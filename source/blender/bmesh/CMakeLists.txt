@@ -167,7 +167,7 @@ set(SRC
 )
 
 if(MSVC)
-	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /WX /wd4101")
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /wd4101")  # BGE-Remix: no /WX, newer MSVC adds warnings (C5287)
 endif()
 
 if(WITH_BULLET)

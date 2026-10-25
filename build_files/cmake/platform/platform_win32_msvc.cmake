@@ -134,8 +134,10 @@ if(NOT DEFINED LIBDIR)
 		message(STATUS "32 bit compiler detected.")
 		set(LIBDIR_BASE "windows")
 	endif()
-	if(MSVC_VERSION EQUAL 1910)
-		message(STATUS "Visual Studio 2017 detected.")
+	if(MSVC_VERSION GREATER 1909)
+		# BGE-Remix: VS 2017/2019/2022 (v141-v143) share the VS 2015 C++ ABI,
+		# so they link against the vc14 pre-compiled libraries.
+		message(STATUS "Visual Studio 2017 or newer detected, using vc14 libraries.")
 		set(LIBDIR ${CMAKE_SOURCE_DIR}/../lib/${LIBDIR_BASE}_vc14)
 	elseif(MSVC_VERSION EQUAL 1900)
 		message(STATUS "Visual Studio 2015 detected.")

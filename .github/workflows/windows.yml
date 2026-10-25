@@ -1,0 +1,173 @@
+name: windows
+
+# BGE-Remix Windows build and tests.
+# Builds Blender 2.79b (blender.exe + blenderplayer.exe) with Visual Studio 2022
+# (v143) against Blender 2.79's own pre-compiled vc14 libraries, with the
+# official release options. Then runs the phase 0 tests against official
+# Blender 2.79b, using Mesa's software OpenGL (the CI machines have no GPU).
+
+on:
+  push:
+  workflow_dispatch:
+
+env:
+  LIB_URL: https://svn.blender.org/svnroot/bf-blender/tags/blender-2.79a-release/lib/win64_vc14
+  LIB_KEY: lib-win64_vc14-blender-2.79a-release
+  OFFICIAL_URL: https://download.blender.org/release/Blender2.79/blender-2.79b-windows64.zip
+
+jobs:
+  # Blender 2.79's pre-compiled Windows libraries (the 2.79a tag also covers
+  # 2.79b: no library changes), fetched once and cached.
+  libs:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - name: Restore libraries
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: lib/win64_vc14
+          key: ${{ env.LIB_KEY }}
+          lookup-only: true
+
+      - name: Download libraries (Blender SVN)
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          choco install sliksvn -y --no-progress
+          $env:Path += ";C:\Program Files\SlikSvn\bin"
+          $ok = $false
+          for ($i = 1; $i -le 8 -and -not $ok; $i++) {
+            if (Test-Path lib/win64_vc14/.svn) {
+              svn cleanup lib/win64_vc14
+              svn update --non-interactive --trust-server-cert lib/win64_vc14
+            } else {
+              svn checkout --quiet --non-interactive --trust-server-cert $env:LIB_URL lib/win64_vc14
+            }
+            if ($LASTEXITCODE -eq 0) { $ok = $true } else { Write-Host "attempt $i failed, waiting"; Start-Sleep -Seconds (60 * $i) }
+          }
+          if (-not $ok) { exit 1 }
+          Remove-Item -Recurse -Force lib/win64_vc14/.svn
+
+      - name: Save libraries
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: lib/win64_vc14
+          key: ${{ env.LIB_KEY }}
+
+  build:
+    needs: libs
+    runs-on: windows-2022
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: blender
+
+      - name: Restore libraries
+        uses: actions/cache/restore@v4
+        with:
+          path: lib/win64_vc14
+          key: ${{ env.LIB_KEY }}
+          fail-on-cache-miss: true
+
+      # Official 2.79b release options; CUDA kernels off (2.79b's kernels stop
+      # at sm_61 and need CUDA 8, so they would not run on RTX cards anyway).
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S blender -B build -G "Visual Studio 17 2022" -A x64 -T v143 `
+            -C blender/build_files/cmake/config/blender_release.cmake `
+            -DWITH_CYCLES_CUDA_BINARIES=OFF `
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 2>&1 | Tee-Object -FilePath configure.log
+          if ($LASTEXITCODE -ne 0) {
+            $lines = Select-String -Path configure.log -Pattern 'CMake Error' -Context 0,4 | Select-Object -First 8 |
+              ForEach-Object { (@($_.Line) + $_.Context.PostContext) -join '%0A' }
+            foreach ($l in $lines) { Write-Output "::error title=Configure error::$l" }
+            exit 1
+          }
+
+
+      - name: Build
+        id: build
+        shell: pwsh
+        run: |
+          $t = [Diagnostics.Stopwatch]::StartNew()
+          cmake --build build --config Release --target INSTALL -- /m /v:minimal 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) {
+            # The errors as annotations, readable on the run page without signing in
+            $lines = Select-String -Path build.log -Pattern 'error C\d+|error LNK\d+|fatal error|error MSB\d+|CMake Error' |
+              Select-Object -First 60 | ForEach-Object { $_.Line.Trim() }
+            $i = 0
+            while ($i -lt $lines.Count) {
+              $chunk = $lines[$i..([math]::Min($i + 5, $lines.Count - 1))] -join '%0A'
+              Write-Output "::error title=Build error::$chunk"
+              $i += 6
+            }
+            exit 1
+          }
+          $t.Stop()
+          "build_minutes=$([math]::Round($t.Elapsed.TotalMinutes, 1))" | Tee-Object -FilePath build/bin/Release/BUILD_TIME.txt
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: build-logs
+          path: |
+            configure.log
+            build.log
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blendremix-win64
+          path: build/bin/Release
+
+  test:
+    needs: build
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: blender
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: blendremix-win64
+          path: ours
+
+      - name: Official Blender 2.79b
+        shell: pwsh
+        run: |
+          Invoke-WebRequest $env:OFFICIAL_URL -OutFile official.zip
+          Expand-Archive official.zip -DestinationPath .
+          Get-ChildItem blender-2.79b-windows64 | Select-Object -First 5 Name
+
+      - name: Mesa software OpenGL
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo pal1000/mesa-dist-win --pattern "*release-msvc.7z" --output mesa.7z
+          7z x mesa.7z -omesa | Out-Null
+          Get-ChildItem mesa/x64 -Filter *.dll | Select-Object Name
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Phase 0 tests
+        shell: pwsh
+        env:
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          python -m pip install --quiet pillow numpy
+          python blender/tests/bge_remix/p0/run_p0.py --ours ours --official blender-2.79b-windows64 --out results --mesa mesa/x64
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: p0-results
+          path: results
