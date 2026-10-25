@@ -30,14 +30,20 @@
 
 CCL_NAMESPACE_BEGIN
 
-/* Some helpers to silence warning in templated function. */
-static bool isfinite(uchar /*value*/)
+/* Some helpers to silence warning in templated function.
+ * BGE-Remix: own name, newer MSVC (14.4x) refuses an isfinite() here next to
+ * the one util_math.h brings in from std. */
+static bool image_isfinite(uchar /*value*/)
 {
 	return false;
 }
-static bool isfinite(half /*value*/)
+static bool image_isfinite(half /*value*/)
 {
 	return false;
+}
+static bool image_isfinite(float value)
+{
+	return isfinite(value);
 }
 
 ImageManager::ImageManager(const DeviceInfo& info)
@@ -654,10 +660,10 @@ bool ImageManager::file_load_image(Image *img,
 		if(is_rgba) {
 			for(size_t i = 0; i < num_pixels; i += 4) {
 				StorageType *pixel = &pixels[i*4];
-				if(!isfinite(pixel[0]) ||
-				   !isfinite(pixel[1]) ||
-				   !isfinite(pixel[2]) ||
-				   !isfinite(pixel[3]))
+				if(!image_isfinite(pixel[0]) ||
+				   !image_isfinite(pixel[1]) ||
+				   !image_isfinite(pixel[2]) ||
+				   !image_isfinite(pixel[3]))
 				{
 					pixel[0] = 0;
 					pixel[1] = 0;
@@ -669,7 +675,7 @@ bool ImageManager::file_load_image(Image *img,
 		else {
 			for(size_t i = 0; i < num_pixels; ++i) {
 				StorageType *pixel = &pixels[i];
-				if(!isfinite(pixel[0])) {
+				if(!image_isfinite(pixel[0])) {
 					pixel[0] = 0;
 				}
 			}
