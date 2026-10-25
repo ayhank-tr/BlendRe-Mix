@@ -76,21 +76,48 @@ jobs:
       # at sm_61 and need CUDA 8, so they would not run on RTX cards anyway).
       - name: Configure
         shell: pwsh
-        run: >
-          cmake -S blender -B build -G "Visual Studio 17 2022" -A x64 -T v143
-          -C blender/build_files/cmake/config/blender_release.cmake
-          -DWITH_CYCLES_CUDA_BINARIES=OFF
-          -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+        run: |
+          cmake -S blender -B build -G "Visual Studio 17 2022" -A x64 -T v143 `
+            -C blender/build_files/cmake/config/blender_release.cmake `
+            -DWITH_CYCLES_CUDA_BINARIES=OFF `
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 2>&1 | Tee-Object -FilePath configure.log
+          if ($LASTEXITCODE -ne 0) {
+            $lines = Select-String -Path configure.log -Pattern 'CMake Error' -Context 0,4 | Select-Object -First 8 |
+              ForEach-Object { (@($_.Line) + $_.Context.PostContext) -join '%0A' }
+            foreach ($l in $lines) { Write-Output "::error title=Configure error::$l" }
+            exit 1
+          }
+
 
       - name: Build
         id: build
         shell: pwsh
         run: |
           $t = [Diagnostics.Stopwatch]::StartNew()
-          cmake --build build --config Release --target INSTALL -- /m /v:minimal
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          cmake --build build --config Release --target INSTALL -- /m /v:minimal 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) {
+            # The errors as annotations, readable on the run page without signing in
+            $lines = Select-String -Path build.log -Pattern 'error C\d+|error LNK\d+|fatal error|error MSB\d+|CMake Error' |
+              Select-Object -First 60 | ForEach-Object { $_.Line.Trim() }
+            $i = 0
+            while ($i -lt $lines.Count) {
+              $chunk = $lines[$i..([math]::Min($i + 5, $lines.Count - 1))] -join '%0A'
+              Write-Output "::error title=Build error::$chunk"
+              $i += 6
+            }
+            exit 1
+          }
           $t.Stop()
           "build_minutes=$([math]::Round($t.Elapsed.TotalMinutes, 1))" | Tee-Object -FilePath build/bin/Release/BUILD_TIME.txt
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: build-logs
+          path: |
+            configure.log
+            build.log
+          if-no-files-found: ignore
 
       - uses: actions/upload-artifact@v4
         with:
