@@ -85,7 +85,7 @@ if frames >= max_frames and elapsed >= seconds:
 '''
 
 
-LIGHT_SCALES = (0.5, 0.25, 0.125)
+EXPOSURES = (0.5, 1, 1.5)
 
 
 def scale_tag(scale):
@@ -281,11 +281,11 @@ def make_room(folder):
     scene["bge_remix"] = 1
     scene.update()  # world matrices of the new objects (background mode)
     save(os.path.join(folder, "p2_room.blend"))
-    # the same room at lower lamp brightness, for choosing the default (sign-off)
-    for scale in LIGHT_SCALES:
-        scene["bge_remix_light_scale"] = scale
-        save(os.path.join(folder, "p2_room_light_%s.blend" % scale_tag(scale)))
-    del scene["bge_remix_light_scale"]
+    # the same room brighter, for choosing the default exposure (sign-off)
+    for ev in EXPOSURES:
+        scene["bge_remix_exposure"] = ev
+        save(os.path.join(folder, "p2_room_exposure_%s.blend" % scale_tag(ev)))
+    del scene["bge_remix_exposure"]
 
     expected = {
         "lamps": [lamp_expect(ob) for ob in lamps],
@@ -301,6 +301,18 @@ def make_room(folder):
                    "LightPanel"],
     }
     return expected
+
+
+def make_spot(folder):
+    """The room lit by its spot lamp alone (and a dark sky): does the pool of
+    light on the floor show in Remix as in Cycles?"""
+    bpy.ops.wm.open_mainfile(filepath=os.path.join(folder, "p2_room.blend"))
+    scene = bpy.context.scene
+    for ob in list(scene.objects):
+        if ob.type == 'LAMP' and ob.name != "LampSpot":
+            bpy.data.objects.remove(ob, do_unlink=True)
+    scene.world.horizon_color = (0.005, 0.005, 0.005)
+    save(os.path.join(folder, "p2_spot.blend"))
 
 
 def make_instances(folder):
@@ -332,6 +344,7 @@ def make_instances(folder):
 def main():
     folder = out_dir()
     expected = make_room(folder)
+    make_spot(folder)
     expected["instances"] = make_instances(folder)
     with open(os.path.join(folder, "p2_expected.json"), "w") as f:
         json.dump(expected, f, indent=2)

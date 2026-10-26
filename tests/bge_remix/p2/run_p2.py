@@ -597,15 +597,20 @@ def run_rtx(args, out):
 
     print("T2.1: the room's Cycles render (CPU, about a few minutes)...", flush=True)
     res["T2.1"]["cycles"] = cycles_render(args.ours, out, scenes)
+    spot_cycles = cycles_render(args.ours, out, scenes, "p2_spot")
 
-    print("T2.1: the room at lower lamp brightness (to choose the default)...", flush=True)
-    sheet = [("Cycles", res["T2.1"]["cycles"]["image"]), ("Remix, light scale 1", t21["screenshot"])]
-    for scale in LIGHT_SCALES:
-        tag = ("%g" % scale).replace(".", "_")
-        r = player(args.ours, out, "T2.1_light_" + tag, os.path.join(scenes, "p2_room_light_%s.blend" % tag),
+    print("T2.1: the room at higher exposure, and the spot lamp alone (sign-off)...", flush=True)
+    sheet = [("Cycles", res["T2.1"]["cycles"]["image"]),
+             ("Remix (light scale 0.125, exposure 0)", t21["screenshot"])]
+    for ev in EXPOSURES:
+        tag = ("%g" % ev).replace(".", "_")
+        r = player(args.ours, out, "T2.1_exposure_" + tag, os.path.join(scenes, "p2_room_exposure_%s.blend" % tag),
                    timed(12), size=(1280, 720), cwd=out)
-        sheet.append(("Remix, light scale %g" % scale, r["screenshot"]))
-    res["T2.1"]["light_scales"] = contact_sheet(sheet, os.path.join(out, "T2.1_compare.png"))
+        sheet.append(("Remix, exposure +%g" % ev, r["screenshot"]))
+    r = player(args.ours, out, "T2.1_spot", os.path.join(scenes, "p2_spot.blend"), timed(12), size=(1280, 720),
+               cwd=out)
+    sheet += [("Cycles, spot lamp only", spot_cycles["image"]), ("Remix, spot lamp only", r["screenshot"])]
+    res["T2.1"]["compare"] = contact_sheet(sheet, os.path.join(out, "T2.1_compare.png"))
 
     print("T2.3: BGE's framerate text over the Remix picture...", flush=True)
     t23 = player(args.ours, out, "T2.3_text", room, timed(10), size=(1280, 720),
@@ -700,7 +705,7 @@ def run_c1(args, out, room, timed):
     return {"captures": caps, "mesh_files": meshes, "exit": r["exit"], "skipped": False}
 
 
-LIGHT_SCALES = (0.5, 0.25, 0.125)
+EXPOSURES = (0.5, 1, 1.5)
 
 
 def contact_sheet(items, target):
@@ -810,14 +815,15 @@ bpy.ops.render.render(write_still=True)
 '''
 
 
-def cycles_render(ours, out, scenes):
+def cycles_render(ours, out, scenes, scene="p2_room"):
     script = os.path.join(out, "p2_cycles_setup.py")
     with open(script, "w", encoding="utf-8") as f:
         f.write(CYCLES_SETUP)
-    target = os.path.join(out, "cycles_room.png")
-    code, text, secs = run([exe(ours, "blender"), "--background", os.path.join(scenes, "p2_room.blend"),
+    name = scene.replace("p2_", "cycles_")
+    target = os.path.join(out, name + ".png")
+    code, text, secs = run([exe(ours, "blender"), "--background", os.path.join(scenes, scene + ".blend"),
                             "--python", script, "--", target], base_env(out, "cycles"),
-                           os.path.join(out, "cycles_room.log"), timeout=1800)
+                           os.path.join(out, name + ".log"), timeout=1800)
     return {"ok": code == 0 and os.path.isfile(target), "image": target, "seconds": round(secs, 1)}
 
 

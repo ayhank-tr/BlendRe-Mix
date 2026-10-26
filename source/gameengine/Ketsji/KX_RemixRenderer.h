@@ -64,6 +64,7 @@ public:
 		int enabled;        /* 1: render through Remix */
 		int window_mode;    /* 1: present into a child window (blenderplayer) */
 		float light_scale;  /* brightness factor for lamps */
+		float exposure;     /* stops added to Remix's automatic exposure */
 	};
 
 	/* Scene settings: the custom properties bge_remix, bge_remix_fast and
@@ -125,6 +126,7 @@ private:
 	bool EnsureMesh(KX_Scene *scene, RAS_MeshObject *mesh, MeshEntry *&r_entry);
 	uint64_t EnsureMaterial(KX_Scene *scene, RAS_IPolyMaterial *mat);
 	void ShowRemixWindow(bool show);
+	void ApplyExposure(const Settings &settings);
 	void UpdateLights(KX_Scene *scene, float light_scale);
 	void SendLight(KX_Scene *scene, const void *key, const struct brb_light_desc &desc);
 	void DrawPicture(int width, int height);

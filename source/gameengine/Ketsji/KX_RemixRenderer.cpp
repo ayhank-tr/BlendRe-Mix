@@ -79,6 +79,10 @@ extern "C" {
 static const float SUN_ANGULAR_DIAMETER_DEG = 0.53f;
 static const float MIN_LIGHT_RADIUS = 0.02f;
 static const double NOTICE_SECONDS = 8.0;
+/* Chosen by eye against the room's Cycles render (P2 sign-off, RTX 3080):
+ * with 1, the lamps outshine everything else under Remix's automatic
+ * exposure (the glowing panel disappears) */
+static const float DEFAULT_LIGHT_SCALE = 0.125f;
 static const double PI = 3.14159265358979323846;
 
 /* ------------------------------------------------------------------------- */
@@ -203,12 +207,13 @@ static void object_matrix(KX_GameObject *obj, float r_m[16])
 
 KX_RemixRenderer::Settings KX_RemixRenderer::GetSettings(KX_Scene *scene, int override_enabled, int override_fast)
 {
-	Settings s = {0, 0, 1.0f};
+	Settings s = {0, 0, DEFAULT_LIGHT_SCALE, 0.0f};
 	Scene *bscene = scene ? scene->GetBlenderScene() : NULL;
 	IDProperty *props = bscene ? bscene->id.properties : NULL;
 	s.enabled = idprop_int(props, "bge_remix", 0) != 0;
 	s.window_mode = idprop_int(props, "bge_remix_fast", 0) != 0;
-	s.light_scale = idprop_float(props, "bge_remix_light_scale", 1.0f);
+	s.light_scale = idprop_float(props, "bge_remix_light_scale", DEFAULT_LIGHT_SCALE);
+	s.exposure = idprop_float(props, "bge_remix_exposure", 0.0f);
 	if (override_enabled >= 0) {
 		s.enabled = override_enabled != 0;
 	}
@@ -216,7 +221,10 @@ KX_RemixRenderer::Settings KX_RemixRenderer::GetSettings(KX_Scene *scene, int ov
 		s.window_mode = override_fast != 0;
 	}
 	if (!(s.light_scale >= 0.0f) || s.light_scale > 1e6f) {
-		s.light_scale = 1.0f;
+		s.light_scale = DEFAULT_LIGHT_SCALE;
+	}
+	if (!(s.exposure >= -10.0f && s.exposure <= 10.0f)) {
+		s.exposure = 0.0f;
 	}
 	return s;
 }
@@ -250,7 +258,8 @@ KX_RemixRenderer::KX_RemixRenderer(RAS_ICanvas *canvas, bool window_mode_allowed
 {
 	m_settings.enabled = 0;
 	m_settings.window_mode = 0;
-	m_settings.light_scale = 1.0f;
+	m_settings.light_scale = DEFAULT_LIGHT_SCALE;
+	m_settings.exposure = 0.0f;
 	std::wstring f;
 	if (env_path(L"BGE_REMIX_SCREENSHOT_FRAME", f)) {
 		m_screenshot_frame = _wtoi(f.c_str());
@@ -348,6 +357,7 @@ bool KX_RemixRenderer::Start(KX_Scene *scene, int width, int height, const Setti
 		return false;
 	}
 	m_bridge->reset_stats();
+	ApplyExposure(settings);
 	m_running = true;
 	m_mode = mode;
 	m_scene = scene;
@@ -359,6 +369,14 @@ bool KX_RemixRenderer::Start(KX_Scene *scene, int width, int height, const Setti
 	       mode == BRB_MODE_COPY ? "copy mode" : "window mode", width, height);
 	fflush(stdout);
 	return true;
+}
+
+void KX_RemixRenderer::ApplyExposure(const Settings &settings)
+{
+	/* stops on top of Remix's automatic exposure */
+	char value[32];
+	snprintf(value, sizeof(value), "%g", settings.exposure);
+	m_bridge->set_config("rtx.tonemap.exposureBias", value);
 }
 
 void KX_RemixRenderer::ShowRemixWindow(bool show)
@@ -396,7 +414,7 @@ KX_Scene *KX_RemixRenderer::PickSceneImpl(const std::vector<KX_Scene *> &scenes,
 	/* The first scene (bottom of the stack) with Remix on gets it. Only one:
 	 * Remix draws one picture per frame. */
 	KX_Scene *wanted = NULL;
-	Settings settings = {0, 0, 1.0f};
+	Settings settings = {0, 0, DEFAULT_LIGHT_SCALE, 0.0f};
 	bool first = true;
 	for (KX_Scene *s : scenes) {
 		/* the -g override applies to the first scene only */
@@ -414,6 +432,7 @@ KX_Scene *KX_RemixRenderer::PickSceneImpl(const std::vector<KX_Scene *> &scenes,
 		/* another scene asks for Remix after the first one went */
 		m_scene = wanted;
 		m_settings = settings;
+		ApplyExposure(settings);
 		return m_scene;
 	}
 	if (m_tried) {

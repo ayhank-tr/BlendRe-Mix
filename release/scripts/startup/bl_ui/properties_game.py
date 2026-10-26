@@ -436,11 +436,15 @@ class RENDER_PT_game_remix(RenderButtonsPanel, Panel):
         bpy.types.Scene.bge_remix_light_scale = FloatProperty(
             name="Light Scale",
             description="Brightness factor for lamps under RTX Remix",
-            default=1.0, min=0.0, soft_max=100.0)
+            default=0.125, min=0.0, soft_max=100.0)
+        bpy.types.Scene.bge_remix_exposure = FloatProperty(
+            name="Exposure",
+            description="Stops added to RTX Remix's automatic exposure (positive: brighter)",
+            default=0.0, min=-10.0, max=10.0)
 
     @classmethod
     def unregister(cls):
-        for name in ("bge_remix", "bge_remix_fast", "bge_remix_light_scale"):
+        for name in ("bge_remix", "bge_remix_fast", "bge_remix_light_scale", "bge_remix_exposure"):
             if hasattr(bpy.types.Scene, name):
                 delattr(bpy.types.Scene, name)
 
@@ -452,6 +456,7 @@ class RENDER_PT_game_remix(RenderButtonsPanel, Panel):
             return
         col = layout.column()
         col.prop(scene, "bge_remix_light_scale")
+        col.prop(scene, "bge_remix_exposure")
         col.prop(scene, "bge_remix_fast")
         try:
             import bge_remix
