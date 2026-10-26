@@ -39,6 +39,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 		ShowWindow(hwnd, SW_HIDE);
 		return 0;
 	}
+	if (msg == WM_NCHITTEST && (GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_CHILD)) {
+		/* Window mode: the mouse belongs to the game window underneath. */
+		return HTTRANSPARENT;
+	}
 	return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
@@ -55,7 +59,7 @@ static void unhook_window()
 	}
 }
 
-static void destroy_window()
+void destroy_window()
 {
 	if (g_hwnd) {
 		unhook_window();
@@ -119,9 +123,6 @@ double now_ms()
 	return 1000.0 * (double)t.QuadPart / (double)freq.QuadPart;
 }
 
-/* Screenshot of the window's client area, including GPU-presented content,
- * as a 24-bit BMP. */
-
 }  /* namespace brb */
 
 using namespace brb;
@@ -146,6 +147,7 @@ BRB_API brb_status brb_startup(int width, int height, int visible)
 	if (g_status != BRB_STATUS_READY) {
 		return g_status;
 	}
+	g_mode = BRB_MODE_WINDOW;
 	if (!g_hwnd) {
 		g_hwnd = create_window(std::max(width, 64), std::max(height, 64), visible != 0);
 		if (!g_hwnd) {
@@ -176,6 +178,7 @@ BRB_API brb_status brb_startup(int width, int height, int visible)
 	log("Startup -> %u in %.1f ms", (unsigned)r, now_ms() - t0);
 	if (r != REMIXAPI_ERROR_CODE_SUCCESS) {
 		destroy_window();
+		g_mode = BRB_MODE_NONE;
 		set_status(BRB_STATUS_STARTUP_FAILED, with_code("RTX Remix could not start", r));
 		return g_status;
 	}
@@ -193,8 +196,11 @@ BRB_API brb_status brb_startup(int width, int height, int visible)
 
 BRB_API void brb_shutdown(void)
 {
-	/* Order matters: Remix shuts down, our window procedure goes back on, the
-	 * window goes, and only then are the runtime's DLLs released. */
+	/* Order matters: our objects on Remix's device go first, Remix shuts down,
+	 * our window procedure goes back on, the window goes, and only then are the
+	 * runtime's DLLs released. */
+	device_release();
+	scene_forget();
 	if (g_dll && g_started && g_remix.Shutdown) {
 		try {
 			remixapi_ErrorCode r = g_remix.Shutdown();
@@ -213,6 +219,7 @@ BRB_API void brb_shutdown(void)
 	g_remix = remixapi_Interface();
 	g_dll = nullptr;
 	g_started = false;
+	g_mode = BRB_MODE_NONE;
 	g_runtime_dir.clear();
 	if (g_status != BRB_STATUS_NOT_LOADED) {
 		set_status(BRB_STATUS_NOT_LOADED, "RTX Remix was shut down.");

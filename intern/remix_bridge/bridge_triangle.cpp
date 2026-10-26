@@ -81,6 +81,44 @@ bool save_window_bmp(HWND hwnd, const wchar_t *path)
 	return ok != FALSE;
 }
 
+bool save_bmp(const wchar_t *path, const unsigned char *bgra, int width, int height, int pitch)
+{
+	if (!bgra || width <= 0 || height <= 0) {
+		return false;
+	}
+	BITMAPINFOHEADER bi = {};
+	bi.biSize = sizeof(bi);
+	bi.biWidth = width;
+	bi.biHeight = height; /* bottom-up */
+	bi.biPlanes = 1;
+	bi.biBitCount = 24;
+	bi.biCompression = BI_RGB;
+	const int stride = ((width * 3 + 3) / 4) * 4;
+	std::vector<unsigned char> pixels((size_t)stride * height, 0);
+	for (int y = 0; y < height; y++) {
+		const unsigned char *src = bgra + (size_t)pitch * (height - 1 - y);
+		unsigned char *dst = &pixels[(size_t)stride * y];
+		for (int x = 0; x < width; x++) {
+			dst[x * 3 + 0] = src[x * 4 + 0];
+			dst[x * 3 + 1] = src[x * 4 + 1];
+			dst[x * 3 + 2] = src[x * 4 + 2];
+		}
+	}
+	FILE *f = _wfopen(path, L"wb");
+	if (!f) {
+		return false;
+	}
+	BITMAPFILEHEADER bf = {};
+	bf.bfType = 0x4D42;
+	bf.bfOffBits = sizeof(bf) + sizeof(bi);
+	bf.bfSize = bf.bfOffBits + (DWORD)pixels.size();
+	fwrite(&bf, sizeof(bf), 1, f);
+	fwrite(&bi, sizeof(bi), 1, f);
+	fwrite(pixels.data(), 1, pixels.size(), f);
+	fclose(f);
+	return true;
+}
+
 void press_capture_hotkey()
 {
 	/* rtx.captureHotKey defaults to Ctrl+Shift+Q; with
