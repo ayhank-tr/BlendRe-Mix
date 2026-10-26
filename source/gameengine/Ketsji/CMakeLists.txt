@@ -109,6 +109,7 @@ set(SRC
 	KX_PythonMain.cpp
 	KX_RadarSensor.cpp
 	KX_RayCast.cpp
+	KX_RemixRenderer.cpp
 	KX_RayEventManager.cpp
 	KX_RaySensor.cpp
 	KX_SCA_AddObjectActuator.cpp
@@ -187,6 +188,7 @@ set(SRC
 	KX_PythonMain.h
 	KX_RadarSensor.h
 	KX_RayCast.h
+	KX_RemixRenderer.h
 	KX_RayEventManager.h
 	KX_RaySensor.h
 	KX_SCA_AddObjectActuator.h
@@ -250,6 +252,15 @@ if(WITH_AUDASPACE)
 		${AUDASPACE_C_INCLUDE_DIRS}
 		${AUDASPACE_PY_INCLUDE_DIRS}
 	)
+endif()
+
+# BGE-Remix: a scene can render through RTX Remix (KX_RemixRenderer)
+if(WITH_REMIX)
+	list(APPEND INC
+		../../blender/remix
+		../../../intern/remix_bridge
+	)
+	add_definitions(-DWITH_REMIX)
 endif()
 
 if(WITH_BULLET)
