@@ -190,7 +190,10 @@ class WM_OT_bge_remix_test(Operator):
             return {'CANCELLED'}
         shot = os.path.join(tempfile.gettempdir(), "bge-remix-test.bmp")
         r = bge_remix._bge_remix.triangle_test(5.0, shot, False)
-        if r["ok"]:
+        if r["ok"] and not bge_remix.has_picture(shot):
+            self.report({'WARNING'}, "RTX Remix is running but still preparing its shaders "
+                        "(the first start can take a minute). Run the test again.")
+        elif r["ok"]:
             self.report({'INFO'}, "RTX Remix works: %d frames, %.1f ms per frame" % (
                 r["frames"], r["frame_ms_median"]))
         else:

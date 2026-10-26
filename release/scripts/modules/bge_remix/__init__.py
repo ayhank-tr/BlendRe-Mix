@@ -111,6 +111,29 @@ def shutdown():
         _bge_remix.shutdown()
 
 
+def bmp_stats(path, step=97):
+    """Mean and standard deviation of a 24-bit BMP's bytes (a quick "is there a
+    picture" check, no image library needed). None if unreadable."""
+    import struct
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        offset = struct.unpack_from("<I", data, 10)[0]
+    except (OSError, struct.error):
+        return None
+    px = data[offset::step]
+    if not px:
+        return None
+    mean = sum(px) / len(px)
+    var = sum((b - mean) ** 2 for b in px) / len(px)
+    return mean, var ** 0.5
+
+
+def has_picture(path):
+    s = bmp_stats(path)
+    return s is not None and s[0] > 5 and s[1] > 3
+
+
 def pin_for_install():
     """The pinned runtime, or a test package named by BGE_REMIX_PIN_OVERRIDE
     (a JSON file with url, sha256, size, version; tests only)."""
