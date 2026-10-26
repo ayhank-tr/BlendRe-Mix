@@ -1093,7 +1093,8 @@ class MATERIAL_PT_game_remix(MaterialButtonsPanel, Panel):
         M.bge_remix_alpha_cutoff = FloatProperty(name="Cutoff", min=0.0, max=1.0, default=0.5)
         M.bge_remix_ior = FloatProperty(name="IOR", min=1.0, max=3.0, default=1.5)
         M.bge_remix_transmittance = FloatVectorProperty(
-            name="Transmittance", subtype='COLOR', size=3, min=0.0, max=1.0, default=(1.0, 1.0, 1.0))
+            name="Transmittance", subtype='COLOR', size=3, min=0.0, max=1.0, default=(1.0, 1.0, 1.0),
+            description="The colour light keeps after half a metre (Blender unit) inside the glass")
         M.bge_remix_subsurface_radius = FloatVectorProperty(
             name="Radius", subtype='XYZ', size=3, min=0.0, default=(1.0, 0.2, 0.1),
             description="How far light travels under the surface, per colour channel (Blender units)")

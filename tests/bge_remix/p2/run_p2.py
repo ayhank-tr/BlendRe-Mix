@@ -162,6 +162,15 @@ def created(lines, prefix):
     return result
 
 
+def srgb(c):
+    """linear -> sRGB-encoded, as the bridge sends colours (Remix's shaders
+    decode them from gamma themselves); a list is converted per channel"""
+    if isinstance(c, list):
+        return [srgb(x) for x in c]
+    c = min(max(float(c), 0.0), 1.0)
+    return c * 12.92 if c <= 0.0031308 else 1.055 * c ** (1.0 / 2.4) - 0.055
+
+
 def close(a, b, tol=1e-3):
     if isinstance(a, list) or isinstance(b, list):
         if not isinstance(a, list) or not isinstance(b, list) or len(a) != len(b):
@@ -260,9 +269,9 @@ def check_materials(lines, expected):
         if f is None:
             checks[e["name"] + " arrives"] = False
             continue
-        ok = close(f["albedo"], e["albedo"]) and close(f["opacity"], e["opacity"]) and f.get("blend") == e["blend"]
+        ok = close(f["albedo"], srgb(e["albedo"])) and close(f["opacity"], e["opacity"]) and f.get("blend") == e["blend"]
         if e["emit"] > 0:
-            ok = ok and close(f["intensity"], e["emit"]) and close(f["emissive"], e["color"])
+            ok = ok and close(f["intensity"], e["emit"]) and close(f["emissive"], srgb(e["color"]))
         else:
             ok = ok and f.get("intensity") == 0
         checks["%s: colour, alpha, emit" % e["name"]] = ok

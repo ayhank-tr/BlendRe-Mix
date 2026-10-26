@@ -24,7 +24,11 @@
  * The texture interface (version 3): Blender's pixels to DDS files as RTX
  * Remix reads them, with DirectXTex.
  *
- *   colour    -> BC7, sRGB (alpha kept)
+ *   colour    -> BC7 holding sRGB-encoded values in a plain UNORM format:
+ *                Remix's material shaders convert albedo and emission from
+ *                gamma to linear themselves (gammaToLinear, "assuming all
+ *                textures are not using sRGB formats"), so an _SRGB format
+ *                would be decoded twice (P3 RTX run: dark, oversaturated)
  *   normal    -> BC5, Remix's unsigned hemisphere-octahedral encoding (the
  *                opaque material shader decodes every normal map with
  *                unsignedOctahedralToHemisphereDirection), in Direct3D's
@@ -222,8 +226,11 @@ HRESULT build_base(const Job &job, const Pixels &px, DirectX::ScratchImage &out,
 	HRESULT hr = E_INVALIDARG;
 	switch (job.kind) {
 		case BRB_TEXTURE_COLOR: {
-			const bool linear = (job.flags & BRB_TEXTURE_LINEAR) != 0;
-			hr = out.Initialize2D(linear ? DXGI_FORMAT_R8G8B8A8_UNORM : DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, w, h, 1, 1);
+			/* always sRGB-encoded values in the end (see the top); the mips
+			 * are made in an _SRGB format so they average in linear light,
+			 * and the format is relabelled UNORM before compression */
+			const bool linear_bytes = (job.flags & BRB_TEXTURE_LINEAR) != 0;
+			hr = out.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, w, h, 1, 1);
 			if (FAILED(hr)) {
 				return hr;
 			}
@@ -233,14 +240,14 @@ HRESULT build_base(const Job &job, const Pixels &px, DirectX::ScratchImage &out,
 				for (int x = 0; x < w; x++) {
 					for (int c = 0; c < 4; c++) {
 						float v = texel(px, w, h, x, y, c);
-						if (px.rgbaf && c < 3 && !linear) {
+						if (c < 3 && (px.rgbaf || linear_bytes)) {
 							v = linear_to_srgb(v);
 						}
 						row[x * 4 + c] = to_byte(v);
 					}
 				}
 			}
-			r_target = linear ? DXGI_FORMAT_BC7_UNORM : DXGI_FORMAT_BC7_UNORM_SRGB;
+			r_target = DXGI_FORMAT_BC7_UNORM;
 			return S_OK;
 		}
 		case BRB_TEXTURE_SCALAR: {
@@ -387,7 +394,7 @@ HRESULT compress(const DirectX::ScratchImage &mips, DXGI_FORMAT format, int flag
 	r_gpu = 0;
 	const DirectX::TexMetadata &meta = mips.GetMetadata();
 #ifdef BRB_DIRECTXTEX_GPU
-	if ((format == DXGI_FORMAT_BC7_UNORM || format == DXGI_FORMAT_BC7_UNORM_SRGB || format == DXGI_FORMAT_BC6H_UF16) &&
+	if ((format == DXGI_FORMAT_BC7_UNORM || format == DXGI_FORMAT_BC6H_UF16) &&
 	    !(flags & BRB_TEXTURE_NO_GPU))
 	{
 		std::lock_guard<std::mutex> lock(g_gpu_mutex);
@@ -411,7 +418,7 @@ HRESULT compress(const DirectX::ScratchImage &mips, DXGI_FORMAT format, int flag
 	/* BC7 on the CPU: the quick mode (mode 6 only) is many times faster and
 	 * still good for colour maps */
 	DirectX::TEX_COMPRESS_FLAGS cf = DirectX::TEX_COMPRESS_DEFAULT;
-	if (format == DXGI_FORMAT_BC7_UNORM || format == DXGI_FORMAT_BC7_UNORM_SRGB) {
+	if (format == DXGI_FORMAT_BC7_UNORM) {
 		cf = DirectX::TEX_COMPRESS_BC7_QUICK;
 	}
 	for (size_t i = 0; i < meta.mipLevels; i++) {
@@ -455,6 +462,9 @@ bool encode(const Job &job, const Pixels &px, brb_texture_result &r)
 				}
 				else {
 					mips = std::move(base);
+				}
+				if (SUCCEEDED(hr) && mips.GetMetadata().format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) {
+					mips.OverrideFormat(DXGI_FORMAT_R8G8B8A8_UNORM);
 				}
 			}
 		}

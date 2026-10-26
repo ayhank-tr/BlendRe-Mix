@@ -134,6 +134,8 @@ typedef enum brb_material_type {
 	BRB_MATERIAL_TRANSLUCENT = 1, /* glass: refracts, tinted by transmittance */
 } brb_material_type;
 
+/* Colours are linear here, as in Blender; the bridge hands Remix the
+ * sRGB-encoded values its shaders expect (albedo, emission, transmittance). */
 typedef struct brb_material_desc {
 	uint64_t hash;               /* identifies the material; never 0 */
 	float albedo[3];             /* linear; ignored where albedo_texture is set */
@@ -274,14 +276,14 @@ BRB_API void brb_reset_stats(void);
  * not need Remix to be running (only the bridge loaded). */
 
 typedef enum brb_texture_kind {
-	BRB_TEXTURE_COLOR = 0,   /* sRGB colour + alpha -> BC7 (sRGB) */
+	BRB_TEXTURE_COLOR = 0,   /* sRGB colour + alpha -> BC7 (sRGB values, UNORM format: Remix decodes them) */
 	BRB_TEXTURE_NORMAL = 1,  /* tangent-space normal map as Blender uses it (OpenGL, RGB) -> octahedral BC5 */
 	BRB_TEXTURE_SCALAR = 2,  /* one channel (roughness, metallic...) -> BC4 */
 	BRB_TEXTURE_HDR = 3,     /* linear colour beyond 1 -> BC6H */
 } brb_texture_kind;
 
 #define BRB_TEXTURE_NO_GPU 1 /* compress on the CPU even when a GPU is there */
-#define BRB_TEXTURE_LINEAR 2 /* COLOR: the data is linear, not sRGB */
+#define BRB_TEXTURE_LINEAR 2 /* COLOR: the bytes are linear, not sRGB (encoded to sRGB) */
 #define BRB_TEXTURE_INVERT 4 /* SCALAR: store 1 - value */
 
 typedef struct brb_texture_desc {

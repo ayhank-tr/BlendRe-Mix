@@ -79,6 +79,20 @@ float hardness_to_roughness(const Material *ma)
 	return (ma->spec < 0.01f) ? 1.0f : (float)std::pow(2.0 / ((double)ma->har + 2.0), 0.25);
 }
 
+/* Cycles' Glass colour tints light once at each surface it crosses, so
+ * light through a solid object is tinted by the colour squared, whatever
+ * its size. Remix tints by distance travelled inside: the colour squared
+ * after half a metre matches Cycles for objects about half a metre thick
+ * (the test balls are 0.8 m across). */
+static const float GLASS_TINT_DISTANCE = 0.5f;
+
+static void glass_tint(const float c[3], float r_transmittance[3])
+{
+	for (int i = 0; i < 3; i++) {
+		r_transmittance[i] = c[i] * c[i];
+	}
+}
+
 /* The defaults: Blender's default material (grey, half rough). */
 void defaults(MaterialSpec &s)
 {
@@ -90,7 +104,9 @@ void defaults(MaterialSpec &s)
 	s.desc.alpha_cutoff = 0.5f;
 	s.desc.ior = 1.5f;
 	set3(s.desc.transmittance, 1.0f, 1.0f, 1.0f);
-	s.desc.transmittance_distance = 1.0f;
+	/* Remix tints glass by the distance light travels inside it: the
+	 * transmittance is the colour left after this many metres */
+	s.desc.transmittance_distance = GLASS_TINT_DISTANCE;
 	set3(s.desc.subsurface_color, 0.8f, 0.8f, 0.8f);
 	set3(s.desc.subsurface_radius, 1.0f, 0.2f, 0.1f);
 	for (int i = 0; i < TEX_COUNT; i++) {
@@ -490,7 +506,7 @@ struct Nodes {
 		if (transmission > 0.5f) {
 			d.type = BRB_MATERIAL_TRANSLUCENT;
 			d.ior = value(n, "IOR", 1.45f);
-			memcpy(d.transmittance, d.albedo, sizeof(d.transmittance));
+			glass_tint(d.albedo, d.transmittance);
 			if (s.textures[TEX_ALBEDO].image) {
 				note(s, std::string(n->name) + ": glass tinted by an image, the image is left out");
 				s.textures[TEX_ALBEDO] = TextureRequest();
@@ -533,7 +549,11 @@ struct Nodes {
 			case SH_NODE_BSDF_GLASS:
 			case SH_NODE_BSDF_REFRACTION:
 				d.type = BRB_MATERIAL_TRANSLUCENT;
-				color(n, "Color", d.transmittance);
+				{
+					float c[3] = {1.0f, 1.0f, 1.0f};
+					color(n, "Color", c);
+					glass_tint(c, d.transmittance);
+				}
 				d.ior = value(n, "IOR", 1.45f);
 				return;
 			case SH_NODE_EMISSION: {

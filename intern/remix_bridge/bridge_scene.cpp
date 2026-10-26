@@ -74,6 +74,22 @@ static remixapi_Float3D f3(const float v[3])
 	return r;
 }
 
+/* Remix's material shaders take albedo, emissive and transmittance colours
+ * as gamma (sRGB) values and convert them to linear (gammaToLinear in
+ * opaque_surface_material_interaction.slangh): Blender's linear colours are
+ * encoded first, or they come out squared (P3 RTX run: oversaturated). */
+static float srgb(float c)
+{
+	c = std::min(std::max(c, 0.0f), 1.0f);
+	return (c <= 0.0031308f) ? c * 12.92f : 1.055f * std::pow(c, 1.0f / 2.4f) - 0.055f;
+}
+
+static remixapi_Float3D srgb3(const float v[3])
+{
+	remixapi_Float3D r = {srgb(v[0]), srgb(v[1]), srgb(v[2])};
+	return r;
+}
+
 /* Remix's dome light needs a texture. A small white one, multiplied by the
  * light's radiance, gives a uniform sky. Written once to the temp folder. */
 static const std::wstring &dome_texture()
@@ -141,7 +157,7 @@ BRB_API int brb_material_create(const brb_material_desc *d)
 	if (d->type == BRB_MATERIAL_TRANSLUCENT) {
 		glass.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_TRANSLUCENT_EXT;
 		glass.refractiveIndex = std::min(std::max(d->ior, 1.0f), 3.0f);
-		glass.transmittanceColor = f3(d->transmittance);
+		glass.transmittanceColor = srgb3(d->transmittance);
 		/* Remix's glass rejects a zero distance; Blender's glass tints per surface */
 		glass.transmittanceMeasurementDistance = std::max(d->transmittance_distance, 0.001f);
 		glass.thinWallThickness_hasvalue = d->thin_walled ? TRUE : FALSE;
@@ -150,7 +166,7 @@ BRB_API int brb_material_create(const brb_material_desc *d)
 		ext = &glass;
 	}
 	else {
-		opaque.albedoConstant = f3(d->albedo);
+		opaque.albedoConstant = srgb3(d->albedo);
 		opaque.opacityConstant = clamp01(d->opacity);
 		opaque.roughnessConstant = clamp01(d->roughness);
 		opaque.metallicConstant = clamp01(d->metallic);
@@ -174,7 +190,7 @@ BRB_API int brb_material_create(const brb_material_desc *d)
 			/* Remix's diffusion profile, as Blender's Christensen-Burley:
 			 * radius per channel in scene units (here Blender units) */
 			sss.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_SUBSURFACE_EXT;
-			sss.subsurfaceTransmittanceColor = f3(d->subsurface_color);
+			sss.subsurfaceTransmittanceColor = srgb3(d->subsurface_color);
 			sss.subsurfaceSingleScatteringAlbedo = f3(d->subsurface_color);
 			sss.subsurfaceMeasurementDistance = 0.0f;
 			sss.subsurfaceVolumetricAnisotropy = 0.0f;
@@ -190,7 +206,7 @@ BRB_API int brb_material_create(const brb_material_desc *d)
 	brb_material_destroy(d->hash);
 	remixapi_MaterialInfo info = default_material(d->hash, ext);
 	info.emissiveIntensity = std::max(d->emissive_intensity, 0.0f);
-	info.emissiveColorConstant = f3(d->emissive);
+	info.emissiveColorConstant = srgb3(d->emissive);
 	info.albedoTexture = tex(d->albedo_texture);
 	info.normalTexture = tex(d->normal_texture);
 	info.emissiveTexture = tex(d->emissive_texture);

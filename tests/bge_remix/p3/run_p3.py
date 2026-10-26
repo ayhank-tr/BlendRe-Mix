@@ -38,7 +38,7 @@ sys.path.insert(0, HERE)
 import run_p2 as p2  # noqa: E402  (running Blender, the fake runtime's log)
 import dds_check  # noqa: E402
 
-FMT = {"col": 99, "nrm": 83, "r": 80, "ri": 80}
+FMT = {"col": 98, "nrm": 83, "r": 80, "ri": 80}
 
 
 # ---------------------------------------------------------------------------
@@ -102,10 +102,12 @@ def check_material(f, e):
         bad.append("type %s, expected %s" % (f.get("type"), e["type"]))
     pairs = [("albedo", "albedo"), ("metallic", "metallic"), ("roughness", "roughness"), ("opacity", "opacity"),
              ("ior", "ior"), ("transmittance", "transmittance"), ("emissive", "emissive"),
-             ("intensity", "intensity"), ("sss_radius", "sss_radius")]
+             ("intensity", "intensity"), ("sss_radius", "sss_radius"), ("distance", "distance")]
+    colours = ("albedo", "transmittance", "emissive")  # the bridge sends these sRGB-encoded
     for key, field in pairs:
-        if key in e and not (field in f and p2.close(f[field], e[key], 2e-3)):
-            bad.append("%s %s, expected %s" % (key, f.get(field), e[key]))
+        want = p2.srgb(e[key]) if key in colours and key in e else e.get(key)
+        if key in e and not (field in f and p2.close(f[field], want, 2e-3)):
+            bad.append("%s %s, expected %s" % (key, f.get(field), want))
     if "blend" in e and f.get("blend") != e["blend"]:
         bad.append("blend %s, expected %s" % (f.get("blend"), e["blend"]))
     if "subsurface" in e and f.get("subsurface") != e["subsurface"]:
@@ -180,7 +182,9 @@ def bridge_checks(ours, out):
     checks["normal map: BC5, octahedral, within 2 degrees (green flipped for Remix)"] = \
         ok and dds_check.read_header(path)["dxgi"] == 83 and err < 2.0
     ok, path = write("grad_c.dds", 0, data8=grad)
-    checks["colour map: BC7 sRGB"] = ok and dds_check.read_header(path)["dxgi"] == 99
+    # BC7_UNORM holding sRGB values: Remix decodes colour maps from gamma
+    # itself, an _SRGB format (99) would be decoded twice
+    checks["colour map: BC7, sRGB values in a UNORM format"] = ok and dds_check.read_header(path)["dxgi"] == 98
     hdr = []
     for i in range(W * H):
         hdr += [4.0 * (i % W) / W, 2.0, 0.5, 1.0]
@@ -551,6 +555,8 @@ def run_rtx(args, out):
     g = p2.player(args.ours, out, "T3.1_grid", grid, timed(25, cache_grid, {"RTX_ENABLE_ASYNC_COMPILATION": "0"}),
                   size=(1280, 720), cwd=out)
     ok_g, img_g = p2.has_picture(g["screenshot"])
+    g1 = p2.player(args.ours, out, "T3.1_grid_exposure_1", os.path.join(scenes, "p3_grid_exposure_1.blend"),
+                   timed(15, cache_grid, {"RTX_ENABLE_ASYNC_COMPILATION": "0"}), size=(1280, 720), cwd=out)
     print("T3.1: the grid's Cycles render (CPU, several minutes)...", flush=True)
     cyc = cycles_grid(args.ours, out, scenes)
     res["T3.1"] = {"ok": g["exit"] == 0 and g["stats"].get("running") is True and bool(ok_g) and
@@ -583,7 +589,8 @@ def run_rtx(args, out):
     res["B3.2"]["targets_met"] = (res["B3.2"]["warm_first_textured_frame"] or 99) <= 1 and \
         (res["B3.2"]["cold_first_textured_seconds"] or 1e9) < 10.0
 
-    sheet = [("Cycles, material grid", cyc["image"]), ("Remix, material grid", g["screenshot"]),
+    sheet = [("Cycles, material grid", cyc["image"]), ("Remix, material grid (exposure +2, default)", g["screenshot"]),
+             ("Remix, material grid (exposure +1)", g1["screenshot"]),
              ("Remix, textured room (full cache)", warm["screenshot"])]
     res["T3.1"]["compare"] = p2.contact_sheet(sheet, os.path.join(out, "T3.1_compare.png"))
 

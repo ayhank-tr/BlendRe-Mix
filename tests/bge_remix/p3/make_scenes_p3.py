@@ -19,6 +19,7 @@
 #                                   RTX Remix panel (gold metal, T3.4)
 #                          on a grey floor before a grey wall, sun + area lamp
 #                          + sky, camera straight on
+#   p3_grid_exposure_1.blend  the same grid at exposure +1 (the default is +2)
 #   p3_room.blend          the P2 room, textured: tiled floor (packed colour,
 #                          normal, roughness), brick back wall (external PNGs
 #                          next to the .blend), plaster side walls and ceiling
@@ -106,17 +107,31 @@ def tiles(x, y, n=4, grout=0.04):
     return (0.25, 0.25, 0.27, 1.0) if edge else (0.75, 0.72, 0.66, 1.0)
 
 
-def tiles_normal(x, y, n=4, grout=0.06):
+def bevel_normal(dx0, dx1, dy0, dy1, band, slope):
+    """The normal of a raised block with bevelled edges: dx0/dx1/dy0/dy1 are
+    the distances to the block's left/right/bottom/top edge, in the same
+    units as band; inside the band the surface rises with the given slope
+    (1.0 = 45 degrees), facing away from the nearest edge."""
+    d = min(dx0, dx1, dy0, dy1)
+    if d >= band:
+        return normal_rgb(0, 0, 1)
+    # a smooth (sine) ramp: steepest half-way up the bevel
+    t = slope * math.sin(math.pi * 0.5 * (1.0 - d / band)) * 1.4
+    if d == dx0:
+        return normal_rgb(-t, 0, 1)
+    if d == dx1:
+        return normal_rgb(t, 0, 1)
+    if d == dy0:
+        return normal_rgb(0, -t, 1)
+    return normal_rgb(0, t, 1)
+
+
+def tiles_normal(x, y, n=4, grout=0.04, band=0.16):
+    """pillowed tiles: a wide bevel on all four sides, flat sunken grout"""
     fx, fy = (x * n) % 1.0, (y * n) % 1.0
-    if fx < grout:
-        return normal_rgb(-0.6, 0, 1)
-    if 1 - fx < grout:
-        return normal_rgb(0.6, 0, 1)
-    if fy < grout:
-        return normal_rgb(0, -0.6, 1)
-    if 1 - fy < grout:
-        return normal_rgb(0, 0.6, 1)
-    return normal_rgb(0, 0, 1)
+    if min(fx, fy, 1 - fx, 1 - fy) < grout:
+        return normal_rgb(0, 0, 1)
+    return bevel_normal(fx - grout, 1 - grout - fx, fy - grout, 1 - grout - fy, band, 1.0)
 
 
 def tiles_rough(x, y, n=4, grout=0.04):
@@ -136,14 +151,16 @@ def brick(x, y, rows=8, cols=4, mortar=0.05):
 
 
 def brick_normal(x, y, rows=8, cols=4, mortar=0.05):
+    """each brick raised with a bevel on all four sides, flat sunken mortar
+    (the same layout as brick())"""
     r = int(y * rows)
     fx = (x * cols + (0.5 if r % 2 else 0.0)) % 1.0
     fy = (y * rows) % 1.0
-    if fx < mortar:
-        return normal_rgb(0.7, 0, 1)
-    if fy < mortar * 2:
-        return normal_rgb(0, 0.7, 1)
-    return normal_rgb(0, 0, 1)
+    if fx < mortar or fy < mortar * 2:
+        return normal_rgb(0, 0, 1)
+    # in brick-height units: a brick is 2 high per 1 wide here (8 rows, 4 cols)
+    w = rows / float(cols)
+    return bevel_normal((fx - mortar) * w, (1 - fx) * w, fy - mortar * 2, 1 - fy, 0.25, 1.0)
 
 
 def plaster(x, y):
@@ -328,13 +345,15 @@ def make_grid(folder):
     r2 = []
     ma, nt, s = shader_material("Glass15", "ShaderNodeBsdfGlass", Color=(1, 1, 1, 1), IOR=1.5)
     r2.append(ma)
-    E.append(expect(ma, "nodes", type="translucent", ior=1.5, transmittance=[1, 1, 1]))
+    E.append(expect(ma, "nodes", type="translucent", ior=1.5, transmittance=[1, 1, 1], distance=0.5))
     ma, nt, s = shader_material("GlassBlue133", "ShaderNodeBsdfGlass", Color=(0.5, 0.7, 1.0, 1), IOR=1.33)
     r2.append(ma)
-    E.append(expect(ma, "nodes", type="translucent", ior=1.33, transmittance=[0.5, 0.7, 1.0]))
+    E.append(expect(ma, "nodes", type="translucent", ior=1.33, transmittance=[0.25, 0.49, 1.0],
+                    distance=0.5))  # Cycles tints at both surfaces: the colour squared
     ma, nt, p = principled("PrincipledGlass", (0.95, 0.95, 1.0), 0.0, 0.05, Transmission=1.0, IOR=1.45)
     r2.append(ma)
-    E.append(expect(ma, "nodes", type="translucent", ior=1.45, transmittance=[0.95, 0.95, 1.0]))
+    E.append(expect(ma, "nodes", type="translucent", ior=1.45, transmittance=[0.9025, 0.9025, 1.0],
+                    distance=0.5))
     ma, nt, out = nodes_material("PrincipledAlpha05")
     p = nt.nodes.new("ShaderNodeBsdfPrincipled")
     p.inputs["Base Color"].default_value = (0.9, 0.5, 0.1, 1.0)
@@ -418,6 +437,11 @@ def make_grid(folder):
     area.data.size = 2.0
     p2.camera(scene, (0.0, -8.5, 2.1), (0.0, 0.0, 2.1), lens=40.0)
     finish(scene, os.path.join(folder, "p3_grid.blend"))
+    # the same grid one stop darker, for re-checking the default exposure
+    # (+2, chosen in P2) now that colours are no longer darkened twice
+    scene["bge_remix_exposure"] = 1.0
+    p2.save(os.path.join(folder, "p3_grid_exposure_1.blend"))
+    del scene["bge_remix_exposure"]
     return E
 
 
@@ -510,9 +534,9 @@ def main():
     expected["room"] = make_room(folder)
     make_room(folder, changed=True)
     # the images of the room's cache: (image, kind tag, DXGI format)
-    expected["room_cache"] = [["TilesColour", "col", 99], ["TilesNormal", "nrm", 83], ["TilesRough", "r", 80],
-                              ["BrickColour", "col", 99], ["BrickNormal", "nrm", 83], ["Plaster", "col", 99],
-                              ["UVGrid", "col", 99], ["Sign", "col", 99]]
+    expected["room_cache"] = [["TilesColour", "col", 98], ["TilesNormal", "nrm", 83], ["TilesRough", "r", 80],
+                              ["BrickColour", "col", 98], ["BrickNormal", "nrm", 83], ["Plaster", "col", 98],
+                              ["UVGrid", "col", 98], ["Sign", "col", 98]]
     with open(os.path.join(folder, "p3_expected.json"), "w") as f:
         json.dump(expected, f, indent=2)
     print("BGE-Remix: wrote", os.path.join(folder, "p3_expected.json"))
