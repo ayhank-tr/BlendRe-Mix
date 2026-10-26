@@ -15,7 +15,7 @@ official NVIDIA runtime. OpenGL stays the default renderer, and every stock
 | --- | --- | --- |
 | Base | Stock Blender 2.79b source | Imported |
 | P0 | Visual Studio 2022 build, Windows CI, test harness | Done (bge-remix-p0) |
-| P1 | Remix bridge DLL and runtime loader | Next |
+| P1 | Remix bridge DLL and runtime loader | In progress |
 | P2 | Game engine, static scenes | Planned |
 | P3 | Materials and texture cache | Planned |
 | P4 | Skinning, physics, particles, picking | Planned |
