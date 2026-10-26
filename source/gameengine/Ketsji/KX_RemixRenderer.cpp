@@ -70,6 +70,7 @@ extern "C" {
 }
 
 #include "BRMX_loader.h"  /* C linkage inside */
+#include "BRMX_material.h"
 
 /* The world colour and the lamps, in Blender Internal's units, are turned
  * into Remix's physical units so that a white surface lit by a lamp of
@@ -262,6 +263,16 @@ KX_RemixRenderer::KX_RemixRenderer(RAS_ICanvas *canvas, bool window_mode_allowed
       m_last_lights(0),
       m_screenshot_frame(120)
 {
+	m_cache = new brmx::TextureCache();
+	m_materials_waiting = 0;
+	m_materials_swapped = 0;
+	m_material_notes = 0;
+	m_max_swap_ms = 0.0;
+	m_frame_ms_max = 0.0;
+	m_last_render = 0.0;
+	m_first_textured_frame = -1;
+	m_first_textured_seconds = 0.0;
+	m_start_time = 0.0;
 	m_settings.enabled = 0;
 	m_settings.window_mode = 0;
 	m_settings.light_scale = DEFAULT_LIGHT_SCALE;
@@ -287,6 +298,7 @@ KX_RemixRenderer::~KX_RemixRenderer()
 		Trace("game end: freeing the picture texture");
 		glDeleteTextures(1, (GLuint *)&m_texture);
 	}
+	delete m_cache;
 	Trace("game end: Remix renderer closed");
 }
 
@@ -369,6 +381,7 @@ bool KX_RemixRenderer::Start(KX_Scene *scene, int width, int height, const Setti
 	m_bridge->reset_stats();
 	ApplyExposure(settings);
 	m_running = true;
+	m_start_time = now_seconds();
 	m_mode = mode;
 	m_scene = scene;
 	m_settings = settings;
@@ -511,6 +524,9 @@ void KX_RemixRenderer::RemoveScene(KX_Scene *scene)
 	/* after the meshes that use them */
 	for (auto it = m_materials.begin(); it != m_materials.end();) {
 		if (it->second.scene == scene) {
+			if (it->second.waiting) {
+				m_materials_waiting--;
+			}
 			if (m_running) {
 				m_bridge->material_destroy(it->second.hash);
 			}
@@ -560,54 +576,95 @@ uint64_t KX_RemixRenderer::EnsureMaterial(KX_Scene *scene, RAS_IPolyMaterial *pm
 		/* a different material at the address of a freed one */
 		m_bridge->material_destroy(it->second.hash);
 		m_hashes.erase(it->second.hash);
+		if (it->second.waiting) {
+			m_materials_waiting--;
+		}
 		m_materials.erase(it);
 	}
 
-	brb_material_desc d;
-	memset(&d, 0, sizeof(d));
-	d.hash = UniqueHash("material", name, pm);
-	/* Blender's default material */
-	d.albedo[0] = d.albedo[1] = d.albedo[2] = 0.8f * 0.8f;
-	d.opacity = 1.0f;
-	d.roughness = 0.5f;
-
-	Material *ma = pm ? pm->GetBlenderMaterial() : NULL;
-	if (ma) {
-		d.albedo[0] = ma->r * ma->ref;
-		d.albedo[1] = ma->g * ma->ref;
-		d.albedo[2] = ma->b * ma->ref;
-		d.opacity = ma->alpha;
-		/* Blinn-Phong hardness to a GGX roughness: alpha = sqrt(2 / (n + 2)),
-		 * roughness = sqrt(alpha) */
-		d.roughness = (ma->spec < 0.01f) ? 1.0f : (float)std::pow(2.0 / ((double)ma->har + 2.0), 0.25);
-		d.metallic = 0.0f;
-		if (ma->emit > 0.0f) {
-			d.emissive[0] = ma->r;
-			d.emissive[1] = ma->g;
-			d.emissive[2] = ma->b;
-			d.emissive_intensity = ma->emit;
-		}
-		if (ma->mode & MA_SHLESS) {
-			/* shadeless: shows its own colour, whatever the light */
-			d.albedo[0] = d.albedo[1] = d.albedo[2] = 0.0f;
-			d.emissive[0] = ma->r;
-			d.emissive[1] = ma->g;
-			d.emissive[2] = ma->b;
-			d.emissive_intensity = 1.0f;
-		}
-		const int blend = ma->game.alpha_blend;
-		d.alpha_blend = (blend == GEMAT_ALPHA || blend == GEMAT_ALPHA_SORT || blend == GEMAT_ADD) ? 1 : 0;
-		if (!d.alpha_blend) {
-			d.opacity = 1.0f;
-		}
-	}
-	m_bridge->material_create(&d);
+	/* the RTX Remix panel, Cycles nodes or Blender Internal settings
+	 * (source/blender/remix/intern/remix_material.cc) */
 	MaterialEntry e;
-	e.hash = d.hash;
+	e.spec.reset(new brmx::MaterialSpec());
+	brmx::translate_material(pm ? pm->GetBlenderMaterial() : NULL, *e.spec);
+	e.spec->desc.hash = UniqueHash("material", name, pm);
+	for (size_t i = 0; i < e.spec->notes.size(); i++) {
+		printf("BGE-Remix: material \"%s\": %s\n", name.c_str(), e.spec->notes[i].c_str());
+		m_material_notes++;
+	}
+	fflush(stdout);
+	e.hash = e.spec->desc.hash;
 	e.scene = scene;
 	e.name = name;
+	e.blend = e.spec->desc.alpha_blend != 0;
+	e.waiting = false;
+	SendMaterial(e);
 	m_materials[pm] = e;
-	return d.hash;
+	return e.hash;
+}
+
+void KX_RemixRenderer::SendMaterial(MaterialEntry &e)
+{
+	/* the textures that are ready; the others follow when they are encoded
+	 * (UpdateTextures), so the game starts without waiting for them */
+	brb_material_desc d = e.spec->desc;
+	std::wstring paths[brmx::TEX_COUNT];
+	bool waiting = false;
+	for (int i = 0; i < brmx::TEX_COUNT; i++) {
+		const brmx::TextureRequest &req = e.spec->textures[i];
+		if (!req.image) {
+			continue;
+		}
+		const brmx::TextureCache::State st = m_cache->request(req, paths[i]);
+		if (st != brmx::TextureCache::READY) {
+			paths[i].clear();
+			waiting = waiting || st == brmx::TextureCache::WAITING;
+		}
+	}
+	const wchar_t **slots[brmx::TEX_COUNT] = {&d.albedo_texture, &d.normal_texture, &d.roughness_texture,
+	                                         &d.metallic_texture, &d.emissive_texture};
+	for (int i = 0; i < brmx::TEX_COUNT; i++) {
+		*slots[i] = paths[i].empty() ? NULL : paths[i].c_str();
+	}
+	m_bridge->material_create(&d);
+	if (waiting != e.waiting) {
+		m_materials_waiting += waiting ? 1 : -1;
+	}
+	e.waiting = waiting;
+}
+
+void KX_RemixRenderer::UpdateTextures(KX_Scene *scene)
+{
+	if (m_materials_waiting <= 0) {
+		return;
+	}
+	m_cache->poll();
+	const double t0 = now_seconds();
+	bool swapped = false;
+	for (std::map<const void *, MaterialEntry>::iterator it = m_materials.begin(); it != m_materials.end(); ++it) {
+		MaterialEntry &e = it->second;
+		if (!e.waiting || e.scene != scene) {
+			continue;
+		}
+		/* sent again (same hash: Remix replaces it) once nothing is waiting */
+		bool still = false;
+		for (int i = 0; i < brmx::TEX_COUNT && !still; i++) {
+			std::wstring path;
+			if (e.spec->textures[i].image &&
+			    m_cache->request(e.spec->textures[i], path) == brmx::TextureCache::WAITING)
+			{
+				still = true;
+			}
+		}
+		if (!still) {
+			SendMaterial(e);
+			m_materials_swapped++;
+			swapped = true;
+		}
+	}
+	if (swapped) {
+		m_max_swap_ms = std::max(m_max_swap_ms, (now_seconds() - t0) * 1000.0);
+	}
 }
 
 bool KX_RemixRenderer::EnsureMesh(KX_Scene *scene, RAS_MeshObject *mesh, MeshEntry *&r_entry)
@@ -688,12 +745,12 @@ bool KX_RemixRenderer::EnsureMesh(KX_Scene *scene, RAS_MeshObject *mesh, MeshEnt
 		if (!ma || !(ma->game.flag & GEMAT_BACKCULL)) {
 			double_sided = true;
 		}
-		if (ma && (ma->game.alpha_blend == GEMAT_ALPHA || ma->game.alpha_blend == GEMAT_ALPHA_SORT ||
-		           ma->game.alpha_blend == GEMAT_ADD))
-		{
+		materials.push_back(EnsureMaterial(scene, pm));
+		/* see-through as the translator decided (game settings, Cycles'
+		 * Transparent BSDF, the RTX Remix panel) */
+		if (m_materials[pm].blend) {
 			blend = true;
 		}
-		materials.push_back(EnsureMaterial(scene, pm));
 		verts.push_back(v);
 		indices.push_back(idx);
 	}
@@ -876,6 +933,7 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 	ShowRemixWindow(true);
 
 	m_bridge->frame_begin();
+	UpdateTextures(scene);
 
 	float v[16], p[16];
 	view.getValue(v);
@@ -921,6 +979,16 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 	}
 	m_present_ms.push_back((float)st.present_ms);
 	m_copy_ms.push_back((float)st.copy_ms);
+	/* the longest gap between two Remix frames, past the first frames that
+	 * create the scene: a texture swap must not make the game stutter */
+	if (m_frames > 10 && m_last_render > 0.0) {
+		m_frame_ms_max = std::max(m_frame_ms_max, (t0 - m_last_render) * 1000.0);
+	}
+	m_last_render = t0;
+	if (m_first_textured_frame < 0 && m_materials_waiting == 0) {
+		m_first_textured_frame = m_frames;
+		m_first_textured_seconds = now_seconds() - m_start_time;
+	}
 
 	MaybeScreenshot();
 
@@ -1074,8 +1142,17 @@ void KX_RemixRenderer::WriteStats()
 	fprintf(f, "  \"errors\": %d,\n  \"last_error\": %d,\n", st.errors, st.last_error);
 	fprintf(f, "  \"handover_ms_median\": %.4f,\n  \"handover_ms_p95\": %.4f,\n",
 	        median(m_handover_ms), percentile95(m_handover_ms));
-	fprintf(f, "  \"present_ms_median\": %.4f,\n  \"copy_ms_median\": %.4f,\n  \"upload_ms_median\": %.4f\n",
+	fprintf(f, "  \"present_ms_median\": %.4f,\n  \"copy_ms_median\": %.4f,\n  \"upload_ms_median\": %.4f,\n",
 	        median(m_present_ms), median(m_copy_ms), median(m_upload_ms));
+	fprintf(f, "  \"frame_ms_max\": %.4f,\n", m_frame_ms_max);
+	fprintf(f, "  \"textures_encoded\": %d,\n  \"textures_reused\": %d,\n  \"textures_failed\": %d,\n",
+	        m_cache ? m_cache->encoded : 0, m_cache ? m_cache->reused : 0, m_cache ? m_cache->failed : 0);
+	fprintf(f, "  \"textures_waiting\": %d,\n  \"encode_seconds\": %.4f,\n",
+	        m_cache ? m_cache->waiting() : 0, m_cache ? m_cache->encode_seconds : 0.0);
+	fprintf(f, "  \"first_textured_frame\": %d,\n  \"first_textured_seconds\": %.4f,\n",
+	        m_first_textured_frame, m_first_textured_seconds);
+	fprintf(f, "  \"materials_swapped\": %d,\n  \"material_notes\": %d,\n  \"swap_ms_max\": %.4f\n",
+	        m_materials_swapped, m_material_notes, m_max_swap_ms);
 	fprintf(f, "}\n");
 	fclose(f);
 }
