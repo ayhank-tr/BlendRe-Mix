@@ -467,7 +467,7 @@ class RENDER_PT_game_remix(RenderButtonsPanel, Panel):
         if not ok:
             layout.label("RTX Remix is not installed: Preferences > System > RTX Remix", icon='ERROR')
         else:
-            layout.label("Textures, 2D filters and 3D text: OpenGL only for now", icon='INFO')
+            layout.label("2D filters and 3D text: OpenGL only for now", icon='INFO')
 
 
 class RENDER_PT_game_system(RenderButtonsPanel, Panel):
