@@ -9,6 +9,14 @@
  *   ok            (default) everything succeeds
  *   version       InitializeLibrary reports an incompatible API version
  *   startup_fail  Startup fails as with a too old graphics driver
+ *   throw         InitializeLibrary throws a C++ exception, as the real
+ *                 runtime does for some failures
+ *
+ * Runtime layout: when a d3d9_x64.dll lies next to this d3d9.dll, this DLL
+ * acts like Remix's real shim: it loads d3d9_x64.dll with a plain
+ * LoadLibraryW (a C++ exception if that fails) and forwards to it. The
+ * d3d9_x64.dll build (MOCK_IMPL) needs remixdep.dll from the same folder,
+ * like the real runtime needs NRD, DLSS, CUDA and others.
  *
  * GPL v2 or later, as Blender.
  */
@@ -21,6 +29,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <stdexcept>
+#include <string>
+
+#ifdef MOCK_IMPL
+extern "C" __declspec(dllimport) int remixdep_ping(void);
+#endif
 
 namespace {
 
@@ -135,9 +149,47 @@ remixapi_ErrorCode REMIXAPI_CALL m_Present(const remixapi_PresentInfo *)
 
 }  /* namespace */
 
+#ifndef MOCK_IMPL
+/* The shim part: forward to d3d9_x64.dll when it is there. */
+static bool shim_forward(const remixapi_InitializeLibraryInfo *info, remixapi_Interface *out_result,
+                         remixapi_ErrorCode *r_code)
+{
+	HMODULE self = nullptr;
+	GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+	                   reinterpret_cast<LPCWSTR>(&shim_forward), &self);
+	wchar_t path[MAX_PATH];
+	GetModuleFileNameW(self, path, MAX_PATH);
+	std::wstring impl(path);
+	impl = impl.substr(0, impl.find_last_of(L"\\/") + 1) + L"d3d9_x64.dll";
+	if (GetFileAttributesW(impl.c_str()) == INVALID_FILE_ATTRIBUTES) {
+		return false;
+	}
+	mlog("Shim loads d3d9_x64.dll");
+	HMODULE h = LoadLibraryW(impl.c_str()); /* plain, as Remix's shim does */
+	if (h == nullptr) {
+		mlog("Shim failed to load the implementation (error %lu)", GetLastError());
+		throw std::runtime_error("d3d9 shim: failed to load implementation DLL");
+	}
+	typedef remixapi_ErrorCode(REMIXAPI_CALL * init_fn)(const remixapi_InitializeLibraryInfo *, remixapi_Interface *);
+	init_fn fn = reinterpret_cast<init_fn>(GetProcAddress(h, "remixapi_InitializeLibrary"));
+	*r_code = fn ? fn(info, out_result) : REMIXAPI_ERROR_CODE_GET_PROC_ADDRESS_FAILURE;
+	return true;
+}
+#endif
+
 extern "C" REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_InitializeLibrary(
     const remixapi_InitializeLibraryInfo *info, remixapi_Interface *out_result)
 {
+#ifndef MOCK_IMPL
+	{
+		remixapi_ErrorCode code;
+		if (shim_forward(info, out_result, &code)) {
+			return code;
+		}
+	}
+#else
+	mlog("Implementation loaded, dependency says %d", remixdep_ping());
+#endif
 	const char *mode = getenv("BGE_REMIX_MOCK_MODE");
 	if (mode && mode[0]) {
 		strncpy(g_mode, mode, sizeof(g_mode) - 1);
@@ -146,6 +198,9 @@ extern "C" REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_InitializeLibrary(
 	mlog("InitializeLibrary api=%llu.%llu.%llu mode=%s",
 	     (unsigned long long)REMIXAPI_VERSION_GET_MAJOR(v), (unsigned long long)REMIXAPI_VERSION_GET_MINOR(v),
 	     (unsigned long long)REMIXAPI_VERSION_GET_PATCH(v), g_mode);
+	if (strcmp(g_mode, "throw") == 0) {
+		throw std::runtime_error("mock runtime: simulated failure");
+	}
 	if (!info || !out_result || info->sType != REMIXAPI_STRUCT_TYPE_INITIALIZE_LIBRARY_INFO) {
 		return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
 	}

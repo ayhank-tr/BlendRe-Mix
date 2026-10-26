@@ -2,10 +2,13 @@
 """BGE-Remix phase 1 tests and benchmarks (host side, Python 3.8+).
 
 CI, with the fake runtime (no GPU needed):
-  python run_p1.py --ours <folder with blender.exe> --mock <folder with mock d3d9.dll> --out <folder>
+  python run_p1.py --ours <folder with blender.exe> --mock <folder with mock d3d9.dll>
+                   --mock-shim <folder with mock d3d9.dll, d3d9_x64.dll, remixdep.dll> --out <folder>
 
   T1.2 runtime missing (background check + the Preferences box in the UI)
   T1.3 wrong API version
+  T1.3b the runtime throws while loading (no crash)
+  T1.3c the real runtime's DLL layout (shim + implementation + dependency)
   T1.4 startup sequence (checked against the fake runtime's call log)
   T1.5 startup failure
   T1.6 installer
@@ -183,13 +186,22 @@ def run_ci(args, out):
     log = os.path.join(out, "mock_startup_fail.log")
     res["T1.5"] = probe(args.ours, out, "startup_fail", mock_env(mock, "startup_fail", log))
 
+    log = os.path.join(out, "mock_throw.log")
+    res["T1.3b"] = probe(args.ours, out, "throw", mock_env(mock, "throw", log))
+
+    log = os.path.join(out, "mock_shim_layout.log")
+    res["T1.3c"] = probe(args.ours, out, "shim_layout", mock_env(os.path.abspath(args.mock_shim), "ok", log))
+
     res["T1.6"] = probe(args.ours, out, "installer", {}, [os.path.join(mock, "d3d9.dll")])
 
-    res["all_ok"] = all(res[k]["ok"] for k in ("T1.2", "T1.3", "T1.4", "T1.5", "T1.6"))
+    keys = ("T1.2", "T1.3", "T1.3b", "T1.3c", "T1.4", "T1.5", "T1.6")
+    res["all_ok"] = all(res[k]["ok"] for k in keys)
     lines = ["BGE-Remix phase 1 results (CI, fake runtime)", "=" * 44, ""]
     names = {"T1.2": "Runtime missing (incl. Preferences box)", "T1.3": "Wrong API version",
+             "T1.3b": "Runtime error while loading (no crash)",
+             "T1.3c": "Real runtime DLL layout",
              "T1.4": "Startup sequence", "T1.5": "Startup failure", "T1.6": "Installer"}
-    for k in ("T1.2", "T1.3", "T1.4", "T1.5", "T1.6"):
+    for k in keys:
         lines.append("%-5s %-42s %s" % (k, names[k], mark(res[k]["ok"])))
     lines.append("")
     lines.append("T1.4 calls: %d Present for %d frames; config %s" % (
@@ -198,11 +210,41 @@ def run_ci(args, out):
     return res, lines
 
 
+def collect_logs(out, since, roots):
+    """Copy Remix's and the bridge's log files written since `since` into out/logs."""
+    import shutil
+    import tempfile
+    dest = os.path.join(out, "logs")
+    os.makedirs(dest, exist_ok=True)
+    copied = []
+    bridge_log = os.path.join(tempfile.gettempdir(), "bge-remix.log")
+    candidates = [bridge_log] if os.path.isfile(bridge_log) else []
+    for root in roots:
+        for dirpath, dirnames, filenames in os.walk(root):
+            if dirpath[len(root):].count(os.sep) > 4:
+                dirnames[:] = []
+                continue
+            candidates += [os.path.join(dirpath, n) for n in filenames if n.lower().endswith(".log")]
+    for path in candidates:
+        try:
+            if os.path.getmtime(path) >= since - 2:
+                target = os.path.join(dest, os.path.basename(path))
+                shutil.copy2(path, target)
+                copied.append(path)
+        except (OSError, ValueError):
+            pass
+    return copied
+
+
 def run_rtx(args, out):
     res = {}
     t18 = probe(args.ours, out, "real_install", {})
     res["T1.8"] = t18
+    since = time.time()
     rtx = probe(args.ours, out, "rtx", {})
+    runtime = (t18.get("target") or os.path.join(os.environ.get("APPDATA", ""),
+               "Blender Foundation", "Blender", "2.79", "remix", "1.6.1"))
+    res["logs"] = collect_logs(out, since, [args.ours, runtime, os.getcwd()])
     shot = os.path.join(out, "rtx.bmp")
     img = image_stats(shot)
     t11 = rtx.get("checks", {})
@@ -246,6 +288,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ours", required=True)
     ap.add_argument("--mock")
+    ap.add_argument("--mock-shim", dest="mock_shim")
     ap.add_argument("--out", required=True)
     ap.add_argument("--rtx", action="store_true")
     args = ap.parse_args()
@@ -256,8 +299,8 @@ def main():
         res, lines = run_rtx(args, out)
         name = "results_p1_rtx"
     else:
-        if not args.mock:
-            raise SystemExit("--mock is needed without --rtx")
+        if not args.mock or not args.mock_shim:
+            raise SystemExit("--mock and --mock-shim are needed without --rtx")
         res, lines = run_ci(args, out)
         name = "results_p1"
     with open(os.path.join(out, name + ".json"), "w") as f:

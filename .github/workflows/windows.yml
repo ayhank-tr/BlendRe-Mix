@@ -177,8 +177,9 @@ jobs:
         run: |
           cmake -S blender/tests/bge_remix/p1/mock_remix -B mockbuild -G "Visual Studio 17 2022" -A x64
           cmake --build mockbuild --config Release -- /m /v:minimal
-          New-Item -ItemType Directory -Force mock | Out-Null
+          New-Item -ItemType Directory -Force mock, mock_shim | Out-Null
           Copy-Item mockbuild/Release/d3d9.dll mock/
+          Copy-Item mockbuild/Release/d3d9.dll, mockbuild/Release/d3d9_x64.dll, mockbuild/Release/remixdep.dll mock_shim/
 
       - name: Phase 1 tests (fake runtime)
         if: always()
@@ -186,7 +187,7 @@ jobs:
         env:
           GALLIUM_DRIVER: llvmpipe
         run: |
-          python blender/tests/bge_remix/p1/run_p1.py --ours ours --mock mock --out results/p1
+          python blender/tests/bge_remix/p1/run_p1.py --ours ours --mock mock --mock-shim mock_shim --out results/p1
 
       - uses: actions/upload-artifact@v4
         if: always()

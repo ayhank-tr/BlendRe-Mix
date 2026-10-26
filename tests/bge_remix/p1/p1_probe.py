@@ -8,6 +8,9 @@
 #   sequence       T1.4  load, start, draw, and leave shutdown to Blender's exit
 #   startup_fail   T1.5  Remix refuses to start; Blender still renders
 #   installer      T1.6  install a test package, reject a bad one, remove
+#   throw          T1.3b the runtime throws while loading; Blender carries on
+#   shim_layout    T1.3c the real runtime's layout: shim, implementation DLL,
+#                        and a dependency found only in the runtime folder
 # Cases (your PC, real runtime):
 #   real_install   T1.8  download and install the pinned 557 MB runtime
 #   rtx            T1.1 + C1 + B1.2 + B1.3  path-traced triangle, capture, timings
@@ -92,7 +95,10 @@ def case_startup_fail():
     code, text = bge_remix.startup(320, 180, False)
     check("startup failed", code == "STARTUP_FAILED", [code, text])
     check("message names the driver", "driver" in text.lower(), text)
-    # Blender itself keeps working: render the default scene.
+    _render_still_works()
+
+
+def _render_still_works():
     scene = bpy.context.scene
     scene.render.engine = 'BLENDER_RENDER'
     scene.render.resolution_x, scene.render.resolution_y = 320, 180
@@ -101,6 +107,28 @@ def case_startup_fail():
     scene.render.filepath = path
     bpy.ops.render.render(write_still=True)
     check("Blender still renders", os.path.isfile(path), path)
+
+
+def case_throw():
+    bridge_ok()
+    code, text = bge_remix.load()
+    check("load failed, reported", code == "LOAD_FAILED", [code, text])
+    code, text = bge_remix.startup(320, 180, False)
+    check("startup refused", code == "LOAD_FAILED", [code, text])
+    _render_still_works()
+
+
+def case_shim_layout():
+    bridge_ok()
+    code, text = bge_remix.load()
+    check("load ready", code == "READY", [code, text])
+    code, text = bge_remix.startup(640, 360, False)
+    check("startup running", code == "RUNNING", [code, text])
+    r = _bge_remix.triangle_test(0.5, "", False)
+    result["triangle"] = r
+    check("triangle test ok", r["ok"] and r["frames"] > 0, r)
+    bge_remix.shutdown()
+    check("shutdown", bge_remix.status()[0] in {"INSTALLED", "NOT_LOADED"}, bge_remix.status())
 
 
 def _make_package(folder, mock_dll):
@@ -164,6 +192,11 @@ def case_installer():
 def case_real_install():
     from bge_remix import pin
     target = bge_remix.runtime_dir()
+    result["target"] = target
+    if bge_remix.installed():
+        result["seconds"] = 0
+        check("pinned runtime installed (already there, not downloaded again)", True, target)
+        return
     t0 = time.time()
     last = [0]
 
@@ -255,6 +288,8 @@ CASES = {
     "sequence": case_sequence,
     "startup_fail": case_startup_fail,
     "installer": case_installer,
+    "throw": case_throw,
+    "shim_layout": case_shim_layout,
     "real_install": case_real_install,
     "rtx": case_rtx,
 }
