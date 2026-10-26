@@ -42,6 +42,28 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 	return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
+/* Remix hooks the window procedure of the window it renders into and does not
+ * restore it at Shutdown; its hook then reads freed memory on the next
+ * message (found on the RTX 3080: a crash in dxvk::D3D9WindowProc when the
+ * window was destroyed). Put our own procedure back before anything else can
+ * reach the window. */
+static void unhook_window()
+{
+	if (g_hwnd && (WNDPROC)GetWindowLongPtrW(g_hwnd, GWLP_WNDPROC) != window_proc) {
+		SetWindowLongPtrW(g_hwnd, GWLP_WNDPROC, (LONG_PTR)window_proc);
+		log("window procedure restored after Remix");
+	}
+}
+
+static void destroy_window()
+{
+	if (g_hwnd) {
+		unhook_window();
+		DestroyWindow(g_hwnd);
+		g_hwnd = nullptr;
+	}
+}
+
 HWND create_window(int width, int height, bool visible)
 {
 	static bool registered = false;
@@ -153,8 +175,7 @@ BRB_API brb_status brb_startup(int width, int height, int visible)
 	}
 	log("Startup -> %u in %.1f ms", (unsigned)r, now_ms() - t0);
 	if (r != REMIXAPI_ERROR_CODE_SUCCESS) {
-		DestroyWindow(g_hwnd);
-		g_hwnd = nullptr;
+		destroy_window();
 		set_status(BRB_STATUS_STARTUP_FAILED, with_code("RTX Remix could not start", r));
 		return g_status;
 	}
@@ -172,30 +193,27 @@ BRB_API brb_status brb_startup(int width, int height, int visible)
 
 BRB_API void brb_shutdown(void)
 {
-	if (g_dll) {
+	/* Order matters: Remix shuts down, our window procedure goes back on, the
+	 * window goes, and only then are the runtime's DLLs released. */
+	if (g_dll && g_started && g_remix.Shutdown) {
 		try {
-			if (g_started) {
-				remixapi_ErrorCode r = remixapi_lib_shutdownAndUnloadRemixDll(&g_remix, g_dll);
-				log("Shutdown -> %u", (unsigned)r);
-			}
-			else {
-				FreeLibrary(g_dll);
-				log("runtime unloaded (never started)");
-			}
+			remixapi_ErrorCode r = g_remix.Shutdown();
+			log("Shutdown -> %u", (unsigned)r);
 		}
 		catch (...) {
 			log("the runtime raised an exception while shutting down");
 		}
+	}
+	destroy_window();
+	if (g_dll) {
+		FreeLibrary(g_dll);
+		log("runtime unloaded");
 	}
 	release_runtime_paths();
 	g_remix = remixapi_Interface();
 	g_dll = nullptr;
 	g_started = false;
 	g_runtime_dir.clear();
-	if (g_hwnd) {
-		DestroyWindow(g_hwnd);
-		g_hwnd = nullptr;
-	}
 	if (g_status != BRB_STATUS_NOT_LOADED) {
 		set_status(BRB_STATUS_NOT_LOADED, "RTX Remix was shut down.");
 	}
