@@ -15,6 +15,7 @@ add_library(bge_remix_bridge SHARED
 	bridge.cpp
 	bridge_load.cpp
 	bridge_startup.cpp
+	bridge_triangle.cpp
 
 	bge_remix_bridge.h
 	bridge_intern.h
