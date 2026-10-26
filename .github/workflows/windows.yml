@@ -21,6 +21,11 @@ jobs:
   libs:
     runs-on: windows-2022
     timeout-minutes: 120
+    # one download at a time across branches and tags: svn.blender.org refuses
+    # parallel downloads (P0's first run on main)
+    concurrency:
+      group: blender-279-libs
+      cancel-in-progress: false
     steps:
       - name: Restore libraries
         id: cache
@@ -158,13 +163,31 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Phase 0 tests
+      - name: Phase 0 tests (T1.7 regression, B1.1 startup)
         shell: pwsh
         env:
           GALLIUM_DRIVER: llvmpipe
         run: |
           python -m pip install --quiet pillow numpy
           python blender/tests/bge_remix/p0/run_p0.py --ours ours --official blender-2.79b-windows64 --out results --mesa mesa/x64
+
+      # The fake RTX Remix runtime (d3d9.dll) for the phase 1 tests
+      - name: Build the fake Remix runtime
+        shell: pwsh
+        run: |
+          cmake -S blender/tests/bge_remix/p1/mock_remix -B mockbuild -G "Visual Studio 17 2022" -A x64
+          cmake --build mockbuild --config Release -- /m /v:minimal
+          New-Item -ItemType Directory -Force mock, mock_shim | Out-Null
+          Copy-Item mockbuild/Release/d3d9.dll mock/
+          Copy-Item mockbuild/Release/d3d9.dll, mockbuild/Release/d3d9_x64.dll, mockbuild/Release/remixdep.dll mock_shim/
+
+      - name: Phase 1 tests (fake runtime)
+        if: always()
+        shell: pwsh
+        env:
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          python blender/tests/bge_remix/p1/run_p1.py --ours ours --mock mock --mock-shim mock_shim --out results/p1
 
       - uses: actions/upload-artifact@v4
         if: always()

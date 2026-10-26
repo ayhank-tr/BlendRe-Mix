@@ -70,6 +70,11 @@ if(WITH_CYCLES)
 	add_subdirectory(cycles)
 endif()
 
+# BGE-Remix
+if(WITH_REMIX)
+	add_subdirectory(remix_bridge)
+endif()
+
 if(WITH_INTERNATIONAL)
 	add_subdirectory(locale)
 endif()

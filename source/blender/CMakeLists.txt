@@ -146,6 +146,11 @@ if(WITH_PYTHON)
 	add_subdirectory(python)
 endif()
 
+# BGE-Remix
+if(WITH_REMIX AND WITH_PYTHON)
+	add_subdirectory(remix)
+endif()
+
 if(WITH_OPENCOLLADA)
 	add_subdirectory(collada)
 endif()

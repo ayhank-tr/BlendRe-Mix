@@ -252,6 +252,10 @@ if(WITH_PYTHON_MODULE)
 
 else()
 	add_executable(blender ${EXETYPE} ${SRC})
+	# BGE-Remix: the bridge DLL is loaded at run time, but is built with Blender
+	if(WITH_REMIX AND WITH_PYTHON)
+		add_dependencies(blender bge_remix_bridge)
+	endif()
 	WINDOWS_SIGN_TARGET(blender)
 endif()
 
