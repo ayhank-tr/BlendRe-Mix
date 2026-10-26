@@ -290,6 +290,8 @@ def make_room(folder):
     expected = {
         "lamps": [lamp_expect(ob) for ob in lamps],
         "world_horizon": vec(scene.world.horizon_color),
+        # the room keeps the default light scale (KX_RemixRenderer: 0.125)
+        "light_scale": scene.get("bge_remix_light_scale", 0.125),
         "materials": [
             {"name": m.name, "albedo": vec(Vector(m.diffuse_color) * m.diffuse_intensity),
              "opacity": m.alpha if m.game_settings.alpha_blend != 'OPAQUE' else 1.0,
