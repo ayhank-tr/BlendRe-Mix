@@ -99,6 +99,8 @@ def make_scenes(ours, out):
                          "--python", os.path.join(HERE, "make_scenes_p2.py"), "--", scenes],
                         base_env(out, "make"), os.path.join(out, "make_scenes_p2.log"))
     if code != 0 or "Traceback" in text:
+        # the end of Blender's output, readable on the CI page
+        print("\n".join(text.splitlines()[-40:]))
         raise SystemExit("making the P2 test scenes failed, see make_scenes_p2.log")
     return scenes, read_json(os.path.join(scenes, "p2_expected.json"))
 

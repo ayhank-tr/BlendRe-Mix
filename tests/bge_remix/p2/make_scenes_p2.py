@@ -98,8 +98,7 @@ def empty_scene():
     bpy.ops.wm.read_factory_settings(use_empty=False)
     scene = bpy.context.scene
     for ob in list(scene.objects):
-        scene.objects.unlink(ob)
-        bpy.data.objects.remove(ob)
+        bpy.data.objects.remove(ob, do_unlink=True)
     scene.render.engine = 'BLENDER_GAME'
     gs = scene.game_settings
     gs.resolution_x = 1280
@@ -160,9 +159,9 @@ def lamp(scene, name, kind, location, rotation=(0, 0, 0), energy=1.0, color=(1, 
     la = bpy.data.lamps.new(name, kind)
     la.energy = energy
     la.color = color
-    if hasattr(la, "distance"):
-        la.distance = distance
-    la.shadow_soft_size = soft
+    la.distance = distance
+    if hasattr(la, "shadow_soft_size"):  # not on hemi lamps
+        la.shadow_soft_size = soft
     ob = bpy.data.objects.new(name, la)
     ob.location = location
     ob.rotation_euler = rotation
@@ -226,7 +225,7 @@ def lamp_expect(ob):
     m = ob.matrix_world
     e = {"name": ob.name, "type": la.type, "position": vec(m.translation),
          "direction": vec(-(m.to_3x3() * Vector((0, 0, 1))).normalized()),
-         "energy": la.energy, "color": vec(la.color), "soft": la.shadow_soft_size}
+         "energy": la.energy, "color": vec(la.color), "soft": getattr(la, "shadow_soft_size", 0.0)}
     if la.type == 'SPOT':
         e["cone_deg"] = math.degrees(la.spot_size) / 2.0
         e["softness"] = la.spot_blend
@@ -273,6 +272,7 @@ def make_room(folder):
     camera(scene, (0.0, -7.0, 2.0), (0.0, 0.0, 1.2), lens=30.0, shift_x=0.05)
     add_probe(scene)
     scene["bge_remix"] = 1
+    scene.update()  # world matrices of the new objects (background mode)
     save(os.path.join(folder, "p2_room.blend"))
 
     expected = {
