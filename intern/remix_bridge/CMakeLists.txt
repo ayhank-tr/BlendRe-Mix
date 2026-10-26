@@ -13,6 +13,7 @@
 
 add_library(bge_remix_bridge SHARED
 	bridge.cpp
+	bridge_load.cpp
 
 	bge_remix_bridge.h
 	bridge_intern.h
