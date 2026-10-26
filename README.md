@@ -17,7 +17,7 @@ official NVIDIA runtime. OpenGL stays the default renderer, and every stock
 | P0 | Visual Studio 2022 build, Windows CI, test harness | Done (bge-remix-p0) |
 | P1 | Remix bridge DLL and runtime loader | Done (bge-remix-p1) |
 | P2 | Game engine, static scenes | Done (bge-remix-p2) |
-| P3 | Materials and texture cache | Planned |
+| P3 | Materials and texture cache | In progress |
 | P4 | Skinning, physics, particles, picking | Planned |
 | P5 | "RTX Remix" render engine for the 3D view and F12 | Planned |
 | P6 | OpenUSD mod export and capture import | Planned |
@@ -43,4 +43,5 @@ the Remix runtime, it behaves like stock Blender 2.79b.
 Blender is licensed under the GNU GPL v2 or later (see `COPYING` and
 `doc/license/`). New code in this fork uses the same license. The RTX Remix
 runtime is not included in this repository. It is downloaded separately from
-NVIDIA's official releases.
+NVIDIA's official releases. The bridge DLL includes DirectXTex (MIT,
+`extern/directxtex`) to write the DDS textures Remix reads.

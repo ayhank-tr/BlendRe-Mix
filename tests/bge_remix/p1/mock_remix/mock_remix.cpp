@@ -153,6 +153,19 @@ template<typename T> const T *find_ext(const void *pnext, remixapi_StructType ty
 	return nullptr;
 }
 
+/* a texture path for the log: "-" when there is none (no spaces expected) */
+static std::string tex_path(const wchar_t *p)
+{
+	if (!p || !p[0]) {
+		return "-";
+	}
+	std::string out;
+	for (const wchar_t *c = p; *c; c++) {
+		out += (*c < 128 && *c != L' ') ? (char)*c : '_';
+	}
+	return out;
+}
+
 remixapi_ErrorCode REMIXAPI_CALL m_CreateMaterial(const remixapi_MaterialInfo *info, remixapi_MaterialHandle *out)
 {
 	if (!info) {
@@ -160,13 +173,33 @@ remixapi_ErrorCode REMIXAPI_CALL m_CreateMaterial(const remixapi_MaterialInfo *i
 	}
 	const remixapi_MaterialInfoOpaqueEXT *o = find_ext<remixapi_MaterialInfoOpaqueEXT>(
 	    info->pNext, REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_EXT);
+	const remixapi_MaterialInfoTranslucentEXT *t = find_ext<remixapi_MaterialInfoTranslucentEXT>(
+	    info->pNext, REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_TRANSLUCENT_EXT);
+	const remixapi_MaterialInfoOpaqueSubsurfaceEXT *ss = find_ext<remixapi_MaterialInfoOpaqueSubsurfaceEXT>(
+	    info->pNext, REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_SUBSURFACE_EXT);
+	const std::string common =
+	    " albedo_tex=" + tex_path(info->albedoTexture) + " normal_tex=" + tex_path(info->normalTexture) +
+	    " emissive_tex=" + tex_path(info->emissiveTexture) + " filter=" + std::to_string(info->filterMode) +
+	    " wrap=" + std::to_string(info->wrapModeU);
 	if (o) {
-		mlog("CreateMaterial hash=%llx albedo=%.4f,%.4f,%.4f opacity=%.4f roughness=%.4f metallic=%.4f "
-		     "emissive=%.4f,%.4f,%.4f intensity=%.4f blend=%d",
+		mlog("CreateMaterial hash=%llx type=opaque albedo=%.4f,%.4f,%.4f opacity=%.4f roughness=%.4f metallic=%.4f "
+		     "emissive=%.4f,%.4f,%.4f intensity=%.4f blend=%d alphatest=%d alpharef=%d subsurface=%d "
+		     "sss_radius=%.4f,%.4f,%.4f roughness_tex=%s metallic_tex=%s%s",
 		     (unsigned long long)info->hash, o->albedoConstant.x, o->albedoConstant.y, o->albedoConstant.z,
 		     o->opacityConstant, o->roughnessConstant, o->metallicConstant, info->emissiveColorConstant.x,
 		     info->emissiveColorConstant.y, info->emissiveColorConstant.z, info->emissiveIntensity,
-		     o->blendType_hasvalue ? 1 : 0);
+		     o->blendType_hasvalue ? 1 : 0, (!o->useDrawCallAlphaState && o->alphaTestType != 7) ? 1 : 0,
+		     (int)o->alphaReferenceValue, ss ? 1 : 0, ss ? ss->subsurfaceRadius.x : 0.0f,
+		     ss ? ss->subsurfaceRadius.y : 0.0f, ss ? ss->subsurfaceRadius.z : 0.0f,
+		     tex_path(o->roughnessTexture).c_str(), tex_path(o->metallicTexture).c_str(), common.c_str());
+	}
+	else if (t) {
+		mlog("CreateMaterial hash=%llx type=translucent ior=%.4f transmittance=%.4f,%.4f,%.4f distance=%.4f "
+		     "emissive=%.4f,%.4f,%.4f intensity=%.4f%s",
+		     (unsigned long long)info->hash, t->refractiveIndex, t->transmittanceColor.x, t->transmittanceColor.y,
+		     t->transmittanceColor.z, t->transmittanceMeasurementDistance, info->emissiveColorConstant.x,
+		     info->emissiveColorConstant.y, info->emissiveColorConstant.z, info->emissiveIntensity,
+		     common.c_str());
 	}
 	else {
 		mlog("CreateMaterial hash=%llx", (unsigned long long)info->hash);
