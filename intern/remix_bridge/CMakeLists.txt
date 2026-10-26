@@ -29,7 +29,10 @@ target_include_directories(bge_remix_bridge PRIVATE
 target_link_libraries(bge_remix_bridge user32 gdi32)
 
 if(MSVC)
-	target_compile_options(bge_remix_bridge PRIVATE /std:c++17 /EHsc /utf-8)
+	# /EHs /EHc-: C++ exceptions may come out of extern "C" functions. Remix's
+	# shim throws through remixapi_InitializeLibrary; with the usual /EHsc the
+	# compiler assumes extern "C" never throws and drops our catch blocks.
+	target_compile_options(bge_remix_bridge PRIVATE /std:c++17 /EHs /EHc- /utf-8)
 endif()
 
 install(TARGETS bge_remix_bridge RUNTIME DESTINATION ".")
