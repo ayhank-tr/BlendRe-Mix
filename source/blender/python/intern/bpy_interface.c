@@ -196,6 +196,11 @@ void BPY_context_set(bContext *C)
 /* defined in AUD_C-API.cpp */
 extern PyObject *AUD_initPython(void);
 
+#ifdef WITH_REMIX
+/* BGE-Remix: defined in source/blender/remix */
+#  include "BRMX_remix.h"
+#endif
+
 #ifdef WITH_CYCLES
 /* defined in cycles module */
 static PyObject *CCL_initPython(void)
@@ -225,6 +230,9 @@ static struct _inittab bpy_internal_modules[] = {
 #endif
 #ifdef WITH_CYCLES
 	{"_cycles", CCL_initPython},
+#endif
+#ifdef WITH_REMIX
+	{"_bge_remix", (PyObject *(*)(void))BRMX_initPython},
 #endif
 	{"gpu", GPU_initPython},
 	{"idprop", BPyInit_idprop},

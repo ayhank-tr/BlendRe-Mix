@@ -163,6 +163,12 @@ if(WITH_CYCLES)
 	add_definitions(-DWITH_CYCLES)
 endif()
 
+# BGE-Remix
+if(WITH_REMIX)
+	add_definitions(-DWITH_REMIX)
+	list(APPEND INC ../../remix)
+endif()
+
 if(WITH_CYCLES_OSL)
 	add_definitions(-DWITH_CYCLES_OSL)
 endif()

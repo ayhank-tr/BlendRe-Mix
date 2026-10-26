@@ -669,6 +669,11 @@ function(SETUP_BLENDER_SORTED_LIBS)
 		bf_intern_glew_mx
 	)
 
+	# BGE-Remix
+	if(WITH_REMIX AND WITH_PYTHON)
+		list_insert_after(BLENDER_SORTED_LIBS "bf_python" "bf_remix")
+	endif()
+
 	if(NOT WITH_SYSTEM_GLOG)
 		list(APPEND BLENDER_SORTED_LIBS extern_glog)
 	endif()
