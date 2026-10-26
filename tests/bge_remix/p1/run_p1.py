@@ -125,7 +125,8 @@ def t12_ui(ours, out, scenes):
 def t14_check(seq, log_lines):
     starts = [l for l in log_lines if l.startswith("Startup")]
     config = {l[len("Config "):] for l in log_lines if l.startswith("Config ")}
-    presents = sum(1 for l in log_lines if l == "Present")
+    # "Present" (P1 mock) or "Present draws=N lights=M" (P2 mock)
+    presents = sum(1 for l in log_lines if l == "Present" or l.startswith("Present "))
     shutdowns = [i for i, l in enumerate(log_lines) if l == "Shutdown"]
     after = [l for l in log_lines if l.startswith("WndProc after Shutdown")]
     frames = (seq.get("triangle") or {}).get("frames", -1)
