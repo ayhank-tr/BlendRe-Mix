@@ -85,6 +85,13 @@ if frames >= max_frames and elapsed >= seconds:
 '''
 
 
+LIGHT_SCALES = (0.25, 0.0625, 0.015625)
+
+
+def scale_tag(scale):
+    return ("%g" % scale).replace(".", "_")
+
+
 def out_dir():
     argv = sys.argv
     if "--" not in argv:
@@ -274,6 +281,11 @@ def make_room(folder):
     scene["bge_remix"] = 1
     scene.update()  # world matrices of the new objects (background mode)
     save(os.path.join(folder, "p2_room.blend"))
+    # the same room at lower lamp brightness, for choosing the default (sign-off)
+    for scale in LIGHT_SCALES:
+        scene["bge_remix_light_scale"] = scale
+        save(os.path.join(folder, "p2_room_light_%s.blend" % scale_tag(scale)))
+    del scene["bge_remix_light_scale"]
 
     expected = {
         "lamps": [lamp_expect(ob) for ob in lamps],

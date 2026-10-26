@@ -474,6 +474,8 @@ class P2Embedded(bpy.types.Operator):
             state["i"] += 1
             context.scene.bge_remix = mode
             os.environ["BGE_REMIX_P2_OUT"] = os.path.join(out_dir, "embedded_%s.json" % name)
+            # Remix's first start in blender.exe prepares its shaders (black meanwhile)
+            os.environ["BGE_REMIX_P2_SECONDS"] = "40" if mode == 'RTX_REMIX' else "6"
             os.environ["BGE_REMIX_STATS"] = os.path.join(out_dir, "embedded_%s_stats.json" % name)
             os.environ["BGE_REMIX_P2_SHOT"] = os.path.join(out_dir, "embedded_%s.png" % name)
             o = view3d()
@@ -591,6 +593,15 @@ def run_rtx(args, out):
     print("T2.1: the room's Cycles render (CPU, about a few minutes)...", flush=True)
     res["T2.1"]["cycles"] = cycles_render(args.ours, out, scenes)
 
+    print("T2.1: the room at lower lamp brightness (to choose the default)...", flush=True)
+    sheet = [("Cycles", res["T2.1"]["cycles"]["image"]), ("Remix, light scale 1", t21["screenshot"])]
+    for scale in LIGHT_SCALES:
+        tag = ("%g" % scale).replace(".", "_")
+        r = player(args.ours, out, "T2.1_light_" + tag, os.path.join(scenes, "p2_room_light_%s.blend" % tag),
+                   timed(12), size=(1280, 720), cwd=out)
+        sheet.append(("Remix, light scale %g" % scale, r["screenshot"]))
+    res["T2.1"]["light_scales"] = contact_sheet(sheet, os.path.join(out, "T2.1_compare.png"))
+
     print("T2.3: BGE's framerate text over the Remix picture...", flush=True)
     t23 = player(args.ours, out, "T2.3_text", room, timed(10), size=(1280, 720),
                  args=["-g", "show_framerate", "=", "1"], cwd=out)
@@ -640,7 +651,7 @@ def run_rtx(args, out):
     res["all_ok"] = all(res[k]["ok"] for k in ("T2.1", "T2.3", "T2.4", "T2.9"))
 
     lines = ["BGE-Remix phase 2 results (RTX)", "=" * 31, ""]
-    lines.append("T2.1 Lit room in blenderplayer        %s   (sign-off: T2.1_room.png next to cycles_room.png)" %
+    lines.append("T2.1 Lit room in blenderplayer        %s   (sign-off: T2.1_compare.png)" %
                  mark(res["T2.1"]["ok"]))
     lines.append("T2.3 Framerate text on top            %s   (look at T2.3_text.png)" % mark(res["T2.3"]["ok"]))
     lines.append("T2.4 OpenGL / Remix / OpenGL          %s" % mark(res["T2.4"]["ok"]))
@@ -682,6 +693,34 @@ def run_c1(args, out, room, timed):
         if os.path.isdir(mdir):
             meshes += len(os.listdir(mdir))
     return {"captures": caps, "mesh_files": meshes, "exit": r["exit"], "skipped": False}
+
+
+LIGHT_SCALES = (0.25, 0.0625, 0.015625)
+
+
+def contact_sheet(items, target):
+    """The images side by side, two per row, each labelled; for the sign-off."""
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        return None
+    tiles = []
+    for label, path in items:
+        if path and os.path.isfile(path):
+            img = Image.open(path).convert("RGB").resize((960, 540))
+        else:
+            img = Image.new("RGB", (960, 540), (40, 0, 0))
+            label += " (missing)"
+        d = ImageDraw.Draw(img)
+        d.rectangle([0, 0, 960, 34], fill=(0, 0, 0))
+        d.text((10, 10), label, fill=(255, 255, 255))
+        tiles.append(img)
+    rows = (len(tiles) + 1) // 2
+    sheet = Image.new("RGB", (1920, 540 * rows), (0, 0, 0))
+    for i, t in enumerate(tiles):
+        sheet.paste(t, ((i % 2) * 960, (i // 2) * 540))
+    sheet.save(target)
+    return target
 
 
 def player_stats(out, name):
