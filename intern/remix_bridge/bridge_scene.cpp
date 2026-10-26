@@ -21,7 +21,8 @@
 /** \file bridge_scene.cpp
  *  \ingroup remix_bridge
  *
- * The scene interface (version 2): materials, meshes, lights, camera, draws.
+ * The scene interface (versions 2 and 3): materials, meshes, lights, camera,
+ * draws.
  * The game engine describes things in its own terms (OpenGL matrices,
  * Blender's uv origin); the conversion to Remix's conventions happens here.
  */
@@ -128,22 +129,73 @@ BRB_API int brb_material_create(const brb_material_desc *d)
 	if (!running() || !d || d->hash == 0) {
 		return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
 	}
+	auto clamp01 = [](float v) { return std::min(std::max(v, 0.0f), 1.0f); };
+	/* "" and NULL: no texture (Remix wants NULL) */
+	auto tex = [](const wchar_t *p) -> const wchar_t * { return (p && p[0]) ? p : nullptr; };
+
 	remixapi_MaterialInfoOpaqueEXT opaque = default_opaque();
-	opaque.albedoConstant = f3(d->albedo);
-	opaque.opacityConstant = std::min(std::max(d->opacity, 0.0f), 1.0f);
-	opaque.roughnessConstant = std::min(std::max(d->roughness, 0.0f), 1.0f);
-	opaque.metallicConstant = std::min(std::max(d->metallic, 0.0f), 1.0f);
-	if (d->alpha_blend) {
-		/* blend by opacityConstant, not by the (missing) draw call state */
-		opaque.useDrawCallAlphaState = FALSE;
-		opaque.blendType_hasvalue = TRUE;
-		opaque.blendType_value = 0; /* alpha */
+	remixapi_MaterialInfoOpaqueSubsurfaceEXT sss = {};
+	remixapi_MaterialInfoTranslucentEXT glass = {};
+	void *ext = &opaque;
+
+	if (d->type == BRB_MATERIAL_TRANSLUCENT) {
+		glass.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_TRANSLUCENT_EXT;
+		glass.refractiveIndex = std::min(std::max(d->ior, 1.0f), 3.0f);
+		glass.transmittanceColor = f3(d->transmittance);
+		/* Remix's glass rejects a zero distance; Blender's glass tints per surface */
+		glass.transmittanceMeasurementDistance = std::max(d->transmittance_distance, 0.001f);
+		glass.thinWallThickness_hasvalue = d->thin_walled ? TRUE : FALSE;
+		glass.thinWallThickness_value = 0.001f;
+		glass.useDiffuseLayer = FALSE;
+		ext = &glass;
+	}
+	else {
+		opaque.albedoConstant = f3(d->albedo);
+		opaque.opacityConstant = clamp01(d->opacity);
+		opaque.roughnessConstant = clamp01(d->roughness);
+		opaque.metallicConstant = clamp01(d->metallic);
+		opaque.roughnessTexture = tex(d->roughness_texture);
+		opaque.metallicTexture = tex(d->metallic_texture);
+		if (d->alpha_blend) {
+			/* blend by opacity (and the albedo texture's alpha), not by the
+			 * (missing) draw call state */
+			opaque.useDrawCallAlphaState = FALSE;
+			opaque.blendType_hasvalue = TRUE;
+			opaque.blendType_value = 0; /* alpha */
+		}
+		else if (d->alpha_test) {
+			/* cut out: keep texels whose alpha is above the cutoff */
+			opaque.useDrawCallAlphaState = FALSE;
+			opaque.blendType_hasvalue = FALSE;
+			opaque.alphaTestType = 4; /* AlphaTestType::kGreater */
+			opaque.alphaReferenceValue = (uint8_t)std::lround(clamp01(d->alpha_cutoff) * 255.0f);
+		}
+		if (d->subsurface) {
+			/* Remix's diffusion profile, as Blender's Christensen-Burley:
+			 * radius per channel in scene units (here Blender units) */
+			sss.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_SUBSURFACE_EXT;
+			sss.subsurfaceTransmittanceColor = f3(d->subsurface_color);
+			sss.subsurfaceSingleScatteringAlbedo = f3(d->subsurface_color);
+			sss.subsurfaceMeasurementDistance = 0.0f;
+			sss.subsurfaceVolumetricAnisotropy = 0.0f;
+			sss.subsurfaceDiffusionProfile = TRUE;
+			sss.subsurfaceRadius = f3(d->subsurface_radius);
+			sss.subsurfaceRadiusScale = 1.0f;
+			const float rmax = std::max(std::max(d->subsurface_radius[0], d->subsurface_radius[1]), d->subsurface_radius[2]);
+			sss.subsurfaceMaxSampleRadius = std::max(rmax * 3.0f, 0.001f);
+			opaque.pNext = &sss;
+		}
 	}
 	/* Remix ignores a second material with the same hash: replace it */
 	brb_material_destroy(d->hash);
-	remixapi_MaterialInfo info = default_material(d->hash, &opaque);
+	remixapi_MaterialInfo info = default_material(d->hash, ext);
 	info.emissiveIntensity = std::max(d->emissive_intensity, 0.0f);
 	info.emissiveColorConstant = f3(d->emissive);
+	info.albedoTexture = tex(d->albedo_texture);
+	info.normalTexture = tex(d->normal_texture);
+	info.emissiveTexture = tex(d->emissive_texture);
+	info.filterMode = d->filter_nearest ? 0 : 1;   /* MDL filter: nearest, linear */
+	info.wrapModeU = info.wrapModeV = d->clamp ? 0 : 1; /* MDL wrap: clamp, repeat */
 
 	remixapi_MaterialHandle h = nullptr;
 	remixapi_ErrorCode r = guarded("CreateMaterial", [&] { return g_remix.CreateMaterial(&info, &h); });
