@@ -807,7 +807,15 @@ def contact_sheet(items, target):
     sheet = Image.new("RGB", (1920, 540 * rows), (0, 0, 0))
     for i, t in enumerate(tiles):
         sheet.paste(t, ((i % 2) * 960, (i // 2) * 540))
-    sheet.save(target)
+    try:
+        sheet.save(target)
+    except OSError as ex:
+        # Windows refuses to overwrite a picture that is open in a viewer
+        # (Errno 22, P2 RTX run 6): keep the run going under another name
+        base, ext = os.path.splitext(target)
+        target = "%s_%s%s" % (base, time.strftime("%H%M%S"), ext)
+        print("note: could not overwrite the old sheet (%s; open in a viewer?), wrote %s" % (ex, target), flush=True)
+        sheet.save(target)
     return target
 
 
