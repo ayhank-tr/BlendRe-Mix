@@ -85,6 +85,9 @@ void press_capture_hotkey()
 {
 	/* rtx.captureHotKey defaults to Ctrl+Shift+Q; with
 	 * rtx.captureShowMenuOnHotkey = False it starts a capture directly. */
+	/* Remix refuses to capture while replacement assets are on ("Cannot begin
+	 * capture while replacement assets are enabled", RTX 3080 run). */
+	brb_set_config("rtx.enableReplacementAssets", "False");
 	SetForegroundWindow(g_hwnd);
 	INPUT in[6] = {};
 	const WORD keys[3] = {VK_CONTROL, VK_SHIFT, 'Q'};
