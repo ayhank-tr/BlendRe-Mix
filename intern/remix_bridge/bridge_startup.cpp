@@ -143,7 +143,14 @@ BRB_API brb_status brb_startup(int width, int height, int visible)
 	info.combineGuiInFinalColor = TRUE;
 
 	const double t0 = now_ms();
-	remixapi_ErrorCode r = g_remix.Startup(&info);
+	remixapi_ErrorCode r;
+	try {
+		r = g_remix.Startup(&info);
+	}
+	catch (...) {
+		log("the runtime raised an exception in Startup");
+		r = REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+	}
 	log("Startup -> %u in %.1f ms", (unsigned)r, now_ms() - t0);
 	if (r != REMIXAPI_ERROR_CODE_SUCCESS) {
 		DestroyWindow(g_hwnd);
@@ -166,15 +173,21 @@ BRB_API brb_status brb_startup(int width, int height, int visible)
 BRB_API void brb_shutdown(void)
 {
 	if (g_dll) {
-		if (g_started) {
-			remixapi_ErrorCode r = remixapi_lib_shutdownAndUnloadRemixDll(&g_remix, g_dll);
-			log("Shutdown -> %u", (unsigned)r);
+		try {
+			if (g_started) {
+				remixapi_ErrorCode r = remixapi_lib_shutdownAndUnloadRemixDll(&g_remix, g_dll);
+				log("Shutdown -> %u", (unsigned)r);
+			}
+			else {
+				FreeLibrary(g_dll);
+				log("runtime unloaded (never started)");
+			}
 		}
-		else {
-			FreeLibrary(g_dll);
-			log("runtime unloaded (never started)");
+		catch (...) {
+			log("the runtime raised an exception while shutting down");
 		}
 	}
+	release_runtime_paths();
 	g_remix = remixapi_Interface();
 	g_dll = nullptr;
 	g_started = false;

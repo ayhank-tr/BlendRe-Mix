@@ -52,6 +52,12 @@ extern remixapi_HMODULE g_dll;
 extern bool g_started;
 extern HWND g_hwnd;
 extern std::wstring g_runtime_dir;
+/* Remix's implementation DLL (d3d9_x64.dll), preloaded by brb_load */
+extern HMODULE g_impl;
+
+/* Undo what brb_load changed in the process: the DLL search folder and the
+ * preloaded implementation DLL. */
+void release_runtime_paths();
 
 std::string utf8(const std::wstring &w);
 const std::string &log_path();

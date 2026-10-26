@@ -67,6 +67,15 @@ std::string error_text(remixapi_ErrorCode code)
 	}
 }
 
+void release_runtime_paths()
+{
+	if (g_impl) {
+		FreeLibrary(g_impl);
+		g_impl = nullptr;
+	}
+	SetDllDirectoryW(nullptr);
+}
+
 std::string with_code(const std::string &what, remixapi_ErrorCode code)
 {
 	char buf[32];
@@ -106,9 +115,48 @@ BRB_API brb_status brb_load(const wchar_t *runtime_dir)
 		return g_status;
 	}
 
+	/* Remix's d3d9.dll is a small shim that loads d3d9_x64.dll from its own
+	 * folder with a plain LoadLibraryW. Windows then looks for that DLL's own
+	 * dependencies (NRD, DLSS, CUDA, TBB, USD...) next to blender.exe, not in
+	 * the runtime folder, and the load fails. So: add the runtime folder to
+	 * the DLL search path for as long as Remix is loaded, and preload the
+	 * implementation with its own folder as the search base. */
+	SetDllDirectoryW(dir.c_str());
+	const std::wstring impl_path = dir + L"\\d3d9_x64.dll";
+	if (file_exists(impl_path)) {
+		g_impl = LoadLibraryExW(impl_path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+		if (g_impl == nullptr) {
+			const DWORD err = GetLastError();
+			release_runtime_paths();
+			char buf[96];
+			snprintf(buf, sizeof(buf), " (Windows error %lu).", (unsigned long)err);
+			std::string text = "RTX Remix could not be loaded: Windows could not load d3d9_x64.dll or a DLL it needs";
+			text += buf;
+			if (err == ERROR_MOD_NOT_FOUND) {
+				text += " A file is missing: reinstall the runtime, and make sure the Microsoft Visual C++ "
+				        "Redistributable (2015-2022, x64) is installed.";
+			}
+			set_status(BRB_STATUS_LOAD_FAILED, text);
+			return g_status;
+		}
+		log("preloaded %s", utf8(impl_path).c_str());
+	}
+
 	remixapi_Interface iface = {};
 	remixapi_HMODULE dll = nullptr;
-	remixapi_ErrorCode r = remixapi_lib_loadRemixDllAndInitialize(dll_path.c_str(), &iface, &dll);
+	remixapi_ErrorCode r;
+	try {
+		r = remixapi_lib_loadRemixDllAndInitialize(dll_path.c_str(), &iface, &dll);
+	}
+	catch (...) {
+		/* The runtime reports some failures as C++ exceptions; never let one
+		 * reach Blender. */
+		log("the runtime raised an exception while loading");
+		r = REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+	}
+	if (r != REMIXAPI_ERROR_CODE_SUCCESS) {
+		release_runtime_paths();
+	}
 	if (r == REMIXAPI_ERROR_CODE_INCOMPATIBLE_VERSION) {
 		set_status(BRB_STATUS_INCOMPATIBLE_VERSION,
 		           std::string("This RTX Remix runtime does not match BGE-Remix (Remix API ") +
@@ -116,7 +164,8 @@ BRB_API brb_status brb_load(const wchar_t *runtime_dir)
 		return g_status;
 	}
 	if (r != REMIXAPI_ERROR_CODE_SUCCESS) {
-		set_status(BRB_STATUS_LOAD_FAILED, with_code("RTX Remix could not be loaded", r));
+		set_status(BRB_STATUS_LOAD_FAILED, with_code("RTX Remix could not be loaded", r) +
+		           " Details are in Remix's log and in " + log_path() + ".");
 		return g_status;
 	}
 	g_remix = iface;

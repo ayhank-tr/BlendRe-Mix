@@ -167,7 +167,7 @@ using namespace brb;
 
 extern "C" {
 
-BRB_API int brb_triangle_test(double seconds, const wchar_t *screenshot_path, int capture,
+static int triangle_test_impl(double seconds, const wchar_t *screenshot_path, int capture,
                               brb_triangle_result *r_result)
 {
 	brb_triangle_result res = {};
@@ -277,10 +277,18 @@ BRB_API int brb_triangle_test(double seconds, const wchar_t *screenshot_path, in
 		const int w = rc.right - rc.left, h = rc.bottom - rc.top;
 		cam.aspect = (w > 0 && h > 0) ? (float)w / (float)h : 16.0f / 9.0f;
 
-		g_remix.SetupCamera(&cam_info);
-		g_remix.DrawInstance(&inst);
-		g_remix.DrawLightInstance(light);
-		remixapi_ErrorCode pr = g_remix.Present(nullptr);
+		remixapi_ErrorCode pr;
+		try {
+			g_remix.SetupCamera(&cam_info);
+			g_remix.DrawInstance(&inst);
+			g_remix.DrawLightInstance(light);
+			pr = g_remix.Present(nullptr);
+		}
+		catch (...) {
+			log("the runtime raised an exception while drawing");
+			pr = REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+			res.present_errors = 1000; /* stop the loop */
+		}
 		if (pr != REMIXAPI_ERROR_CODE_SUCCESS) {
 			res.present_errors++;
 			res.last_error = (int)pr;
@@ -336,6 +344,22 @@ BRB_API int brb_triangle_test(double seconds, const wchar_t *screenshot_path, in
 		*r_result = res;
 	}
 	return (r == REMIXAPI_ERROR_CODE_SUCCESS && res.present_errors == 0) ? 0 : 1;
+}
+
+BRB_API int brb_triangle_test(double seconds, const wchar_t *screenshot_path, int capture,
+                              brb_triangle_result *r_result)
+{
+	try {
+		return triangle_test_impl(seconds, screenshot_path, capture, r_result);
+	}
+	catch (...) {
+		log("the runtime raised an exception in the triangle test");
+		if (r_result) {
+			*r_result = brb_triangle_result();
+			r_result->last_error = REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+		}
+		return 1;
+	}
 }
 
 }  /* extern "C" */

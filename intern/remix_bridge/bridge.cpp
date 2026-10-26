@@ -40,6 +40,7 @@ remixapi_HMODULE g_dll = nullptr;
 bool g_started = false;
 HWND g_hwnd = nullptr;
 std::wstring g_runtime_dir;
+HMODULE g_impl = nullptr;
 
 std::string utf8(const std::wstring &w)
 {
