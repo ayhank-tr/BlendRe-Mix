@@ -182,6 +182,8 @@ def check_sequence(lines, stats):
         "Shutdown last, at the player's exit": bool(lines) and lines[-1] == "Shutdown",
         "no window message after Shutdown": not [l for l in lines if l.startswith("WndProc after")],
         "no runtime errors": stats.get("errors", 1) == 0,
+        "every mesh: triangles clockwise, as Remix wants": all(
+            parse_fields(l).get("winding") == "cw" for l in lines if l.startswith("CreateMesh ")),
     }
     return checks
 
@@ -278,6 +280,7 @@ def check_instances(lines, expected):
         "two meshes in total (the cube and the floor)": len(meshes) == 2 and hashes == want,
         "%d draws in every frame" % (n + 1): bool(presents) and all(p.get("draws") == n + 1 for p in presents),
         "no meshes created after the first frame": not late,
+        "triangles clockwise, as Remix wants": bool(meshes) and all(parse_fields(l).get("winding") == "cw" for l in meshes),
     }
     return checks, {"meshes": meshes, "frames": len(presents)}
 
@@ -625,19 +628,13 @@ def run_rtx(args, out):
     res["B2.3"] = {"copy_ms_median": copy.get("copy_ms_median"), "upload_ms_median": copy.get("upload_ms_median"),
                    "present_ms_median": copy.get("present_ms_median")}
 
-    print("C1: capture retry (replacement assets off from the start)...", flush=True)
-    c1_since = time.time()
-    r = player(args.ours, out, "C1_capture", room,
-               timed(30, {"DXVK_RTX_CAPTURE_ENABLE_ON_FRAME": "900", "BGE_REMIX_NO_REPLACEMENTS": "1"}),
-               size=(1280, 720), cwd=out)
-    time.sleep(3)
-    caps = find_captures(c1_since, [out, args.ours])
-    meshes = 0
-    for c in caps:
-        mdir = os.path.join(os.path.dirname(c), "meshes")
-        if os.path.isdir(mdir):
-            meshes += len(os.listdir(mdir))
-    res["C1"] = {"captures": caps, "mesh_files": meshes, "exit": r["exit"]}
+    # C1: Remix 1.6.1 crashes when it captures geometry sent through its API
+    # without textures (GameCapturer::captureMaterial reads the missing albedo
+    # texture; RTX 3080, P2 run 1). Off until P3 gives materials textures;
+    # BGE_REMIX_P2_C1=1 runs it anyway.
+    res["C1"] = {"captures": [], "mesh_files": 0, "skipped": os.environ.get("BGE_REMIX_P2_C1") != "1"}
+    if not res["C1"]["skipped"]:
+        res["C1"] = run_c1(args, out, room, timed)
 
     res["logs"] = collect_logs(out, since, [out, args.ours])
     res["all_ok"] = all(res[k]["ok"] for k in ("T2.1", "T2.3", "T2.4", "T2.9"))
@@ -649,8 +646,11 @@ def run_rtx(args, out):
     lines.append("T2.4 OpenGL / Remix / OpenGL          %s" % mark(res["T2.4"]["ok"]))
     lines.append("T2.9 Embedded player through Remix    %s" % mark(res["T2.9"]["ok"]))
     c1 = res["C1"]
-    lines.append("C1   Capture                          %s   %d stage file(s), %d mesh file(s)" % (
-        "yes " if c1["captures"] and c1["mesh_files"] else "no  ", len(c1["captures"]), c1["mesh_files"]))
+    if c1.get("skipped"):
+        lines.append("C1   Capture                          skipped (crashes Remix 1.6.1 without textures; P3)")
+    else:
+        lines.append("C1   Capture                          %s   %d stage file(s), %d mesh file(s)" % (
+            "yes " if c1["captures"] and c1["mesh_files"] else "no  ", len(c1["captures"]), c1["mesh_files"]))
     lines += ["", "Benchmarks", "-" * 10]
     for name, b in b21.items():
         if not isinstance(b, dict):
@@ -666,6 +666,22 @@ def run_rtx(args, out):
         _r(b23["copy_ms_median"]), _r(b23["upload_ms_median"]), _r(b23["present_ms_median"])))
     lines += ["", "ALL PASS" if res["all_ok"] else "SOME TESTS FAILED (see results_p2_rtx.json and the .log files)"]
     return res, lines
+
+
+def run_c1(args, out, room, timed):
+    print("C1: capture (replacement assets off from the start)...", flush=True)
+    since = time.time()
+    r = player(args.ours, out, "C1_capture", room,
+               timed(30, {"DXVK_RTX_CAPTURE_ENABLE_ON_FRAME": "900", "BGE_REMIX_NO_REPLACEMENTS": "1"}),
+               size=(1280, 720), cwd=out)
+    time.sleep(3)
+    caps = find_captures(since, [out, args.ours])
+    meshes = 0
+    for c in caps:
+        mdir = os.path.join(os.path.dirname(c), "meshes")
+        if os.path.isdir(mdir):
+            meshes += len(os.listdir(mdir))
+    return {"captures": caps, "mesh_files": meshes, "exit": r["exit"], "skipped": False}
 
 
 def player_stats(out, name):
@@ -684,6 +700,12 @@ scene.cycles.device = 'CPU'
 scene.cycles.samples = 96
 scene.render.resolution_x, scene.render.resolution_y = 1280, 720
 scene.render.resolution_percentage = 100
+# a film-like curve, as Remix's tone mapping, so bright areas don't burn out
+try:
+    scene.view_settings.view_transform = 'Filmic'
+    scene.view_settings.look = 'Filmic - Base Contrast'
+except Exception:
+    pass
 try:
     scene.render.layers[0].cycles.use_denoising = True
 except Exception:

@@ -796,11 +796,13 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 		return;
 	}
 	const double t0 = now_seconds();
-	const int width = std::max(viewport.GetRight() - viewport.GetLeft() + 1, 8);
-	const int height = std::max(viewport.GetTop() - viewport.GetBottom() + 1, 8);
+	/* the window's size (BGE's viewport rectangle includes its right and top
+	 * edge: 1920 x 1080 shows as 0..1920, 0..1080) */
+	const int width = std::max(viewport.GetRight() - viewport.GetLeft(), 8);
+	const int height = std::max(viewport.GetTop() - viewport.GetBottom(), 8);
 	/* child window: top-left corner in the game window's client area */
 	const int x = viewport.GetLeft();
-	const int y = m_canvas->GetHeight() - 1 - viewport.GetTop();
+	const int y = m_canvas->GetHeight() - viewport.GetTop();
 	if (width != m_width || height != m_height || (m_mode == BRB_MODE_CHILD && (x != m_x || y != m_y))) {
 		if (m_bridge->resize(width, height, x, y) == 0) {
 			m_width = width;

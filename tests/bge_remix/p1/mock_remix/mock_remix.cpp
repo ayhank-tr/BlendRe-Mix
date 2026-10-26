@@ -188,8 +188,29 @@ remixapi_ErrorCode REMIXAPI_CALL m_CreateMesh(const remixapi_MeshInfo *info, rem
 	unsigned long long verts = 0, indices = 0;
 	float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
 	int no_material = 0;
+	/* winding against the vertex normals: Remix wants clockwise front faces */
+	int cw = 0, ccw = 0;
 	for (uint32_t s = 0; s < info->surfaces_count; s++) {
 		const remixapi_MeshInfoSurfaceTriangles &t = info->surfaces_values[s];
+		for (uint64_t i = 0; i + 2 < t.indices_count; i += 3) {
+			const uint32_t a = t.indices_values[i], b = t.indices_values[i + 1], c = t.indices_values[i + 2];
+			if (a >= t.vertices_count || b >= t.vertices_count || c >= t.vertices_count) {
+				continue;
+			}
+			const float *p0 = t.vertices_values[a].position, *p1 = t.vertices_values[b].position,
+			            *p2 = t.vertices_values[c].position;
+			const float e1[3] = {p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]};
+			const float e2[3] = {p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]};
+			const float n[3] = {e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]};
+			const float *vn = t.vertices_values[a].normal;
+			const float d = n[0] * vn[0] + n[1] * vn[1] + n[2] * vn[2];
+			if (d < 0.0f) {
+				cw++;
+			}
+			else if (d > 0.0f) {
+				ccw++;
+			}
+		}
 		verts += t.vertices_count;
 		indices += t.indices_count;
 		no_material += t.material ? 0 : 1;
@@ -200,8 +221,10 @@ remixapi_ErrorCode REMIXAPI_CALL m_CreateMesh(const remixapi_MeshInfo *info, rem
 			}
 		}
 	}
-	mlog("CreateMesh hash=%llx surfaces=%u verts=%llu indices=%llu no_material=%d bbox=%.4f,%.4f,%.4f,%.4f,%.4f,%.4f",
+	mlog("CreateMesh hash=%llx surfaces=%u verts=%llu indices=%llu no_material=%d winding=%s "
+	     "bbox=%.4f,%.4f,%.4f,%.4f,%.4f,%.4f",
 	     (unsigned long long)info->hash, info->surfaces_count, verts, indices, no_material,
+	     (cw && !ccw) ? "cw" : (ccw && !cw) ? "ccw" : "mixed",
 	     lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
 	*out = handle<remixapi_MeshHandle>();
 	return REMIXAPI_ERROR_CODE_SUCCESS;

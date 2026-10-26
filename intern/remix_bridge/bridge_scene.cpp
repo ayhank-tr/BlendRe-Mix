@@ -175,6 +175,7 @@ BRB_API int brb_mesh_create(uint64_t hash, const brb_surface_desc *surfaces, uin
 		return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
 	}
 	std::vector<std::vector<remixapi_HardcodedVertex>> verts(surface_count);
+	std::vector<std::vector<uint32_t>> tris(surface_count);
 	std::vector<remixapi_MeshInfoSurfaceTriangles> infos(surface_count);
 	for (uint32_t s = 0; s < surface_count; s++) {
 		const brb_surface_desc &src = surfaces[s];
@@ -199,8 +200,15 @@ BRB_API int brb_mesh_create(uint64_t hash, const brb_surface_desc *surfaces, uin
 		t = remixapi_MeshInfoSurfaceTriangles();
 		t.vertices_values = dst.data();
 		t.vertices_count = dst.size();
-		t.indices_values = src.indices;
-		t.indices_count = src.index_count;
+		/* Remix's front faces are clockwise (D3D), OpenGL's counter-clockwise:
+		 * single-sided surfaces would show their back (RTX 3080, P2 room) */
+		std::vector<uint32_t> &idx = tris[s];
+		idx.assign(src.indices, src.indices + src.index_count);
+		for (size_t i = 0; i + 2 < idx.size(); i += 3) {
+			std::swap(idx[i + 1], idx[i + 2]);
+		}
+		t.indices_values = idx.data();
+		t.indices_count = idx.size();
 		t.skinning_hasvalue = FALSE;
 		auto m = g_materials.find(src.material);
 		t.material = (m != g_materials.end()) ? m->second : nullptr;

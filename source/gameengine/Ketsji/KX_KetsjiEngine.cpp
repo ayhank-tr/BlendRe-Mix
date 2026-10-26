@@ -856,7 +856,10 @@ void KX_KetsjiEngine::Render()
 
 	m_remixScene = NULL;
 #ifdef WITH_REMIX
-	if (m_remix && m_rasterizer->GetDrawingMode() == RAS_IRasterizer::KX_TEXTURED) {
+	/* Solid, shaded and textured all go to Remix (the embedded player draws
+	 * like the 3D view's shading, usually Solid); not wireframe or boxes */
+	const int drawmode = m_rasterizer->GetDrawingMode();
+	if (m_remix && drawmode >= RAS_IRasterizer::KX_SOLID && drawmode != RAS_IRasterizer::KX_SHADOW) {
 		m_remixScene = m_remix->PickScene(m_scenes, m_rasterizer->Stereo(), m_usedome,
 		                                  m_remixOverride, m_remixFastOverride);
 	}
