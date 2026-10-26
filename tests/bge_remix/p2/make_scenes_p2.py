@@ -85,7 +85,8 @@ if frames >= max_frames and elapsed >= seconds:
 '''
 
 
-EXPOSURES = (0.5, 1, 1.5)
+# whole stops: Remix came out about two stops darker than Cycles (P2 RTX run 5)
+EXPOSURES = (1, 2, 3)
 
 
 def scale_tag(scale):
@@ -235,7 +236,8 @@ def lamp_expect(ob):
          "energy": la.energy, "color": vec(la.color), "soft": getattr(la, "shadow_soft_size", 0.0)}
     if la.type == 'SPOT':
         e["cone_deg"] = math.degrees(la.spot_size) / 2.0
-        e["softness"] = la.spot_blend
+        # Remix's cone softness is in cosine units: Blender's blend region
+        e["softness"] = (1.0 - math.cos(la.spot_size / 2.0)) * la.spot_blend
     if la.type == 'AREA':
         e["size"] = [la.size, la.size_y if la.shape == 'RECTANGLE' else la.size]
     return e

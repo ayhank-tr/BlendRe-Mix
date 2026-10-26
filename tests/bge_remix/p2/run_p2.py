@@ -355,6 +355,21 @@ def run_ci(args, out):
     c, d = check_picture(r["screenshot"])
     res["T2.3a"] = dict(test(c, ran(r)), detail=d)
 
+    # The exposure setting: Remix's local tone mapper (its default) and the
+    # global one both get it (0.75 is Remix's default local exposure)
+    log, env = mock_env("exposure")
+    r = player(args.ours, out, "exposure", os.path.join(scenes, "p2_room_exposure_1.blend"), env)
+    config = [l for l in read_lines(log) if "Config " in l]
+    room_config = [l for l in lines if "Config " in l]
+    c = {
+        "the player ran 300 frames": ran(r),
+        "exposure 0: local tone mapper at Remix's default 0.75":
+            any("rtx.localtonemap.exposure=0.75" in l for l in room_config),
+        "exposure +1: local tone mapper 0.75 x 2 = 1.5": any("rtx.localtonemap.exposure=1.5" in l for l in config),
+        "exposure +1: global tone mapper bias 1": any("rtx.tonemap.exposureBias=1" in l for l in config),
+    }
+    res["T2.1e"] = dict(test(c), detail={"config": config})
+
     # 1,000 instances
     log, env = mock_env("instances")
     r = player(args.ours, out, "instances", inst, env)
@@ -385,8 +400,9 @@ def run_ci(args, out):
     # Runtime folder: C (game engine) and Python (Preferences) agree
     res["T2.0"] = check_loader(args.ours, out)
 
-    keys = ("room", "T2.2", "T2.3a", "T2.4a", "T2.5", "T2.6", "T2.7", "T2.0")
-    names = {"room": "Room through Remix (call sequence)", "T2.2": "1,000 instances",
+    keys = ("room", "T2.1e", "T2.2", "T2.3a", "T2.4a", "T2.5", "T2.6", "T2.7", "T2.0")
+    names = {"room": "Room through Remix (call sequence)", "T2.1e": "Exposure setting reaches Remix",
+             "T2.2": "1,000 instances",
              "T2.3a": "Picture in the window, text on top", "T2.4a": "Off, missing, failing: OpenGL",
              "T2.5": "Camera matrices", "T2.6": "Lamps", "T2.7": "Materials",
              "T2.0": "Runtime folder (C = Python), versions"}
@@ -485,11 +501,13 @@ class P2Embedded(bpy.types.Operator):
             os.environ["BGE_REMIX_STATS"] = os.path.join(out_dir, "embedded_%s_stats.json" % name)
             os.environ["BGE_REMIX_P2_SHOT"] = os.path.join(out_dir, "embedded_%s.png" % name)
             o = view3d()
+            print("P2 probe: starting the %s game" % name, flush=True)
             try:
                 bpy.ops.view3d.game_start(o)
                 state["results"].append([name, "ok"])
             except Exception as ex:
                 state["results"].append([name, repr(ex)])
+            print("P2 probe: the %s game returned to Blender" % name, flush=True)
             return {'PASS_THROUGH'}
         context.window_manager.event_timer_remove(self._timer)
         with open(os.path.join(out_dir, "embedded.json"), "w") as f:
@@ -589,6 +607,13 @@ def run_rtx(args, out):
         e.update(extra or {})
         return e
 
+    def still(seconds):
+        # For the sign-off pictures: Remix compiles any shader it is missing
+        # before the first frame instead of showing black meanwhile. A new
+        # shader took the whole 12 s spot run (P2 RTX run 5: no ray-traced
+        # frame, Remix throttled to 33 ms a frame while compiling).
+        return timed(seconds, {"RTX_ENABLE_ASYNC_COMPILATION": "0"})
+
     print("T2.1: the room in blenderplayer, 1920x1080 (the first start prepares Remix's shaders)...", flush=True)
     t21 = player(args.ours, out, "T2.1_room", room, timed(40), size=(1920, 1080), cwd=out)
     ok, img = has_picture(t21["screenshot"])
@@ -603,15 +628,25 @@ def run_rtx(args, out):
     print("T2.1: the room at higher exposure, and the spot lamp alone (sign-off)...", flush=True)
     sheet = [("Cycles", res["T2.1"]["cycles"]["image"]),
              ("Remix (light scale 0.125, exposure 0)", t21["screenshot"])]
+    sheet_runs = {}
     for ev in EXPOSURES:
         tag = ("%g" % ev).replace(".", "_")
-        r = player(args.ours, out, "T2.1_exposure_" + tag, os.path.join(scenes, "p2_room_exposure_%s.blend" % tag),
-                   timed(12), size=(1280, 720), cwd=out)
+        name = "T2.1_exposure_" + tag
+        r = player(args.ours, out, name, os.path.join(scenes, "p2_room_exposure_%s.blend" % tag),
+                   still(15), size=(1280, 720), cwd=out)
         sheet.append(("Remix, exposure +%g" % ev, r["screenshot"]))
-    r = player(args.ours, out, "T2.1_spot", os.path.join(scenes, "p2_spot.blend"), timed(12), size=(1280, 720),
+        sheet_runs[name] = r
+    r = player(args.ours, out, "T2.1_spot", os.path.join(scenes, "p2_spot.blend"), still(15), size=(1280, 720),
                cwd=out)
+    sheet_runs["T2.1_spot"] = r
     sheet += [("Cycles, spot lamp only", spot_cycles["image"]), ("Remix, spot lamp only", r["screenshot"])]
     res["T2.1"]["compare"] = contact_sheet(sheet, os.path.join(out, "T2.1_compare.png"))
+    # every sign-off picture must show something (an all-black one means
+    # Remix never ray-traced a frame)
+    black = [n for n, rr in sorted(sheet_runs.items()) if not has_picture(rr["screenshot"])[0]]
+    res["T2.1"]["black_pictures"] = black
+    if black:
+        res["T2.1"]["ok"] = False
 
     print("T2.3: BGE's framerate text over the Remix picture...", flush=True)
     t23 = player(args.ours, out, "T2.3_text", room, timed(10), size=(1280, 720),
@@ -664,6 +699,8 @@ def run_rtx(args, out):
     lines = ["BGE-Remix phase 2 results (RTX)", "=" * 31, ""]
     lines.append("T2.1 Lit room in blenderplayer        %s   (sign-off: T2.1_compare.png)" %
                  mark(res["T2.1"]["ok"]))
+    if res["T2.1"].get("black_pictures"):
+        lines.append("     black picture(s): " + ", ".join(res["T2.1"]["black_pictures"]))
     lines.append("T2.3 Framerate text on top            %s   (look at T2.3_text.png)" % mark(res["T2.3"]["ok"]))
     lines.append("T2.4 OpenGL / Remix / OpenGL          %s" % mark(res["T2.4"]["ok"]))
     lines.append("T2.9 Embedded player through Remix    %s" % mark(res["T2.9"]["ok"]))
@@ -686,8 +723,48 @@ def run_rtx(args, out):
     b23 = res["B2.3"]
     lines.append("B2.3 copy mode: copy %s ms + upload %s ms per frame (Present %s ms)" % (
         _r(b23["copy_ms_median"]), _r(b23["upload_ms_median"]), _r(b23["present_ms_median"])))
+    res["warmup"] = warmups(out)
+    slow = [(n, w) for n, w in sorted(res["warmup"].items()) if w is None or w > 1.0]
+    lines += ["", "Remix warm-up (start to first ray-traced frame)", "-" * 47]
+    if slow:
+        for n, w in slow:
+            lines.append("%-24s %s" % (n, "never ray-traced" if w is None else "%.1f s" % w))
+    else:
+        lines.append("every run under 1 s")
+    if res["T2.4"].get("crash_files"):
+        lines.append("")
+        lines.append("Blender crash report(s): " + ", ".join(res["T2.4"]["crash_files"]))
     lines += ["", "ALL PASS" if res["all_ok"] else "SOME TESTS FAILED (see results_p2_rtx.json and the .log files)"]
     return res, lines
+
+
+def _clock(stamp):
+    """'[20:34:31.529]' -> seconds since midnight"""
+    m = re.match(r"\[(\d+):(\d+):(\d+(?:\.\d+)?)\]", stamp)
+    return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3)) if m else None
+
+
+def warmups(out):
+    """Seconds from Remix's start to its first ray-traced frame, per run log
+    (None: it never ray-traced). Remix shows black until then."""
+    found = {}
+    for n in sorted(os.listdir(out)):
+        if not n.endswith(".log") or n.startswith(("cycles", "make_", "C1")):
+            continue
+        started = traced = None
+        last = None
+        for line in read_lines(os.path.join(out, n)):
+            if line.startswith("["):
+                last = _clock(line.split(" ", 1)[0])
+            if "BGE-Remix: RTX Remix renders scene" in line:
+                started = last
+                traced = None
+            elif "Opacity Micromap: enabled" in line and started is not None and traced is None:
+                traced = last
+                found[n[:-4] + ("" if n != "embedded.log" else " (Remix run)")] = max(traced - started, 0.0)
+        if started is not None and traced is None:
+            found[n[:-4]] = None
+    return found
 
 
 def run_c1(args, out, room, timed):
@@ -706,7 +783,7 @@ def run_c1(args, out, room, timed):
     return {"captures": caps, "mesh_files": meshes, "exit": r["exit"], "skipped": False}
 
 
-EXPOSURES = (0.5, 1, 1.5)
+EXPOSURES = (1, 2, 3)  # as in make_scenes_p2.py
 
 
 def contact_sheet(items, target):
@@ -836,10 +913,23 @@ def embedded(ours, out, scenes):
         if n.startswith("embedded_"):
             os.remove(os.path.join(out, n))
     env = base_env(out, "embedded")
+    # Blender writes its crash report (p2_room.crash.txt) into TEMP; P2 RTX
+    # run 5 crashed after the Remix game without one in the results
+    tmp = os.path.join(out, "tmp_embedded")
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp, exist_ok=True)
     env.update({"BGE_REMIX_P2_EMBEDDED": out, "BGE_REMIX_P2_SECONDS": "8", "BGE_REMIX_P2_FRAMES": "60",
-                "BGE_REMIX_P2_SHOT_FRAME": "30", "BGE_REMIX_RUNTIME_DIR": None})
+                "BGE_REMIX_P2_SHOT_FRAME": "30", "BGE_REMIX_RUNTIME_DIR": None, "BGE_REMIX_TRACE": "1",
+                "TEMP": tmp, "TMP": tmp})
     code, text, secs = run([exe(ours, "blender"), os.path.join(scenes, "p2_room.blend"),
                             "--python", script], env, os.path.join(out, "embedded.log"), timeout=900, cwd=out)
+    crash_files = []
+    for n in os.listdir(tmp):
+        if n.endswith(".crash.txt"):
+            shutil.copy2(os.path.join(tmp, n), os.path.join(out, "embedded_" + n))
+            crash_files.append("embedded_" + n)
+        elif n == "bge-remix.log":
+            shutil.copy2(os.path.join(tmp, n), os.path.join(out, "embedded_bge-remix.log"))
     runs = {}
     for name in ("opengl_1", "remix", "opengl_2"):
         runs[name] = {"probe": read_json(os.path.join(out, "embedded_%s.json" % name)),
@@ -858,7 +948,7 @@ def embedded(ours, out, scenes):
         runs["remix"]["stats"].get("mode") == "copy",
         "a picture in Blender's 3D view": bool(runs["remix"]["picture"]),
     }
-    return dict(test(t24), runs=runs, exit=code), dict(test(t29))
+    return dict(test(t24), runs=runs, exit=code, crash_files=crash_files), dict(test(t29))
 
 
 def mark(ok):

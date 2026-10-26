@@ -1390,6 +1390,7 @@ void KX_KetsjiEngine::StopEngine()
 		delete m_remix;
 		m_remix = NULL;
 		m_remixScene = NULL;
+		KX_RemixRenderer::Trace("game end: removing the scenes");
 #endif
 
 		KX_SceneList::iterator sceneit;
@@ -1398,6 +1399,9 @@ void KX_KetsjiEngine::StopEngine()
 			KX_Scene* scene = *sceneit;
 			m_sceneconverter->RemoveScene(scene);
 		}
+#ifdef WITH_REMIX
+		KX_RemixRenderer::Trace("game end: scenes removed");
+#endif
 		m_scenes.clear();
 
 		// cleanup all the stuff

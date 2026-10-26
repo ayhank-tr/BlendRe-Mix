@@ -83,6 +83,8 @@ static const double NOTICE_SECONDS = 8.0;
  * with 1, the lamps outshine everything else under Remix's automatic
  * exposure (the glowing panel disappears) */
 static const float DEFAULT_LIGHT_SCALE = 0.125f;
+/* Remix's own default for rtx.localtonemap.exposure (1.6.1) */
+static const double LOCAL_TONEMAP_EXPOSURE = 0.75;
 static const double PI = 3.14159265358979323846;
 
 /* ------------------------------------------------------------------------- */
@@ -269,15 +271,19 @@ KX_RemixRenderer::KX_RemixRenderer(RAS_ICanvas *canvas, bool window_mode_allowed
 
 KX_RemixRenderer::~KX_RemixRenderer()
 {
+	Trace("game end: writing stats");
 	WriteStats();
 	if (m_bridge && m_running) {
 		/* Remix keeps running for the next game; this game's objects go. */
 		ShowRemixWindow(false);
+		Trace("game end: clearing the Remix scene");
 		m_bridge->scene_clear();
 	}
 	if (m_texture) {
+		Trace("game end: freeing the picture texture");
 		glDeleteTextures(1, (GLuint *)&m_texture);
 	}
+	Trace("game end: Remix renderer closed");
 }
 
 void KX_RemixRenderer::SetNotice(const std::string &text)
@@ -373,10 +379,30 @@ bool KX_RemixRenderer::Start(KX_Scene *scene, int width, int height, const Setti
 
 void KX_RemixRenderer::ApplyExposure(const Settings &settings)
 {
-	/* stops on top of Remix's automatic exposure */
+	/* Stops on top of Remix's automatic exposure. Remix's default tone mapper
+	 * (rtx.tonemappingMode Local) ignores rtx.tonemap.exposureBias and scales
+	 * by rtx.localtonemap.exposure instead (P2 RTX run 5: four exposures,
+	 * one picture), so both are set: the local factor from Remix's default,
+	 * the global bias for scenes that switch to the global tone mapper. */
 	char value[32];
+	snprintf(value, sizeof(value), "%g", LOCAL_TONEMAP_EXPOSURE * std::pow(2.0, (double)settings.exposure));
+	m_bridge->set_config("rtx.localtonemap.exposure", value);
 	snprintf(value, sizeof(value), "%g", settings.exposure);
 	m_bridge->set_config("rtx.tonemap.exposureBias", value);
+}
+
+void KX_RemixRenderer::Trace(const char *what)
+{
+	/* for tests (BGE_REMIX_TRACE): where a crash at the end of a game happens */
+	static int on = -1;
+	if (on < 0) {
+		std::wstring v;
+		on = env_path(L"BGE_REMIX_TRACE", v) ? 1 : 0;
+	}
+	if (on) {
+		printf("BGE-Remix trace: %s\n", what);
+		fflush(stdout);
+	}
 }
 
 void KX_RemixRenderer::ShowRemixWindow(bool show)
@@ -784,8 +810,14 @@ void KX_RemixRenderer::UpdateLights(KX_Scene *scene, float light_scale)
 			scale = energy * dist / (d.radius * d.radius);
 			if (type == LA_SPOT) {
 				d.shaped = 1;
-				d.cone_angle_deg = (float)(data->m_spotsize * 0.5 * 180.0 / PI);
-				d.cone_softness = std::min(std::max(data->m_spotblend, 0.0f), 1.0f);
+				const double half = data->m_spotsize * 0.5;
+				d.cone_angle_deg = (float)(half * 180.0 / PI);
+				/* Remix fades the cone edge over coneSoftness in cosine units
+				 * (smoothstep(cos(cone), cos(cone) + softness, cos(angle))), as
+				 * Blender does over (1 - cos(cone)) * blend; passing the blend
+				 * itself dimmed and blurred the pool (P2 RTX run 5) */
+				const float blend = std::min(std::max(data->m_spotblend, 0.0f), 1.0f);
+				d.cone_softness = (float)((1.0 - std::cos(half)) * blend);
 			}
 		}
 		d.radiance[0] = color[0] * scale;

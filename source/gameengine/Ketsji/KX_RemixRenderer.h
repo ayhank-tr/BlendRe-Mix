@@ -98,6 +98,9 @@ public:
 	/* For tests: BGE_REMIX_STATS names a JSON file written when the game ends. */
 	void WriteStats();
 
+	/* For tests: with BGE_REMIX_TRACE set, prints (and flushes) a step. */
+	static void Trace(const char *what);
+
 private:
 	struct MeshEntry {
 		uint64_t hash;
