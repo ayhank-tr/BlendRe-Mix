@@ -83,6 +83,10 @@ static const double NOTICE_SECONDS = 8.0;
  * with 1, the lamps outshine everything else under Remix's automatic
  * exposure (the glowing panel disappears) */
 static const float DEFAULT_LIGHT_SCALE = 0.125f;
+/* Chosen against the room's Cycles render (P2 sign-off, RTX 3080, run 7):
+ * +2 stops keeps shadows and the spot pool's contrast; +3 burns out the
+ * glowing panel. Same default as the Rasterizer panel's Exposure. */
+static const float DEFAULT_EXPOSURE = 2.0f;
 /* Remix's own default for rtx.localtonemap.exposure (1.6.1) */
 static const double LOCAL_TONEMAP_EXPOSURE = 0.75;
 static const double PI = 3.14159265358979323846;
@@ -209,13 +213,13 @@ static void object_matrix(KX_GameObject *obj, float r_m[16])
 
 KX_RemixRenderer::Settings KX_RemixRenderer::GetSettings(KX_Scene *scene, int override_enabled, int override_fast)
 {
-	Settings s = {0, 0, DEFAULT_LIGHT_SCALE, 0.0f};
+	Settings s = {0, 0, DEFAULT_LIGHT_SCALE, DEFAULT_EXPOSURE};
 	Scene *bscene = scene ? scene->GetBlenderScene() : NULL;
 	IDProperty *props = bscene ? bscene->id.properties : NULL;
 	s.enabled = idprop_int(props, "bge_remix", 0) != 0;
 	s.window_mode = idprop_int(props, "bge_remix_fast", 0) != 0;
 	s.light_scale = idprop_float(props, "bge_remix_light_scale", DEFAULT_LIGHT_SCALE);
-	s.exposure = idprop_float(props, "bge_remix_exposure", 0.0f);
+	s.exposure = idprop_float(props, "bge_remix_exposure", DEFAULT_EXPOSURE);
 	if (override_enabled >= 0) {
 		s.enabled = override_enabled != 0;
 	}
@@ -226,7 +230,7 @@ KX_RemixRenderer::Settings KX_RemixRenderer::GetSettings(KX_Scene *scene, int ov
 		s.light_scale = DEFAULT_LIGHT_SCALE;
 	}
 	if (!(s.exposure >= -10.0f && s.exposure <= 10.0f)) {
-		s.exposure = 0.0f;
+		s.exposure = DEFAULT_EXPOSURE;
 	}
 	return s;
 }
@@ -261,7 +265,7 @@ KX_RemixRenderer::KX_RemixRenderer(RAS_ICanvas *canvas, bool window_mode_allowed
 	m_settings.enabled = 0;
 	m_settings.window_mode = 0;
 	m_settings.light_scale = DEFAULT_LIGHT_SCALE;
-	m_settings.exposure = 0.0f;
+	m_settings.exposure = DEFAULT_EXPOSURE;
 	std::wstring f;
 	if (env_path(L"BGE_REMIX_SCREENSHOT_FRAME", f)) {
 		m_screenshot_frame = _wtoi(f.c_str());
@@ -440,7 +444,7 @@ KX_Scene *KX_RemixRenderer::PickSceneImpl(const std::vector<KX_Scene *> &scenes,
 	/* The first scene (bottom of the stack) with Remix on gets it. Only one:
 	 * Remix draws one picture per frame. */
 	KX_Scene *wanted = NULL;
-	Settings settings = {0, 0, DEFAULT_LIGHT_SCALE, 0.0f};
+	Settings settings = {0, 0, DEFAULT_LIGHT_SCALE, DEFAULT_EXPOSURE};
 	bool first = true;
 	for (KX_Scene *s : scenes) {
 		/* the -g override applies to the first scene only */

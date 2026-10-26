@@ -64,7 +64,7 @@ public:
 		int enabled;        /* 1: render through Remix */
 		int window_mode;    /* 1: present into a child window (blenderplayer) */
 		float light_scale;  /* brightness factor for lamps */
-		float exposure;     /* stops added to Remix's automatic exposure */
+		float exposure;     /* stops added to Remix's automatic exposure (default +2) */
 	};
 
 	/* Scene settings: the custom properties bge_remix, bge_remix_fast and
