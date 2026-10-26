@@ -676,6 +676,10 @@ bool GPG_Application::initEngine(GHOST_IWindow* window, const int stereoMode)
 		//set the global settings (carried over if restart/load new files)
 		m_ketsjiengine->SetGlobalSettings(m_globalSettings);
 		m_ketsjiengine->SetRender(true);
+		/* BGE-Remix: -g remix = 1 renders through RTX Remix, -g remix_fast = 1
+		 * in window mode (the player may use a child window) */
+		m_ketsjiengine->SetRemixOptions(SYS_GetCommandLineInt(syshandle, "remix", -1),
+		                                SYS_GetCommandLineInt(syshandle, "remix_fast", -1), true);
 
 		m_engineInitialized = true;
 	}

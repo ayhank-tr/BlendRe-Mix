@@ -85,6 +85,8 @@ public:
 	void setMistColor(float r, float g, float b);
 	void setBackColor(float r, float g, float b);
 	const float *getBackColorConverted() const;
+	/* BGE-Remix: the horizon colour, scene linear */
+	const float *getBackColor() const { return m_backgroundcolor; }
 	void setAmbientColor(float r, float g, float b);
 	void UpdateBackGround();
 	void UpdateWorldSettings();

@@ -34,6 +34,7 @@
 #  define NOMINMAX
 #endif
 #include <windows.h>
+#include <d3d9.h>
 
 #include <string>
 
@@ -70,8 +71,42 @@ std::string error_text(remixapi_ErrorCode code);
 std::string with_code(const std::string &what, remixapi_ErrorCode code);
 
 /* bridge_startup.cpp */
+LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
+HWND create_window(int width, int height, bool visible);
+void destroy_window();
 void pump_messages();
 double now_ms();
+/* Call a runtime function, turning a C++ exception from it into an error code. */
+template<typename F> remixapi_ErrorCode guarded(const char *what, F &&fn)
+{
+	try {
+		return fn();
+	}
+	catch (...) {
+		log("the runtime raised an exception in %s", what);
+		return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+	}
+}
+
+/* bridge_triangle.cpp */
+remixapi_MaterialInfoOpaqueEXT default_opaque();
+remixapi_MaterialInfo default_material(uint64_t hash, void *ext);
+remixapi_LightInfoSphereEXT default_sphere();
+bool save_window_bmp(HWND hwnd, const wchar_t *path);
+bool save_bmp(const wchar_t *path, const unsigned char *bgra, int width, int height, int pitch);
+
+/* bridge_device.cpp: the game modes (copy, child window) */
+extern brb_mode g_mode;
+/* Release the device-side objects of the game modes; called before Remix shuts down. */
+void device_release();
+void device_frame_unlock();
+/* Present, and in copy mode copy the picture out. */
+remixapi_ErrorCode device_present();
+
+/* bridge_scene.cpp */
+extern brb_frame_stats g_stats;
+/* Forget all objects without calling the runtime (it is going away). */
+void scene_forget();
 
 }  /* namespace brb */
 

@@ -342,6 +342,9 @@ extern "C" void StartKetsjiShell(struct bContext *C, struct ARegion *ar, rcti *c
 		ketsjiengine->SetTimingDisplay(frameRate, profile, properties);
 		ketsjiengine->SetRestrictAnimationFPS(restrictAnimFPS);
 		ketsjiengine->SetRender(true);
+		/* BGE-Remix: blender -g remix 1 forces Remix on (tests); no window
+		 * mode inside Blender's own window */
+		ketsjiengine->SetRemixOptions(SYS_GetCommandLineInt(syshandle, "remix", -1), -1, false);
 		KX_KetsjiEngine::SetExitKey(ConvertKeyCode(startscene->gm.exitkey));
 
 		//set the global settings (carried over if restart/load new files)

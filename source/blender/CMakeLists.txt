@@ -147,7 +147,7 @@ if(WITH_PYTHON)
 endif()
 
 # BGE-Remix
-if(WITH_REMIX AND WITH_PYTHON)
+if(WITH_REMIX)
 	add_subdirectory(remix)
 endif()
 

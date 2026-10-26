@@ -35,107 +35,17 @@
 
 #include "BLI_utildefines.h"
 
-#include "BKE_appdir.h"
-
+#include "BRMX_loader.h"
 #include "BRMX_remix.h"
-#include "bge_remix_bridge.h"
 
 /* ------------------------------------------------------------------------- */
-/* Bridge DLL */
+/* Bridge DLL (loaded by the shared loader, BRMX_loader.h) */
 
-typedef int (*brb_abi_version_fn)(void);
-typedef const char *(*brb_text_fn)(void);
-typedef brb_status (*brb_load_fn)(const wchar_t *);
-typedef brb_status (*brb_get_status_fn)(void);
-typedef brb_status (*brb_startup_fn)(int, int, int);
-typedef int (*brb_set_config_fn)(const char *, const char *);
-typedef int (*brb_triangle_test_fn)(double, const wchar_t *, int, brb_triangle_result *);
-typedef void (*brb_shutdown_fn)(void);
-
-static struct {
-	int tried;
-	HMODULE dll;
-	char error[512];
-	wchar_t path[MAX_PATH];
-
-	brb_abi_version_fn abi_version;
-	brb_text_fn api_version;
-	brb_load_fn load;
-	brb_get_status_fn get_status;
-	brb_text_fn status_text;
-	brb_text_fn log_path;
-	brb_startup_fn startup;
-	brb_set_config_fn set_config;
-	brb_triangle_test_fn triangle_test;
-	brb_shutdown_fn shutdown;
-} bridge = {0};
+#define B (BRMX_bridge())
 
 static int bridge_ensure(void)
 {
-	const char *dir;
-	int n;
-
-	if (bridge.tried) {
-		return bridge.dll != NULL;
-	}
-	bridge.tried = 1;
-
-	dir = BKE_appdir_program_dir();
-	n = MultiByteToWideChar(CP_UTF8, 0, dir, -1, bridge.path, MAX_PATH - 32);
-	if (n <= 0) {
-		strcpy(bridge.error, "could not find Blender's own folder");
-		return 0;
-	}
-	wcscat(bridge.path, L"\\bge_remix_bridge.dll");
-
-	bridge.dll = LoadLibraryExW(bridge.path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
-	if (bridge.dll == NULL) {
-		_snprintf(bridge.error, sizeof(bridge.error),
-		          "bge_remix_bridge.dll did not load (Windows error %lu)", GetLastError());
-		return 0;
-	}
-
-#define BRIDGE_FN(name) \
-	bridge.name = (brb_##name##_fn)GetProcAddress(bridge.dll, "brb_" #name); \
-	if (bridge.name == NULL) { \
-		_snprintf(bridge.error, sizeof(bridge.error), "bge_remix_bridge.dll lacks brb_" #name); \
-		goto fail; \
-	} (void)0
-
-	BRIDGE_FN(abi_version);
-	if (bridge.abi_version() != BRB_ABI_VERSION) {
-		_snprintf(bridge.error, sizeof(bridge.error),
-		          "bge_remix_bridge.dll is from another build (interface %d, expected %d)",
-		          bridge.abi_version(), BRB_ABI_VERSION);
-		goto fail;
-	}
-	bridge.api_version = (brb_text_fn)GetProcAddress(bridge.dll, "brb_api_version");
-	bridge.status_text = (brb_text_fn)GetProcAddress(bridge.dll, "brb_status_text");
-	bridge.log_path = (brb_text_fn)GetProcAddress(bridge.dll, "brb_log_path");
-	if (!bridge.api_version || !bridge.status_text || !bridge.log_path) {
-		strcpy(bridge.error, "bge_remix_bridge.dll is incomplete");
-		goto fail;
-	}
-	BRIDGE_FN(load);
-	BRIDGE_FN(get_status);
-	BRIDGE_FN(startup);
-	BRIDGE_FN(set_config);
-	BRIDGE_FN(triangle_test);
-	BRIDGE_FN(shutdown);
-#undef BRIDGE_FN
-	return 1;
-
-fail:
-	FreeLibrary(bridge.dll);
-	bridge.dll = NULL;
-	return 0;
-}
-
-void BRMX_exit(void)
-{
-	if (bridge.dll && bridge.shutdown) {
-		bridge.shutdown();
-	}
+	return BRMX_bridge() != NULL;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -158,9 +68,9 @@ static const char *status_name(brb_status s)
 static PyObject *status_tuple(void)
 {
 	if (!bridge_ensure()) {
-		return Py_BuildValue("(ss)", "NO_BRIDGE", bridge.error);
+		return Py_BuildValue("(ss)", "NO_BRIDGE", BRMX_bridge_error());
 	}
-	return Py_BuildValue("(ss)", status_name(bridge.get_status()), bridge.status_text());
+	return Py_BuildValue("(ss)", status_name(B->get_status()), B->status_text());
 }
 
 PyDoc_STRVAR(brmx_bridge_info_doc,
@@ -172,15 +82,15 @@ PyDoc_STRVAR(brmx_bridge_info_doc,
 static PyObject *brmx_bridge_info(PyObject *UNUSED_self)
 {
 	const int ok = bridge_ensure();
-	PyObject *path = PyUnicode_FromWideChar(bridge.path, -1);
+	PyObject *path = PyUnicode_FromWideChar(BRMX_bridge_path(), -1);
 	PyObject *d = Py_BuildValue(
 	        "{s:O,s:s,s:N,s:i,s:s,s:s}",
 	        "loaded", ok ? Py_True : Py_False,
-	        "error", ok ? "" : bridge.error,
+	        "error", ok ? "" : BRMX_bridge_error(),
 	        "path", path,
-	        "interface", ok ? bridge.abi_version() : 0,
-	        "api_version", ok ? bridge.api_version() : "",
-	        "log_path", ok ? bridge.log_path() : "");
+	        "interface", ok ? B->abi_version() : 0,
+	        "api_version", ok ? B->api_version() : "",
+	        "log_path", ok ? B->log_path() : "");
 	return d;
 }
 
@@ -216,7 +126,7 @@ static PyObject *brmx_load(PyObject *UNUSED_self, PyObject *args)
 	if (dir == NULL) {
 		return NULL;
 	}
-	bridge.load(dir);
+	B->load(dir);
 	PyMem_Free(dir);
 	return status_tuple();
 }
@@ -236,7 +146,7 @@ static PyObject *brmx_startup(PyObject *UNUSED_self, PyObject *args, PyObject *k
 		return NULL;
 	}
 	if (bridge_ensure()) {
-		bridge.startup(width, height, visible);
+		B->startup(width, height, visible);
 	}
 	return status_tuple();
 }
@@ -257,7 +167,7 @@ static PyObject *brmx_set_config(PyObject *UNUSED_self, PyObject *args)
 	if (!bridge_ensure()) {
 		return PyLong_FromLong(-1);
 	}
-	return PyLong_FromLong(bridge.set_config(key, value));
+	return PyLong_FromLong(B->set_config(key, value));
 }
 
 PyDoc_STRVAR(brmx_triangle_test_doc,
@@ -285,7 +195,7 @@ static PyObject *brmx_triangle_test(PyObject *UNUSED_self, PyObject *args, PyObj
 	}
 	memset(&r, 0, sizeof(r));
 	if (!bridge_ensure()) {
-		PyErr_SetString(PyExc_RuntimeError, bridge.error);
+		PyErr_SetString(PyExc_RuntimeError, BRMX_bridge_error());
 		return NULL;
 	}
 	if (shot_obj) {
@@ -295,7 +205,7 @@ static PyObject *brmx_triangle_test(PyObject *UNUSED_self, PyObject *args, PyObj
 		}
 	}
 	Py_BEGIN_ALLOW_THREADS
-	rc = bridge.triangle_test(seconds, shot, capture, &r);
+	rc = B->triangle_test(seconds, shot, capture, &r);
 	Py_END_ALLOW_THREADS
 	if (shot) {
 		PyMem_Free(shot);
@@ -312,6 +222,22 @@ static PyObject *brmx_triangle_test(PyObject *UNUSED_self, PyObject *args, PyObj
 	        "screenshot_saved", r.screenshot_saved ? Py_True : Py_False,
 	        "capture_requested", r.capture_requested ? Py_True : Py_False,
 	        "last_error", r.last_error);
+}
+
+PyDoc_STRVAR(brmx_runtime_dir_doc,
+".. function:: runtime_dir()\n"
+"\n"
+"   The runtime folder as the game engine finds it (environment variable,\n"
+"   settings.json, default), so Python and C can be checked against each other.\n"
+"\n"
+"   :rtype: str\n");
+static PyObject *brmx_runtime_dir(PyObject *UNUSED_self)
+{
+	wchar_t dir[MAX_PATH * 2];
+	if (!BRMX_runtime_dir(dir, (int)(sizeof(dir) / sizeof(dir[0])))) {
+		Py_RETURN_NONE;
+	}
+	return PyUnicode_FromWideChar(dir, -1);
 }
 
 PyDoc_STRVAR(brmx_shutdown_doc,
@@ -331,6 +257,7 @@ static PyMethodDef brmx_methods[] = {
 	{"startup", (PyCFunction)brmx_startup, METH_VARARGS | METH_KEYWORDS, brmx_startup_doc},
 	{"set_config", (PyCFunction)brmx_set_config, METH_VARARGS, brmx_set_config_doc},
 	{"triangle_test", (PyCFunction)brmx_triangle_test, METH_VARARGS | METH_KEYWORDS, brmx_triangle_test_doc},
+	{"runtime_dir", (PyCFunction)brmx_runtime_dir, METH_NOARGS, brmx_runtime_dir_doc},
 	{"shutdown", (PyCFunction)brmx_shutdown, METH_NOARGS, brmx_shutdown_doc},
 	{NULL, NULL, 0, NULL}
 };

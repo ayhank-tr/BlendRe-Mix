@@ -560,3 +560,13 @@ void RAS_2DFilterManager::EnableFilter(vector<STR_String>& propNames, void* game
 	AnalyseShader(pass, propNames);
 	m_enabled[pass] = 1;
 }
+
+bool RAS_2DFilterManager::HasActiveFilters() const
+{
+	for (int i = 0; i < MAX_RENDER_PASS; i++) {
+		if (m_filters[i] && m_enabled[i]) {
+			return true;
+		}
+	}
+	return false;
+}

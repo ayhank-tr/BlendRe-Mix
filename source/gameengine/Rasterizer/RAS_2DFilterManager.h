@@ -104,6 +104,9 @@ public:
 
 	void RenderFilters(RAS_ICanvas* canvas);
 
+	/* BGE-Remix: true when a filter would run */
+	bool HasActiveFilters() const;
+
 	void EnableFilter(std::vector<STR_String>& propNames, void* gameObj, RAS_2DFILTER_MODE mode, int pass, STR_String& text);
 
 
