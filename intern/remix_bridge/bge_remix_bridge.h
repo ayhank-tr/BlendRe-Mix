@@ -49,8 +49,9 @@ extern "C" {
 
 /* Bumped whenever a function below changes; Blender refuses a bridge DLL
  * with another value instead of calling into it.
- * 1: P1 (load, start, triangle test). 2: P2 (scene interface, copy and window modes). */
-#define BRB_ABI_VERSION 2
+ * 1: P1 (load, start, triangle test). 2: P2 (scene interface, copy and window modes).
+ * 3: P3 (textures, glass, subsurface, alpha test). */
+#define BRB_ABI_VERSION 3
 
 typedef enum brb_status {
 	BRB_STATUS_NOT_LOADED = 0,           /* nothing tried yet */
@@ -128,15 +129,42 @@ typedef struct brb_vertex {
 	uint32_t color;
 } brb_vertex;
 
+typedef enum brb_material_type {
+	BRB_MATERIAL_OPAQUE = 0,      /* Remix's opaque PBR material (also see-through by opacity) */
+	BRB_MATERIAL_TRANSLUCENT = 1, /* glass: refracts, tinted by transmittance */
+} brb_material_type;
+
 typedef struct brb_material_desc {
 	uint64_t hash;               /* identifies the material; never 0 */
-	float albedo[3];             /* linear */
+	float albedo[3];             /* linear; ignored where albedo_texture is set */
 	float opacity;               /* 1 = opaque */
 	float roughness;             /* 0..1, perceptual */
 	float metallic;
 	float emissive[3];           /* linear colour of the light the surface gives off */
 	float emissive_intensity;    /* 0 = not emissive */
-	int alpha_blend;             /* 1: blend by opacity */
+	int alpha_blend;             /* 1: blend by opacity (and the albedo texture's alpha) */
+
+	/* interface 3 (P3) */
+	int type;                    /* brb_material_type */
+	int alpha_test;              /* 1: cut out where alpha <= alpha_cutoff (no blending) */
+	float alpha_cutoff;          /* 0..1 */
+	/* DDS files (brb_texture_write); NULL or "" = none. Remix keeps the path. */
+	const wchar_t *albedo_texture;    /* sRGB colour, alpha = opacity */
+	const wchar_t *normal_texture;    /* BRB_TEXTURE_NORMAL */
+	const wchar_t *roughness_texture; /* BRB_TEXTURE_SCALAR */
+	const wchar_t *metallic_texture;  /* BRB_TEXTURE_SCALAR */
+	const wchar_t *emissive_texture;  /* sRGB colour, times emissive_intensity */
+	int filter_nearest;          /* 1: no texture filtering (pixel art) */
+	int clamp;                   /* 1: textures clamp at the edge instead of repeating */
+	/* BRB_MATERIAL_TRANSLUCENT */
+	float ior;                   /* refractive index, e.g. 1.5 */
+	float transmittance[3];      /* colour after transmittance_distance of glass */
+	float transmittance_distance;/* Blender units */
+	int thin_walled;             /* 1: a thin shell (no refraction offset) */
+	/* subsurface scattering (BRB_MATERIAL_OPAQUE) */
+	int subsurface;              /* 1: on */
+	float subsurface_color[3];   /* single-scattering albedo, linear */
+	float subsurface_radius[3];  /* mean free path per channel, Blender units */
 } brb_material_desc;
 
 typedef struct brb_surface_desc {
@@ -237,6 +265,60 @@ BRB_API int brb_save_bmp(const wchar_t *path);
 
 BRB_API void brb_get_stats(brb_frame_stats *r_stats);
 BRB_API void brb_reset_stats(void);
+
+/* ------------------------------------------------------------------------- */
+/* Interface version 3: textures (P3)
+ *
+ * Remix loads material textures only as DDS files. These calls write one,
+ * with a full mip chain, in the format Remix expects for its kind. They do
+ * not need Remix to be running (only the bridge loaded). */
+
+typedef enum brb_texture_kind {
+	BRB_TEXTURE_COLOR = 0,   /* sRGB colour + alpha -> BC7 (sRGB) */
+	BRB_TEXTURE_NORMAL = 1,  /* tangent-space normal map as Blender uses it (OpenGL, RGB) -> octahedral BC5 */
+	BRB_TEXTURE_SCALAR = 2,  /* one channel (roughness, metallic...) -> BC4 */
+	BRB_TEXTURE_HDR = 3,     /* linear colour beyond 1 -> BC6H */
+} brb_texture_kind;
+
+#define BRB_TEXTURE_NO_GPU 1 /* compress on the CPU even when a GPU is there */
+#define BRB_TEXTURE_LINEAR 2 /* COLOR: the data is linear, not sRGB */
+#define BRB_TEXTURE_INVERT 4 /* SCALAR: store 1 - value */
+
+typedef struct brb_texture_desc {
+	const wchar_t *path;         /* the .dds to write; its folder must exist */
+	int kind;                    /* brb_texture_kind */
+	int width, height;
+	/* One of the two, width * height * 4 values, rows from the bottom
+	 * (as Blender stores images): */
+	const unsigned char *rgba8;  /* 8-bit RGBA (sRGB for colour) */
+	const float *rgbaf;          /* float RGBA, linear */
+	int channel;                 /* SCALAR: the channel to keep, 0 = R .. 3 = A */
+	int flags;                   /* BRB_TEXTURE_* */
+} brb_texture_desc;
+
+typedef struct brb_texture_result {
+	int state;                   /* 0 waiting, 1 written, -1 failed */
+	int gpu;                     /* 1: compressed on the GPU */
+	int dxgi_format;             /* the DDS file's DXGI_FORMAT */
+	int mips;
+	double seconds;              /* encoding time */
+	char error[128];
+} brb_texture_result;
+
+/* Write the DDS now. Returns 0 on success (r_result may be NULL). */
+BRB_API int brb_texture_write(const brb_texture_desc *desc, brb_texture_result *r_result);
+
+/* Copy the pixels and write the DDS on the bridge's encoder thread, one job
+ * after the other. Returns a ticket (> 0), or 0 if the job was refused. The
+ * file appears complete or not at all. */
+BRB_API int brb_texture_submit(const brb_texture_desc *desc);
+
+/* The state of a submitted job (brb_texture_result.state; -2: unknown
+ * ticket). A finished job is forgotten after it has been polled once. */
+BRB_API int brb_texture_poll(int ticket, brb_texture_result *r_result);
+
+/* Jobs waiting or being encoded. */
+BRB_API int brb_texture_pending(void);
 
 #ifdef __cplusplus
 }

@@ -11,12 +11,18 @@
 # C++17 inside, a plain C interface outside (bge_remix_bridge.h), so the rest
 # of Blender stays C/C++11. Installed next to blender.exe.
 
+# RTX Remix needs Windows 10, and DirectXTex's header Windows 8+ (Blender
+# itself targets Vista)
+remove_definitions(-D_WIN32_WINNT=0x600)
+add_definitions(-D_WIN32_WINNT=0x0A00)
+
 add_library(bge_remix_bridge SHARED
 	bridge.cpp
 	bridge_device.cpp
 	bridge_load.cpp
 	bridge_scene.cpp
 	bridge_startup.cpp
+	bridge_texture.cpp
 	bridge_triangle.cpp
 
 	bge_remix_bridge.h
@@ -28,7 +34,7 @@ target_include_directories(bge_remix_bridge PRIVATE
 	${CMAKE_SOURCE_DIR}/extern/remix_sdk
 )
 
-target_link_libraries(bge_remix_bridge user32 gdi32)
+target_link_libraries(bge_remix_bridge user32 gdi32 extern_directxtex)
 
 if(MSVC)
 	# /EHs /EHc-: C++ exceptions may come out of extern "C" functions. Remix's

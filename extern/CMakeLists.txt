@@ -113,3 +113,8 @@ endif()
 if(WITH_SDL AND WITH_SDL_DYNLOAD)
 	add_subdirectory(sdlew)
 endif()
+
+# BGE-Remix: the bridge's DDS writer
+if(WITH_REMIX AND WIN32)
+	add_subdirectory(directxtex)
+endif()
