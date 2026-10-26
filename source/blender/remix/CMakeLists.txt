@@ -7,8 +7,11 @@
 #
 # ***** END GPL LICENSE BLOCK *****
 
-# BGE-Remix, Blender side: the "_bge_remix" Python module, which loads
-# bge_remix_bridge.dll on first use.
+# BGE-Remix, Blender side.
+#   bf_remix_loader: loads bge_remix_bridge.dll on first use and finds the
+#                    Remix runtime; no Python, linked into blender and
+#                    blenderplayer (the game engine uses it).
+#   bf_remix:        the "_bge_remix" Python module (blender only).
 
 set(INC
 	.
@@ -20,13 +23,26 @@ set(INC
 )
 
 set(INC_SYS
-	${PYTHON_INCLUDE_DIRS}
 )
 
 set(SRC
-	intern/remix_python.c
+	intern/remix_loader.c
 
-	BRMX_remix.h
+	BRMX_loader.h
 )
 
-blender_add_lib(bf_remix "${SRC}" "${INC}" "${INC_SYS}")
+blender_add_lib(bf_remix_loader "${SRC}" "${INC}" "${INC_SYS}")
+
+if(WITH_PYTHON)
+	set(INC_SYS
+		${PYTHON_INCLUDE_DIRS}
+	)
+
+	set(SRC
+		intern/remix_python.c
+
+		BRMX_remix.h
+	)
+
+	blender_add_lib(bf_remix "${SRC}" "${INC}" "${INC_SYS}")
+endif()

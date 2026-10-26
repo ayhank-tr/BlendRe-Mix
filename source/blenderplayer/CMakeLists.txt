@@ -232,6 +232,11 @@ endif()
 		list(APPEND BLENDER_SORTED_LIBS bf_alembic)
 	endif()
 
+	# BGE-Remix: the bridge loader (the bridge DLL itself is loaded at run time)
+	if(WITH_REMIX)
+		list(APPEND BLENDER_SORTED_LIBS bf_remix_loader)
+	endif()
+
 	foreach(SORTLIB ${BLENDER_SORTED_LIBS})
 		set(REMLIB ${SORTLIB})
 		foreach(SEARCHLIB ${BLENDER_LINK_LIBS})
