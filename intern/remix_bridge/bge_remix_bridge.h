@@ -221,7 +221,9 @@ BRB_API void brb_scene_clear(void);
  * them; model is the object's OpenGL matrix. */
 BRB_API int brb_frame_begin(void);
 BRB_API int brb_frame_camera(const float view[16], const float proj[16]);
-BRB_API int brb_frame_draw(uint64_t mesh, const float model[16], int double_sided);
+#define BRB_DRAW_DOUBLE_SIDED 1 /* no back-face culling */
+#define BRB_DRAW_BLEND 2        /* the mesh has see-through (alpha blended) surfaces */
+BRB_API int brb_frame_draw(uint64_t mesh, const float model[16], int flags);
 BRB_API int brb_frame_light(uint64_t light);
 BRB_API int brb_frame_end(void);
 

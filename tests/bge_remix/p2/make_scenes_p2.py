@@ -85,7 +85,7 @@ if frames >= max_frames and elapsed >= seconds:
 '''
 
 
-LIGHT_SCALES = (0.25, 0.0625, 0.015625)
+LIGHT_SCALES = (0.5, 0.25, 0.125)
 
 
 def scale_tag(scale):

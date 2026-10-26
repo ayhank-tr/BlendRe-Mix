@@ -60,6 +60,7 @@ uintptr_t g_next_handle = 0x1000;
 IDirect3D9Ex *g_d3d = nullptr;
 IDirect3DDevice9Ex *g_dev = nullptr;
 int g_frame_draws = 0;
+int g_frame_blended = 0;
 int g_frame_lights = 0;
 int g_copies = 0;
 bool g_camera_new = false;
@@ -258,6 +259,11 @@ remixapi_ErrorCode REMIXAPI_CALL m_DrawInstance(const remixapi_InstanceInfo *inf
 		return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
 	}
 	g_frame_draws++;
+	if (const remixapi_InstanceInfoBlendEXT *b = find_ext<remixapi_InstanceInfoBlendEXT>(
+	        info->pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BLEND_EXT))
+	{
+		g_frame_blended += b->alphaBlendEnabled ? 1 : 0;
+	}
 	return REMIXAPI_ERROR_CODE_SUCCESS;
 }
 
@@ -335,8 +341,9 @@ remixapi_ErrorCode REMIXAPI_CALL m_Present(const remixapi_PresentInfo *)
 		memcpy(g_camera_logged, g_camera, sizeof(g_camera));
 	}
 	g_camera_new = false;
-	mlog("Present draws=%d lights=%d", g_frame_draws, g_frame_lights);
+	mlog("Present draws=%d lights=%d blended=%d", g_frame_draws, g_frame_lights, g_frame_blended);
 	g_frame_draws = 0;
+	g_frame_blended = 0;
 	g_frame_lights = 0;
 	return REMIXAPI_ERROR_CODE_SUCCESS;
 }

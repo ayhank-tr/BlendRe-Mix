@@ -104,6 +104,7 @@ private:
 		int polygons;      /* to notice a different mesh at a reused address */
 		std::string name;
 		bool double_sided;
+		bool blend;        /* has alpha-blended surfaces */
 	};
 	struct MaterialEntry {
 		uint64_t hash;

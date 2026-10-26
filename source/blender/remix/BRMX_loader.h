@@ -67,7 +67,7 @@ typedef struct BRMX_Bridge {
 	void (*scene_clear)(void);
 	int (*frame_begin)(void);
 	int (*frame_camera)(const float view[16], const float proj[16]);
-	int (*frame_draw)(uint64_t mesh, const float model[16], int double_sided);
+	int (*frame_draw)(uint64_t mesh, const float model[16], int flags);
 	int (*frame_light)(uint64_t light);
 	int (*frame_end)(void);
 	const void *(*frame_pixels)(int *r_width, int *r_height, int *r_pitch);

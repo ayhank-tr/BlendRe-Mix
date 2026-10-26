@@ -382,7 +382,7 @@ BRB_API int brb_frame_camera(const float view[16], const float proj[16])
 	return track(guarded("SetupCamera", [&] { return g_remix.SetupCamera(&info); }));
 }
 
-BRB_API int brb_frame_draw(uint64_t mesh, const float model[16], int double_sided)
+BRB_API int brb_frame_draw(uint64_t mesh, const float model[16], int flags)
 {
 	if (!running() || !model) {
 		return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
@@ -400,7 +400,23 @@ BRB_API int brb_frame_draw(uint64_t mesh, const float model[16], int double_side
 			inst.transform.matrix[r][c] = model[c * 4 + r];
 		}
 	}
-	inst.doubleSided = double_sided ? TRUE : FALSE;
+	inst.doubleSided = (flags & BRB_DRAW_DOUBLE_SIDED) ? TRUE : FALSE;
+	/* Remix traces surfaces as fully opaque unless the instance's draw state
+	 * blends (the material's own blend type and opacity then apply) */
+	remixapi_InstanceInfoBlendEXT blend = {};
+	if (flags & BRB_DRAW_BLEND) {
+		blend.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BLEND_EXT;
+		blend.alphaBlendEnabled = TRUE;
+		blend.srcColorBlendFactor = 6;  /* VK_BLEND_FACTOR_SRC_ALPHA */
+		blend.dstColorBlendFactor = 7;  /* VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA */
+		blend.colorBlendOp = 0;         /* VK_BLEND_OP_ADD */
+		blend.srcAlphaBlendFactor = 1;  /* VK_BLEND_FACTOR_ONE */
+		blend.dstAlphaBlendFactor = 0;  /* VK_BLEND_FACTOR_ZERO */
+		blend.alphaBlendOp = 0;
+		blend.writeMask = 0xF;
+		blend.tFactor = 0xFFFFFFFFu;
+		inst.pNext = &blend;
+	}
 	g_frame_draws++;
 	return track(guarded("DrawInstance", [&] { return g_remix.DrawInstance(&inst); }));
 }

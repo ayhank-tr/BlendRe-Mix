@@ -583,6 +583,7 @@ bool KX_RemixRenderer::EnsureMesh(KX_Scene *scene, RAS_MeshObject *mesh, MeshEnt
 	std::vector<std::vector<uint32_t> > indices;
 	std::vector<uint64_t> materials;
 	bool double_sided = false;
+	bool blend = false;
 
 	for (std::list<RAS_MeshMaterial>::iterator mit = mesh->GetFirstMaterial(); mit != mesh->GetLastMaterial(); ++mit) {
 		RAS_MeshSlot *slot = mit->m_baseslot;
@@ -638,6 +639,11 @@ bool KX_RemixRenderer::EnsureMesh(KX_Scene *scene, RAS_MeshObject *mesh, MeshEnt
 		if (!ma || !(ma->game.flag & GEMAT_BACKCULL)) {
 			double_sided = true;
 		}
+		if (ma && (ma->game.alpha_blend == GEMAT_ALPHA || ma->game.alpha_blend == GEMAT_ALPHA_SORT ||
+		           ma->game.alpha_blend == GEMAT_ADD))
+		{
+			blend = true;
+		}
 		materials.push_back(EnsureMaterial(scene, pm));
 		verts.push_back(v);
 		indices.push_back(idx);
@@ -649,6 +655,7 @@ bool KX_RemixRenderer::EnsureMesh(KX_Scene *scene, RAS_MeshObject *mesh, MeshEnt
 	e.polygons = polygons;
 	e.name = name;
 	e.double_sided = double_sided;
+	e.blend = blend;
 
 	std::vector<brb_surface_desc> surfaces(verts.size());
 	for (size_t s = 0; s < verts.size(); s++) {
@@ -729,12 +736,12 @@ void KX_RemixRenderer::UpdateLights(KX_Scene *scene, float light_scale)
 		float scale = 1.0f;
 
 		if (type == LA_SUN) {
-			/* irradiance pi * E from a disc of the given angular diameter */
+			/* Remix's distant light "radiance" is the irradiance it gives (as
+			 * Remix converts D3D9 sun lights): pi * E. Dividing by the sun's
+			 * solid angle burnt the sunlit floor out (RTX 3080, P2 room). */
 			d.type = BRB_LIGHT_DISTANT;
 			d.angular_diameter_deg = SUN_ANGULAR_DIAMETER_DEG;
-			const double half = (double)SUN_ANGULAR_DIAMETER_DEG * PI / 360.0;
-			const double solid_angle = 2.0 * PI * (1.0 - std::cos(half));
-			scale = (float)(PI * energy / solid_angle);
+			scale = (float)(PI * energy);
 		}
 		else if (type == LA_AREA && la) {
 			d.type = BRB_LIGHT_RECT;
@@ -838,7 +845,8 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 				object_matrix(obj, model);
 				have_matrix = true;
 			}
-			m_bridge->frame_draw(e->hash, model, e->double_sided ? 1 : 0);
+			m_bridge->frame_draw(e->hash, model, (e->double_sided ? BRB_DRAW_DOUBLE_SIDED : 0) |
+			                                     (e->blend ? BRB_DRAW_BLEND : 0));
 			draws++;
 		}
 	}

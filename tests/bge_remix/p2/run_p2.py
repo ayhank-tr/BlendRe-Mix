@@ -265,6 +265,11 @@ def check_materials(lines, expected):
         else:
             ok = ok and f.get("intensity") == 0
         checks["%s: colour, alpha, emit" % e["name"]] = ok
+    # the see-through box is drawn as blended, nothing else is
+    presents = [parse_fields(l) for l in lines if l.startswith("Present")]
+    want = sum(1 for e in expected["materials"] if e["blend"])
+    checks["%d see-through object(s) drawn blended in every frame" % want] = bool(presents) and all(
+        p.get("blended") == want for p in presents)
     return checks, detail
 
 
@@ -695,7 +700,7 @@ def run_c1(args, out, room, timed):
     return {"captures": caps, "mesh_files": meshes, "exit": r["exit"], "skipped": False}
 
 
-LIGHT_SCALES = (0.25, 0.0625, 0.015625)
+LIGHT_SCALES = (0.5, 0.25, 0.125)
 
 
 def contact_sheet(items, target):
