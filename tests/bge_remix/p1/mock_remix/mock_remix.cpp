@@ -12,6 +12,10 @@
  *   throw         InitializeLibrary throws a C++ exception, as the real
  *                 runtime does for some failures
  *
+ * Like the real runtime, Startup hooks the window procedure and Shutdown does
+ * not restore it. A message reaching the hook after Shutdown is logged as
+ * "WndProc after Shutdown" (where the real runtime crashes).
+ *
  * Runtime layout: when a d3d9_x64.dll lies next to this d3d9.dll, this DLL
  * acts like Remix's real shim: it loads d3d9_x64.dll with a plain
  * LoadLibraryW (a C++ exception if that fails) and forwards to it. The
@@ -39,6 +43,8 @@ extern "C" __declspec(dllimport) int remixdep_ping(void);
 namespace {
 
 char g_mode[32] = "ok";
+bool g_shut = false;
+WNDPROC g_prev_proc = nullptr;
 uintptr_t g_next_handle = 0x1000;
 
 void mlog(const char *fmt, ...)
@@ -65,11 +71,25 @@ template<typename T> T handle()
 	return reinterpret_cast<T>(g_next_handle);
 }
 
+LRESULT CALLBACK mock_window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+{
+	if (g_shut) {
+		mlog("WndProc after Shutdown msg=0x%04x", msg);
+	}
+	return CallWindowProcW(g_prev_proc, hwnd, msg, wparam, lparam);
+}
+
 remixapi_ErrorCode REMIXAPI_CALL m_Startup(const remixapi_StartupInfo *info)
 {
 	const int valid = (info && info->sType == REMIXAPI_STRUCT_TYPE_STARTUP_INFO && IsWindow(info->hwnd)) ? 1 : 0;
 	mlog("Startup hwnd_valid=%d", valid);
+	if (valid) {
+		/* hook the window, like the real runtime (also before a failed start) */
+		g_prev_proc = (WNDPROC)SetWindowLongPtrW(info->hwnd, GWLP_WNDPROC, (LONG_PTR)mock_window_proc);
+		g_shut = false;
+	}
 	if (strcmp(g_mode, "startup_fail") == 0) {
+		g_shut = true;
 		return REMIXAPI_ERROR_CODE_HRESULT_DRIVER_VERSION_BELOW_MINIMUM;
 	}
 	return valid ? REMIXAPI_ERROR_CODE_SUCCESS : REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
@@ -78,6 +98,7 @@ remixapi_ErrorCode REMIXAPI_CALL m_Startup(const remixapi_StartupInfo *info)
 remixapi_ErrorCode REMIXAPI_CALL m_Shutdown(void)
 {
 	mlog("Shutdown");
+	g_shut = true; /* the hook stays, as with the real runtime */
 	return REMIXAPI_ERROR_CODE_SUCCESS;
 }
 

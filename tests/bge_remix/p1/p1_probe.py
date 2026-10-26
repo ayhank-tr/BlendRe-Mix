@@ -253,17 +253,30 @@ def case_rtx():
         return
     first = _bge_remix.triangle_test(0.0, "", False)  # one frame: first frame time
     t_first = time.time()
+
+    # The first start compiles Remix's shaders and shows nothing meanwhile
+    # (RTX 3080, first run). Draw until a picture appears, at most 5 minutes.
+    shot = os.path.splitext(OUT)[0] + ".bmp"
+    warm = os.path.splitext(OUT)[0] + "_warmup.bmp"
+    picture_s = None
+    while time.time() - t_first < 300:
+        _bge_remix.triangle_test(1.0, warm, False)
+        if bge_remix.has_picture(warm):
+            picture_s = round(time.time() - t0, 1)
+            break
     result["B1.2"] = {"load_s": round(t_load - t0, 3), "startup_s": round(t_start - t_load, 3),
                       "first_frame_s": round(t_first - t_start, 3), "total_s": round(t_first - t0, 3),
-                      "first_frames": first["frames"]}
+                      "first_frames": first["frames"], "first_picture_s": picture_s,
+                      "warmup_stats": bge_remix.bmp_stats(warm)}
+    check("a picture appears", picture_s is not None, result["B1.2"])
     result["vram_after_startup_mb"] = _vram_mb()
 
-    shot = os.path.splitext(OUT)[0] + ".bmp"
     since = time.time()
     r = _bge_remix.triangle_test(6.0, shot, True)
     result["T1.1"] = r
     check("T1.1 frames without errors", r["ok"] and r["frames"] > 30, r)
     check("T1.1 screenshot saved", r["screenshot_saved"], shot)
+    check("T1.1 screenshot shows a picture", bge_remix.has_picture(shot), bge_remix.bmp_stats(shot))
 
     # B1.3: frame time at 1080p over at least 300 frames
     r3 = _bge_remix.triangle_test(max(5.0, 300 * r["frame_ms_median"] / 1000.0 + 1.0), "", False)
@@ -280,6 +293,10 @@ def case_rtx():
             meshes += os.listdir(mdir)
     result["C1"] = {"captures": caps, "mesh_files": len(meshes)}
     # C1 is recorded, not required: its result decides how P6 captures.
+    # Shut down here, so a crash at shutdown shows up in this test's exit code
+    # and in the log instead of after the results are written.
+    bge_remix.shutdown()
+    result["shutdown"] = bge_remix.status()
 
 
 CASES = {

@@ -127,12 +127,14 @@ def t14_check(seq, log_lines):
     config = {l[len("Config "):] for l in log_lines if l.startswith("Config ")}
     presents = sum(1 for l in log_lines if l == "Present")
     shutdowns = [i for i, l in enumerate(log_lines) if l == "Shutdown"]
+    after = [l for l in log_lines if l.startswith("WndProc after Shutdown")]
     frames = (seq.get("triangle") or {}).get("frames", -1)
     checks = {
         "one Startup with a real window": starts == ["Startup hwnd_valid=1"],
         "exactly the four config values": config == EXPECTED_CONFIG,
         "one Present per frame": presents == frames and frames > 0,
         "one Shutdown, at Blender's exit": len(shutdowns) == 1 and shutdowns[0] == len(log_lines) - 1,
+        "no window message reaches Remix after Shutdown": not after,
     }
     return {"checks": checks, "presents": presents, "frames": frames, "config": sorted(config),
             "ok": all(checks.values())}
@@ -185,12 +187,16 @@ def run_ci(args, out):
 
     log = os.path.join(out, "mock_startup_fail.log")
     res["T1.5"] = probe(args.ours, out, "startup_fail", mock_env(mock, "startup_fail", log))
+    res["T1.5"]["messages_after_failed_start"] = [l for l in read_lines(log) if l.startswith("WndProc after")]
+    res["T1.5"]["ok"] = res["T1.5"]["ok"] and not res["T1.5"]["messages_after_failed_start"]
 
     log = os.path.join(out, "mock_throw.log")
     res["T1.3b"] = probe(args.ours, out, "throw", mock_env(mock, "throw", log))
 
     log = os.path.join(out, "mock_shim_layout.log")
     res["T1.3c"] = probe(args.ours, out, "shim_layout", mock_env(os.path.abspath(args.mock_shim), "ok", log))
+    res["T1.3c"]["messages_after_shutdown"] = [l for l in read_lines(log) if l.startswith("WndProc after")]
+    res["T1.3c"]["ok"] = res["T1.3c"]["ok"] and not res["T1.3c"]["messages_after_shutdown"]
 
     res["T1.6"] = probe(args.ours, out, "installer", {}, [os.path.join(mock, "d3d9.dll")])
 
@@ -269,6 +275,9 @@ def run_rtx(args, out):
     lines += ["", "Benchmarks", "-" * 10]
     lines.append("B1.2 Remix load / startup / first frame   %s / %s / %s s (total %s s)" % (
         b12.get("load_s"), b12.get("startup_s"), b12.get("first_frame_s"), b12.get("total_s")))
+    lines.append("     first picture after               %s s (long on the very first start: shaders)" % (
+        b12.get("first_picture_s"),))
+    lines.append("     Blender exit code                  %s (0 = clean shutdown)" % rtx.get("exit"))
     lines.append("B1.3 Triangle at 1080p, %s frames         median %s ms, 95th pct %s ms" % (
         b13.get("frames"), _r(b13.get("frame_ms_median")), _r(b13.get("frame_ms_p95"))))
     lines.append("     VRAM before / after startup / after test   %s / %s / %s MB" % (
