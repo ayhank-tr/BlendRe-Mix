@@ -504,6 +504,11 @@ class USERPREF_PT_system(Panel):
             col.label(text="OpenSubdiv compute:")
             col.row().prop(system, "opensubdiv_compute_type", text="")
 
+        # BGE-Remix
+        col.separator()
+        import bge_remix.ui
+        bge_remix.ui.draw_preferences(col, context)
+
         # 2. Column
         column = split.column()
         colsplit = column.split(percentage=0.85)
