@@ -609,6 +609,8 @@ public:
 	 */
 	void Update2DFilter(std::vector<STR_String>& propNames, void* gameObj, RAS_2DFilterManager::RAS_2DFILTER_MODE filtermode, int pass, STR_String& text);
 	void Render2DFilters(RAS_ICanvas* canvas);
+	/* BGE-Remix */
+	bool Has2DFilters() const { return m_filtermanager.HasActiveFilters(); }
 
 	KX_ObstacleSimulation* GetObstacleSimulation() { return m_obstacleSimulation; }
 

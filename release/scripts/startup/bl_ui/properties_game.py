@@ -409,6 +409,61 @@ class RENDER_PT_game_shading(RenderButtonsPanel, Panel):
             col.prop(gs, "use_glsl_extra_textures", text="Extra Textures")
 
 
+class RENDER_PT_game_remix(RenderButtonsPanel, Panel):
+    """BGE-Remix: render the game through NVIDIA RTX Remix (path tracing).
+
+    The settings are custom properties of the scene (bge_remix,
+    bge_remix_fast, bge_remix_light_scale), which stock Blender 2.79b
+    keeps and ignores."""
+    bl_label = "Rasterizer"
+    COMPAT_ENGINES = {'BLENDER_GAME'}
+
+    @classmethod
+    def register(cls):
+        from bpy.props import BoolProperty, EnumProperty, FloatProperty
+        bpy.types.Scene.bge_remix = EnumProperty(
+            name="Rasterizer",
+            description="How the game engine draws this scene",
+            items=(('OPENGL', "OpenGL", "Blender's own game engine drawing", 0),
+                   ('RTX_REMIX', "RTX Remix", "Path traced by NVIDIA RTX Remix (needs an RTX card "
+                    "and the runtime from Preferences > System)", 1)),
+            default='OPENGL')
+        bpy.types.Scene.bge_remix_fast = BoolProperty(
+            name="Window Mode",
+            description="Standalone player only: Remix shows its picture in a window of its own over the "
+                        "game, without copying it (faster, but no text or overlays on top)",
+            default=False)
+        bpy.types.Scene.bge_remix_light_scale = FloatProperty(
+            name="Light Scale",
+            description="Brightness factor for lamps under RTX Remix",
+            default=1.0, min=0.0, soft_max=100.0)
+
+    @classmethod
+    def unregister(cls):
+        for name in ("bge_remix", "bge_remix_fast", "bge_remix_light_scale"):
+            if hasattr(bpy.types.Scene, name):
+                delattr(bpy.types.Scene, name)
+
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+        layout.row().prop(scene, "bge_remix", expand=True)
+        if scene.bge_remix != 'RTX_REMIX':
+            return
+        col = layout.column()
+        col.prop(scene, "bge_remix_light_scale")
+        col.prop(scene, "bge_remix_fast")
+        try:
+            import bge_remix
+            ok = bge_remix.available() and bge_remix.installed()
+        except Exception:
+            ok = False
+        if not ok:
+            layout.label("RTX Remix is not installed: Preferences > System > RTX Remix", icon='ERROR')
+        else:
+            layout.label("Textures, 2D filters and 3D text: OpenGL only for now", icon='INFO')
+
+
 class RENDER_PT_game_system(RenderButtonsPanel, Panel):
     bl_label = "System"
     COMPAT_ENGINES = {'BLENDER_GAME'}
@@ -860,6 +915,7 @@ classes = (
     RENDER_PT_game_player,
     RENDER_PT_game_stereo,
     RENDER_PT_game_shading,
+    RENDER_PT_game_remix,
     RENDER_PT_game_system,
     RENDER_PT_game_display,
     SCENE_PT_game_physics,

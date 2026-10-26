@@ -77,6 +77,12 @@ private:
 	class KX_ISystem*					m_kxsystem;
 	class KX_ISceneConverter*			m_sceneconverter;
 	class NG_NetworkDeviceInterface*	m_networkdevice;
+	/* BGE-Remix: renders a scene through RTX Remix (WITH_REMIX builds) */
+	class KX_RemixRenderer*				m_remix;
+	class KX_Scene*						m_remixScene; /* this frame's, or NULL */
+	int									m_remixOverride;     /* -g remix: -1 none, 0 off, 1 on */
+	int									m_remixFastOverride; /* -g remix_fast */
+	bool								m_remixWindowModeAllowed;
 #ifdef WITH_PYTHON
 	/* borrowed from sys.modules["__main__"], don't manage ref's */
 	PyObject*					m_pythondictionary;
@@ -248,6 +254,13 @@ public:
 	void			EndDome();
 	void			RenderDome();
 	bool			m_usedome;
+
+	/// BGE-Remix: player options (-g remix, -g remix_fast; -1 = use the scene's setting)
+	void			SetRemixOptions(int enabled, int fast, bool window_mode_allowed);
+	/// BGE-Remix: draw the one-line notice (Remix unavailable, filters off...)
+	void			RenderRemixNotice(const char *text);
+	/// BGE-Remix: tell the Remix renderer a scene goes away
+	void			RemixRemoveScene(KX_Scene *scene);
 
 	///returns true if an update happened to indicate -> Render
 	bool			NextFrame();

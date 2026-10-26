@@ -77,6 +77,10 @@
 
 #include "BL_Action.h" // For managing action lock.
 
+#ifdef WITH_REMIX
+#  include "KX_RemixRenderer.h"
+#endif
+
 #define DEFAULT_LOGIC_TIC_RATE 60.0
 //#define DEFAULT_PHYSICS_TIC_RATE 60.0
 
@@ -171,6 +175,12 @@ KX_KetsjiEngine::KX_KetsjiEngine(KX_ISystem* system)
 
 	m_usedome(false)
 {
+	m_remix = NULL;
+	m_remixScene = NULL;
+	m_remixOverride = -1;
+	m_remixFastOverride = -1;
+	m_remixWindowModeAllowed = false;
+
 	// Initialize the time logger
 	m_logger = new KX_TimeCategoryLogger (25);
 
@@ -193,6 +203,10 @@ KX_KetsjiEngine::KX_KetsjiEngine(KX_ISystem* system)
  */
 KX_KetsjiEngine::~KX_KetsjiEngine()
 {
+#ifdef WITH_REMIX
+	delete m_remix;
+	m_remix = NULL;
+#endif
 	delete m_logger;
 	if (m_usedome)
 		delete m_dome;
@@ -413,6 +427,13 @@ void KX_KetsjiEngine::StartEngine(bool clearIpo)
 
 	m_firstframe = true;
 	m_bInitialized = true;
+
+#ifdef WITH_REMIX
+	/* Remix itself starts only when a scene asks for it */
+	if (m_remix == NULL) {
+		m_remix = new KX_RemixRenderer(m_canvas, m_remixWindowModeAllowed);
+	}
+#endif
 	// there is always one scene enabled at startup
 	Scene* scene = m_scenes[0]->GetBlenderScene();
 	if (scene)
@@ -510,6 +531,13 @@ void KX_KetsjiEngine::EndFrame()
 
 	// Show profiling info
 	m_logger->StartLog(tc_overhead, m_kxsystem->GetTimeInSeconds(), true);
+#ifdef WITH_REMIX
+	if (m_remix) {
+		const char *notice = m_remix->GetNotice(m_kxsystem->GetTimeInSeconds());
+		if (notice)
+			RenderRemixNotice(notice);
+	}
+#endif
 	if (m_show_framerate || m_show_profile || (m_show_debug_properties))
 	{
 		RenderDebugProperties();
@@ -826,6 +854,14 @@ void KX_KetsjiEngine::Render()
 	if (!BeginFrame())
 		return;
 
+	m_remixScene = NULL;
+#ifdef WITH_REMIX
+	if (m_remix && m_rasterizer->GetDrawingMode() == RAS_IRasterizer::KX_TEXTURED) {
+		m_remixScene = m_remix->PickScene(m_scenes, m_rasterizer->Stereo(), m_usedome,
+		                                  m_remixOverride, m_remixFastOverride);
+	}
+#endif
+
 	KX_SceneList::iterator sceneit;
 	for (sceneit = m_scenes.begin();sceneit != m_scenes.end(); sceneit++)
 	// for each scene, call the proceed functions
@@ -838,8 +874,9 @@ void KX_KetsjiEngine::Render()
 		// this is now done incrementally in KX_Scene::CalculateVisibleMeshes
 		//scene->UpdateMeshTransformations();
 
-		// shadow buffers
-		RenderShadowBuffers(scene);
+		// shadow buffers (Remix computes its own shadows)
+		if (scene != m_remixScene)
+			RenderShadowBuffers(scene);
 
 		// Avoid drawing the scene with the active camera twice when its viewport is enabled
 		if (cam && !cam->GetViewport())
@@ -1278,10 +1315,25 @@ void KX_KetsjiEngine::RenderFrame(KX_Scene* scene, KX_Camera* cam)
 	scene->RunDrawingCallbacks(scene->GetPreDrawCB());
 #endif
 
-	scene->RenderBuckets(camtrans, m_rasterizer);
+#ifdef WITH_REMIX
+	if (m_remix && scene == m_remixScene && !cam->GetViewport()) {
+		/* BGE-Remix: the scene goes to Remix, with the matrices used above;
+		 * the picture is drawn into the viewport. 3D text objects follow in P3. */
+		MT_Matrix4x4 remixproj;
+		if (override_camera && m_overrideCamUseOrtho)
+			remixproj.setValue(m_overrideCamProjMat.getPointer());
+		else
+			remixproj = cam->GetProjectionMatrix();
+		m_remix->RenderScene(scene, cam, m_rasterizer->GetViewMatrix(), remixproj, viewport);
+	}
+	else
+#endif
+	{
+		scene->RenderBuckets(camtrans, m_rasterizer);
 
-	// render all the font objects for this scene
-	scene->RenderFonts();
+		// render all the font objects for this scene
+		scene->RenderFonts();
+	}
 
 	if (scene->GetPhysicsEnvironment())
 		scene->GetPhysicsEnvironment()->DebugDrawWorld();
@@ -1298,7 +1350,16 @@ void KX_KetsjiEngine::PostRenderScene(KX_Scene* scene)
 	m_canvas->SetViewPort(0, 0, m_canvas->GetWidth(), m_canvas->GetHeight());
 	
 	m_rasterizer->FlushDebugShapes(scene);
-	scene->Render2DFilters(m_canvas);
+#ifdef WITH_REMIX
+	if (m_remix && scene == m_remixScene && scene->Has2DFilters()) {
+		/* the filters would work on an empty depth buffer */
+		m_remix->NoteSkippedFilters();
+	}
+	else
+#endif
+	{
+		scene->Render2DFilters(m_canvas);
+	}
 
 #ifdef WITH_PYTHON
 	PHY_SetActiveEnvironment(scene->GetPhysicsEnvironment());
@@ -1320,6 +1381,13 @@ void KX_KetsjiEngine::StopEngine()
 //			printf("TestHandlesPhysicsObjectToAnimationIpo\n");
 			m_sceneconverter->TestHandlesPhysicsObjectToAnimationIpo();
 		}
+
+#ifdef WITH_REMIX
+		/* the game's objects leave Remix (which keeps running for the next game) */
+		delete m_remix;
+		m_remix = NULL;
+		m_remixScene = NULL;
+#endif
 
 		KX_SceneList::iterator sceneit;
 		for (sceneit = m_scenes.begin();sceneit != m_scenes.end() ; sceneit++)
@@ -1632,6 +1700,7 @@ void KX_KetsjiEngine::RemoveScheduledScenes()
 				KX_Scene* scene = *sceneit;
 				if (scene->GetName()==scenename)
 				{
+					RemixRemoveScene(scene);
 					m_sceneconverter->RemoveScene(scene);
 					m_scenes.erase(sceneit);
 					break;
@@ -1750,6 +1819,7 @@ void KX_KetsjiEngine::ReplaceScheduledScenes()
 					// avoid crash if the new scene doesn't exist, just do nothing
 					Scene *blScene = m_sceneconverter->GetBlenderSceneForName(newscenename);
 					if (blScene) {
+						RemixRemoveScene(scene);
 						m_sceneconverter->RemoveScene(scene);
 						KX_Scene* tmpscene = CreateScene(blScene);
 						m_scenes[i]=tmpscene;
@@ -2079,3 +2149,31 @@ GlobalSettings* KX_KetsjiEngine::GetGlobalSettings(void)
 	return &m_globalsettings;
 }
 
+
+/* BGE-Remix */
+
+void KX_KetsjiEngine::SetRemixOptions(int enabled, int fast, bool window_mode_allowed)
+{
+	m_remixOverride = enabled;
+	m_remixFastOverride = fast;
+	m_remixWindowModeAllowed = window_mode_allowed;
+}
+
+void KX_KetsjiEngine::RenderRemixNotice(const char *text)
+{
+	m_canvas->SetViewPort(0, 0, int(m_canvas->GetWidth()), int(m_canvas->GetHeight()));
+	m_rasterizer->RenderText2D(RAS_IRasterizer::RAS_TEXT_PADDED, text, 12, int(m_canvas->GetHeight()) - 12,
+	                           m_canvas->GetWidth(), m_canvas->GetHeight());
+}
+
+void KX_KetsjiEngine::RemixRemoveScene(KX_Scene *scene)
+{
+#ifdef WITH_REMIX
+	if (m_remix)
+		m_remix->RemoveScene(scene);
+	if (scene == m_remixScene)
+		m_remixScene = NULL;
+#else
+	(void)scene;
+#endif
+}
