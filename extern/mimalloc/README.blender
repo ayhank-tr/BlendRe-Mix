@@ -1,0 +1,8 @@
+Project: mimalloc
+URL: https://github.com/microsoft/mimalloc
+License: MIT
+Upstream version: v2.1.7
+Local modifications: include/mimalloc_bge_prefix.h (bge_ prefix on every global symbol, included
+by mimalloc.h and forced into src/static.c) so it never clashes with the mimalloc inside
+Python 3.13+; src/ and include/ only; mimalloc-override.h left out
+Used by BGE-Next (WITH_MEM_MIMALLOC): C++ new/delete and Blender's MEM_ allocations.

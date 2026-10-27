@@ -6,6 +6,14 @@ else()
 	set(CYCLES_INSTALL_PATH "scripts/addons/cycles")
 endif()
 
+# BGE-Remix, from BGE NEXT: Cycles keeps its own per-kernel AVX/AVX2 builds; the engine-wide WITH_CPU_AVX2 flag is
+# left out here (OpenImageIO 1.7's headers don't compile with it on MSVC, and Cycles is not on
+# the game engine's hot path)
+if(MSVC)
+	string(REPLACE "/arch:AVX2" "" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
+	string(REPLACE "/arch:AVX2" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+endif()
+
 # External Libraries
 
 include(cmake/external_libs.cmake)

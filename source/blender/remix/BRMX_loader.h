@@ -79,6 +79,13 @@ typedef struct BRMX_Bridge {
 	int (*texture_submit)(const brb_texture_desc *desc);
 	int (*texture_poll)(int ticket, brb_texture_result *r_result);
 	int (*texture_pending)(void);
+
+	int (*frame_draw_ex)(const brb_draw_desc *desc);
+	int (*pick_request)(int left, int top, int right, int bottom);
+	int (*pick_result)(uint32_t *r_ids, int max, int *r_count);
+	int (*highlight)(const uint32_t *ids, int count, float r, float g, float b);
+
+	int (*frame_vk)(uint64_t *r_image, uint64_t *r_done, uint64_t *r_resume, int *r_width, int *r_height);
 } BRMX_Bridge;
 
 /* The bridge, loaded on first use; NULL when it is missing or from another

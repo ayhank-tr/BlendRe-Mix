@@ -1098,6 +1098,11 @@ class MATERIAL_PT_game_remix(MaterialButtonsPanel, Panel):
         M.bge_remix_subsurface_radius = FloatVectorProperty(
             name="Radius", subtype='XYZ', size=3, min=0.0, default=(1.0, 0.2, 0.1),
             description="How far light travels under the surface, per colour channel (Blender units)")
+        M.bge_remix_particle = BoolProperty(
+            name="Particle",
+            description="RTX Remix treats surfaces with this material as particles or sprites "
+                        "(on by itself for Halo face orientation)",
+            default=False)
         for name in cls.IMAGES:
             setattr(M, "bge_remix_%s_image" % name, StringProperty(
                 name=name.capitalize() + " Image",
@@ -1115,6 +1120,9 @@ class MATERIAL_PT_game_remix(MaterialButtonsPanel, Panel):
     def draw(self, context):
         layout = self.layout
         mat = context.material
+        # applies with or without the override below
+        layout.row().prop(mat, "bge_remix_particle")
+        layout = layout.column()
         layout.active = mat.bge_remix_override
         if not mat.bge_remix_override:
             layout.label("Off: Remix translates the material's own settings or Cycles nodes", icon='INFO')

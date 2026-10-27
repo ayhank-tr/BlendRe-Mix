@@ -40,6 +40,7 @@
 #include "KX_IpoConvert.h"
 
 #include <map>
+#include <unordered_set>
 
 using namespace std;
 
@@ -63,6 +64,7 @@ class KX_BlenderSceneConverter : public KX_ISceneConverter
 	// Use vector of pairs to allow removal of entities between scene switch
 	vector<pair<KX_Scene*,KX_WorldInfo*> >	m_worldinfos;
 	vector<pair<KX_Scene*,RAS_IPolyMaterial*> > m_polymaterials;
+	std::unordered_set<const void *> m_seenMaterials;   /* BGE-Remix, from BGE NEXT (perf): every material ever registered */
 	vector<pair<KX_Scene*,RAS_MeshObject*> > m_meshobjects;
 	vector<pair<KX_Scene*,BL_Material *> >	m_materials;
 

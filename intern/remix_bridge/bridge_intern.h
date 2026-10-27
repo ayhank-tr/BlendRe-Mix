@@ -63,6 +63,8 @@ void release_runtime_paths();
 std::string utf8(const std::wstring &w);
 const std::string &log_path();
 void log(const char *fmt, ...);
+/* rtx.* settings every scene needs (bridge_startup.cpp) */
+void set_scene_defaults();
 void set_status(brb_status status, const std::string &text);
 bool file_exists(const std::wstring &path);
 

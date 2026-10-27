@@ -728,6 +728,44 @@ void CcdPhysicsController::SimulationTick(float timestep)
 }
 
 
+/* BGE-Remix (CPU performance): the physics sync runs twice per physics step for every body,
+ * still ones too, and used to set the shape's scaling each time. For the shapes below, setting
+ * the scaling they already have only recomputes the same bounds (convex hulls, GImpact and
+ * triangle meshes rebuild them), so it is skipped; the result is the same bit for bit. Boxes,
+ * cylinders, cones, capsules and compounds recompute their sizes by dividing and multiplying,
+ * which can move the last bit, so they keep the old call. BGE_REMIX_NO_PHYSICS_SKIP=1 restores
+ * the old way everywhere. */
+static bool physics_skip_enabled()
+{
+	static int on = -1;
+	if (on < 0) {
+		const char *e = getenv("BGE_REMIX_NO_PHYSICS_SKIP");
+		on = (e && e[0] == '1') ? 0 : 1;
+	}
+	return on == 1;
+}
+
+void CcdPhysicsController::SyncShapeScaling(const btVector3 &scaling)
+{
+	btCollisionShape *shape = GetCollisionShape();
+	if (!shape) {
+		return;
+	}
+	if (physics_skip_enabled() && shape->getLocalScaling() == scaling) {
+		switch (shape->getShapeType()) {
+			case SPHERE_SHAPE_PROXYTYPE:
+			case CONVEX_HULL_SHAPE_PROXYTYPE:
+			case TRIANGLE_MESH_SHAPE_PROXYTYPE:
+			case SCALED_TRIANGLE_MESH_SHAPE_PROXYTYPE:
+			case GIMPACT_SHAPE_PROXYTYPE:
+				return;
+			default:
+				break;
+		}
+	}
+	shape->setLocalScaling(scaling);
+}
+
 /**
  * SynchronizeMotionStates ynchronizes dynas, kinematic and deformable entities (and do 'late binding')
  */
@@ -774,7 +812,7 @@ bool		CcdPhysicsController::SynchronizeMotionStates(float time)
 		float scale[3];
 		m_MotionState->GetWorldScaling(scale[0],scale[1],scale[2]);
 		btVector3 scaling(scale[0],scale[1],scale[2]);
-		GetCollisionShape()->setLocalScaling(scaling);
+		SyncShapeScaling(scaling);
 	} else
 	{
 		btVector3 worldPos;
@@ -793,7 +831,7 @@ bool		CcdPhysicsController::SynchronizeMotionStates(float time)
 		float scale[3];
 		m_MotionState->GetWorldScaling(scale[0],scale[1],scale[2]);
 		btVector3 scaling(scale[0],scale[1],scale[2]);
-		GetCollisionShape()->setLocalScaling(scaling);
+		SyncShapeScaling(scaling);
 	}
 	return true;
 

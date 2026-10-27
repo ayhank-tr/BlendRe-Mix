@@ -59,6 +59,37 @@ static void unhook_window()
 	}
 }
 
+/* The settings every BGE-Remix scene needs, right after startup. */
+void set_scene_defaults()
+{
+	/* Blender: Z up, right-handed, 1 unit = 1 m; Remix renders in cm. */
+	brb_set_config("rtx.zUp", "True");
+	brb_set_config("rtx.leftHandedCoordinateSystem", "False");
+	brb_set_config("rtx.sceneScale", "0.01");
+	brb_set_config("rtx.captureShowMenuOnHotkey", "False");
+	/* Highlighting (bge.render.remixHighlight) outlines the objects; by
+	 * default Remix also greys out everything else, which suits its editor
+	 * but not a game (RTX run 1 of P4). */
+	brb_set_config("rtx.postfx.desaturateOthersOnHighlight", "False");
+	/* How far an object may move in one frame and still count as the same
+	 * object. Remix's 300 is in game units and assumes centimetres (3 m);
+	 * in metres it put every copy of a mesh in one search cell, so each
+	 * moving copy was compared with all the others every frame (P4 B4.3).
+	 * BGE_REMIX_UNIQUE_DISTANCE overrides it (RTX benchmarks). */
+	char buf[32];
+	const DWORD n = GetEnvironmentVariableA("BGE_REMIX_UNIQUE_DISTANCE", buf, sizeof(buf));
+	brb_set_config("rtx.uniqueObjectDistance", (n > 0 && n < sizeof(buf)) ? buf : "3.0");
+	/* Remix puts every mesh under 1,000 triangles into one merged ray-tracing structure and
+	 * rebuilds it whenever one of them moves (rtx_accel_manager.cpp). rtx.minimizeBlasMerging
+	 * avoids that, but in Remix 1.6.1 it misplaces still objects through the API (P4.8 RTX
+	 * run: walls, ramps and pedestals missing or moved), so Remix's default stays.
+	 * BGE_REMIX_MINIMIZE_BLAS=1 turns it on, for testing newer runtimes only. */
+	const DWORD m = GetEnvironmentVariableA("BGE_REMIX_MINIMIZE_BLAS", buf, sizeof(buf));
+	if (m == 1 && buf[0] == '1') {
+		brb_set_config("rtx.minimizeBlasMerging", "True");
+	}
+}
+
 void destroy_window()
 {
 	if (g_hwnd) {
@@ -184,11 +215,7 @@ BRB_API brb_status brb_startup(int width, int height, int visible)
 	}
 	g_started = true;
 
-	/* Blender: Z up, right-handed, 1 unit = 1 m; Remix renders in cm. */
-	brb_set_config("rtx.zUp", "True");
-	brb_set_config("rtx.leftHandedCoordinateSystem", "False");
-	brb_set_config("rtx.sceneScale", "0.01");
-	brb_set_config("rtx.captureShowMenuOnHotkey", "False");
+	set_scene_defaults();
 
 	set_status(BRB_STATUS_RUNNING, "RTX Remix is running.");
 	return g_status;

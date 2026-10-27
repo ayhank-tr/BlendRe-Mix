@@ -229,6 +229,33 @@ Functions
    :arg y: Y-coordinate in screen pixel coordinates.
    :type y: integer
 
+.. function:: remixPick(x, y, exact=False)
+
+   BGE-Remix: the object RTX Remix drew at a pixel of the game window (top left
+   origin, as :func:`setMousePosition`), pixel-exact: objects without collision
+   and cut-out (alpha clip) surfaces count as drawn. The answer arrives one or
+   two frames after the first call for a point; call it every frame. Until
+   then it returns the answer for the previous point, or None with ``exact``.
+   Always None when the scene is not rendered through RTX Remix.
+
+   :arg x: X-coordinate in window pixels.
+   :type x: integer
+   :arg y: Y-coordinate in window pixels.
+   :type y: integer
+   :arg exact: only an answer for this very point.
+   :type exact: boolean
+   :rtype: :class:`~bge.types.KX_GameObject` or None
+
+.. function:: remixHighlight(objects=None, color=(1.0, 0.6, 0.1))
+
+   BGE-Remix: outline these objects in RTX Remix's picture until the next call
+   (None or an empty list: no outline). The other objects keep their colours.
+
+   :arg objects: game objects or their names.
+   :type objects: list
+   :arg color: outline colour (red, green, blue, 0 to 1).
+   :type color: tuple of 3 floats
+
 
 .. function:: setBackgroundColor(rgba)
 

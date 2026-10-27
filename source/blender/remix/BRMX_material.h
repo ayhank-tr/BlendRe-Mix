@@ -85,6 +85,9 @@ struct MaterialSpec {
 	enum Source { DEFAULT, PANEL, NODES, BLENDER_INTERNAL } source;
 	/* what the translator could not represent, one line each */
 	std::vector<std::string> notes;
+	/* P4: drawn as a particle or sprite (Halo face orientation, or the RTX
+	 * Remix panel's Particle option) */
+	bool particle;
 };
 
 /* The Remix version of a material (NULL: Blender's default material).

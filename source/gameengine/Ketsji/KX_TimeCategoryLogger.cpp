@@ -111,6 +111,12 @@ void KX_TimeCategoryLogger::NextMeasurement(double now)
 }
 
 
+double KX_TimeCategoryLogger::GetLast(TimeCategory tc)
+{
+	KX_TimeLoggerMap::iterator it = m_loggers.find(tc);
+	return (it != m_loggers.end()) ? it->second->GetLast() : 0.0;
+}
+
 double KX_TimeCategoryLogger::GetAverage(TimeCategory tc)
 {
 	//assert(m_loggers[tc] != m_loggers.end());

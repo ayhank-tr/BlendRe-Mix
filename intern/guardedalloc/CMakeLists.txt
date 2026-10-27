@@ -53,7 +53,16 @@ if(WIN32 AND NOT UNIX)
 	)
 endif()
 
+if(WITH_MEM_MIMALLOC)   # BGE-Remix, from BGE NEXT (CPU performance)
+	list(APPEND INC ../../extern/mimalloc/include)
+	add_definitions(-DWITH_MEM_MIMALLOC -DMI_STATIC_LIB)
+endif()
+
 blender_add_lib(bf_intern_guardedalloc "${SRC}" "${INC}" "${INC_SYS}")
+if(WITH_MEM_MIMALLOC)
+	# every user of the allocator (tools like makesdna and msgfmt too) needs mimalloc
+	target_link_libraries(bf_intern_guardedalloc extern_mimalloc)
+endif()
 
 # Override C++ alloc, optional.
 if(WITH_CXX_GUARDEDALLOC)

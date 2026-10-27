@@ -80,6 +80,9 @@ extern "C" {
 	 */
 	extern void (*MEM_freeN)(void *vmemh);
 
+/* BGE-Remix, from BGE NEXT (CPU performance): 1 when allocations go through mimalloc (BGE_REMIX_NO_MIMALLOC turns it off) */
+int MEM_use_mimalloc(void);
+
 #if 0  /* UNUSED */
 	/**
 	 * Return zero if memory is not in allocated list

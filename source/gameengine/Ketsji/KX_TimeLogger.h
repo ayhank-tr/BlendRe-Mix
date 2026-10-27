@@ -92,6 +92,11 @@ public:
 	 */
 	virtual double GetAverage(void) const;
 
+	/**
+	 * BGE-Remix (P4.8): the last finished measurement (0 before the first).
+	 */
+	double GetLast(void) const { return m_measurements.size() > 1 ? m_measurements[1] : 0.0; }
+
 protected:
 	/** Storage for the measurements. */
 	std::deque<double> m_measurements;

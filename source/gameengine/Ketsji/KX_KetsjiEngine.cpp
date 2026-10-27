@@ -40,6 +40,7 @@
 #include "BLI_task.h"
 
 #include "KX_KetsjiEngine.h"
+#include "KX_FramePacing.h"
 
 #include "EXP_ListValue.h"
 #include "EXP_IntValue.h"
@@ -563,6 +564,13 @@ void KX_KetsjiEngine::EndFrame()
 
 	// Go to next profiling measurement, time spent after this call is shown in the next frame.
 	m_logger->NextMeasurement(m_kxsystem->GetTimeInSeconds());
+#ifdef WITH_REMIX
+	if (m_remix) {
+		/* BGE-Remix (P4.8): the frame's time split for the RTX tests */
+		m_remix->AddProfileSample(m_logger->GetLast(tc_logic), m_logger->GetLast(tc_physics),
+		                          m_logger->GetLast(tc_animations), m_logger->GetLast(tc_scenegraph));
+	}
+#endif
 
 	m_logger->StartLog(tc_rasterizer, m_kxsystem->GetTimeInSeconds(), true);
 	m_rasterizer->EndFrame();
@@ -577,6 +585,20 @@ void KX_KetsjiEngine::EndFrame()
 //#include "PIL_time.h"
 //#include "LinearMath/btQuickprof.h"
 
+
+/* BGE-Remix (CPU performance, from BGE NEXT): with the frame rate limited, the next tic is due
+ * when the clock reaches m_frameTime + timestep. The clock only moves with real time here, so
+ * sleeping until just before then changes nothing the game sees. */
+void KX_KetsjiEngine::PaceUntilNextTic(double timestep)
+{
+	if (m_bFixedTime || m_useExternalClock || m_timescale <= 0.0) {
+		return;
+	}
+	const double wait = (m_frameTime + timestep - m_clockTime) / m_timescale;
+	if (wait > 0.0) {
+		KX_PaceSleep(wait);
+	}
+}
 
 bool KX_KetsjiEngine::NextFrame()
 {
@@ -633,11 +655,16 @@ bool KX_KetsjiEngine::NextFrame()
 	{
 		// We got here too quickly, which means there is nothing to do, just return and don't render.
 		// Not sure if this is the best fix, but it seems to stop the jumping framerate issue (#33088)
+		PaceUntilNextTic(timestep);
 		return false;
 	}
 
 	// Compute the number of logic frames to do each update (fixed tic bricks)
 	int frames = int(deltatime * m_ticrate / m_timescale + 1e-6);
+	if (frames == 0) {
+		/* BGE-Remix: no tic due yet; sleep instead of spinning until one is */
+		PaceUntilNextTic(timestep);
+	}
 //	if (frames>1)
 //		printf("****************************************");
 //	printf("dt = %f, deltatime = %f, frames = %d\n",dt, deltatime,frames);
@@ -1304,6 +1331,17 @@ void KX_KetsjiEngine::RenderFrame(KX_Scene* scene, KX_Camera* cam)
 	SG_SetActiveStage(SG_STAGE_CULLING);
 
 	scene->CalculateVisibleMeshes(m_rasterizer,cam);
+
+#ifdef WITH_REMIX
+	if (m_remix && scene == m_remixScene && !cam->GetViewport()) {
+		/* BGE-Remix: Remix also shows what the camera does not see (shadows,
+		 * reflections), so nothing counts as culled: every character is
+		 * animated (UpdateAnimations skips culled ones). */
+		CListValue *objects = scene->GetObjectList();
+		for (int i = 0; i < objects->GetCount(); i++)
+			((KX_GameObject *)objects->GetValue(i))->SetCulled(false);
+	}
+#endif
 
 	m_logger->StartLog(tc_animations, m_kxsystem->GetTimeInSeconds(), true);
 	SG_SetActiveStage(SG_STAGE_ANIMATION_UPDATE);

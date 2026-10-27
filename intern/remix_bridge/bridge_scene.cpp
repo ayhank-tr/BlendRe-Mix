@@ -21,8 +21,8 @@
 /** \file bridge_scene.cpp
  *  \ingroup remix_bridge
  *
- * The scene interface (versions 2 and 3): materials, meshes, lights, camera,
- * draws.
+ * The scene interface (versions 2 to 4): materials, meshes, lights, camera,
+ * draws, skinning, picking, GPU particles.
  * The game engine describes things in its own terms (OpenGL matrices,
  * Blender's uv origin); the conversion to Remix's conventions happens here.
  */
@@ -30,6 +30,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -44,6 +47,15 @@ static std::unordered_map<uint64_t, remixapi_MeshHandle> g_meshes;
 static std::unordered_map<uint64_t, remixapi_LightHandle> g_lights;
 static int g_frame_draws = 0;
 static int g_frame_lights = 0;
+static int g_frame_skinned = 0;
+static int g_frame_bones = 0;
+static int g_frame_emitters = 0;
+
+/* picking: Remix answers on one of its own threads */
+static std::mutex g_pick_mutex;
+static int g_pick_state = 0;        /* 0 none, 1 waiting, 2 answered, -1 failed */
+static unsigned g_pick_serial = 0;  /* the request an answer belongs to */
+static std::vector<uint32_t> g_pick_ids;
 static std::wstring g_dome_texture;
 
 void scene_forget()
@@ -132,6 +144,200 @@ static const std::wstring &dome_texture()
 		log("could not write the dome texture %s", utf8(path).c_str());
 	}
 	return g_dome_texture;
+}
+
+/* OpenGL 4 x 4 (column major) to Remix's 3 x 4 rows */
+static remixapi_Transform to_transform(const float m[16])
+{
+	remixapi_Transform t = {};
+	for (int r = 0; r < 3; r++) {
+		for (int c = 0; c < 4; c++) {
+			t.matrix[r][c] = m[c * 4 + r];
+		}
+	}
+	return t;
+}
+
+/* a * b, both OpenGL (column major) */
+static void mul4(const float a[16], const float b[16], float r[16])
+{
+	for (int c = 0; c < 4; c++) {
+		for (int row = 0; row < 4; row++) {
+			float v = 0.0f;
+			for (int k = 0; k < 4; k++) {
+				v += a[k * 4 + row] * b[c * 4 + k];
+			}
+			r[c * 4 + row] = v;
+		}
+	}
+}
+
+/* Bones in the object's space (the interface's convention) and the
+ * object's matrix as the instance transform; BGE_REMIX_BONES_WORLD=1 sends
+ * world-space bones with an identity transform instead (the RTX check
+ * T4.1 tells which one Remix 1.6.1 expects). */
+static bool bones_world()
+{
+	static int v = -1;
+	if (v < 0) {
+		const char *e = getenv("BGE_REMIX_BONES_WORLD");
+		v = (e && e[0] == '1') ? 1 : 0;
+		if (v) {
+			log("bones are sent in world space (BGE_REMIX_BONES_WORLD)");
+		}
+	}
+	return v == 1;
+}
+
+static uint32_t to_categories(uint32_t c)
+{
+	uint32_t r = 0;
+	if (c & BRB_CATEGORY_PARTICLE) {
+		r |= REMIXAPI_INSTANCE_CATEGORY_BIT_PARTICLE;
+	}
+	if (c & BRB_CATEGORY_PARTICLE_EMITTER) {
+		r |= REMIXAPI_INSTANCE_CATEGORY_BIT_PARTICLE_EMITTER;
+	}
+	return r;
+}
+
+/* Blender units (metres) to Remix's particle units (centimetres, which
+ * Remix scales by rtx.sceneScale = 0.01 into our metres) */
+static const float CM = 100.0f;
+
+struct ParticleExt {
+	remixapi_InstanceInfoParticleSystemEXT info;
+	remixapi_Float4D color[2];
+	remixapi_Float2D size_min[2], size_max[2];
+	float rot_min[2], rot_max[2];
+	remixapi_Float3D velocity[2];
+};
+
+static void fill_particles(const brb_particle_desc &d, ParticleExt &p)
+{
+	remixapi_InstanceInfoParticleSystemEXT &i = p.info;
+	i = remixapi_InstanceInfoParticleSystemEXT();
+	i.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_PARTICLE_SYSTEM_EXT;
+	i.maxNumParticles = std::max<uint32_t>(d.max_particles, 1u);
+	i.spawnRatePerSecond = std::max(d.spawn_rate, 0.0f);
+	i.minTimeToLive = std::max(d.lifetime_min, 0.01f);
+	i.maxTimeToLive = std::max(d.lifetime_max, i.minTimeToLive);
+	i.initialVelocityFromNormal = d.speed_normal * CM;
+	i.initialVelocityConeAngleDegrees = std::min(std::max(d.cone_angle_deg, 0.0f), 180.0f);
+	i.initialVelocityFromMotion = d.speed_from_motion;
+	i.gravityForce = d.gravity * CM;
+	i.dragCoefficient = std::max(d.drag, 0.0f);
+	i.enableCollisionDetection = d.collide ? TRUE : FALSE;
+	i.collisionRestitution = std::min(std::max(d.restitution, 0.0f), 1.0f);
+	i.collisionThickness = 5.0f;
+	i.collisionMode = 0; /* bounce */
+	i.alignParticlesToVelocity = d.align_to_velocity ? TRUE : FALSE;
+	i.hideEmitter = d.hide_emitter ? TRUE : FALSE;
+	i.billboardType = (uint8_t)std::min(std::max(d.billboard, 0), 3);
+	i.spriteSheetMode = 0;
+	i.motionTrailMultiplier = 1.0f;
+	i.turbulenceFrequency = 0.05f;
+	i.turbulenceForce = 0.0f;
+	/* the animated values: start (birth) and end (death) */
+	for (int k = 0; k < 2; k++) {
+		const float *c = k ? d.color_end : d.color_start;
+		p.color[k] = {c[0], c[1], c[2], c[3]};
+		const float scale = k ? d.size_end_scale : 1.0f;
+		p.size_min[k] = {d.size_min * scale * CM, d.size_min * scale * CM};
+		p.size_max[k] = {d.size_max * scale * CM, d.size_max * scale * CM};
+		p.rot_min[k] = -std::fabs(d.rotation_speed);
+		p.rot_max[k] = std::fabs(d.rotation_speed);
+		p.velocity[k] = {-1.0f, -1.0f, -1.0f}; /* no limit */
+	}
+	i.minColor = {p.color, 2};
+	i.maxColor = {p.color, 2};
+	i.minSize = {p.size_min, 2};
+	i.maxSize = {p.size_max, 2};
+	i.minRotationSpeed = {p.rot_min, 2};
+	i.maxRotationSpeed = {p.rot_max, 2};
+	i.maxVelocity = {p.velocity, 2};
+}
+
+static int draw_instance(const brb_draw_desc &d)
+{
+	if (!running()) {
+		return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+	}
+	auto it = g_meshes.find(d.mesh);
+	if (it == g_meshes.end()) {
+		return track(REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS);
+	}
+	const int flags = d.flags;
+	const bool skinned = d.bones && d.bone_count > 0;
+	const bool world = skinned && bones_world();
+	static const float identity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+
+	remixapi_InstanceInfo inst = {};
+	inst.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO;
+	inst.mesh = it->second;
+	inst.transform = to_transform(world ? identity : d.model);
+	inst.categoryFlags = to_categories(d.categories);
+	inst.doubleSided = (flags & BRB_DRAW_DOUBLE_SIDED) ? TRUE : FALSE;
+	void **tail = &inst.pNext;
+
+	remixapi_InstanceInfoObjectPickingEXT pick = {};
+	if (d.pick_id) {
+		pick.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_OBJECT_PICKING_EXT;
+		pick.objectPickingValue = d.pick_id;
+		*tail = &pick;
+		tail = &pick.pNext;
+	}
+
+	std::vector<remixapi_Transform> bone_tf;
+	remixapi_InstanceInfoBoneTransformsEXT bones = {};
+	if (skinned) {
+		const uint32_t n = std::min<uint32_t>(d.bone_count, BRB_MAX_BONES);
+		bone_tf.resize(n);
+		for (uint32_t b = 0; b < n; b++) {
+			if (world) {
+				float m[16];
+				mul4(d.model, d.bones + (size_t)b * 16, m);
+				bone_tf[b] = to_transform(m);
+			}
+			else {
+				bone_tf[b] = to_transform(d.bones + (size_t)b * 16);
+			}
+		}
+		bones.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BONE_TRANSFORMS_EXT;
+		bones.boneTransforms_values = bone_tf.data();
+		bones.boneTransforms_count = n;
+		*tail = &bones;
+		tail = &bones.pNext;
+		g_frame_skinned++;
+		g_frame_bones += (int)n;
+	}
+
+	ParticleExt particles;
+	if ((d.categories & BRB_CATEGORY_PARTICLE_EMITTER) && d.particles) {
+		fill_particles(*d.particles, particles);
+		*tail = &particles.info;
+		tail = &particles.info.pNext;
+		g_frame_emitters++;
+	}
+	/* Remix traces surfaces as fully opaque unless the instance's draw state
+	 * blends (the material's own blend type and opacity then apply) */
+	remixapi_InstanceInfoBlendEXT blend = {};
+	if (flags & BRB_DRAW_BLEND) {
+		blend.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BLEND_EXT;
+		blend.alphaBlendEnabled = TRUE;
+		blend.srcColorBlendFactor = 6;  /* VK_BLEND_FACTOR_SRC_ALPHA */
+		blend.dstColorBlendFactor = 7;  /* VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA */
+		blend.colorBlendOp = 0;         /* VK_BLEND_OP_ADD */
+		blend.srcAlphaBlendFactor = 1;  /* VK_BLEND_FACTOR_ONE */
+		blend.dstAlphaBlendFactor = 0;  /* VK_BLEND_FACTOR_ZERO */
+		blend.alphaBlendOp = 0;
+		blend.writeMask = 0xF;
+		blend.tFactor = 0xFFFFFFFFu;
+		*tail = &blend;
+		tail = &blend.pNext;
+	}
+	g_frame_draws++;
+	return track(guarded("DrawInstance", [&] { return g_remix.DrawInstance(&inst); }));
 }
 
 }  /* namespace brb */
@@ -237,6 +443,22 @@ BRB_API void brb_material_destroy(uint64_t hash)
 	g_stats.materials = (int)g_materials.size();
 }
 
+/* BGE_REMIX_SKIN_LAYOUT=documented: the weight layout remix_c.h describes
+ * (bones_per_vertex weights per vertex, one after the other), for the RTX
+ * check that tells which one Remix 1.6.1 reads (see brb_mesh_create). */
+static bool documented_layout()
+{
+	static int v = -1;
+	if (v < 0) {
+		const char *e = getenv("BGE_REMIX_SKIN_LAYOUT");
+		v = (e && strcmp(e, "documented") == 0) ? 1 : 0;
+		if (v) {
+			log("bone weights in the documented layout (BGE_REMIX_SKIN_LAYOUT)");
+		}
+	}
+	return v == 1;
+}
+
 BRB_API int brb_mesh_create(uint64_t hash, const brb_surface_desc *surfaces, uint32_t surface_count)
 {
 	if (!running() || hash == 0 || (!surfaces && surface_count)) {
@@ -244,14 +466,37 @@ BRB_API int brb_mesh_create(uint64_t hash, const brb_surface_desc *surfaces, uin
 	}
 	std::vector<std::vector<remixapi_HardcodedVertex>> verts(surface_count);
 	std::vector<std::vector<uint32_t>> tris(surface_count);
+	std::vector<std::vector<float>> weights(surface_count);
+	std::vector<std::vector<uint32_t>> bones(surface_count);
 	std::vector<remixapi_MeshInfoSurfaceTriangles> infos(surface_count);
 	for (uint32_t s = 0; s < surface_count; s++) {
 		const brb_surface_desc &src = surfaces[s];
+		const brb_skin_desc *skin = src.skin;
+		const uint32_t bpv = skin ? std::min<uint32_t>(std::max<uint32_t>(skin->bones_per_vertex, 1u),
+		                                                  BRB_MAX_BONES_PER_VERTEX) : 0;
+		if (skin && (!skin->weights || !skin->bones)) {
+			return track(REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS);
+		}
+		/* Remix 1.6.1 reads a vertex's blend weights from float number
+		 * (vertex index) of the weight buffer (the buffer's stride is one
+		 * float, rtx_remix_api.cpp), bones_per_vertex - 1 of them, the last
+		 * weight being the rest to 1 (skinning.h). With more than two bones
+		 * per vertex these reads overlap, so each vertex is placed
+		 * bones_per_vertex - 1 slots apart and its weights written there; the
+		 * slots in between hold copies that no triangle uses. */
+		const bool documented = documented_layout();
+		const uint32_t spacing = (bpv > 2 && !documented) ? bpv - 1 : 1;
+		const uint32_t slots = (src.vertex_count == 0) ? 0 : (src.vertex_count - 1) * spacing + 1;
 		std::vector<remixapi_HardcodedVertex> &dst = verts[s];
-		dst.resize(src.vertex_count);
+		dst.resize(slots);
+		if (skin) {
+			/* the size Remix checks: bones_per_vertex values per vertex */
+			weights[s].assign((size_t)slots * bpv, 0.0f);
+			bones[s].assign((size_t)slots * bpv, 0u);
+		}
 		for (uint32_t i = 0; i < src.vertex_count; i++) {
 			const brb_vertex &v = src.vertices[i];
-			remixapi_HardcodedVertex &o = dst[i];
+			remixapi_HardcodedVertex &o = dst[(size_t)i * spacing];
 			o = remixapi_HardcodedVertex();
 			o.position[0] = v.position[0];
 			o.position[1] = v.position[1];
@@ -263,6 +508,27 @@ BRB_API int brb_mesh_create(uint64_t hash, const brb_surface_desc *surfaces, uin
 			o.texcoord[0] = v.uv[0];
 			o.texcoord[1] = 1.0f - v.uv[1];
 			o.color = v.color;
+			if (skin) {
+				const size_t at = (size_t)i * spacing;
+				for (uint32_t k = 0; k < bpv; k++) {
+					bones[s][at * bpv + k] = skin->bones[(size_t)i * bpv + k];
+				}
+				if (documented) {
+					for (uint32_t k = 0; k < bpv; k++) {
+						weights[s][at * bpv + k] = skin->weights[(size_t)i * bpv + k];
+					}
+				}
+				else {
+					/* the first bpv - 1 weights from float number `at` on */
+					for (uint32_t k = 0; k + 1 < bpv; k++) {
+						weights[s][at + k] = skin->weights[(size_t)i * bpv + k];
+					}
+				}
+			}
+			/* the unused slots after it: the same vertex, so that bounds stay */
+			for (uint32_t k = 1; k < spacing && (size_t)i * spacing + k < dst.size(); k++) {
+				dst[(size_t)i * spacing + k] = o;
+			}
 		}
 		remixapi_MeshInfoSurfaceTriangles &t = infos[s];
 		t = remixapi_MeshInfoSurfaceTriangles();
@@ -275,9 +541,21 @@ BRB_API int brb_mesh_create(uint64_t hash, const brb_surface_desc *surfaces, uin
 		for (size_t i = 0; i + 2 < idx.size(); i += 3) {
 			std::swap(idx[i + 1], idx[i + 2]);
 		}
+		if (spacing > 1) {
+			for (uint32_t &k : idx) {
+				k *= spacing;
+			}
+		}
 		t.indices_values = idx.data();
 		t.indices_count = idx.size();
-		t.skinning_hasvalue = FALSE;
+		t.skinning_hasvalue = skin ? TRUE : FALSE;
+		if (skin) {
+			t.skinning_value.bonesPerVertex = bpv;
+			t.skinning_value.blendWeights_values = weights[s].data();
+			t.skinning_value.blendWeights_count = (uint32_t)weights[s].size();
+			t.skinning_value.blendIndices_values = bones[s].data();
+			t.skinning_value.blendIndices_count = (uint32_t)bones[s].size();
+		}
 		auto m = g_materials.find(src.material);
 		t.material = (m != g_materials.end()) ? m->second : nullptr;
 	}
@@ -424,6 +702,9 @@ BRB_API int brb_frame_begin(void)
 	device_frame_unlock();
 	g_frame_draws = 0;
 	g_frame_lights = 0;
+	g_frame_skinned = 0;
+	g_frame_bones = 0;
+	g_frame_emitters = 0;
 	return running() ? 0 : REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
 }
 
@@ -452,41 +733,95 @@ BRB_API int brb_frame_camera(const float view[16], const float proj[16])
 
 BRB_API int brb_frame_draw(uint64_t mesh, const float model[16], int flags)
 {
-	if (!running() || !model) {
+	if (!model) {
+		return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+	}
+	brb_draw_desc d = {};
+	d.mesh = mesh;
+	memcpy(d.model, model, sizeof(d.model));
+	d.flags = flags;
+	return draw_instance(d);
+}
+
+BRB_API int brb_frame_draw_ex(const brb_draw_desc *desc)
+{
+	if (!desc) {
+		return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+	}
+	return draw_instance(*desc);
+}
+
+static void REMIXAPI_PTR pick_callback(const uint32_t *values, uint32_t count, void *user)
+{
+	std::lock_guard<std::mutex> lock(g_pick_mutex);
+	if ((unsigned)(uintptr_t)user != g_pick_serial) {
+		return; /* an answer to a request that was replaced */
+	}
+	g_pick_ids.assign(values, values + count);
+	std::sort(g_pick_ids.begin(), g_pick_ids.end());
+	g_pick_state = 2;
+}
+
+BRB_API int brb_pick_request(int left, int top, int right, int bottom)
+{
+	if (!running() || !g_remix.pick_RequestObjectPicking) {
 		return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
 	}
-	auto it = g_meshes.find(mesh);
-	if (it == g_meshes.end()) {
-		return track(REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS);
+	remixapi_Rect2D rect = {left, top, std::max(right, left + 1), std::max(bottom, top + 1)};
+	void *user;
+	{
+		std::lock_guard<std::mutex> lock(g_pick_mutex);
+		g_pick_serial++;
+		g_pick_state = 1;
+		g_pick_ids.clear();
+		user = (void *)(uintptr_t)g_pick_serial;
 	}
-	remixapi_InstanceInfo inst = {};
-	inst.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO;
-	inst.mesh = it->second;
-	/* 3 x 4, rows; OpenGL's matrix is column major */
-	for (int r = 0; r < 3; r++) {
-		for (int c = 0; c < 4; c++) {
-			inst.transform.matrix[r][c] = model[c * 4 + r];
-		}
+	remixapi_ErrorCode r = guarded("pick_RequestObjectPicking",
+	                               [&] { return g_remix.pick_RequestObjectPicking(&rect, pick_callback, user); });
+	if (r != REMIXAPI_ERROR_CODE_SUCCESS) {
+		std::lock_guard<std::mutex> lock(g_pick_mutex);
+		g_pick_state = -1;
 	}
-	inst.doubleSided = (flags & BRB_DRAW_DOUBLE_SIDED) ? TRUE : FALSE;
-	/* Remix traces surfaces as fully opaque unless the instance's draw state
-	 * blends (the material's own blend type and opacity then apply) */
-	remixapi_InstanceInfoBlendEXT blend = {};
-	if (flags & BRB_DRAW_BLEND) {
-		blend.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BLEND_EXT;
-		blend.alphaBlendEnabled = TRUE;
-		blend.srcColorBlendFactor = 6;  /* VK_BLEND_FACTOR_SRC_ALPHA */
-		blend.dstColorBlendFactor = 7;  /* VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA */
-		blend.colorBlendOp = 0;         /* VK_BLEND_OP_ADD */
-		blend.srcAlphaBlendFactor = 1;  /* VK_BLEND_FACTOR_ONE */
-		blend.dstAlphaBlendFactor = 0;  /* VK_BLEND_FACTOR_ZERO */
-		blend.alphaBlendOp = 0;
-		blend.writeMask = 0xF;
-		blend.tFactor = 0xFFFFFFFFu;
-		inst.pNext = &blend;
+	return track(r);
+}
+
+BRB_API int brb_pick_result(uint32_t *r_ids, int max, int *r_count)
+{
+	std::lock_guard<std::mutex> lock(g_pick_mutex);
+	if (r_count) {
+		*r_count = 0;
 	}
-	g_frame_draws++;
-	return track(guarded("DrawInstance", [&] { return g_remix.DrawInstance(&inst); }));
+	if (g_pick_state == -1) {
+		g_pick_state = 0;
+		return -1;
+	}
+	if (g_pick_state != 2) {
+		return 0;
+	}
+	const int n = (int)g_pick_ids.size();
+	for (int i = 0; i < n && i < max && r_ids; i++) {
+		r_ids[i] = g_pick_ids[i];
+	}
+	if (r_count) {
+		*r_count = n;
+	}
+	g_pick_state = 0;
+	g_stats.picks++;
+	return 1;
+}
+
+BRB_API int brb_highlight(const uint32_t *ids, int count, float r, float g, float b)
+{
+	if (!running() || !g_remix.pick_HighlightObjects) {
+		return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+	}
+	if (!ids || count <= 0) {
+		return 0;
+	}
+	auto byte = [](float v) { return (uint8_t)std::lround(std::min(std::max(v, 0.0f), 1.0f) * 255.0f); };
+	return track(guarded("pick_HighlightObjects", [&] {
+		return g_remix.pick_HighlightObjects(ids, (uint32_t)count, byte(r), byte(g), byte(b));
+	}));
 }
 
 BRB_API int brb_frame_light(uint64_t light)
@@ -514,6 +849,9 @@ BRB_API int brb_frame_end(void)
 	g_stats.frames++;
 	g_stats.draws = g_frame_draws;
 	g_stats.lights = g_frame_lights;
+	g_stats.skinned_draws = g_frame_skinned;
+	g_stats.bones = g_frame_bones;
+	g_stats.emitters = g_frame_emitters;
 	return track(r);
 }
 

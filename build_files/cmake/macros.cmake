@@ -715,6 +715,10 @@ function(SETUP_BLENDER_SORTED_LIBS)
 		list(APPEND BLENDER_SORTED_LIBS bf_intern_guardedalloc_cpp)
 	endif()
 
+	if(WITH_MEM_MIMALLOC)
+		list(APPEND BLENDER_SORTED_LIBS extern_mimalloc)   # BGE-Remix, from BGE NEXT (CPU performance)
+	endif()
+
 	if(WITH_IK_SOLVER)
 		list_insert_after(BLENDER_SORTED_LIBS "bf_intern_elbeem" "bf_intern_iksolver")
 	endif()

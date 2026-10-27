@@ -23,6 +23,11 @@
 #
 # ***** END GPL LICENSE BLOCK *****
 
+# BGE-Remix, from BGE NEXT: OpenImageIO 1.7's headers don't compile with the engine-wide /arch:AVX2 on MSVC
+if(MSVC)
+	string(REPLACE "/arch:AVX2" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+endif()
+
 set(INC
 	.
 	..

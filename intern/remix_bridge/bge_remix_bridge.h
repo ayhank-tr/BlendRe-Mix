@@ -50,8 +50,10 @@ extern "C" {
 /* Bumped whenever a function below changes; Blender refuses a bridge DLL
  * with another value instead of calling into it.
  * 1: P1 (load, start, triangle test). 2: P2 (scene interface, copy and window modes).
- * 3: P3 (textures, glass, subsurface, alpha test). */
-#define BRB_ABI_VERSION 3
+ * 3: P3 (textures, glass, subsurface, alpha test).
+ * 4: P4 (skinning, draw categories, picking, particle systems).
+ * 5: P4.8 (direct presentation: brb_frame_vk). */
+#define BRB_ABI_VERSION 5
 
 typedef enum brb_status {
 	BRB_STATUS_NOT_LOADED = 0,           /* nothing tried yet */
@@ -118,6 +120,8 @@ typedef enum brb_mode {
 	BRB_MODE_WINDOW = 1, /* P1: a top-level window of the bridge's own (brb_startup) */
 	BRB_MODE_COPY = 2,   /* each frame is copied out (brb_frame_pixels) and drawn by the game */
 	BRB_MODE_CHILD = 3,  /* Remix presents into a child window over the game window */
+	BRB_MODE_DIRECT = 4, /* P4.8: Remix has no window; the game draws its Vulkan image itself
+	                      * (GL_NV_draw_vulkan_image, brb_frame_vk) */
 } brb_mode;
 
 /* Positions and normals in the object's own space; uv as in Blender
@@ -169,12 +173,24 @@ typedef struct brb_material_desc {
 	float subsurface_radius[3];  /* mean free path per channel, Blender units */
 } brb_material_desc;
 
+/* interface 4 (P4): bone weights of a skinned surface, bones_per_vertex
+ * values per vertex in each array. Remix moves each vertex by the bone
+ * matrices of the draw (brb_draw_desc.bones), weighted. */
+#define BRB_MAX_BONES_PER_VERTEX 4
+#define BRB_MAX_BONES 256
+typedef struct brb_skin_desc {
+	uint32_t bones_per_vertex;   /* 1 .. BRB_MAX_BONES_PER_VERTEX */
+	const float *weights;        /* adding up to 1 per vertex */
+	const uint32_t *bones;       /* indices into the draw's bone matrices */
+} brb_skin_desc;
+
 typedef struct brb_surface_desc {
 	const brb_vertex *vertices;
 	uint32_t vertex_count;
 	const uint32_t *indices;     /* triangles */
 	uint32_t index_count;
 	uint64_t material;           /* hash of a material created before */
+	const brb_skin_desc *skin;   /* interface 4: NULL = not skinned */
 } brb_surface_desc;
 
 typedef enum brb_light_type {
@@ -215,11 +231,19 @@ typedef struct brb_frame_stats {
 	int width, height;           /* current render size */
 	double present_ms;           /* last frame: Present */
 	double copy_ms;              /* last frame: copying the picture out (copy mode) */
+	/* interface 4 */
+	int skinned_draws;           /* last frame: draws with bone matrices */
+	int bones;                   /* last frame: bone matrices sent */
+	int emitters;                /* last frame: GPU particle emitters drawn */
+	int picks;                   /* pick requests answered since the last reset */
 } brb_frame_stats;
 
 /* Start Remix for a game. mode is BRB_MODE_COPY (a hidden window of the
- * bridge's own; the game draws the copied picture) or BRB_MODE_CHILD (a child
- * window of parent_hwnd at x, y, client coordinates, top left). Needs READY.
+ * bridge's own; the game draws the copied picture), BRB_MODE_CHILD (a child
+ * window of parent_hwnd at x, y, client coordinates, top left) or
+ * BRB_MODE_DIRECT (no window; the game draws Remix's image, brb_frame_vk).
+ * Needs READY. In direct mode the picture keeps the starting size: a later
+ * brb_resize changes nothing and the game scales the image.
  * Remix keeps running after the game ends, for the next one; brb_scene_clear
  * removes the game's objects. */
 BRB_API brb_status brb_startup_ex(int mode, int width, int height, void *parent_hwnd, int x, int y);
@@ -261,12 +285,81 @@ BRB_API int brb_frame_end(void);
  * next brb_frame_begin. NULL when there is none. */
 BRB_API const void *brb_frame_pixels(int *r_width, int *r_height, int *r_pitch);
 
+/* Direct mode: after a brb_frame_end that presented, the Vulkan image
+ * (VkImage) and its two binary semaphores (VkSemaphore): "done" is signalled
+ * when the picture is ready, and Remix waits for "resume" before it renders
+ * the next frame. The caller MUST wait for done and then signal resume exactly
+ * once for every frame this returns 1 for, or Remix stops for good. Returns 0
+ * when no frame waits (not direct mode, or already taken). */
+BRB_API int brb_frame_vk(uint64_t *r_image, uint64_t *r_done, uint64_t *r_resume, int *r_width, int *r_height);
+
 /* Save what Remix shows (copy mode: the last frame; window modes: the
- * window) as a 24-bit BMP. Returns 1 when written. */
+ * window) as a 24-bit BMP. Returns 1 when written; 0 in direct mode, where
+ * the game reads its own window back. */
 BRB_API int brb_save_bmp(const wchar_t *path);
 
 BRB_API void brb_get_stats(brb_frame_stats *r_stats);
 BRB_API void brb_reset_stats(void);
+
+/* ------------------------------------------------------------------------- */
+/* Interface version 4: dynamic content (P4) */
+
+/* What Remix should treat a draw as (brb_draw_desc.categories) */
+#define BRB_CATEGORY_PARTICLE 1          /* a sprite or particle (Remix's particle handling) */
+#define BRB_CATEGORY_PARTICLE_EMITTER 2  /* spawns Remix GPU particles (brb_draw_desc.particles) */
+
+/* Remix's own GPU particles, spawned from the draw's triangles. Lengths
+ * in Blender units (metres), times in seconds; colours linear RGBA. "start"
+ * values apply at birth, "end" values at the end of a particle's life. */
+typedef struct brb_particle_desc {
+	uint32_t max_particles;
+	float spawn_rate;            /* particles per second */
+	float lifetime_min, lifetime_max;
+	float speed_normal;          /* start speed along the surface normal */
+	float cone_angle_deg;        /* random spread around the normal (half angle) */
+	float speed_from_motion;     /* times the emitter's own velocity */
+	float gravity;               /* downward acceleration (9.81 = Earth) */
+	float drag;                  /* 0 = none */
+	float size_min, size_max;    /* start size (width = height) */
+	float size_end_scale;        /* end size = start size times this */
+	float color_start[4];
+	float color_end[4];
+	float rotation_speed;        /* turns per second, random sign */
+	int collide;                 /* 1: bounce off the scene */
+	float restitution;           /* kept speed after a bounce, 0..1 */
+	int align_to_velocity;
+	int hide_emitter;            /* 1: the emitter mesh itself is not drawn */
+	int billboard;               /* 0 face the camera, 1 upright (turn around Z), 2 lie flat (face up) */
+} brb_particle_desc;
+
+/* One draw with everything interface 4 adds. bones: bone_count OpenGL
+ * matrices (column major), each mapping the mesh's rest pose to its pose,
+ * in the object's own space (model applies after). */
+typedef struct brb_draw_desc {
+	uint64_t mesh;
+	float model[16];
+	int flags;                   /* BRB_DRAW_* */
+	uint32_t categories;         /* BRB_CATEGORY_* */
+	uint32_t pick_id;            /* 0 = not pickable */
+	const float *bones;
+	uint32_t bone_count;         /* at most BRB_MAX_BONES */
+	const brb_particle_desc *particles; /* with BRB_CATEGORY_PARTICLE_EMITTER */
+} brb_draw_desc;
+
+BRB_API int brb_frame_draw_ex(const brb_draw_desc *desc);
+
+/* Ask which pick_ids Remix drew in a rectangle of its picture (pixels, top
+ * left origin, right and bottom exclusive). The answer arrives a frame or
+ * two later; a new request replaces one still waiting. Returns 0 when sent. */
+BRB_API int brb_pick_request(int left, int top, int right, int bottom);
+
+/* The answer to the last request: 1 = ready (r_ids gets up to max ids, sorted,
+ * r_count how many there were), 0 = still waiting or none asked, -1 = the
+ * request failed. An answer is handed out once. */
+BRB_API int brb_pick_result(uint32_t *r_ids, int max, int *r_count);
+
+/* Outline these pick_ids in this frame's picture (call every frame). */
+BRB_API int brb_highlight(const uint32_t *ids, int count, float r, float g, float b);
 
 /* ------------------------------------------------------------------------- */
 /* Interface version 3: textures (P3)

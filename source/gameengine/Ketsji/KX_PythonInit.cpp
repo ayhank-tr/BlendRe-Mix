@@ -112,6 +112,9 @@ extern "C" {
 #include "EXP_ListValue.h"
 #include "EXP_InputParser.h"
 #include "KX_Scene.h"
+#ifdef WITH_REMIX
+#  include "KX_RemixRenderer.h"
+#endif
 
 #include "NG_NetworkScene.h" //Needed for sendMessage()
 
@@ -1016,6 +1019,61 @@ static PyObject *gPySetMousePosition(PyObject *, PyObject *args)
 	Py_RETURN_NONE;
 }
 
+/* BGE-Remix (P4): picking and outlines through RTX Remix */
+static PyObject *gPyRemixPick(PyObject *, PyObject *args, PyObject *kwds)
+{
+	int x, y, exact = 0;
+	static const char *kwlist[] = {"x", "y", "exact", NULL};
+	if (!PyArg_ParseTupleAndKeywords(args, kwds, "ii|i:remixPick", (char **)kwlist, &x, &y, &exact))
+		return NULL;
+#ifdef WITH_REMIX
+	KX_KetsjiEngine *engine = KX_GetActiveEngine();
+	KX_RemixRenderer *remix = engine ? engine->GetRemix() : NULL;
+	KX_GameObject *obj = remix ? remix->Pick(x, y, exact != 0) : NULL;
+	if (obj)
+		return obj->GetProxy();
+#else
+	(void)x; (void)y; (void)exact;
+#endif
+	Py_RETURN_NONE;
+}
+
+static PyObject *gPyRemixHighlight(PyObject *, PyObject *args)
+{
+	PyObject *list = Py_None;
+	float color[3] = {1.0f, 0.6f, 0.1f};
+	if (!PyArg_ParseTuple(args, "|O(fff):remixHighlight", &list, &color[0], &color[1], &color[2]))
+		return NULL;
+#ifdef WITH_REMIX
+	std::vector<KX_GameObject *> objects;
+	KX_Scene *scene = KX_GetActiveScene();
+	if (list != Py_None) {
+		PyObject *seq = PySequence_Fast(list, "remixHighlight(objects, color): objects must be a list of game objects");
+		if (!seq)
+			return NULL;
+		const Py_ssize_t n = PySequence_Fast_GET_SIZE(seq);
+		for (Py_ssize_t i = 0; i < n; i++) {
+			KX_GameObject *obj = NULL;
+			if (!scene || !ConvertPythonToGameObject(scene->GetLogicManager(), PySequence_Fast_GET_ITEM(seq, i), &obj,
+			                                         false, "remixHighlight(objects, color): "))
+			{
+				Py_DECREF(seq);
+				return NULL;
+			}
+			objects.push_back(obj);
+		}
+		Py_DECREF(seq);
+	}
+	KX_KetsjiEngine *engine = KX_GetActiveEngine();
+	KX_RemixRenderer *remix = engine ? engine->GetRemix() : NULL;
+	if (remix)
+		remix->SetHighlight(objects, color);
+#else
+	(void)list;
+#endif
+	Py_RETURN_NONE;
+}
+
 static PyObject *gPySetEyeSeparation(PyObject *, PyObject *args)
 {
 	float sep;
@@ -1644,6 +1702,10 @@ static struct PyMethodDef rasterizer_methods[] = {
 	 METH_VARARGS, "showMouse(bool visible)"},
 	{"setMousePosition",(PyCFunction) gPySetMousePosition,
 	 METH_VARARGS, "setMousePosition(int x,int y)"},
+	{"remixPick",(PyCFunction) gPyRemixPick, METH_VARARGS | METH_KEYWORDS,
+	 "remixPick(x, y, exact=False): the object RTX Remix drew at that window pixel, or None"},
+	{"remixHighlight",(PyCFunction) gPyRemixHighlight, METH_VARARGS,
+	 "remixHighlight(objects=None, color=(1.0, 0.6, 0.1)): outline objects in RTX Remix's picture"},
 	{"setBackgroundColor",(PyCFunction)gPySetBackgroundColor,METH_O,"set Background Color (rgb)"},
 	{"enableMotionBlur",(PyCFunction)gPyEnableMotionBlur,METH_VARARGS,"enable motion blur"},
 	{"disableMotionBlur",(PyCFunction)gPyDisableMotionBlur,METH_NOARGS,"disable motion blur"},

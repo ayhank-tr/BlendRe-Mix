@@ -111,6 +111,11 @@ public:
 	virtual double GetAverage(TimeCategory tc);
 
 	/**
+	 * BGE-Remix (P4.8): the last finished measurement of a category.
+	 */
+	double GetLast(TimeCategory tc);
+
+	/**
 	 * Returns average for grand total.
 	 */
 	virtual double GetAverage(void);
