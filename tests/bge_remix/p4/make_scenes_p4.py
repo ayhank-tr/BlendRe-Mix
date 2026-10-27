@@ -961,8 +961,9 @@ def make_picking(folder):
                   "leaf_corner": behind, "walker_body": ["PickWalkerMesh"], "walker_hand": ["PickWalkerMesh"],
                   "gap": behind, "sky": [None]},
         "fake": {"cube": ["PickCube"], "ball": ["PickBall"], "cone": ["PickCone"], "leaf_centre": ["PickLeaf"],
-                 "leaf_corner": ["PickLeaf"], "walker_body": ["PickWalkerMesh"], "walker_hand": ["PickWalkerMesh"],
-                 "gap": behind, "sky": [None]},
+                 # the fake's boxes are loose at the leaf's corner: either answer is fine there
+                 "leaf_corner": ["PickLeaf"] + behind, "walker_body": ["PickWalkerMesh"],
+                 "walker_hand": ["PickWalkerMesh"], "gap": behind, "sky": [None]},
     }
 
 

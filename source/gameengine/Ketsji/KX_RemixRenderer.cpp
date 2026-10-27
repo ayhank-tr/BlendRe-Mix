@@ -1136,9 +1136,10 @@ bool KX_RemixRenderer::DrawSkinned(KX_Scene *scene, KX_GameObject *obj, RAS_Defo
 	if (!mesh || !skin->RemixArmature()) {
 		return false;
 	}
-	const ID *arm = (const ID *)skin->RemixArmature()->GetArmature();
+	/* Armature copies (BGE gives each armature object its own data) still
+	 * share the mesh when the deform groups match: bones are sent per draw. */
 	const std::string name = mesh->GetName().ReadPtr();
-	const std::pair<std::string, const void *> key(name + "|" + (arm ? arm->name : ""), scene);
+	const std::pair<std::string, const void *> key(name + "|" + skin->RemixGroupKey(), scene);
 	const int polygons = mesh->NumPolygons();
 	std::map<std::pair<std::string, const void *>, SkinEntry>::iterator found = m_skins.find(key);
 	if (found != m_skins.end() && (found->second.name != name || found->second.polygons != polygons)) {
@@ -1228,7 +1229,13 @@ void KX_RemixRenderer::SkinCheck(KX_GameObject *obj, BL_SkinDeformer *skin, uint
 		int n = 0;
 		for (size_t s = 0; s < src.verts.size(); s++) {
 			std::vector<char> seen(src.verts[s].size(), 0);
-			for (uint32_t v : src.indices[s]) {
+			/* Visit the corners in the order the bridge sends them: it swaps
+			 * the 2nd and 3rd corner of every triangle for Remix's winding. */
+			const std::vector<uint32_t> &ix = src.indices[s];
+			for (size_t c = 0; c < ix.size(); c++) {
+				const size_t base = c - c % 3, corner = c % 3;
+				const size_t at = (base + 2 < ix.size() && corner) ? base + 3 - corner : c;
+				const uint32_t v = ix[at];
 				if (v >= seen.size() || seen[v]) {
 					continue;
 				}

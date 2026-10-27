@@ -316,6 +316,16 @@ int BL_SkinDeformer::RemixGroupCount()
 	return BLI_listbase_count(&m_objMesh->defbase);
 }
 
+std::string BL_SkinDeformer::RemixGroupKey()
+{
+	std::string key;
+	for (bDeformGroup *dg = (bDeformGroup *)m_objMesh->defbase.first; dg; dg = dg->next) {
+		key += dg->name;
+		key += '/';
+	}
+	return key;
+}
+
 bool BL_SkinDeformer::RemixCanSkin(std::string &r_why)
 {
 	if (!m_armobj || !m_bmesh || !m_bmesh->dvert) {

@@ -108,6 +108,9 @@ public:
 	bool RemixCanSkin(std::string &r_why);
 	/* Number of deform groups (vertex groups) of the mesh object. */
 	int RemixGroupCount();
+	/* The deform group names in order: two objects with the same mesh and
+	 * the same groups can share one skinned Remix mesh. */
+	std::string RemixGroupKey();
 	/* Weights per original (Blender) vertex, by mvert index. */
 	bool RemixVertexWeights(std::vector<RemixWeights> &r_weights);
 	/* RemixGroupCount() + 1 OpenGL matrices (column major): each deform
