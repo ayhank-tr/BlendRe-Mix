@@ -668,6 +668,7 @@ void RE_engine_report(struct RenderEngine *engine, int type, const char *msg) RE
 ListBase R_engines = {NULL, NULL};
 void RE_engine_free(struct RenderEngine *engine) RET_NONE
 struct RenderEngineType *RE_engines_find(const char *idname) RET_NULL
+const char *RE_engine_id_scene(const struct Scene *scene) RET_NULL  /* BGE-Remix */
 void RE_engine_update_memory_stats(struct RenderEngine *engine, float mem_used, float mem_peak) RET_NONE
 struct RenderEngine *RE_engine_create(struct RenderEngineType *type) RET_NULL
 void RE_engine_frame_set(struct RenderEngine *engine, int frame, float subframe) RET_NONE
