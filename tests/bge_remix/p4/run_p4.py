@@ -50,10 +50,14 @@ def make_scenes(ours, out):
     code, text, _ = p2.run([p2.exe(ours, "blender"), "--background", "--factory-startup",
                             "--python", os.path.join(HERE, "make_scenes_p4.py"), "--", scenes],
                            p2.base_env(out, "make"), os.path.join(out, "make_scenes_p4.log"))
-    if code != 0 or "Traceback" in text:
+    expected = p2.read_json(os.path.join(scenes, "p4_expected.json"))
+    if code != 0 or not expected:
         print("\n".join(text.splitlines()[-40:]))
         raise SystemExit("making the P4 test scenes failed, see make_scenes_p4.log")
-    return scenes, p2.read_json(os.path.join(scenes, "p4_expected.json"))
+    for name, tb in expected.get("failed", {}).items():
+        # the tests of that scene fail; the others still run
+        print("making the %s scene failed:\n%s" % (name, tb))
+    return scenes, expected
 
 
 def hexfield(line, key):
@@ -146,170 +150,205 @@ def run_ci(args, out):
         with open(os.path.join(out, name + ".log"), encoding="utf-8", errors="replace") as f:
             return f.read()
 
-    # T4.1a-c: the characters
-    ch = expected["characters"]
-    log, env = mock_env("characters", {"BGE_REMIX_SKIN_CHECK": SKIN_FRAMES, "BGE_REMIX_MOCK_SKIN_FRAMES": SKIN_FRAMES})
-    r = p2.player(args.ours, out, "characters", os.path.join(scenes, "p4_characters.blend"), env)
-    lines = p2.read_lines(log)
-    st = r["stats"]
-    skin = mesh_lines(lines, hashes("skin", ch["mannequin_mesh"]))
-    bar = mesh_lines(lines, hashes("skin", ch["bar_mesh"]))
-    pres = [p for p in presents(lines)][10:]
-    want_bones = 3 * (ch["groups"] + 1) + (ch["bar_groups"] + 1)
-    c = {
-        "the player ran 300 frames": ran(r),
-        "the Mannequin's skinned mesh was sent once": len(skin) == 1,
-        "the bar's skinned mesh was sent once": len(bar) == 1,
-        "4 bones per vertex (the belt has vertices with 4)": bool(skin) and skin[0].get("bpv") == 4,
-        "every weight between 0 and 1, adding up to at most 1": bool(skin) and skin[0].get("bad_weights") == 0 and
-        skin[0].get("weight_overflow", 1) < 1e-3,
-        "bone indices below 16 (15 groups and the identity)": bool(skin) and skin[0].get("max_bone", 99) <= ch["groups"],
-        "4 skinned draws every frame (3 Mannequins and the bar)": bool(pres) and all(p.get("skinned") == 4 for p in pres),
-        "%d bone matrices every frame" % want_bones: bool(pres) and all(p.get("bones") == want_bones for p in pres),
-        "the bones move (50 or more different poses)": len(set(p["bonehash"] for p in pres)) >= 50,
-        "two skinned meshes for four objects": st.get("skin_meshes") == 2 and st.get("skinned_objects") == 4,
-        "no object fell back to CPU skinning": st.get("cpu_skin_notes") == 0,
-    }
-    res["T4.1a"] = dict(p2.test(c), detail={"skin_mesh": skin, "bar_mesh": bar, "stats": st,
-                                            "present_sample": pres[:3]})
+    def guarded(scene, keys, fn):
+        """run one scene's checks; a scene that could not be made, or an
+        error in the checks, fails its tests with the reason"""
+        if expected.get(scene) is None:
+            why = (expected.get("failed", {}).get(scene) or "not made").strip().splitlines()[-1]
+            for k in keys:
+                res[k] = dict(p2.test({"the %s scene was made (%s)" % (scene, why): False}))
+            return
+        try:
+            fn()
+        except Exception:
+            import traceback
+            text = traceback.format_exc()
+            print(text)
+            for k in keys:
+                if k not in res:
+                    res[k] = dict(p2.test({"checks ran without an error (%s)" % text.strip().splitlines()[-1]: False}),
+                                  traceback=text)
 
-    gpu = skinned_lines(lines, "Skinned ")
-    cpu = skinned_lines(text_of("characters").splitlines(), "BGE-Remix skincheck ")
-    errs = {}
-    for key, a in cpu.items():
-        b = gpu.get(key)
-        if b is None or len(a) != len(b):
-            errs[str(key)] = "missing" if b is None else "%d vs %d vertices" % (len(a), len(b))
-            continue
-        errs[str(key)] = max(math.sqrt(sum((x - y) ** 2 for x, y in zip(p, q))) for p, q in zip(a, b))
-    worst = max([e for e in errs.values() if isinstance(e, float)] or [0.0])
-    c = {
-        "12 comparisons (4 objects on 3 frames)": len(cpu) == 12,
-        "every one matched with the fake runtime's": all(isinstance(e, float) for e in errs.values()) and bool(errs),
-        "within 1 mm of BGE's own skinning": bool(errs) and worst < 0.001,
-    }
-    res["T4.1b"] = dict(p2.test(c), detail={"max_error_m": worst, "per_object_frame": errs})
+    def characters():
+        # T4.1a-c: the characters
+        ch = expected["characters"]
+        log, env = mock_env("characters", {"BGE_REMIX_SKIN_CHECK": SKIN_FRAMES, "BGE_REMIX_MOCK_SKIN_FRAMES": SKIN_FRAMES})
+        r = p2.player(args.ours, out, "characters", os.path.join(scenes, "p4_characters.blend"), env)
+        lines = p2.read_lines(log)
+        st = r["stats"]
+        skin = mesh_lines(lines, hashes("skin", ch["mannequin_mesh"]))
+        bar = mesh_lines(lines, hashes("skin", ch["bar_mesh"]))
+        pres = [p for p in presents(lines)][10:]
+        want_bones = 3 * (ch["groups"] + 1) + (ch["bar_groups"] + 1)
+        c = {
+            "the player ran 300 frames": ran(r),
+            "the Mannequin's skinned mesh was sent once": len(skin) == 1,
+            "the bar's skinned mesh was sent once": len(bar) == 1,
+            "4 bones per vertex (the belt has vertices with 4)": bool(skin) and skin[0].get("bpv") == 4,
+            "every weight between 0 and 1, adding up to at most 1": bool(skin) and skin[0].get("bad_weights") == 0 and
+            skin[0].get("weight_overflow", 1) < 1e-3,
+            "bone indices below 16 (15 groups and the identity)": bool(skin) and skin[0].get("max_bone", 99) <= ch["groups"],
+            "4 skinned draws every frame (3 Mannequins and the bar)": bool(pres) and all(p.get("skinned") == 4 for p in pres),
+            "%d bone matrices every frame" % want_bones: bool(pres) and all(p.get("bones") == want_bones for p in pres),
+            "the bones move (50 or more different poses)": len(set(p["bonehash"] for p in pres)) >= 50,
+            "two skinned meshes for four objects": st.get("skin_meshes") == 2 and st.get("skinned_objects") == 4,
+            "no object fell back to CPU skinning": st.get("cpu_skin_notes") == 0,
+        }
+        res["T4.1a"] = dict(p2.test(c), detail={"skin_mesh": skin, "bar_mesh": bar, "stats": st,
+                                                "present_sample": pres[:3]})
 
-    pulse = mesh_lines(lines, hashes("deformed", ch["pulse"]))
-    monkey = mesh_lines(lines, hashes("deformed", ch["monkey"]))
-    base_indices = ch["monkey_faces"] * 6
-    c = {
-        "the pulsing ball sent again as it changes (10 times or more)": len(pulse) >= 10,
-        "the monkey sent once": len(monkey) == 1,
-        "the monkey subdivided (more than 8 times its own triangles)": bool(monkey) and
-        monkey[0].get("indices", 0) > 8 * base_indices,
-        "deformed on the CPU: 2 objects": st.get("deformed_objects") == 2,
-    }
-    res["T4.1c"] = dict(p2.test(c), detail={"pulse_sends": len(pulse), "monkey": monkey})
+        gpu = skinned_lines(lines, "Skinned ")
+        cpu = skinned_lines(text_of("characters").splitlines(), "BGE-Remix skincheck ")
+        errs = {}
+        for key, a in cpu.items():
+            b = gpu.get(key)
+            if b is None or len(a) != len(b):
+                errs[str(key)] = "missing" if b is None else "%d vs %d vertices" % (len(a), len(b))
+                continue
+            errs[str(key)] = max(math.sqrt(sum((x - y) ** 2 for x, y in zip(p, q))) for p, q in zip(a, b))
+        worst = max([e for e in errs.values() if isinstance(e, float)] or [0.0])
+        c = {
+            "12 comparisons (4 objects on 3 frames)": len(cpu) == 12,
+            "every one matched with the fake runtime's": all(isinstance(e, float) for e in errs.values()) and bool(errs),
+            "within 1 mm of BGE's own skinning": bool(errs) and worst < 0.001,
+        }
+        res["T4.1b"] = dict(p2.test(c), detail={"max_error_m": worst, "per_object_frame": errs})
 
-    # T4.2a: physics
-    ph = expected["physics"]
-    log, env = mock_env("physics", {"BGE_REMIX_MOCK_DRAWS_FRAME": "20,280"})
-    r = p2.player(args.ours, out, "physics", os.path.join(scenes, "p4_physics.blend"), env)
-    lines = p2.read_lines(log)
-    dl = draws(lines)
-    box_hashes = set()
-    for k in range(5):
-        box_hashes |= hashes("mesh", "Box%d_000Mesh" % k)
-    ball_hashes = hashes("mesh", "BallMesh")
-    early = {d["pick"]: d for d in dl if d["frame"] == 20}
-    late = {d["pick"]: d for d in dl if d["frame"] == 280}
-    moved = 0
-    bodies = [p for p, d in late.items() if d["mesh_int"] in box_hashes | ball_hashes]
-    for pid in bodies:
-        if pid in early:
-            a, b = early[pid]["m"], late[pid]["m"]
-            if math.sqrt(sum((a[i] - b[i]) ** 2 for i in (3, 7, 11))) > 0.5:
-                moved += 1
-    cloth = [d for d in dl if d["mesh_int"] in hashes("deformed", ph["cloth"])]
-    identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]
-    cloth_sends = mesh_lines(lines, hashes("deformed", ph["cloth"]))
-    pres = presents(lines)[5:]
-    c = {
-        "the player ran 300 frames": ran(r),
-        "200 rigid bodies drawn": len(bodies) == 200,
-        "180 or more of them fell more than 0.5 m": moved >= 180,
-        "every frame draws all of them": bool(pres) and all(p.get("draws", 0) >= 200 for p in pres),
-        "the cloth sent again as it falls (20 times or more)": len(cloth_sends) >= 20,
-        "the cloth drawn in world space": bool(cloth) and all(p2.close(d["m"], identity, 1e-4) for d in cloth),
-    }
-    res["T4.2a"] = dict(p2.test(c), detail={"bodies": len(bodies), "moved": moved, "cloth_sends": len(cloth_sends),
-                                            "stats": r["stats"]})
+        pulse = mesh_lines(lines, hashes("deformed", ch["pulse"]))
+        monkey = mesh_lines(lines, hashes("deformed", ch["monkey"]))
+        base_indices = ch["monkey_faces"] * 6
+        c = {
+            "the pulsing ball sent again as it changes (10 times or more)": len(pulse) >= 10,
+            "the monkey sent once": len(monkey) == 1,
+            "the monkey subdivided (more than 8 times its own triangles)": bool(monkey) and
+            monkey[0].get("indices", 0) > 8 * base_indices,
+            "deformed on the CPU: 2 objects": st.get("deformed_objects") == 2,
+        }
+        res["T4.1c"] = dict(p2.test(c), detail={"pulse_sends": len(pulse), "monkey": monkey})
 
-    # T4.3a, T4.5a: the fountain
-    fo = expected["fountain"]
-    log, env = mock_env("fountain", {"BGE_REMIX_MOCK_DRAWS_FRAME": "400", "BGE_REMIX_P2_FRAMES": "420",
-                                     "BGE_REMIX_P2_SECONDS": "8"})
-    r = p2.player(args.ours, out, "fountain", os.path.join(scenes, "p4_fountain.blend"), env)
-    lines = p2.read_lines(log)
-    dl = draws(lines)
-    cam = fo["camera"]
-    sparks = [d for d in dl if d["mesh_int"] in hashes("mesh", fo["spark_mesh"])]
-    trees = [d for d in dl if d["mesh_int"] in hashes("mesh", fo["tree_mesh"])]
-    spark_err = 0.0
-    for d in sparks:
-        m = d["m"]
-        pos = [m[3], m[7], m[11]]
-        spark_err = max(spark_err, angle(column(m, 0), [cam[i] - pos[i] for i in range(3)]))
-    tree_err = 0.0
-    for d in trees:
-        m = d["m"]
-        pos = [m[3], m[7], m[11]]
-        to_cam = [cam[0] - pos[0], cam[1] - pos[1], 0.0]
-        tree_err = max(tree_err, angle(column(m, 0), to_cam), angle(column(m, 2), [0, 0, 1]))
-    drop_sends = mesh_lines(lines, hashes("mesh", "DropMesh"))
-    spark_sends = mesh_lines(lines, hashes("mesh", fo["spark_mesh"]))
-    pres = presents(lines)
-    most = max([p.get("draws", 0) for p in pres] or [0])
-    c = {
-        "the player ran 8 s": ran(r, 420),
-        "drop and spark meshes created once each": len(drop_sends) == 1 and len(spark_sends) == 1,
-        "400 or more objects drawn at once": most >= 400,
-        "sparks drawn as particles": r["stats"].get("particle_draws", 0) >= 20,
-        "sparks face the camera within 1 degree": bool(sparks) and spark_err < 1.0,
-        "the tree upright and turned to the camera within 1 degree": bool(trees) and tree_err < 1.0,
-    }
-    res["T4.3a"] = dict(p2.test(c), detail={"sparks_checked": len(sparks), "spark_error_deg": spark_err,
-                                            "tree_error_deg": tree_err, "most_draws": most, "stats": r["stats"]})
 
-    em = fo["emitter"]
-    emit = [p2.parse_fields(l) for l in lines if l.startswith("Emitter ") and
-            hexfield(l, "mesh") in hashes("mesh", em["mesh"])]
-    e = emit[-1] if emit else {}
-    life = e.get("life", [0, 0]) if isinstance(e.get("life"), list) else [0, 0]
-    size = e.get("size", [0, 0]) if isinstance(e.get("size"), list) else [0, 0]
-    c = {
-        "the emitter reaches Remix with GPU particles": bool(emit) and r["stats"].get("gpu_emitters", 0) >= 1,
-        "rate %.1f per second" % em["rate"]: p2.close(e.get("rate", 0), em["rate"], 1e-2),
-        "lifetime %.2f to %.2f s" % (em["life_min"], em["life_max"]): p2.close(life, [em["life_min"], em["life_max"]], 1e-2),
-        "start speed 3 m/s (300 cm/s) along the normal": p2.close(e.get("speed", 0), em["speed_cm"], 1e-3),
-        "spread %.1f degrees" % em["cone"]: p2.close(e.get("cone", 0), em["cone"], 1e-2),
-        "gravity %.0f cm/s2" % em["gravity_cm"]: p2.close(e.get("gravity", 0), em["gravity_cm"], 1e-2),
-        "size 1.5 to 3 cm": p2.close(size, [em["size_min_cm"], em["size_max_cm"]], 1e-2),
-        "the emitter plane itself hidden": e.get("hide") == em["hide"],
-        "bounces off the floor (Collision)": e.get("collide") == em["collide"] and
-        p2.close(e.get("restitution", 0), em["restitution"], 1e-2),
-    }
-    res["T4.5a"] = dict(p2.test(c), detail={"emitter": e})
+    guarded('characters', ['T4.1a', 'T4.1b', 'T4.1c'], characters)
 
-    # T4.4a: picking
-    pk = expected["picking"]
-    pick_out = os.path.join(out, "picking_points.json")
-    if os.path.isfile(pick_out):
-        os.remove(pick_out)
-    log, env = mock_env("picking", {"BGE_REMIX_P4_PICK_OUT": pick_out, "BGE_REMIX_P4_FREEZE": "20"})
-    r = p2.player(args.ours, out, "picking", os.path.join(scenes, "p4_picking.blend"), env, size=(1280, 720))
-    lines = p2.read_lines(log)
-    got = {p["point"]: p for p in (p2.read_json(pick_out) or [])}
-    c = {"the player ran 300 frames": ran(r), "all 9 points tried": len(got) == len(pk["points"])}
-    for name in pk["points"]:
-        g = got.get(name, {})
-        c["%s: physics %s" % (name, " or ".join(str(x) for x in pk["physics"][name]))] = \
-            g.get("physics") in pk["physics"][name]
-        c["%s: Remix pick %s" % (name, " or ".join(str(x) for x in pk["fake"][name]))] = \
-            g.get("remix") in pk["fake"][name]
-    c["outlines asked for"] = any(p.get("highlighted", 0) > 0 for p in presents(lines))
-    res["T4.4a"] = dict(p2.test(c), detail={"points": got, "stats": r["stats"]})
+    def physics():
+        # T4.2a: physics
+        ph = expected["physics"]
+        log, env = mock_env("physics", {"BGE_REMIX_MOCK_DRAWS_FRAME": "20,280"})
+        r = p2.player(args.ours, out, "physics", os.path.join(scenes, "p4_physics.blend"), env)
+        lines = p2.read_lines(log)
+        dl = draws(lines)
+        box_hashes = set()
+        for k in range(5):
+            box_hashes |= hashes("mesh", "Box%d_000Mesh" % k)
+        ball_hashes = hashes("mesh", "BallMesh")
+        early = {d["pick"]: d for d in dl if d["frame"] == 20}
+        late = {d["pick"]: d for d in dl if d["frame"] == 280}
+        moved = 0
+        bodies = [p for p, d in late.items() if d["mesh_int"] in box_hashes | ball_hashes]
+        for pid in bodies:
+            if pid in early:
+                a, b = early[pid]["m"], late[pid]["m"]
+                if math.sqrt(sum((a[i] - b[i]) ** 2 for i in (3, 7, 11))) > 0.5:
+                    moved += 1
+        cloth = [d for d in dl if d["mesh_int"] in hashes("deformed", ph["cloth"])]
+        identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]
+        cloth_sends = mesh_lines(lines, hashes("deformed", ph["cloth"]))
+        pres = presents(lines)[5:]
+        c = {
+            "the player ran 300 frames": ran(r),
+            "200 rigid bodies drawn": len(bodies) == 200,
+            "180 or more of them fell more than 0.5 m": moved >= 180,
+            "every frame draws all of them": bool(pres) and all(p.get("draws", 0) >= 200 for p in pres),
+            "the cloth sent again as it falls (20 times or more)": len(cloth_sends) >= 20,
+            "the cloth drawn in world space": bool(cloth) and all(p2.close(d["m"], identity, 1e-4) for d in cloth),
+        }
+        res["T4.2a"] = dict(p2.test(c), detail={"bodies": len(bodies), "moved": moved, "cloth_sends": len(cloth_sends),
+                                                "stats": r["stats"]})
+
+
+    guarded('physics', ['T4.2a'], physics)
+
+    def fountain():
+        # T4.3a, T4.5a: the fountain
+        fo = expected["fountain"]
+        log, env = mock_env("fountain", {"BGE_REMIX_MOCK_DRAWS_FRAME": "400", "BGE_REMIX_P2_FRAMES": "420",
+                                         "BGE_REMIX_P2_SECONDS": "8"})
+        r = p2.player(args.ours, out, "fountain", os.path.join(scenes, "p4_fountain.blend"), env)
+        lines = p2.read_lines(log)
+        dl = draws(lines)
+        cam = fo["camera"]
+        sparks = [d for d in dl if d["mesh_int"] in hashes("mesh", fo["spark_mesh"])]
+        trees = [d for d in dl if d["mesh_int"] in hashes("mesh", fo["tree_mesh"])]
+        spark_err = 0.0
+        for d in sparks:
+            m = d["m"]
+            pos = [m[3], m[7], m[11]]
+            spark_err = max(spark_err, angle(column(m, 0), [cam[i] - pos[i] for i in range(3)]))
+        tree_err = 0.0
+        for d in trees:
+            m = d["m"]
+            pos = [m[3], m[7], m[11]]
+            to_cam = [cam[0] - pos[0], cam[1] - pos[1], 0.0]
+            tree_err = max(tree_err, angle(column(m, 0), to_cam), angle(column(m, 2), [0, 0, 1]))
+        drop_sends = mesh_lines(lines, hashes("mesh", "DropMesh"))
+        spark_sends = mesh_lines(lines, hashes("mesh", fo["spark_mesh"]))
+        pres = presents(lines)
+        most = max([p.get("draws", 0) for p in pres] or [0])
+        c = {
+            "the player ran 8 s": ran(r, 420),
+            "drop and spark meshes created once each": len(drop_sends) == 1 and len(spark_sends) == 1,
+            "400 or more objects drawn at once": most >= 400,
+            "sparks drawn as particles": r["stats"].get("particle_draws", 0) >= 20,
+            "sparks face the camera within 1 degree": bool(sparks) and spark_err < 1.0,
+            "the tree upright and turned to the camera within 1 degree": bool(trees) and tree_err < 1.0,
+        }
+        res["T4.3a"] = dict(p2.test(c), detail={"sparks_checked": len(sparks), "spark_error_deg": spark_err,
+                                                "tree_error_deg": tree_err, "most_draws": most, "stats": r["stats"]})
+
+        em = fo["emitter"]
+        emit = [p2.parse_fields(l) for l in lines if l.startswith("Emitter ") and
+                hexfield(l, "mesh") in hashes("mesh", em["mesh"])]
+        e = emit[-1] if emit else {}
+        life = e.get("life", [0, 0]) if isinstance(e.get("life"), list) else [0, 0]
+        size = e.get("size", [0, 0]) if isinstance(e.get("size"), list) else [0, 0]
+        c = {
+            "the emitter reaches Remix with GPU particles": bool(emit) and r["stats"].get("gpu_emitters", 0) >= 1,
+            "rate %.1f per second" % em["rate"]: p2.close(e.get("rate", 0), em["rate"], 1e-2),
+            "lifetime %.2f to %.2f s" % (em["life_min"], em["life_max"]): p2.close(life, [em["life_min"], em["life_max"]], 1e-2),
+            "start speed 3 m/s (300 cm/s) along the normal": p2.close(e.get("speed", 0), em["speed_cm"], 1e-3),
+            "spread %.1f degrees" % em["cone"]: p2.close(e.get("cone", 0), em["cone"], 1e-2),
+            "gravity %.0f cm/s2" % em["gravity_cm"]: p2.close(e.get("gravity", 0), em["gravity_cm"], 1e-2),
+            "size 1.5 to 3 cm": p2.close(size, [em["size_min_cm"], em["size_max_cm"]], 1e-2),
+            "the emitter plane itself hidden": e.get("hide") == em["hide"],
+            "bounces off the floor (Collision)": e.get("collide") == em["collide"] and
+            p2.close(e.get("restitution", 0), em["restitution"], 1e-2),
+        }
+        res["T4.5a"] = dict(p2.test(c), detail={"emitter": e})
+
+
+    guarded('fountain', ['T4.3a', 'T4.5a'], fountain)
+
+    def picking():
+        # T4.4a: picking
+        pk = expected["picking"]
+        pick_out = os.path.join(out, "picking_points.json")
+        if os.path.isfile(pick_out):
+            os.remove(pick_out)
+        log, env = mock_env("picking", {"BGE_REMIX_P4_PICK_OUT": pick_out, "BGE_REMIX_P4_FREEZE": "20"})
+        r = p2.player(args.ours, out, "picking", os.path.join(scenes, "p4_picking.blend"), env, size=(1280, 720))
+        lines = p2.read_lines(log)
+        got = {p["point"]: p for p in (p2.read_json(pick_out) or [])}
+        c = {"the player ran 300 frames": ran(r), "all 9 points tried": len(got) == len(pk["points"])}
+        for name in pk["points"]:
+            g = got.get(name, {})
+            c["%s: physics %s" % (name, " or ".join(str(x) for x in pk["physics"][name]))] = \
+                g.get("physics") in pk["physics"][name]
+            c["%s: Remix pick %s" % (name, " or ".join(str(x) for x in pk["fake"][name]))] = \
+                g.get("remix") in pk["fake"][name]
+        c["outlines asked for"] = any(p.get("highlighted", 0) > 0 for p in presents(lines))
+        res["T4.4a"] = dict(p2.test(c), detail={"points": got, "stats": r["stats"]})
+
+
+    guarded('picking', ['T4.4a'], picking)
 
     # T4.0: official 2.79b
     res["T4.0"] = check_stock(args, out, scenes)

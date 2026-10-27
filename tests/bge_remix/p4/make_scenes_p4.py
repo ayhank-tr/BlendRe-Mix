@@ -25,6 +25,7 @@ import math
 import os
 import random
 import sys
+import traceback
 
 import bpy
 from mathutils import Matrix, Quaternion, Vector
@@ -371,6 +372,13 @@ def armature(scene, name, data=None):
     else:
         ob = bpy.data.objects.new(name, data)
         scene.objects.link(ob)
+        # a new object on existing armature data has no pose until it is
+        # evaluated (or has been in pose mode)
+        scene.update()
+        if ob.pose is None:
+            select_only(ob)
+            bpy.ops.object.mode_set(mode='POSE')
+            bpy.ops.object.mode_set(mode='OBJECT')
     return ob
 
 
@@ -957,12 +965,18 @@ def make_picking(folder):
 
 def main():
     folder = p2.out_dir()
-    expected = {}
-    expected["characters"] = make_characters(folder)
-    expected["crowd"] = make_crowd(folder)
-    expected["physics"] = make_physics(folder)
-    expected["fountain"] = make_fountain(folder)
-    expected["picking"] = make_picking(folder)
+    expected = {"failed": {}}
+    # each scene on its own: one that fails does not stop the others (the
+    # tests of the others still run, and every error shows in one CI run)
+    for name, fn in (("characters", make_characters), ("crowd", make_crowd), ("physics", make_physics),
+                     ("fountain", make_fountain), ("picking", make_picking)):
+        try:
+            expected[name] = fn(folder)
+        except Exception:
+            text = traceback.format_exc()
+            print("BGE-Remix: making the %s scene failed:\n%s" % (name, text))
+            expected[name] = None
+            expected["failed"][name] = text
     with open(os.path.join(folder, "p4_expected.json"), "w") as f:
         json.dump(expected, f, indent=2)
     print("BGE-Remix: wrote", os.path.join(folder, "p4_expected.json"))
