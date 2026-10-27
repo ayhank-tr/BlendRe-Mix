@@ -472,7 +472,9 @@ def run_rtx(args, out):
         tip[key] = red_centroid(runs[key]["screenshot"])
 
     def near(a, b):
-        return bool(a and b) and math.hypot(a[0] - b[0], a[1] - b[1]) < 25.0
+        # same place and about the same size: a broken bar can keep its
+        # centre but lose half its red tip (RTX run 1: documented layout)
+        return bool(a and b) and math.hypot(a[0] - b[0], a[1] - b[1]) < 10.0 and 0.7 < b[2] / float(a[2]) < 1.4
 
     matching = [k for k, _, _ in variants if near(tip["opengl"], tip[k])]
     rx = runs["default"]
@@ -503,9 +505,18 @@ def run_rtx(args, out):
 
     # T4.3 (and T4.5): the fountain
     print("T4.3: the fountain...", flush=True)
-    fo = player(args.ours, out, "T4.3_fountain", blend("p4_fountain"), timed(8), size=(1280, 720), cwd=out)
-    gl3 = player(args.ours, out, "T4.3_opengl", blend("p4_fountain"), timed(8), size=(1280, 720), args=opengl,
-                    cwd=out)
+    # both screenshots at logic tic 420 (7 s of simulation): Remix can spend
+    # seconds compiling the particle shaders, which held its simulation back
+    def at_tic(tag):
+        return {"BGE_REMIX_P4_SHOT": os.path.join(out, tag + "_tic420.png"), "BGE_REMIX_P4_SHOT_TIC": "420"}
+
+    fo = player(args.ours, out, "T4.3_fountain", blend("p4_fountain"), timed(20, at_tic("T4.3_fountain")),
+                   size=(1280, 720), cwd=out)
+    gl3 = player(args.ours, out, "T4.3_opengl", blend("p4_fountain"), timed(10, at_tic("T4.3_opengl")),
+                    size=(1280, 720), args=opengl, cwd=out)
+    for run, tag in ((fo, "T4.3_fountain"), (gl3, "T4.3_opengl")):
+        if os.path.exists(os.path.join(out, tag + "_tic420.png")):
+            run["screenshot"] = os.path.join(out, tag + "_tic420.png")
     ok_o, _ = p2.has_picture(fo["screenshot"])
     res["T4.3"] = {"ok": fo["exit"] == 0 and bool(ok_o) and fo["stats"].get("gpu_emitters", 0) >= 1,
                    "stats": fo["stats"],
@@ -556,6 +567,20 @@ def run_rtx(args, out):
                       "skinned_objects": b["stats"].get("skinned_objects"),
                       "deformed_objects": b["stats"].get("deformed_objects"),
                       "draws": b["stats"].get("draws_last_frame")}
+    # B4.3 breakdown: the fountain without one kind of content at a time,
+    # and in OpenGL (what BGE itself spends: logic, physics, drawing)
+    print("B4.3 breakdown: the fountain without drops, halo sparks or GPU sparks...", flush=True)
+    parts = {}
+    for tag, extra, a in (("no_drops", {"BGE_REMIX_P4_NO_DROPS": "1"}, []),
+                          ("no_halo_sparks", {"BGE_REMIX_P4_NO_SPARKS": "1"}, []),
+                          ("no_gpu_sparks", {"BGE_REMIX_P4_NO_EMITTER": "1"}, []),
+                          ("opengl", {}, opengl)):
+        e = timed(15, extra)
+        e.pop("RTX_ENABLE_ASYNC_COMPILATION")
+        b = player(args.ours, out, "B4.3_" + tag, blend("p4_fountain"), e, size=(1920, 1080), args=a, cwd=out)
+        parts[tag] = {"frame_ms_median": b["probe"].get("frame_ms_median"), "fps": p2.fps(b["probe"].get("frame_ms_median")),
+                      "draws": b["stats"].get("draws_last_frame")}
+    bench["B4.3_breakdown"] = parts
     res["B4"] = bench
     res["B4"]["targets_60fps"] = all((bench[k]["fps"] or 0) >= 60 for k in ("B4.1_gpu", "B4.2_physics", "B4.3_fountain"))
     res["B4.4"] = {"pick_frames_mean": pr["stats"].get("pick_frames_mean"),
@@ -580,6 +605,9 @@ def run_rtx(args, out):
         lines.append("%-14s median %s ms = %s FPS, 95th pct %s ms, skinning/deforming %s ms a frame" % (
             k, p2._r(b["frame_ms_median"]), b["fps"], p2._r(b["frame_ms_p95"]), p2._r(b["dynamic_ms_mean"])))
     lines.append("     target (60 FPS): %s" % ("met" if res["B4"]["targets_60fps"] else "NOT met"))
+    for k, b in bench["B4.3_breakdown"].items():
+        lines.append("B4.3 %-16s median %s ms = %s FPS, %s draws" % (
+            k, p2._r(b["frame_ms_median"]), b["fps"], b["draws"]))
     lines.append("B4.4 pick answered after %s frames on average" % p2._r(res["B4.4"]["pick_frames_mean"]))
     slow = [(n, w) for n, w in sorted(res["warmup"].items()) if w is None or w > 1.0]
     lines += ["", "Remix warm-up (start to first ray-traced frame)", "-" * 47]

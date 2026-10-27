@@ -85,18 +85,29 @@ g = bge.logic.globalDict
 if "p4_rng" not in g:
     g["p4_rng"] = random.Random(42)
 rng = g["p4_rng"]
-freeze = int(os.environ.get("BGE_REMIX_P4_FREEZE", "0"))
+env = os.environ
+freeze = int(env.get("BGE_REMIX_P4_FREEZE", "0"))
 t = ob.get("t", 0) + 1
 ob["t"] = t
+# RTX diagnostics: leave out one kind of content (benchmark B4.3 breakdown)
+drops = env.get("BGE_REMIX_P4_NO_DROPS") != "1"
+sparks = env.get("BGE_REMIX_P4_NO_SPARKS") != "1"
+if t == 1 and env.get("BGE_REMIX_P4_NO_EMITTER") == "1":
+    scene.objects["SparkEmitter"].visible = False
+# a screenshot at a given logic tic: the same moment of the simulation in
+# OpenGL and in Remix, however long Remix took to compile its shaders
+shot = env.get("BGE_REMIX_P4_SHOT")
+if shot and t == int(env.get("BGE_REMIX_P4_SHOT_TIC", "0")):
+    bge.render.makeScreenshot(shot)
 if not (freeze and t >= freeze):
-    for i in range(5):
+    for i in range(5 if drops else 0):
         d = scene.addObject("Drop", ob, 120)
         a = rng.uniform(0.0, 2.0 * math.pi)
         tilt = math.radians(rng.uniform(0.0, 20.0))
         speed = rng.uniform(3.2, 3.8)
         d.setLinearVelocity((speed * math.sin(tilt) * math.cos(a), speed * math.sin(tilt) * math.sin(a),
                              speed * math.cos(tilt)), False)
-    for i in range(3):
+    for i in range(3 if sparks else 0):
         s = scene.addObject("Spark", ob, 42)
         s.worldPosition = (ob.worldPosition.x + rng.uniform(-0.3, 0.3), ob.worldPosition.y + rng.uniform(-0.3, 0.3),
                            ob.worldPosition.z + rng.uniform(0.0, 0.2))

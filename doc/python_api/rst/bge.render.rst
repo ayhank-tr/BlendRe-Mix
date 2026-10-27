@@ -249,7 +249,7 @@ Functions
 .. function:: remixHighlight(objects=None, color=(1.0, 0.6, 0.1))
 
    BGE-Remix: outline these objects in RTX Remix's picture until the next call
-   (None or an empty list: no outline).
+   (None or an empty list: no outline). The other objects keep their colours.
 
    :arg objects: game objects or their names.
    :type objects: list

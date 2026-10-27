@@ -341,6 +341,10 @@ static brb_status startup_ex_impl(int mode, int width, int height, HWND parent, 
 	brb_set_config("rtx.leftHandedCoordinateSystem", "False");
 	brb_set_config("rtx.sceneScale", "0.01");
 	brb_set_config("rtx.captureShowMenuOnHotkey", "False");
+	/* Highlighting (bge.render.remixHighlight) outlines the objects; by
+	 * default Remix also greys out everything else, which suits its editor
+	 * but not a game (RTX run 1 of P4). */
+	brb_set_config("rtx.postfx.desaturateOthersOnHighlight", "False");
 	if (env_is("BGE_REMIX_NO_REPLACEMENTS", "1")) {
 		/* Captures need replacement assets off before the first frame (C1). */
 		brb_set_config("rtx.enableReplacementAssets", "False");

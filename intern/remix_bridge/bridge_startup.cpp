@@ -189,6 +189,10 @@ BRB_API brb_status brb_startup(int width, int height, int visible)
 	brb_set_config("rtx.leftHandedCoordinateSystem", "False");
 	brb_set_config("rtx.sceneScale", "0.01");
 	brb_set_config("rtx.captureShowMenuOnHotkey", "False");
+	/* Highlighting (bge.render.remixHighlight) outlines the objects; by
+	 * default Remix also greys out everything else, which suits its editor
+	 * but not a game (RTX run 1 of P4). */
+	brb_set_config("rtx.postfx.desaturateOthersOnHighlight", "False");
 
 	set_status(BRB_STATUS_RUNNING, "RTX Remix is running.");
 	return g_status;
