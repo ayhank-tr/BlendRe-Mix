@@ -279,6 +279,10 @@ extern "C" void StartKetsjiShell(struct bContext *C, struct ARegion *ar, rcti *c
 		
 		/* we do not support material mode in game engine, force change to texture mode */
 		if (drawtype == OB_MATERIAL) drawtype = OB_TEXTURE;
+		/* BGE-Remix: Rendered shading (OB_RENDER, 6) is KX_SHADOW (6) to the
+		 * rasterizer, which draws no scene (and so no RTX Remix): the game
+		 * started from a Rendered view is drawn textured */
+		if (drawtype == OB_RENDER) drawtype = OB_TEXTURE;
 		if (animation_record) usefixed= false; /* override since you don't want to run full-speed for sim recording */
 
 		// create the canvas and rasterizer

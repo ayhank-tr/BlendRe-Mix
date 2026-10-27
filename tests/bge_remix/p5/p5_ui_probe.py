@@ -157,18 +157,21 @@ def a_lamp():
 
 
 def a_add():
-    bpy.ops.mesh.primitive_cone_add(override(), location=(1.0, -1.5, 0.5))
+    # 'EXEC_DEFAULT', True: an undo step, as the menu's operator makes (from a
+    # script Blender makes none)
+    bpy.ops.mesh.primitive_cone_add(override(), 'EXEC_DEFAULT', True, location=(1.0, -1.5, 0.5))
     bpy.context.scene.objects.active.name = "AddedCone"
+    bpy.ops.ed.undo_push(message="Rename the cone")
 
 
 def a_delete():
     for o in bpy.context.scene.objects:
         o.select = o.name == "AddedCone"
-    bpy.ops.object.delete(override())
+    bpy.ops.object.delete(override(), 'EXEC_DEFAULT', True)
 
 
 def a_undo():
-    bpy.ops.ed.undo()
+    bpy.ops.ed.undo(override())
 
 
 def click(name):

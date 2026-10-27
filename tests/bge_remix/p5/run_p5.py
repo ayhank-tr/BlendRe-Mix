@@ -252,6 +252,9 @@ def run_ci(args, out):
                 diff(step("add"), step("delete"), "meshes_removed") == 1 and bridge(step("delete"), "draws") == st_exp.get("draws"),
             "undo brought it back": "AddedCone" in step("undo").get("objects", []) and
                 bridge(step("undo"), "draws") == st_exp.get("draws", 0) + 1,
+            # undo replaces every object, mesh and material in memory
+            "and the view started over for it": diff(step("delete"), step("undo"), "main_reloads") == 1 and
+                diff(step("delete"), step("undo"), "view_full_syncs") == 1,
         }
         res["T5.1"] = dict(p2.test(c), detail={k: {"stats": v.get("stats"), "objects": v.get("objects")}
                                                 for k, v in s.items() if not k.startswith("select_")})
@@ -370,10 +373,12 @@ def run_ci(args, out):
         c = {
             "Blender ran and quit cleanly": r["exit"] == 0 and r["probe"].get("finished") is True,
             "the view says why (%s)" % note: bool(note) and opened.get("stats", {}).get("view_frames", 1) == 0,
-            "F12 reports it and Blender ends cleanly": fr["exit"] == 0 and "RTX Remix" in fr["text"] and
-                not fr["traceback"],
+            # an engine's error makes "blender -b -f" end with exit code 1 (G.is_break)
+            "F12 reports why and Blender ends cleanly": fr["exit"] in (0, 1) and "Blender quit" in fr["text"] and
+                "No RTX Remix runtime" in fr["text"] and not fr["traceback"],
         }
-        res["T5.8"] = dict(p2.test(c), detail={"note": note})
+        res["T5.8"] = dict(p2.test(c), detail={"note": note, "f12_exit": fr["exit"],
+                                               "f12_errors": [l for l in fr["text"].splitlines() if "Error" in l]})
 
     guarded(["T5.8"], missing)
 

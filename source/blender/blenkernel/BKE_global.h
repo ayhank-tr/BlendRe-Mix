@@ -73,6 +73,10 @@ typedef struct Global {
 	/* to indicate render is busy, prevent renderwindow events etc */
 	bool is_rendering;
 
+	/* BGE-Remix: counts the times G.main was replaced (a file loaded, an undo
+	 * or redo step): render engines that keep data pointers start over */
+	int main_generation;
+
 	/* debug value, can be set from the UI and python, used for testing nonstandard features */
 	short debug_value;
 

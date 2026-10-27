@@ -204,6 +204,7 @@ struct Stats {
 	int highlighted = 0;       /* objects outlined in the last frame */
 	int gl_differences = 0;    /* BGE_REMIX_GL_CHECK */
 	int resized_frames = 0;    /* frames Remix changed size on */
+	int main_reloads = 0;      /* undo/redo/reload steps the view started over for */
 	int width = 0, height = 0; /* the last view frame's size */
 	int render_syncs = 0, render_frames = 0, render_reads = 0, render_width = 0, render_height = 0;
 	double render_seconds = 0.0; /* the last F12, from sync to result */
@@ -264,6 +265,8 @@ public:
 		m_hashes.clear();
 		m_draws.clear();
 		m_frame_lights.clear();
+		m_pick_ids.clear();
+		m_pick_objects.clear();
 		m_waiting = 0;
 	}
 
@@ -923,10 +926,12 @@ struct ViewSession {
 	RenderEngine *engine;
 	Sync sync;
 	bool need_full;
+	int main_generation; /* G.main_generation its records point into */
 	double last_change;
 	double last_draw;
 	float last_camera[32];
-	ViewSession(RenderEngine *e) : engine(e), sync("view"), need_full(true), last_change(0.0), last_draw(0.0)
+	ViewSession(RenderEngine *e)
+	    : engine(e), sync("view"), need_full(true), main_generation(G.main_generation), last_change(0.0), last_draw(0.0)
 	{
 		memset(last_camera, 0, sizeof(last_camera));
 	}
@@ -1040,7 +1045,9 @@ void BRMX_view_update(RenderEngine *engine, Main *bmain, Scene *scene, ARegion *
 	g_stats.view_updates++;
 	v->last_change = now_seconds();
 	const BRMX_Bridge *b = BRMX_bridge();
-	if (BRMX_owner() == v && !v->need_full && b && b->get_status() == BRB_STATUS_RUNNING) {
+	if (BRMX_owner() == v && !v->need_full && v->main_generation == G.main_generation && b &&
+	    b->get_status() == BRB_STATUS_RUNNING)
+	{
 		v->sync.update(b, bmain, scene, v3d->lay, false, false);
 		apply_scene_settings(scene, v->sync.exposure());
 	}
@@ -1092,6 +1099,14 @@ int BRMX_view_draw(RenderEngine *engine, Main *bmain, Scene *scene, ARegion *ar,
 	if (BRMX_owner_take(BRMX_OWNER_VIEW, v, view_lost)) {
 		v->sync.forget();
 		v->need_full = true;
+	}
+	if (v->main_generation != G.main_generation) {
+		/* an undo, redo or reload replaced every object, mesh and material:
+		 * the records point at freed data (whose addresses Blender may reuse) */
+		v->sync.clear(b);
+		v->need_full = true;
+		v->main_generation = G.main_generation;
+		g_stats.main_reloads++;
 	}
 	b->resize(width, height, 0, 0);
 	if (v->need_full) {
@@ -1268,10 +1283,14 @@ int BRMX_render_sync(RenderEngine *engine, Main *bmain, Scene *scene, const char
 		 * thread, without the render operator that starts Remix */
 		if (ensure_running(r->width, r->height, false, message)) {
 			b->resize(r->width, r->height, 0, 0);
+			message.clear();
 		}
-		message.clear();
+		/* else: why it did not start (no runtime, ...) */
 	}
-	if (!b || b->get_status() != BRB_STATUS_RUNNING) {
+	if (!message.empty()) {
+		/* set above */
+	}
+	else if (!b || b->get_status() != BRB_STATUS_RUNNING) {
 		message = "RTX Remix is not running (render again; it starts with the render).";
 	}
 	else if (BRMX_owner_kind() == BRMX_OWNER_GAME) {
@@ -1467,13 +1486,14 @@ const char *BRMX_view_stats_json(void)
 	         "\"last_draws\": %d, \"highlighted\": %d, \"gl_differences\": %d, \"resized_frames\": %d, "
 	         "\"width\": %d, \"height\": %d, \"render_syncs\": %d, \"render_frames\": %d, \"render_reads\": %d, "
 	         "\"render_width\": %d, \"render_height\": %d, \"render_seconds\": %.3f, \"full_sync_ms\": %.2f, "
-	         "\"owner\": %d, ",
+	         "\"owner\": %d, \"main_reloads\": %d, ",
 	         g_stats.view_updates, g_stats.view_draws, g_stats.view_frames, g_stats.view_fallbacks,
 	         g_stats.view_full_syncs, g_stats.meshes_sent, g_stats.materials_sent, g_stats.lights_sent,
 	         g_stats.meshes_removed, g_stats.last_meshes, g_stats.last_materials, g_stats.last_lights,
 	         g_stats.last_draws, g_stats.highlighted, g_stats.gl_differences, g_stats.resized_frames, g_stats.width,
 	         g_stats.height, g_stats.render_syncs, g_stats.render_frames, g_stats.render_reads, g_stats.render_width,
-	         g_stats.render_height, g_stats.render_seconds, g_stats.first_frame_ms, BRMX_owner_kind());
+	         g_stats.render_height, g_stats.render_seconds, g_stats.first_frame_ms, BRMX_owner_kind(),
+	         g_stats.main_reloads);
 	json = buf;
 	std::string note;
 	for (char c : g_stats.last_note) {
