@@ -18,7 +18,7 @@ official NVIDIA runtime. OpenGL stays the default renderer, and every stock
 | P1 | Remix bridge DLL and runtime loader | Done (bge-remix-p1) |
 | P2 | Game engine, static scenes | Done (bge-remix-p2) |
 | P3 | Materials and texture cache | Done (bge-remix-p3) |
-| P4 | Skinning, physics, particles, picking | In progress |
+| P4 | Skinning, physics, particles, picking | Done (bge-remix-p4) |
 | P5 | "RTX Remix" render engine for the 3D view and F12 | Planned |
 | P6 | OpenUSD mod export and capture import | Planned |
 | P7 | Hardening and release | Planned |
@@ -44,4 +44,5 @@ Blender is licensed under the GNU GPL v2 or later (see `COPYING` and
 `doc/license/`). New code in this fork uses the same license. The RTX Remix
 runtime is not included in this repository. It is downloaded separately from
 NVIDIA's official releases. The bridge DLL includes DirectXTex (MIT,
-`extern/directxtex`) to write the DDS textures Remix reads.
+`extern/directxtex`) to write the DDS textures Remix reads. The Windows build
+uses mimalloc (MIT, `extern/mimalloc`) as its memory allocator.
