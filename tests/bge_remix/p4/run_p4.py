@@ -60,6 +60,21 @@ def make_scenes(ours, out):
     return scenes, expected
 
 
+def player(ours, out, name, blend, env, **kw):
+    """p2.player, and the end of the game's output on the CI page when it
+    did not run cleanly (the log files are in the results artifact too)"""
+    r = p2.player(ours, out, name, blend, env, **kw)
+    if r["exit"] != 0 or r["traceback_in_output"] or not r["frames"]:
+        try:
+            with open(os.path.join(out, name + ".log"), encoding="utf-8", errors="replace") as f:
+                tail = f.read().splitlines()[-30:]
+        except OSError:
+            tail = ["(no log)"]
+        print("---- %s: exit %s, %s frames; the end of its output:" % (name, r["exit"], r["frames"]))
+        print("\n".join("    " + l for l in tail))
+    return r
+
+
 def hexfield(line, key):
     """a hash field as an int (parse_fields would read some as numbers)"""
     m = re.search(r"\b%s=([0-9a-fA-F]+)\b" % key, line)
@@ -173,7 +188,7 @@ def run_ci(args, out):
         # T4.1a-c: the characters
         ch = expected["characters"]
         log, env = mock_env("characters", {"BGE_REMIX_SKIN_CHECK": SKIN_FRAMES, "BGE_REMIX_MOCK_SKIN_FRAMES": SKIN_FRAMES})
-        r = p2.player(args.ours, out, "characters", os.path.join(scenes, "p4_characters.blend"), env)
+        r = player(args.ours, out, "characters", os.path.join(scenes, "p4_characters.blend"), env)
         lines = p2.read_lines(log)
         st = r["stats"]
         skin = mesh_lines(lines, hashes("skin", ch["mannequin_mesh"]))
@@ -233,7 +248,7 @@ def run_ci(args, out):
         # T4.2a: physics
         ph = expected["physics"]
         log, env = mock_env("physics", {"BGE_REMIX_MOCK_DRAWS_FRAME": "20,280"})
-        r = p2.player(args.ours, out, "physics", os.path.join(scenes, "p4_physics.blend"), env)
+        r = player(args.ours, out, "physics", os.path.join(scenes, "p4_physics.blend"), env)
         lines = p2.read_lines(log)
         dl = draws(lines)
         box_hashes = set()
@@ -272,7 +287,7 @@ def run_ci(args, out):
         fo = expected["fountain"]
         log, env = mock_env("fountain", {"BGE_REMIX_MOCK_DRAWS_FRAME": "400", "BGE_REMIX_P2_FRAMES": "420",
                                          "BGE_REMIX_P2_SECONDS": "8"})
-        r = p2.player(args.ours, out, "fountain", os.path.join(scenes, "p4_fountain.blend"), env)
+        r = player(args.ours, out, "fountain", os.path.join(scenes, "p4_fountain.blend"), env)
         lines = p2.read_lines(log)
         dl = draws(lines)
         cam = fo["camera"]
@@ -334,7 +349,7 @@ def run_ci(args, out):
         if os.path.isfile(pick_out):
             os.remove(pick_out)
         log, env = mock_env("picking", {"BGE_REMIX_P4_PICK_OUT": pick_out, "BGE_REMIX_P4_FREEZE": "20"})
-        r = p2.player(args.ours, out, "picking", os.path.join(scenes, "p4_picking.blend"), env, size=(1280, 720))
+        r = player(args.ours, out, "picking", os.path.join(scenes, "p4_picking.blend"), env, size=(1280, 720))
         lines = p2.read_lines(log)
         got = {p["point"]: p for p in (p2.read_json(pick_out) or [])}
         c = {"the player ran 300 frames": ran(r), "all 9 points tried": len(got) == len(pk["points"])}
@@ -364,6 +379,9 @@ def run_ci(args, out):
         for name, ok in res[k]["checks"].items():
             if not ok:
                 lines.append("         failed: " + name)
+        if not res[k]["ok"] and res[k].get("detail"):
+            text = json.dumps(res[k]["detail"], default=str)
+            lines.append("         detail: " + (text[:1500] + " ..." if len(text) > 1500 else text))
     lines += ["", "ALL PASS" if res["all_ok"] else "SOME TESTS FAILED (see results_p4.json and the .log files)"]
     return res, lines
 
@@ -375,7 +393,7 @@ def check_stock(args, out, scenes):
     c, d = {}, {}
     for name in ("p4_characters", "p4_crowd", "p4_physics", "p4_fountain", "p4_picking"):
         env = {"BGE_REMIX_P2_FRAMES": "300", "BGE_REMIX_P2_SECONDS": "0"}
-        r = p2.player(official, out, "stock_" + name, os.path.join(scenes, name + ".blend"), env)
+        r = player(official, out, "stock_" + name, os.path.join(scenes, name + ".blend"), env)
         d[name] = {"exit": r["exit"], "frames": r["frames"]}
         c["%s plays 300 frames" % name] = r["exit"] == 0 and r["frames"] >= 300 and not r["traceback_in_output"]
     return dict(p2.test(c), detail=d)
@@ -421,14 +439,14 @@ def run_rtx(args, out):
     # tell which bone space and which weight layout Remix 1.6.1 reads, from
     # where the bending bar's red tip lands (the same place as in OpenGL)
     print("T4.1: the characters in OpenGL and in Remix (three ways of sending bones)...", flush=True)
-    gl = p2.player(args.ours, out, "T4.1_opengl", blend("p4_characters"), timed(8, freeze), size=(1280, 720),
+    gl = player(args.ours, out, "T4.1_opengl", blend("p4_characters"), timed(8, freeze), size=(1280, 720),
                    args=opengl, cwd=out)
     variants = (("default", "Remix (default: object space, spaced weights)", {}),
                 ("world", "Remix, bones in world space", {"BGE_REMIX_BONES_WORLD": "1"}),
                 ("documented", "Remix, weights as remix_c.h describes", {"BGE_REMIX_SKIN_LAYOUT": "documented"}))
     runs = {}
     for key, label, extra in variants:
-        runs[key] = p2.player(args.ours, out, "T4.1_remix_" + key, blend("p4_characters"),
+        runs[key] = player(args.ours, out, "T4.1_remix_" + key, blend("p4_characters"),
                               timed(10, dict(freeze, **extra)), size=(1280, 720), cwd=out)
     tip = {"opengl": red_centroid(gl["screenshot"])}
     for key in runs:
@@ -451,9 +469,9 @@ def run_rtx(args, out):
 
     # T4.2: physics, falling and settled
     print("T4.2: 200 rigid bodies and a cloth...", flush=True)
-    fall = p2.player(args.ours, out, "T4.2_falling", blend("p4_physics"), timed(1.6), size=(1280, 720), cwd=out)
-    rest = p2.player(args.ours, out, "T4.2_settled", blend("p4_physics"), timed(10), size=(1280, 720), cwd=out)
-    gl2 = p2.player(args.ours, out, "T4.2_opengl", blend("p4_physics"), timed(10), size=(1280, 720), args=opengl,
+    fall = player(args.ours, out, "T4.2_falling", blend("p4_physics"), timed(1.6), size=(1280, 720), cwd=out)
+    rest = player(args.ours, out, "T4.2_settled", blend("p4_physics"), timed(10), size=(1280, 720), cwd=out)
+    gl2 = player(args.ours, out, "T4.2_opengl", blend("p4_physics"), timed(10), size=(1280, 720), args=opengl,
                     cwd=out)
     ok_f, _ = p2.has_picture(fall["screenshot"])
     ok_s, _ = p2.has_picture(rest["screenshot"])
@@ -466,8 +484,8 @@ def run_rtx(args, out):
 
     # T4.3 (and T4.5): the fountain
     print("T4.3: the fountain...", flush=True)
-    fo = p2.player(args.ours, out, "T4.3_fountain", blend("p4_fountain"), timed(8), size=(1280, 720), cwd=out)
-    gl3 = p2.player(args.ours, out, "T4.3_opengl", blend("p4_fountain"), timed(8), size=(1280, 720), args=opengl,
+    fo = player(args.ours, out, "T4.3_fountain", blend("p4_fountain"), timed(8), size=(1280, 720), cwd=out)
+    gl3 = player(args.ours, out, "T4.3_opengl", blend("p4_fountain"), timed(8), size=(1280, 720), args=opengl,
                     cwd=out)
     ok_o, _ = p2.has_picture(fo["screenshot"])
     res["T4.3"] = {"ok": fo["exit"] == 0 and bool(ok_o) and fo["stats"].get("gpu_emitters", 0) >= 1,
@@ -485,7 +503,7 @@ def run_rtx(args, out):
     os.makedirs(shots, exist_ok=True)
     if os.path.isfile(pick_out):
         os.remove(pick_out)
-    pr = p2.player(args.ours, out, "T4.4_picking", blend("p4_picking"),
+    pr = player(args.ours, out, "T4.4_picking", blend("p4_picking"),
                    timed(6, {"BGE_REMIX_P4_PICK_OUT": pick_out, "BGE_REMIX_P4_FREEZE": "20",
                              "BGE_REMIX_P4_PICK_SHOTS": shots}, frames=300), size=(1280, 720), cwd=out)
     got = {p["point"]: p for p in (p2.read_json(pick_out) or [])}
@@ -512,7 +530,7 @@ def run_rtx(args, out):
                              ("B4.2_physics", "p4_physics", {}), ("B4.3_fountain", "p4_fountain", {})):
         e = timed(15, extra)
         e.pop("RTX_ENABLE_ASYNC_COMPILATION")
-        b = p2.player(args.ours, out, tag, blend(name), e, size=(1920, 1080), cwd=out)
+        b = player(args.ours, out, tag, blend(name), e, size=(1920, 1080), cwd=out)
         bench[tag] = {"frame_ms_median": b["probe"].get("frame_ms_median"), "fps": p2.fps(b["probe"].get("frame_ms_median")),
                       "frame_ms_p95": b["probe"].get("frame_ms_p95"),
                       "dynamic_ms_mean": b["stats"].get("dynamic_ms_mean"),

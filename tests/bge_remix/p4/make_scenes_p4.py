@@ -121,7 +121,8 @@ if "p4_pick" not in g:
     g["p4_pick"] = {"i": 0, "f": 0, "results": [], "start": 40}
 st = g["p4_pick"]
 st["f"] += 1
-points = ob["points"].split(";")
+# label=where; written in here: a string property holds only 128 characters
+points = POINTS
 STEP = 12   # frames per point: the answer arrives within a few
 
 def target(spec):
@@ -511,12 +512,16 @@ def pulse_ball(scene, name, location, ma):
         n = v.co.normalized()
         # bigger, with bumps: the shape is easy to tell from the basis
         big.data[i].co = v.co + n * (0.08 + 0.05 * math.sin(6 * math.atan2(n.y, n.x)))
+    # the action by hand: keyframe_insert on a shape key makes none in
+    # background mode (CI run 28)
     key = ob.data.shape_keys
     key.animation_data_create()
+    act = bpy.data.actions.new("Pulse")
+    act.id_root = 'KEY'
+    fc = act.fcurves.new('key_blocks["Big"].value')
     for f, val in ((1, 0.0), (21, 1.0), (41, 0.0)):
-        big.value = val
-        big.keyframe_insert("value", frame=f)
-    key.animation_data.action.name = "Pulse"
+        fc.keyframe_points.insert(f, val)
+    key.animation_data.action = act
     big.value = 0.0
     ob.game.physics_type = 'NO_COLLISION'
     prop(ob, "action", "Pulse")
@@ -891,7 +896,7 @@ def make_fountain(folder):
                     "speed_cm": 300.0, "cone": math.degrees(math.atan2(1.0, 3.0)),
                     "gravity_cm": scene.game_settings.physics_gravity * 100.0,
                     "size_max_cm": 3.0, "size_min_cm": 1.5, "hide": 1, "collide": 1,
-                    "restitution": 1.0 - floor.collision.damping, "billboard": 0},
+                    "restitution": 1.0 - floor.collision.damping_factor, "billboard": 0},
     }
 
 
@@ -942,8 +947,8 @@ def make_picking(folder):
         ("gap", "PickCone@-0.6,0,0.15"),
         ("sky", "xy@0.5,0.03"),
     ]
-    prop(tester, "points", ";".join("%s=%s" % p for p in points))
-    logic(tester, "p4_picker.py", PICKER, extra_sensor="over")
+    body = PICKER.replace("points = POINTS", "points = %r" % ["%s=%s" % p for p in points])
+    logic(tester, "p4_picker.py", body, extra_sensor="over")
     p2.camera(scene, (0.0, -6.0, 1.2), (0.0, 0.0, 0.6), lens=30.0)
     finish(scene, os.path.join(folder, "p4_picking.blend"))
     behind = ["PickBackdrop", "PickFloor"]
