@@ -405,12 +405,23 @@ def run_ci(args, out):
         st_d = rd["stats"] or {}
         lines = p2.read_lines(log_d)
         n_present = len(presents(lines))
-        ext = [int(l.split("=")[1]) for l in lines if l.startswith("ExternalSwapchain calls=")]
+        ext = [int(re.search(r"calls=(\d+)", l).group(1)) for l in lines if l.startswith("ExternalSwapchain calls=")]
+        resets = len([l for l in lines if l.startswith("External reset ")])
         seq = [l for l in text_of("present_direct").splitlines() if l.startswith("BGE-Remix direct: ")]
         kinds = [l.split()[2] for l in seq]
-        in_order = len(kinds) % 3 == 0 and kinds == ["wait", "draw", "signal"] * (len(kinds) // 3)
-        handles = all(("wait 2222" in a) and ("draw 1111" in b) and ("signal 3333" in c)
-                      for a, b, c in zip(seq[0::3], seq[1::3], seq[2::3]))
+        # every frame: wait, draw, signal; P5: on a frame Remix changed its picture
+        # size on (External reset in the fake runtime's log), wait and signal only
+        frames, cur = [], []
+        for l, k in zip(seq, kinds):
+            cur.append((k, l))
+            if k == "signal":
+                frames.append(cur)
+                cur = []
+        shapes = [[k for k, _ in f] for f in frames]
+        skipped = sum(1 for sh in shapes if sh == ["wait", "signal"])
+        in_order = not cur and all(sh in (["wait", "draw", "signal"], ["wait", "signal"]) for sh in shapes)
+        handles = all(("wait 2222" in f[0][1]) and ("signal 3333" in f[-1][1]) and
+                      all("draw 1111" in l for k, l in f if k == "draw") for f in frames)
         rects = []
         for l in seq:
             m = re.search(r" at ([-\d.]+),([-\d.]+)\.\.([-\d.]+),([-\d.]+)", l)
@@ -425,19 +436,25 @@ def run_ci(args, out):
                 "NoVkSwapchain requested editor=0 srgb_off=0" in lines,
             "the direct-mode game ran 200 frames": ran(rd, 200),
             "every frame waited for, drawn and resumed, in that order": in_order and bool(kinds),
-            "once per presented frame": len(kinds) // 3 == n_present and n_present >= 200,
+            "once per presented frame": len(frames) == n_present and n_present >= 200,
+            "not drawn only on the frames Remix changed size on (P5)": skipped == resets and resets >= 1,
             "Remix's handles used as given": handles and bool(seq),
             "the image fetched once per frame": bool(ext) and ext[0] == n_present,
             # the first size is the game's viewport, which CI's small screen can shrink
             # (the window is clamped, the 16:9 picture letterboxed); after the resize
-            # the window is 800 x 450 and the picture fills it
+            # the window is 800 x 450, the picture fills it, and Remix's picture is
+            # 800 x 450 too (P5: direct mode resizes)
             "drawn over the game's viewport, before and after the resize":
                 len(set(rects)) >= 2 and rects[0][2] > rects[0][0] and rects[0][3] > rects[0][1] and
                 rects[-1] == (0.0, 0.0, 800.0, 450.0),
+            "Remix's picture is the window's size afterwards (P5)":
+                [st_d.get("picture_width"), st_d.get("picture_height")] == [800, 450],
         }
         res["T4.8a"] = dict(p2.test(c), detail={"copy": {k: st_c.get(k) for k in ("mode", "copy_mode_reason")},
                                                 "direct": {k: st_d.get(k) for k in ("mode", "direct_frames")},
                                                 "presents": n_present, "sequence": len(kinds), "ext": ext,
+                                                "resets": resets, "skipped": skipped,
+                                                "picture": [st_d.get("picture_width"), st_d.get("picture_height")],
                                                 "rects": sorted(set(rects))[:6], "first": seq[:3]})
 
     guarded('characters', ['T4.8a'], presentation)
