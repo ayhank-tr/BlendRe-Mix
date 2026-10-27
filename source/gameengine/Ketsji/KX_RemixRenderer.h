@@ -280,6 +280,8 @@ private:
 	double m_max_swap_ms;      /* slowest frame that swapped materials */
 	double m_frame_ms_max;     /* longest gap between two Remix frames (after the first 10) */
 	double m_last_render;
+	double m_last_end;           /* when the previous Remix frame was on screen */
+	std::vector<float> m_game_ms; /* BGE's own work between two Remix frames */
 	int m_first_textured_frame;  /* first frame with every texture in place (-1: not yet) */
 	double m_first_textured_seconds; /* ... seconds after Remix started */
 	double m_start_time;

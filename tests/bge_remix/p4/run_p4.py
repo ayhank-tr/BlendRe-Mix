@@ -566,12 +566,16 @@ def run_rtx(args, out):
                       "dynamic_ms_mean": b["stats"].get("dynamic_ms_mean"),
                       "skinned_objects": b["stats"].get("skinned_objects"),
                       "deformed_objects": b["stats"].get("deformed_objects"),
-                      "draws": b["stats"].get("draws_last_frame")}
+                      "draws": b["stats"].get("draws_last_frame"),
+                      "game_ms": b["stats"].get("game_ms_median"), "copy_ms": b["stats"].get("copy_ms_median")}
     # B4.3 breakdown: the fountain without one kind of content at a time,
     # and in OpenGL (what BGE itself spends: logic, physics, drawing)
     print("B4.3 breakdown: the fountain without drops, halo sparks or GPU sparks...", flush=True)
     parts = {}
-    for tag, extra, a in (("no_drops", {"BGE_REMIX_P4_NO_DROPS": "1"}, []),
+    for tag, extra, a in (("remix_300_units", {"BGE_REMIX_UNIQUE_DISTANCE": "300"}, []),
+                          ("unique_1m", {"BGE_REMIX_UNIQUE_DISTANCE": "1.0"}, []),
+                          ("unique_0.3m", {"BGE_REMIX_UNIQUE_DISTANCE": "0.3"}, []),
+                          ("no_drops", {"BGE_REMIX_P4_NO_DROPS": "1"}, []),
                           ("no_halo_sparks", {"BGE_REMIX_P4_NO_SPARKS": "1"}, []),
                           ("no_gpu_sparks", {"BGE_REMIX_P4_NO_EMITTER": "1"}, []),
                           ("opengl", {}, opengl)):
@@ -579,7 +583,8 @@ def run_rtx(args, out):
         e.pop("RTX_ENABLE_ASYNC_COMPILATION")
         b = player(args.ours, out, "B4.3_" + tag, blend("p4_fountain"), e, size=(1920, 1080), args=a, cwd=out)
         parts[tag] = {"frame_ms_median": b["probe"].get("frame_ms_median"), "fps": p2.fps(b["probe"].get("frame_ms_median")),
-                      "draws": b["stats"].get("draws_last_frame")}
+                      "draws": b["stats"].get("draws_last_frame"),
+                      "game_ms": b["stats"].get("game_ms_median"), "copy_ms": b["stats"].get("copy_ms_median")}
     bench["B4.3_breakdown"] = parts
     res["B4"] = bench
     res["B4"]["targets_60fps"] = all((bench[k]["fps"] or 0) >= 60 for k in ("B4.1_gpu", "B4.2_physics", "B4.3_fountain"))
@@ -604,10 +609,12 @@ def run_rtx(args, out):
         b = bench[k]
         lines.append("%-14s median %s ms = %s FPS, 95th pct %s ms, skinning/deforming %s ms a frame" % (
             k, p2._r(b["frame_ms_median"]), b["fps"], p2._r(b["frame_ms_p95"]), p2._r(b["dynamic_ms_mean"])))
+        lines.append("%-14s   of which BGE (logic, physics) %s ms, waiting for Remix's picture %s ms" % (
+            "", p2._r(b["game_ms"]), p2._r(b["copy_ms"])))
     lines.append("     target (60 FPS): %s" % ("met" if res["B4"]["targets_60fps"] else "NOT met"))
     for k, b in bench["B4.3_breakdown"].items():
-        lines.append("B4.3 %-16s median %s ms = %s FPS, %s draws" % (
-            k, p2._r(b["frame_ms_median"]), b["fps"], b["draws"]))
+        lines.append("B4.3 %-16s median %s ms = %s FPS, %s draws, BGE %s ms, Remix wait %s ms" % (
+            k, p2._r(b["frame_ms_median"]), b["fps"], b["draws"], p2._r(b["game_ms"]), p2._r(b["copy_ms"])))
     lines.append("B4.4 pick answered after %s frames on average" % p2._r(res["B4.4"]["pick_frames_mean"]))
     slow = [(n, w) for n, w in sorted(res["warmup"].items()) if w is None or w > 1.0]
     lines += ["", "Remix warm-up (start to first ray-traced frame)", "-" * 47]

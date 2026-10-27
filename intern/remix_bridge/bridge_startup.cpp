@@ -51,6 +51,28 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
  * message (found on the RTX 3080: a crash in dxvk::D3D9WindowProc when the
  * window was destroyed). Put our own procedure back before anything else can
  * reach the window. */
+/* The settings every BGE-Remix scene needs, right after startup. */
+void set_scene_defaults()
+{
+	/* Blender: Z up, right-handed, 1 unit = 1 m; Remix renders in cm. */
+	brb_set_config("rtx.zUp", "True");
+	brb_set_config("rtx.leftHandedCoordinateSystem", "False");
+	brb_set_config("rtx.sceneScale", "0.01");
+	brb_set_config("rtx.captureShowMenuOnHotkey", "False");
+	/* Highlighting (bge.render.remixHighlight) outlines the objects; by
+	 * default Remix also greys out everything else, which suits its editor
+	 * but not a game (RTX run 1 of P4). */
+	brb_set_config("rtx.postfx.desaturateOthersOnHighlight", "False");
+	/* How far an object may move in one frame and still count as the same
+	 * object. Remix's 300 is in game units and assumes centimetres (3 m);
+	 * in metres it put every copy of a mesh in one search cell, so each
+	 * moving copy was compared with all the others every frame (P4 B4.3).
+	 * BGE_REMIX_UNIQUE_DISTANCE overrides it (RTX benchmarks). */
+	char buf[32];
+	const DWORD n = GetEnvironmentVariableA("BGE_REMIX_UNIQUE_DISTANCE", buf, sizeof(buf));
+	brb_set_config("rtx.uniqueObjectDistance", (n > 0 && n < sizeof(buf)) ? buf : "3.0");
+}
+
 static void unhook_window()
 {
 	if (g_hwnd && (WNDPROC)GetWindowLongPtrW(g_hwnd, GWLP_WNDPROC) != window_proc) {
@@ -184,15 +206,7 @@ BRB_API brb_status brb_startup(int width, int height, int visible)
 	}
 	g_started = true;
 
-	/* Blender: Z up, right-handed, 1 unit = 1 m; Remix renders in cm. */
-	brb_set_config("rtx.zUp", "True");
-	brb_set_config("rtx.leftHandedCoordinateSystem", "False");
-	brb_set_config("rtx.sceneScale", "0.01");
-	brb_set_config("rtx.captureShowMenuOnHotkey", "False");
-	/* Highlighting (bge.render.remixHighlight) outlines the objects; by
-	 * default Remix also greys out everything else, which suits its editor
-	 * but not a game (RTX run 1 of P4). */
-	brb_set_config("rtx.postfx.desaturateOthersOnHighlight", "False");
+	set_scene_defaults();
 
 	set_status(BRB_STATUS_RUNNING, "RTX Remix is running.");
 	return g_status;

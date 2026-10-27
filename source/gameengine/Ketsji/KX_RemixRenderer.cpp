@@ -333,6 +333,7 @@ KX_RemixRenderer::KX_RemixRenderer(RAS_ICanvas *canvas, bool window_mode_allowed
 	m_max_swap_ms = 0.0;
 	m_frame_ms_max = 0.0;
 	m_last_render = 0.0;
+	m_last_end = 0.0;
 	m_first_textured_frame = -1;
 	m_first_textured_seconds = 0.0;
 	m_start_time = 0.0;
@@ -1829,6 +1830,11 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 		m_frame_ms_max = std::max(m_frame_ms_max, (t0 - m_last_render) * 1000.0);
 	}
 	m_last_render = t0;
+	/* logic, physics, animation and culling: everything BGE did since the
+	 * previous Remix frame was on screen (copy mode runs it in series) */
+	if (m_frames > 10 && m_last_end > 0.0) {
+		m_game_ms.push_back((float)((t0 - m_last_end) * 1000.0));
+	}
 	if (m_first_textured_frame < 0 && m_materials_waiting == 0) {
 		m_first_textured_frame = m_frames;
 		m_first_textured_seconds = now_seconds() - m_start_time;
@@ -1841,6 +1847,7 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 		DrawPicture(width, height);
 		m_upload_ms.push_back((float)((now_seconds() - t2) * 1000.0));
 	}
+	m_last_end = now_seconds();
 	(void)cam;
 	(void)draws;
 }
@@ -1988,6 +1995,7 @@ void KX_RemixRenderer::WriteStats()
 	        median(m_handover_ms), percentile95(m_handover_ms));
 	fprintf(f, "  \"present_ms_median\": %.4f,\n  \"copy_ms_median\": %.4f,\n  \"upload_ms_median\": %.4f,\n",
 	        median(m_present_ms), median(m_copy_ms), median(m_upload_ms));
+	fprintf(f, "  \"game_ms_median\": %.4f,\n", median(m_game_ms));
 	fprintf(f, "  \"frame_ms_max\": %.4f,\n", m_frame_ms_max);
 	fprintf(f, "  \"textures_encoded\": %d,\n  \"textures_reused\": %d,\n  \"textures_failed\": %d,\n",
 	        m_cache ? m_cache->encoded : 0, m_cache ? m_cache->reused : 0, m_cache ? m_cache->failed : 0);
