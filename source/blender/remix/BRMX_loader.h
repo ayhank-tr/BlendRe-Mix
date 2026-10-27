@@ -84,6 +84,8 @@ typedef struct BRMX_Bridge {
 	int (*pick_request)(int left, int top, int right, int bottom);
 	int (*pick_result)(uint32_t *r_ids, int max, int *r_count);
 	int (*highlight)(const uint32_t *ids, int count, float r, float g, float b);
+
+	int (*frame_vk)(uint64_t *r_image, uint64_t *r_done, uint64_t *r_resume, int *r_width, int *r_height);
 } BRMX_Bridge;
 
 /* The bridge, loaded on first use; NULL when it is missing or from another

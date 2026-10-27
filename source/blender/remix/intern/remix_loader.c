@@ -134,6 +134,7 @@ static int load_bridge(void)
 	BRIDGE_FN(pick_request, "brb_pick_request");
 	BRIDGE_FN(pick_result, "brb_pick_result");
 	BRIDGE_FN(highlight, "brb_highlight");
+	BRIDGE_FN(frame_vk, "brb_frame_vk");
 #undef BRIDGE_FN
 
 	/* Remix is shut down before the process ends, however it ends. */

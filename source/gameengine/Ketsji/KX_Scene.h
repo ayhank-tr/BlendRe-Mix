@@ -336,6 +336,9 @@ public:
 				m_groupGameObjects.find(gameobj) != m_groupGameObjects.end());
 	}
 	void AddObjectDebugProperties(class KX_GameObject* gameobj);
+	/* BGE-Remix (P4.8): seconds spent adding and removing objects since the last call */
+	static double TakeAddRemoveSeconds();
+
 	SCA_IObject* AddReplicaObject(CValue* gameobj,
 	                              CValue* locationobj,
 	                              int lifespan=0);

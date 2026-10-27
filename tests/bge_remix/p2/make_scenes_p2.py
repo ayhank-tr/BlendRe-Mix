@@ -37,9 +37,10 @@ import bge
 g = bge.logic.globalDict
 now = time.perf_counter()
 if "p2" not in g:
-    g["p2"] = {"start": now, "times": [], "camera": None, "shot": None}
+    g["p2"] = {"start": now, "times": [], "cpu": [], "camera": None, "shot": None}
 state = g["p2"]
 state["times"].append(now)
+state["cpu"].append(time.process_time())
 frames = len(state["times"])
 env = os.environ
 max_frames = int(env.get("BGE_REMIX_P2_FRAMES", "300"))
@@ -67,12 +68,16 @@ if frames >= max_frames and elapsed >= seconds:
     first = len(times) // 2 if seconds > 0 else min(30, len(times) // 4)
     window = times[first:]
     deltas = sorted(b - a for a, b in zip(window, window[1:]))
+    # P4.8 (B4.5): the process's CPU time over the measured frames, as a share of one core
+    cpu = state["cpu"][first:]
+    cpu_share = (cpu[-1] - cpu[0]) / (window[-1] - window[0]) if len(window) > 1 and window[-1] > window[0] else None
     result = {
         "frames": frames,
         "seconds": elapsed,
         "measured_frames": len(deltas),
         "frame_ms_median": 1000.0 * deltas[len(deltas) // 2] if deltas else None,
         "frame_ms_p95": 1000.0 * deltas[int(len(deltas) * 0.95)] if deltas else None,
+        "cpu_share": cpu_share,
         "camera": state["camera"],
         "screenshot": state["shot"],
         "window": [bge.render.getWindowWidth(), bge.render.getWindowHeight()],

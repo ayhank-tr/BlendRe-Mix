@@ -35,6 +35,7 @@
 #  pragma warning (disable:4786)
 #endif
 
+#include <chrono>
 #include <stdio.h>
 
 #include "KX_Scene.h"
@@ -874,10 +875,41 @@ void KX_Scene::DupliGroupRecurse(CValue* obj, int level)
 }
 
 
+/* BGE-Remix (P4.8): time spent adding and removing objects, for the RTX tests'
+ * time split; read and reset once per frame */
+static double s_addremove_seconds = 0.0;
+static int s_addremove_depth = 0; /* removing an object removes its children too: time it once */
+
+namespace {
+struct AddRemoveTimer {
+	std::chrono::steady_clock::time_point t0;
+	AddRemoveTimer()
+	{
+		if (s_addremove_depth++ == 0) {
+			t0 = std::chrono::steady_clock::now();
+		}
+	}
+	~AddRemoveTimer()
+	{
+		if (--s_addremove_depth == 0) {
+			s_addremove_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+		}
+	}
+};
+}
+
+double KX_Scene::TakeAddRemoveSeconds()
+{
+	const double s = s_addremove_seconds;
+	s_addremove_seconds = 0.0;
+	return s;
+}
+
 SCA_IObject* KX_Scene::AddReplicaObject(class CValue* originalobject,
 										class CValue* referenceobject,
 										int lifespan)
 {
+	AddRemoveTimer timer;
 
 	m_logicHierarchicalGameObjects.clear();
 	m_map_gameobject_to_replica.clear();
@@ -1031,6 +1063,7 @@ void KX_Scene::DelayedRemoveObject(class CValue* gameobj)
 
 int KX_Scene::NewRemoveObject(class CValue* gameobj)
 {
+	AddRemoveTimer timer;
 	int ret;
 	KX_GameObject* newobj = (KX_GameObject*) gameobj;
 

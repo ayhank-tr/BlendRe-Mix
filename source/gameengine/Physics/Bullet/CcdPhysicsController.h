@@ -584,6 +584,8 @@ protected:
 		 * SynchronizeMotionStates ynchronizes dynas, kinematic and deformable entities (and do 'late binding')
 		 */
 		virtual bool		SynchronizeMotionStates(float time);
+		/* BGE-Remix: sets the shape's scaling only when it changed */
+		void SyncShapeScaling(const btVector3 &scaling);
 
 		/**
 		 * Called for every physics simulation step. Use this method for

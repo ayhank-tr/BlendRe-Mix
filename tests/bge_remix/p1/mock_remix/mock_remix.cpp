@@ -162,6 +162,9 @@ LRESULT CALLBACK mock_window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
 	return CallWindowProcW(g_prev_proc, hwnd, msg, wparam, lparam);
 }
 
+static bool g_external = false;
+static int g_external_calls = 0;
+
 void hook_window(HWND hwnd)
 {
 	g_prev_proc = (WNDPROC)SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)mock_window_proc);
@@ -173,6 +176,12 @@ remixapi_ErrorCode REMIXAPI_CALL m_Startup(const remixapi_StartupInfo *info)
 {
 	const int valid = (info && info->sType == REMIXAPI_STRUCT_TYPE_STARTUP_INFO && IsWindow(info->hwnd)) ? 1 : 0;
 	mlog("Startup hwnd_valid=%d", valid);
+	if (info && info->forceNoVkSwapchain) {
+		/* P4.8 direct mode: no swapchain; the picture goes out by dxvk_GetExternalSwapchain */
+		mlog("NoVkSwapchain requested editor=%d srgb_off=%d", info->editorModeEnabled ? 1 : 0,
+		     info->disableSrgbConversionForOutput ? 1 : 0);
+		g_external = true;
+	}
 	if (valid) {
 		/* hook the window, like the real runtime (also before a failed start) */
 		hook_window(info->hwnd);
@@ -184,8 +193,28 @@ remixapi_ErrorCode REMIXAPI_CALL m_Startup(const remixapi_StartupInfo *info)
 	return valid ? REMIXAPI_ERROR_CODE_SUCCESS : REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
 }
 
+/* P4.8: fake Vulkan handles; the count tells the tests how often the game asked */
+remixapi_ErrorCode REMIXAPI_CALL m_dxvk_GetExternalSwapchain(uint64_t *out_image, uint64_t *out_done,
+                                                            uint64_t *out_resume)
+{
+	if (!out_image || !out_done || !out_resume) {
+		return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+	}
+	if (!g_external) {
+		return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+	}
+	g_external_calls++;
+	*out_image = 0x1111;
+	*out_done = 0x2222;
+	*out_resume = 0x3333;
+	return REMIXAPI_ERROR_CODE_SUCCESS;
+}
+
 remixapi_ErrorCode REMIXAPI_CALL m_Shutdown(void)
 {
+	if (g_external) {
+		mlog("ExternalSwapchain calls=%d", g_external_calls);
+	}
 	if (g_dev) { /* registered: both are alive */
 		mlog("Copies %d", g_copies);
 		mock_release_all(g_dev, g_d3d);
@@ -849,6 +878,7 @@ extern "C" REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_InitializeLibrary(
 	r.dxvk_RegisterD3D9Device = m_dxvk_RegisterD3D9Device;
 	r.pick_RequestObjectPicking = m_pick_RequestObjectPicking;
 	r.pick_HighlightObjects = m_pick_HighlightObjects;
+	r.dxvk_GetExternalSwapchain = m_dxvk_GetExternalSwapchain;
 	*out_result = r;
 	return REMIXAPI_ERROR_CODE_SUCCESS;
 }

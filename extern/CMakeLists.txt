@@ -40,6 +40,10 @@ endif()
 add_subdirectory(rangetree)
 add_subdirectory(wcwidth)
 
+if(WITH_MEM_MIMALLOC)
+	add_subdirectory(mimalloc)   # BGE-Remix, from BGE NEXT (CPU performance)
+endif()
+
 if(WITH_BULLET)
 	if(NOT WITH_SYSTEM_BULLET)
 		add_subdirectory(bullet2)

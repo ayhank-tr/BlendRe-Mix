@@ -119,6 +119,10 @@ public:
 	/* For tests: BGE_REMIX_STATS names a JSON file written when the game ends. */
 	void WriteStats();
 
+	/* P4.8: BGE's own time in the frame that just ended, by part (seconds; from the game
+	 * engine's profiler), for the stats' time split. */
+	void AddProfileSample(double logic, double physics, double animations, double scenegraph);
+
 	/* For tests: with BGE_REMIX_TRACE set, prints (and flushes) a step. */
 	static void Trace(const char *what);
 
@@ -231,6 +235,10 @@ private:
 	void SendLight(KX_Scene *scene, const void *key, const struct brb_light_desc &desc);
 	void DrawPicture(int width, int height);
 	void MaybeScreenshot();
+	/* P4.8 direct mode: GL_NV_draw_vulkan_image draws Remix's Vulkan image */
+	bool DirectAvailable();
+	void DrawDirect(int x, int y, int width, int height);
+	bool SaveWindowBmp(const std::wstring &path, int x, int y, int width, int height);
 
 	const BRMX_Bridge *m_bridge;
 	RAS_ICanvas *m_canvas;
@@ -288,6 +296,17 @@ private:
 
 	unsigned int m_texture;
 	int m_tex_w, m_tex_h;
+
+	/* direct mode: the extension's functions (or the test stubs), a sampler */
+	void *m_vk_draw, *m_vk_wait, *m_vk_signal;
+	bool m_vk_fake;          /* BGE_REMIX_FAKE_VK_DRAW: logging stubs (CI) */
+	unsigned int m_vk_sampler;
+	int m_direct_frames;
+	bool m_direct_error_noted;
+	std::string m_direct_note;   /* why copy mode was used, for the stats */
+
+	/* P4.8 time split (ms per frame) */
+	std::vector<float> m_logic_ms, m_physics_ms, m_anim_ms, m_scenegraph_ms, m_addremove_ms;
 
 	std::string m_notice;
 	double m_notice_until;

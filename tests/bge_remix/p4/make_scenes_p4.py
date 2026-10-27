@@ -62,6 +62,13 @@ if "action" in ob:
     # one frame, played anew every tic (speed 0 with setActionFrame makes
     # BL_Action divide by zero: the frame becomes NaN, CI run 29)
     ob.playAction(ob["action"], frame, frame, layer=0, play_mode=bge.logic.KX_ACTION_MODE_PLAY)
+# P4.8 (T4.8a, T4.6): the window is resized once while the game runs
+resize_tic = int(os.environ.get("BGE_REMIX_P4_RESIZE_TIC", "0"))
+if resize_tic and ob.name == "Walker" and t == resize_tic and not ob.get("resized", False):
+    ob["resized"] = True
+    w, h = (int(v) for v in os.environ.get("BGE_REMIX_P4_RESIZE_TO", "960x540").split("x"))
+    bge.render.setWindowSize(w, h)
+    print("BGE-Remix test: window resized to %dx%d at tic %d" % (w, h, t))
 if ob.get("radius", 0.0) > 0.0:
     # around (cx, cy), facing the way it walks (the Mannequin looks down -Y)
     a = t * ob["turn"]

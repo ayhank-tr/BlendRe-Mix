@@ -318,6 +318,13 @@ KX_RemixRenderer::KX_RemixRenderer(RAS_ICanvas *canvas, bool window_mode_allowed
       m_texture(0),
       m_tex_w(0),
       m_tex_h(0),
+      m_vk_draw(NULL),
+      m_vk_wait(NULL),
+      m_vk_signal(NULL),
+      m_vk_fake(false),
+      m_vk_sampler(0),
+      m_direct_frames(0),
+      m_direct_error_noted(false),
       m_notice_until(0.0),
       m_notice_shown(false),
       m_filters_noted(false),
@@ -385,6 +392,9 @@ KX_RemixRenderer::~KX_RemixRenderer()
 		Trace("game end: freeing the picture texture");
 		glDeleteTextures(1, (GLuint *)&m_texture);
 	}
+	if (m_vk_sampler && glDeleteSamplers) {
+		glDeleteSamplers(1, (GLuint *)&m_vk_sampler);
+	}
 	delete m_cache;
 	Trace("game end: Remix renderer closed");
 }
@@ -449,6 +459,23 @@ bool KX_RemixRenderer::Start(KX_Scene *scene, int width, int height, const Setti
 	else if (settings.window_mode) {
 		SetNotice("RTX Remix window mode works in blenderplayer only; using copy mode.");
 	}
+	if (mode == BRB_MODE_COPY && DirectAvailable()) {
+		/* P4.8: OpenGL draws Remix's own image; nothing is copied */
+		mode = BRB_MODE_DIRECT;
+	}
+	else if (mode == BRB_MODE_COPY) {
+		printf("BGE-Remix: copy mode (%s).\n", m_direct_note.c_str());
+		fflush(stdout);
+	}
+
+	/* An earlier game in this Blender session started Remix in copy or direct
+	 * mode: Remix cannot change between them, so this game uses the same one. */
+	if (status == BRB_STATUS_RUNNING && mode != m_bridge->get_mode() &&
+	    (mode == BRB_MODE_COPY || mode == BRB_MODE_DIRECT) &&
+	    (m_bridge->get_mode() == BRB_MODE_COPY || (m_bridge->get_mode() == BRB_MODE_DIRECT && DirectAvailable())))
+	{
+		mode = m_bridge->get_mode();
+	}
 
 	/* Remix may still be running from the test in Preferences, in its own
 	 * window. Unloading and loading the runtime again in one process is not
@@ -474,9 +501,11 @@ bool KX_RemixRenderer::Start(KX_Scene *scene, int width, int height, const Setti
 	m_settings = settings;
 	m_width = width;
 	m_height = height;
-	m_status = (mode == BRB_MODE_COPY) ? "running (copy mode)" : "running (window mode)";
+	const char *mode_name = (mode == BRB_MODE_COPY) ? "copy mode" : (mode == BRB_MODE_DIRECT) ? "direct mode" :
+	                                                                                           "window mode";
+	m_status = std::string("running (") + mode_name + ")";
 	printf("BGE-Remix: RTX Remix renders scene \"%s\" (%s, %dx%d).\n", scene->GetName().ReadPtr(),
-	       mode == BRB_MODE_COPY ? "copy mode" : "window mode", width, height);
+	       mode_name, width, height);
 	fflush(stdout);
 	return true;
 }
@@ -1840,7 +1869,18 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 		m_first_textured_seconds = now_seconds() - m_start_time;
 	}
 
-	MaybeScreenshot();
+	if (m_mode == BRB_MODE_DIRECT) {
+		const double t2 = now_seconds();
+		DrawDirect(viewport.GetLeft(), viewport.GetBottom(), width, height);
+		m_upload_ms.push_back((float)((now_seconds() - t2) * 1000.0));
+		std::wstring path;
+		if (m_frames == m_screenshot_frame && env_path(L"BGE_REMIX_SCREENSHOT", path)) {
+			SaveWindowBmp(path, viewport.GetLeft(), viewport.GetBottom(), width, height);
+		}
+	}
+	else {
+		MaybeScreenshot();
+	}
 
 	if (m_mode == BRB_MODE_COPY) {
 		const double t2 = now_seconds();
@@ -1942,6 +1982,180 @@ void KX_RemixRenderer::DrawPicture(int width, int height)
 	(void)height;
 }
 
+/* ------------------------------------------------------------------------- */
+/* Direct presentation (P4.8): GL_NV_draw_vulkan_image */
+
+typedef void (APIENTRY *BRMX_DrawVkImageNV)(GLuint64 vkImage, GLuint sampler, GLfloat x0, GLfloat y0, GLfloat x1,
+                                           GLfloat y1, GLfloat z, GLfloat s0, GLfloat t0, GLfloat s1, GLfloat t1);
+typedef void (APIENTRY *BRMX_VkSemaphoreNV)(GLuint64 vkSemaphore);
+
+/* CI has no NVIDIA driver: with BGE_REMIX_FAKE_VK_DRAW=1 these stand in for the
+ * extension and print what the game would do, so the tests can check that every
+ * presented frame is waited for, drawn and resumed exactly once, in that order. */
+static void APIENTRY fake_draw_vk(GLuint64 image, GLuint, GLfloat x0, GLfloat y0, GLfloat x1, GLfloat y1, GLfloat,
+                                  GLfloat, GLfloat t0, GLfloat, GLfloat t1)
+{
+	printf("BGE-Remix direct: draw %llx at %g,%g..%g,%g t %g..%g\n", (unsigned long long)image, x0, y0, x1, y1, t0,
+	       t1);
+}
+static void APIENTRY fake_wait_vk(GLuint64 semaphore)
+{
+	printf("BGE-Remix direct: wait %llx\n", (unsigned long long)semaphore);
+}
+static void APIENTRY fake_signal_vk(GLuint64 semaphore)
+{
+	printf("BGE-Remix direct: signal %llx\n", (unsigned long long)semaphore);
+	fflush(stdout);
+}
+
+static bool has_gl_extension(const char *name)
+{
+	const char *ext = (const char *)glGetString(GL_EXTENSIONS);
+	if (!ext) {
+		return false;
+	}
+	const size_t n = strlen(name);
+	for (const char *p = strstr(ext, name); p; p = strstr(p + 1, name)) {
+		if ((p == ext || p[-1] == ' ') && (p[n] == ' ' || p[n] == '\0')) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool KX_RemixRenderer::DirectAvailable()
+{
+	if (m_vk_draw && m_vk_wait && m_vk_signal) {
+		return true;
+	}
+	std::wstring v;
+	char buf[16];
+	const DWORD n = GetEnvironmentVariableA("BGE_REMIX_PRESENT", buf, sizeof(buf));
+	if (n > 0 && n < sizeof(buf) && _stricmp(buf, "copy") == 0) {
+		m_direct_note = "BGE_REMIX_PRESENT=copy";
+		return false;
+	}
+	if (GetEnvironmentVariableA("BGE_REMIX_FAKE_VK_DRAW", buf, sizeof(buf)) > 0 && buf[0] == '1') {
+		m_vk_fake = true;
+		m_vk_draw = (void *)fake_draw_vk;
+		m_vk_wait = (void *)fake_wait_vk;
+		m_vk_signal = (void *)fake_signal_vk;
+		return true;
+	}
+	if (!has_gl_extension("GL_NV_draw_vulkan_image")) {
+		m_direct_note = "the graphics driver has no GL_NV_draw_vulkan_image";
+		return false;
+	}
+	m_vk_draw = (void *)wglGetProcAddress("glDrawVkImageNV");
+	m_vk_wait = (void *)wglGetProcAddress("glWaitVkSemaphoreNV");
+	m_vk_signal = (void *)wglGetProcAddress("glSignalVkSemaphoreNV");
+	if (!m_vk_draw || !m_vk_wait || !m_vk_signal) {
+		m_vk_draw = m_vk_wait = m_vk_signal = NULL;
+		m_direct_note = "GL_NV_draw_vulkan_image is listed but its functions are missing";
+		return false;
+	}
+	return true;
+}
+
+void KX_RemixRenderer::DrawDirect(int x, int y, int width, int height)
+{
+	GLuint64 image = 0, done = 0, resume = 0;
+	int w = 0, h = 0;
+	if (!m_bridge->frame_vk((uint64_t *)&image, (uint64_t *)&done, (uint64_t *)&resume, &w, &h)) {
+		return;
+	}
+	BRMX_DrawVkImageNV draw = (BRMX_DrawVkImageNV)m_vk_draw;
+	BRMX_VkSemaphoreNV wait = (BRMX_VkSemaphoreNV)m_vk_wait;
+	BRMX_VkSemaphoreNV signal = (BRMX_VkSemaphoreNV)m_vk_signal;
+
+	/* Remix has signalled "done" and holds its next frame until "resume": from
+	 * here on, resume is signalled whatever happens. */
+	if (m_vk_fake) {
+		wait(done);
+		draw(image, 0, (GLfloat)x, (GLfloat)y, (GLfloat)(x + width), (GLfloat)(y + height), 0.0f, 0.0f, 1.0f, 1.0f,
+		     0.0f);
+		signal(resume);
+		m_direct_frames++;
+		return;
+	}
+	GLint program = 0;
+	if (GLEW_VERSION_2_0) {
+		glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+		glUseProgram(0);
+	}
+	glPushAttrib(GL_ENABLE_BIT | GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_POLYGON_BIT);
+	glDisable(GL_DEPTH_TEST);
+	glDisable(GL_BLEND);
+	glDisable(GL_ALPHA_TEST);
+	glDisable(GL_STENCIL_TEST);
+	glDisable(GL_FOG);
+	glDepthMask(GL_FALSE);
+	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+	if (!m_vk_sampler && glGenSamplers && glSamplerParameteri) {
+		glGenSamplers(1, (GLuint *)&m_vk_sampler);
+		glSamplerParameteri(m_vk_sampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glSamplerParameteri(m_vk_sampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glSamplerParameteri(m_vk_sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glSamplerParameteri(m_vk_sampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	}
+
+	wait(done);
+	/* window coordinates; the picture's rows go from the top, OpenGL's from the
+	 * bottom, so t runs from 1 at the bottom edge to 0 at the top */
+	draw(image, m_vk_sampler, (GLfloat)x, (GLfloat)y, (GLfloat)(x + width), (GLfloat)(y + height), 0.0f, 0.0f,
+	     1.0f, 1.0f, 0.0f);
+	signal(resume);
+	m_direct_frames++;
+
+	const GLenum err = glGetError();
+	if (err != GL_NO_ERROR && !m_direct_error_noted) {
+		m_direct_error_noted = true;
+		printf("BGE-Remix: drawing Remix's image failed (OpenGL error 0x%04x); Remix keeps running.\n", err);
+		fflush(stdout);
+	}
+	glPopAttrib();
+	if (GLEW_VERSION_2_0) {
+		glUseProgram((GLuint)program);
+	}
+	(void)w;
+	(void)h;
+}
+
+bool KX_RemixRenderer::SaveWindowBmp(const std::wstring &path, int x, int y, int width, int height)
+{
+	if (width <= 0 || height <= 0) {
+		return false;
+	}
+	const int row = (width * 3 + 3) & ~3;
+	std::vector<unsigned char> px((size_t)row * height);
+	glPushClientAttrib(GL_CLIENT_PIXEL_STORE_BIT);
+	glPushAttrib(GL_PIXEL_MODE_BIT);
+	glPixelStorei(GL_PACK_ALIGNMENT, 4);
+	glReadBuffer(GL_BACK);
+	glReadPixels(x, y, width, height, GL_BGR, GL_UNSIGNED_BYTE, px.data());
+	glPopAttrib();
+	glPopClientAttrib();
+	FILE *f = _wfopen(path.c_str(), L"wb");
+	if (!f) {
+		return false;
+	}
+	/* BMP rows go from the bottom, as OpenGL's */
+	unsigned char head[54] = {'B', 'M'};
+	const unsigned int data = (unsigned int)px.size(), size = 54 + data;
+	memcpy(head + 2, &size, 4);
+	const unsigned int off = 54, info = 40, w = (unsigned int)width, h = (unsigned int)height;
+	memcpy(head + 10, &off, 4);
+	memcpy(head + 14, &info, 4);
+	memcpy(head + 18, &w, 4);
+	memcpy(head + 22, &h, 4);
+	head[26] = 1;
+	head[28] = 24;
+	memcpy(head + 34, &data, 4);
+	const bool ok = fwrite(head, 1, 54, f) == 54 && fwrite(px.data(), 1, px.size(), f) == px.size();
+	fclose(f);
+	return ok;
+}
+
 void KX_RemixRenderer::MaybeScreenshot()
 {
 	std::wstring path;
@@ -1952,6 +2166,18 @@ void KX_RemixRenderer::MaybeScreenshot()
 
 /* ------------------------------------------------------------------------- */
 /* Statistics for the tests */
+
+void KX_RemixRenderer::AddProfileSample(double logic, double physics, double animations, double scenegraph)
+{
+	if (!m_running || m_frames <= 10) {
+		return;
+	}
+	m_logic_ms.push_back((float)(logic * 1000.0));
+	m_physics_ms.push_back((float)(physics * 1000.0));
+	m_anim_ms.push_back((float)(animations * 1000.0));
+	m_scenegraph_ms.push_back((float)(scenegraph * 1000.0));
+	m_addremove_ms.push_back((float)(KX_Scene::TakeAddRemoveSeconds() * 1000.0));
+}
 
 void KX_RemixRenderer::WriteStats()
 {
@@ -1982,7 +2208,10 @@ void KX_RemixRenderer::WriteStats()
 	}
 	fprintf(f, "{\n");
 	fprintf(f, "  \"running\": %s,\n", m_running ? "true" : "false");
-	fprintf(f, "  \"mode\": \"%s\",\n", m_mode == BRB_MODE_COPY ? "copy" : m_mode == BRB_MODE_CHILD ? "window" : "none");
+	fprintf(f, "  \"mode\": \"%s\",\n", m_mode == BRB_MODE_COPY ? "copy" : m_mode == BRB_MODE_CHILD ? "window" :
+	                                       m_mode == BRB_MODE_DIRECT ? "direct" : "none");
+	fprintf(f, "  \"direct_frames\": %d,\n", m_direct_frames);
+	fprintf(f, "  \"copy_mode_reason\": \"%s\",\n", m_direct_note.c_str());
 	fprintf(f, "  \"status\": \"%s\",\n", status.c_str());
 	fprintf(f, "  \"notice\": \"%s\",\n", notice.c_str());
 	fprintf(f, "  \"frames\": %d,\n", m_frames);
@@ -1996,6 +2225,11 @@ void KX_RemixRenderer::WriteStats()
 	fprintf(f, "  \"present_ms_median\": %.4f,\n  \"copy_ms_median\": %.4f,\n  \"upload_ms_median\": %.4f,\n",
 	        median(m_present_ms), median(m_copy_ms), median(m_upload_ms));
 	fprintf(f, "  \"game_ms_median\": %.4f,\n", median(m_game_ms));
+	fprintf(f, "  \"logic_ms_median\": %.4f,\n  \"physics_ms_median\": %.4f,\n", median(m_logic_ms),
+	        median(m_physics_ms));
+	fprintf(f, "  \"animation_ms_median\": %.4f,\n  \"scenegraph_ms_median\": %.4f,\n", median(m_anim_ms),
+	        median(m_scenegraph_ms));
+	fprintf(f, "  \"addremove_ms_median\": %.4f,\n", median(m_addremove_ms));
 	fprintf(f, "  \"frame_ms_max\": %.4f,\n", m_frame_ms_max);
 	fprintf(f, "  \"textures_encoded\": %d,\n  \"textures_reused\": %d,\n  \"textures_failed\": %d,\n",
 	        m_cache ? m_cache->encoded : 0, m_cache ? m_cache->reused : 0, m_cache ? m_cache->failed : 0);

@@ -41,6 +41,20 @@
 #include "atomic_ops.h"
 #include "mallocn_intern.h"
 
+/* BGE-Remix, from BGE NEXT (CPU performance): mimalloc behind the lock-free allocator (WITH_MEM_MIMALLOC) */
+#ifdef WITH_MEM_MIMALLOC
+#  include "mimalloc.h"
+/* BGE_REMIX_NO_MIMALLOC=1 switches back to the system's allocator (decided once, at the first
+ * allocation, for comparing on the PC test run) */
+#  define LF_MALLOC(n) (MEM_use_mimalloc() ? mi_malloc(n) : malloc(n))
+#  define LF_CALLOC(c, n) (MEM_use_mimalloc() ? mi_calloc(c, n) : calloc(c, n))
+#  define LF_FREE(p) (MEM_use_mimalloc() ? mi_free(p) : free(p))
+#else
+#  define LF_MALLOC(n) malloc(n)
+#  define LF_CALLOC(c, n) calloc(c, n)
+#  define LF_FREE(p) free(p)
+#endif
+
 typedef struct MemHead {
 	/* Length of allocated memory block. */
 	size_t len;
@@ -166,7 +180,7 @@ void MEM_lockfree_freeN(void *vmemh)
 			aligned_free(MEMHEAD_REAL_PTR(memh_aligned));
 		}
 		else {
-			free(memh);
+			LF_FREE(memh);
 		}
 	}
 }
@@ -283,7 +297,7 @@ void *MEM_lockfree_callocN(size_t len, const char *str)
 
 	len = SIZET_ALIGN_4(len);
 
-	memh = (MemHead *)calloc(1, len + sizeof(MemHead));
+	memh = (MemHead *)LF_CALLOC(1, len + sizeof(MemHead));
 
 	if (LIKELY(memh)) {
 		memh->len = len;
@@ -319,7 +333,7 @@ void *MEM_lockfree_mallocN(size_t len, const char *str)
 
 	len = SIZET_ALIGN_4(len);
 
-	memh = (MemHead *)malloc(len + sizeof(MemHead));
+	memh = (MemHead *)LF_MALLOC(len + sizeof(MemHead));
 
 	if (LIKELY(memh)) {
 		if (UNLIKELY(malloc_debug_memset && len)) {

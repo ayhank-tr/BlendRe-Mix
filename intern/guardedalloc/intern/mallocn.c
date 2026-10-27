@@ -34,6 +34,7 @@
 #include "../../source/blender/blenlib/BLI_strict_flags.h"
 
 #include <assert.h>
+#include <stdlib.h> /* getenv (fork) */
 
 #include "mallocn_intern.h"
 
@@ -66,9 +67,34 @@ size_t (*MEM_get_peak_memory)(void) = MEM_lockfree_get_peak_memory;
 const char *(*MEM_name_ptr)(void *vmemh) = MEM_lockfree_name_ptr;
 #endif
 
+#ifdef WITH_MEM_MIMALLOC
+#  include "mimalloc.h"
+#endif
+
+/* BGE-Remix, from BGE NEXT (CPU performance): whether mimalloc is used; BGE_REMIX_NO_MIMALLOC=1 turns it off for the
+ * whole run. Decided at the first call (the first allocation), then fixed, so memory is always
+ * freed by the allocator that made it. */
+int MEM_use_mimalloc(void)
+{
+#ifdef WITH_MEM_MIMALLOC
+	static int use = -1;
+	if (use < 0) {
+		const char *e = getenv("BGE_REMIX_NO_MIMALLOC");
+		use = (e && e[0] && e[0] != '0') ? 0 : 1;
+	}
+	return use;
+#else
+	return 0;
+#endif
+}
+
 void *aligned_malloc(size_t size, size_t alignment)
 {
-#ifdef _WIN32
+#ifdef WITH_MEM_MIMALLOC   /* BGE-Remix, from BGE NEXT (CPU performance) */
+	if (MEM_use_mimalloc())
+		return mi_malloc_aligned(size, alignment);
+#endif
+#if defined(_WIN32)
 	return _aligned_malloc(size, alignment);
 #elif defined(__APPLE__)
 	/* On Mac OS X, both the heap and the stack are guaranteed 16-byte aligned so
@@ -94,7 +120,13 @@ void *aligned_malloc(size_t size, size_t alignment)
 
 void aligned_free(void *ptr)
 {
-#ifdef _WIN32
+#ifdef WITH_MEM_MIMALLOC   /* BGE-Remix, from BGE NEXT (CPU performance) */
+	if (MEM_use_mimalloc()) {
+		mi_free(ptr);
+		return;
+	}
+#endif
+#if defined(_WIN32)
 	_aligned_free(ptr);
 #else
 	free(ptr);

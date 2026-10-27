@@ -264,6 +264,12 @@ if(WITH_BUILDINFO)
 	add_dependencies(blender buildinfo)
 endif()
 
+if(WITH_MEM_MIMALLOC)   # BGE-Remix, from BGE NEXT (CPU performance): C++ new/delete through mimalloc
+	target_sources(blender PRIVATE ${CMAKE_SOURCE_DIR}/intern/guardedalloc/cpp/mimalloc_new_delete.cpp)
+	set_property(SOURCE ${CMAKE_SOURCE_DIR}/intern/guardedalloc/cpp/mimalloc_new_delete.cpp APPEND PROPERTY
+	             INCLUDE_DIRECTORIES ${CMAKE_SOURCE_DIR}/extern/mimalloc/include)
+endif()
+
 
 set(BLENDER_TEXT_FILES
 	${CMAKE_SOURCE_DIR}/release/text/GPL-license.txt

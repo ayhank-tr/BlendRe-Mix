@@ -51,8 +51,9 @@ extern "C" {
  * with another value instead of calling into it.
  * 1: P1 (load, start, triangle test). 2: P2 (scene interface, copy and window modes).
  * 3: P3 (textures, glass, subsurface, alpha test).
- * 4: P4 (skinning, draw categories, picking, particle systems). */
-#define BRB_ABI_VERSION 4
+ * 4: P4 (skinning, draw categories, picking, particle systems).
+ * 5: P4.8 (direct presentation: brb_frame_vk). */
+#define BRB_ABI_VERSION 5
 
 typedef enum brb_status {
 	BRB_STATUS_NOT_LOADED = 0,           /* nothing tried yet */
@@ -119,6 +120,8 @@ typedef enum brb_mode {
 	BRB_MODE_WINDOW = 1, /* P1: a top-level window of the bridge's own (brb_startup) */
 	BRB_MODE_COPY = 2,   /* each frame is copied out (brb_frame_pixels) and drawn by the game */
 	BRB_MODE_CHILD = 3,  /* Remix presents into a child window over the game window */
+	BRB_MODE_DIRECT = 4, /* P4.8: Remix has no window; the game draws its Vulkan image itself
+	                      * (GL_NV_draw_vulkan_image, brb_frame_vk) */
 } brb_mode;
 
 /* Positions and normals in the object's own space; uv as in Blender
@@ -236,8 +239,11 @@ typedef struct brb_frame_stats {
 } brb_frame_stats;
 
 /* Start Remix for a game. mode is BRB_MODE_COPY (a hidden window of the
- * bridge's own; the game draws the copied picture) or BRB_MODE_CHILD (a child
- * window of parent_hwnd at x, y, client coordinates, top left). Needs READY.
+ * bridge's own; the game draws the copied picture), BRB_MODE_CHILD (a child
+ * window of parent_hwnd at x, y, client coordinates, top left) or
+ * BRB_MODE_DIRECT (no window; the game draws Remix's image, brb_frame_vk).
+ * Needs READY. In direct mode the picture keeps the starting size: a later
+ * brb_resize changes nothing and the game scales the image.
  * Remix keeps running after the game ends, for the next one; brb_scene_clear
  * removes the game's objects. */
 BRB_API brb_status brb_startup_ex(int mode, int width, int height, void *parent_hwnd, int x, int y);
@@ -279,8 +285,17 @@ BRB_API int brb_frame_end(void);
  * next brb_frame_begin. NULL when there is none. */
 BRB_API const void *brb_frame_pixels(int *r_width, int *r_height, int *r_pitch);
 
+/* Direct mode: after a brb_frame_end that presented, the Vulkan image
+ * (VkImage) and its two binary semaphores (VkSemaphore): "done" is signalled
+ * when the picture is ready, and Remix waits for "resume" before it renders
+ * the next frame. The caller MUST wait for done and then signal resume exactly
+ * once for every frame this returns 1 for, or Remix stops for good. Returns 0
+ * when no frame waits (not direct mode, or already taken). */
+BRB_API int brb_frame_vk(uint64_t *r_image, uint64_t *r_done, uint64_t *r_resume, int *r_width, int *r_height);
+
 /* Save what Remix shows (copy mode: the last frame; window modes: the
- * window) as a 24-bit BMP. Returns 1 when written. */
+ * window) as a 24-bit BMP. Returns 1 when written; 0 in direct mode, where
+ * the game reads its own window back. */
 BRB_API int brb_save_bmp(const wchar_t *path);
 
 BRB_API void brb_get_stats(brb_frame_stats *r_stats);

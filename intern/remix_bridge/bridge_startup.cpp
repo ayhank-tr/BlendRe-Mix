@@ -51,6 +51,14 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
  * message (found on the RTX 3080: a crash in dxvk::D3D9WindowProc when the
  * window was destroyed). Put our own procedure back before anything else can
  * reach the window. */
+static void unhook_window()
+{
+	if (g_hwnd && (WNDPROC)GetWindowLongPtrW(g_hwnd, GWLP_WNDPROC) != window_proc) {
+		SetWindowLongPtrW(g_hwnd, GWLP_WNDPROC, (LONG_PTR)window_proc);
+		log("window procedure restored after Remix");
+	}
+}
+
 /* The settings every BGE-Remix scene needs, right after startup. */
 void set_scene_defaults()
 {
@@ -71,13 +79,14 @@ void set_scene_defaults()
 	char buf[32];
 	const DWORD n = GetEnvironmentVariableA("BGE_REMIX_UNIQUE_DISTANCE", buf, sizeof(buf));
 	brb_set_config("rtx.uniqueObjectDistance", (n > 0 && n < sizeof(buf)) ? buf : "3.0");
-}
-
-static void unhook_window()
-{
-	if (g_hwnd && (WNDPROC)GetWindowLongPtrW(g_hwnd, GWLP_WNDPROC) != window_proc) {
-		SetWindowLongPtrW(g_hwnd, GWLP_WNDPROC, (LONG_PTR)window_proc);
-		log("window procedure restored after Remix");
+	/* Remix puts every mesh under 1,000 triangles into one merged ray-tracing structure that
+	 * has each object's position baked in, and rebuilds it whenever one of them moves
+	 * (rtx_accel_manager.cpp). Games move many small objects (bullets, debris, spawned
+	 * drops), so each shared mesh gets its own reusable structure instead and a moving copy
+	 * only updates its entry (P4.8, B4.3). BGE_REMIX_BLAS_MERGING=1 keeps Remix's default. */
+	const DWORD m = GetEnvironmentVariableA("BGE_REMIX_BLAS_MERGING", buf, sizeof(buf));
+	if (!(m == 1 && buf[0] == '1')) {
+		brb_set_config("rtx.minimizeBlasMerging", "True");
 	}
 }
 

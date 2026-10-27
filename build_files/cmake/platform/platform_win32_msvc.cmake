@@ -388,6 +388,9 @@ if(WITH_OPENIMAGEIO)
 	set(OPENIMAGEIO_IDIFF "${OPENIMAGEIO}/bin/idiff.exe")
 	add_definitions(-DOIIO_STATIC_BUILD)
 	add_definitions(-DOIIO_NO_SSE=1)
+	# BGE-Remix, from BGE NEXT: with WITH_CPU_AVX2 the compiler announces AVX; OpenImageIO 1.7's headers then mix their
+	# AVX code with the SSE-less types chosen by OIIO_NO_SSE and don't compile. Keep them off AVX too.
+	add_definitions(-DOIIO_NO_AVX=1 -DOIIO_NO_AVX2=1)
 endif()
 
 if(WITH_LLVM)

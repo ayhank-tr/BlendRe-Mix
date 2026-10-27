@@ -32,6 +32,13 @@
  *   OpenGL cannot use the frame directly.
  * - Child mode: the device presents into a child window covering the game's
  *   window (blenderplayer only); nothing is copied.
+ * - Direct mode (P4.8): Remix is started with forceNoVkSwapchain, so it has no
+ *   window of its own. After each Present it hands over its picture as a
+ *   Vulkan image plus a "done" and a "resume" semaphore
+ *   (dxvk_GetExternalSwapchain); the game waits for done, draws the image with
+ *   GL_NV_draw_vulkan_image and signals resume. Nothing is copied, and the
+ *   game's thread does not wait for Remix's graphics work. Remix keeps its
+ *   device to itself in this mode, so the picture keeps its starting size.
  */
 
 #include <algorithm>
@@ -56,6 +63,10 @@ static bool g_have_pixels = false;
  * of back buffer 0 (BGE_REMIX_COPY_SOURCE=back), for drivers where the hidden
  * window's swap chain does not rotate its buffers. */
 static bool g_copy_from_back = false;
+
+/* direct mode: the last presented frame, until brb_frame_vk takes it */
+static bool g_direct_pending = false;
+static uint64_t g_vk_image = 0, g_vk_done = 0, g_vk_resume = 0;
 
 static const wchar_t *CHILD_CLASS = L"BGERemixBridgeChild";
 
@@ -195,6 +206,8 @@ void device_release()
 	g_device = nullptr;
 	g_d3d = nullptr;
 	g_width = g_height = 0;
+	g_direct_pending = false;
+	g_vk_image = g_vk_done = g_vk_resume = 0;
 }
 
 static remixapi_ErrorCode copy_frame()
@@ -245,6 +258,73 @@ remixapi_ErrorCode device_present()
 		}
 		g_stats.copy_ms = now_ms() - t1;
 	}
+	else if (r == REMIXAPI_ERROR_CODE_SUCCESS && g_mode == BRB_MODE_DIRECT) {
+		/* Remix has signalled "done" and waits for "resume": the game must take this frame */
+		uint64_t image = 0, done = 0, resume = 0;
+		remixapi_ErrorCode e = g_remix.dxvk_GetExternalSwapchain ?
+		                           guarded("dxvk_GetExternalSwapchain", [&] {
+			                           return g_remix.dxvk_GetExternalSwapchain(&image, &done, &resume);
+		                           }) :
+		                           REMIXAPI_ERROR_CODE_GET_PROC_ADDRESS_FAILURE;
+		if (e == REMIXAPI_ERROR_CODE_SUCCESS && image && done && resume) {
+			g_vk_image = image;
+			g_vk_done = done;
+			g_vk_resume = resume;
+			g_direct_pending = true;
+		}
+		else {
+			log("direct mode: no external swapchain after Present (%u)", (unsigned)e);
+			g_direct_pending = false;
+			r = (e != REMIXAPI_ERROR_CODE_SUCCESS) ? e : REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+		}
+	}
+	return r;
+}
+
+/* Overlay layers of game launchers (GOG Galaxy, Epic, Steam) load into every
+ * Vulkan program. The OpenGL extension uses Remix's Vulkan handles as they
+ * are, and layers may wrap them (NV_draw_vulkan_image, issue 1), so they are
+ * kept out of direct mode. Set before Remix creates its Vulkan instance; an
+ * existing VK_LOADER_LAYERS_DISABLE, or BGE_REMIX_KEEP_VK_LAYERS=1, wins. */
+static void disable_overlay_layers()
+{
+	char buf[8];
+	if (GetEnvironmentVariableA("BGE_REMIX_KEEP_VK_LAYERS", buf, sizeof(buf)) > 0 && buf[0] == '1') {
+		return;
+	}
+	if (GetEnvironmentVariableA("VK_LOADER_LAYERS_DISABLE", nullptr, 0) > 0) {
+		return;
+	}
+	const char *layers = "GalaxyOverlayVkLayer*,VK_LAYER_EOS_Overlay*,VK_LAYER_VALVE_steam_overlay*";
+	SetEnvironmentVariableA("VK_LOADER_LAYERS_DISABLE", layers);
+	_putenv_s("VK_LOADER_LAYERS_DISABLE", layers);
+	log("direct mode: Vulkan overlay layers off (%s)", layers);
+}
+
+static remixapi_ErrorCode start_direct(int width, int height)
+{
+	if (!g_remix.Startup || !g_remix.dxvk_GetExternalSwapchain) {
+		return REMIXAPI_ERROR_CODE_GET_PROC_ADDRESS_FAILURE;
+	}
+	disable_overlay_layers();
+	remixapi_StartupInfo info = {};
+	info.sType = REMIXAPI_STRUCT_TYPE_STARTUP_INFO;
+	info.pNext = nullptr;
+	info.hwnd = g_hwnd; /* only its size is used: Remix makes its picture that big */
+	info.disableSrgbConversionForOutput = FALSE;
+	info.forceNoVkSwapchain = TRUE;
+	info.editorModeEnabled = FALSE;
+	info.combineGuiInFinalColor = TRUE;
+	(void)width;
+	(void)height;
+	remixapi_ErrorCode r;
+	try {
+		r = g_remix.Startup(&info);
+	}
+	catch (...) {
+		log("the runtime raised an exception in Startup (direct mode)");
+		r = REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+	}
 	return r;
 }
 
@@ -277,6 +357,7 @@ static brb_status startup_ex_impl(int mode, int width, int height, HWND parent, 
 
 	g_hwnd = (mode == BRB_MODE_CHILD) ? create_child_window(parent, x, y, width, height) :
 	                                    create_hidden_window(width, height);
+	g_direct_pending = false;
 	if (!g_hwnd) {
 		g_mode = BRB_MODE_NONE;
 		set_status(BRB_STATUS_STARTUP_FAILED, "RTX Remix could not start: Windows refused to create its window.");
@@ -285,10 +366,13 @@ static brb_status startup_ex_impl(int mode, int width, int height, HWND parent, 
 
 	const double t0 = now_ms();
 	remixapi_ErrorCode r = REMIXAPI_ERROR_CODE_SUCCESS;
-	if (!g_remix.dxvk_CreateD3D9 || !g_remix.dxvk_RegisterD3D9Device) {
+	if (mode == BRB_MODE_DIRECT) {
+		r = start_direct(width, height);
+	}
+	else if (!g_remix.dxvk_CreateD3D9 || !g_remix.dxvk_RegisterD3D9Device) {
 		r = REMIXAPI_ERROR_CODE_GET_PROC_ADDRESS_FAILURE;
 	}
-	if (r == REMIXAPI_ERROR_CODE_SUCCESS) {
+	if (r == REMIXAPI_ERROR_CODE_SUCCESS && mode != BRB_MODE_DIRECT) {
 		/* editorModeEnabled = FALSE: game settings, sRGB output, Remix's menu
 		 * drawn into the picture */
 		r = guarded("dxvk_CreateD3D9", [] { return g_remix.dxvk_CreateD3D9(FALSE, &g_d3d); });
@@ -296,7 +380,7 @@ static brb_status startup_ex_impl(int mode, int width, int height, HWND parent, 
 			r = REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
 		}
 	}
-	if (r == REMIXAPI_ERROR_CODE_SUCCESS) {
+	if (r == REMIXAPI_ERROR_CODE_SUCCESS && mode != BRB_MODE_DIRECT) {
 		D3DPRESENT_PARAMETERS pp = present_params(width, height);
 		HRESULT hr;
 		try {
@@ -315,7 +399,7 @@ static brb_status startup_ex_impl(int mode, int width, int height, HWND parent, 
 			g_device = nullptr;
 		}
 	}
-	if (r == REMIXAPI_ERROR_CODE_SUCCESS) {
+	if (r == REMIXAPI_ERROR_CODE_SUCCESS && mode != BRB_MODE_DIRECT) {
 		r = guarded("dxvk_RegisterD3D9Device", [] { return g_remix.dxvk_RegisterD3D9Device(g_device); });
 	}
 	log("game mode %d startup %dx%d -> %u in %.1f ms", mode, width, height, (unsigned)r, now_ms() - t0);
@@ -348,13 +432,14 @@ static brb_status startup_ex_impl(int mode, int width, int height, HWND parent, 
 		return g_status;
 	}
 	set_status(BRB_STATUS_RUNNING, mode == BRB_MODE_COPY ? "RTX Remix is running (copy mode)." :
-	                                                       "RTX Remix is running (window mode).");
+	                               mode == BRB_MODE_DIRECT ? "RTX Remix is running (direct mode)." :
+	                                                         "RTX Remix is running (window mode).");
 	return g_status;
 }
 
 BRB_API brb_status brb_startup_ex(int mode, int width, int height, void *parent_hwnd, int x, int y)
 {
-	if (mode != BRB_MODE_COPY && mode != BRB_MODE_CHILD) {
+	if (mode != BRB_MODE_COPY && mode != BRB_MODE_CHILD && mode != BRB_MODE_DIRECT) {
 		return g_status;
 	}
 	if (g_status == BRB_STATUS_RUNNING) {
@@ -384,6 +469,17 @@ BRB_API brb_status brb_startup_ex(int mode, int width, int height, void *parent_
 
 BRB_API int brb_resize(int width, int height, int x, int y)
 {
+	if (g_status == BRB_STATUS_RUNNING && g_mode == BRB_MODE_DIRECT) {
+		/* Remix keeps its device to itself here: the picture keeps its starting
+		 * size and the game scales it to the window */
+		static bool noted = false;
+		if (!noted && (width != g_width || height != g_height)) {
+			noted = true;
+			log("direct mode: the window is now %dx%d; the picture stays %dx%d and is scaled",
+			    width, height, g_width, g_height);
+		}
+		return REMIXAPI_ERROR_CODE_SUCCESS;
+	}
 	if (g_status != BRB_STATUS_RUNNING || !g_device || !g_hwnd) {
 		return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
 	}
@@ -448,9 +544,33 @@ BRB_API const void *brb_frame_pixels(int *r_width, int *r_height, int *r_pitch)
 	return g_lock.pBits;
 }
 
+BRB_API int brb_frame_vk(uint64_t *r_image, uint64_t *r_done, uint64_t *r_resume, int *r_width, int *r_height)
+{
+	if (g_mode != BRB_MODE_DIRECT || !g_direct_pending) {
+		return 0;
+	}
+	g_direct_pending = false;
+	if (r_image) {
+		*r_image = g_vk_image;
+	}
+	if (r_done) {
+		*r_done = g_vk_done;
+	}
+	if (r_resume) {
+		*r_resume = g_vk_resume;
+	}
+	if (r_width) {
+		*r_width = g_width;
+	}
+	if (r_height) {
+		*r_height = g_height;
+	}
+	return 1;
+}
+
 BRB_API int brb_save_bmp(const wchar_t *path)
 {
-	if (!path || !path[0]) {
+	if (!path || !path[0] || g_mode == BRB_MODE_DIRECT) {
 		return 0;
 	}
 	bool ok;

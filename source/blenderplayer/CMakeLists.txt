@@ -97,6 +97,12 @@ endif()
 
 # if(UNIX)
 	# Sort libraries
+	if(WITH_MEM_MIMALLOC)   # BGE-Remix, from BGE NEXT (CPU performance): C++ new/delete through mimalloc
+		target_sources(blenderplayer PRIVATE ${CMAKE_SOURCE_DIR}/intern/guardedalloc/cpp/mimalloc_new_delete.cpp)
+		set_property(SOURCE ${CMAKE_SOURCE_DIR}/intern/guardedalloc/cpp/mimalloc_new_delete.cpp APPEND PROPERTY
+		             INCLUDE_DIRECTORIES ${CMAKE_SOURCE_DIR}/extern/mimalloc/include)
+	endif()
+
 	set(BLENDER_SORTED_LIBS
 		ge_player_ghost 
 		ge_player_common 
@@ -206,6 +212,10 @@ endif()
 
 	if(WITH_CXX_GUARDEDALLOC)
 		list(APPEND BLENDER_SORTED_LIBS bf_intern_guardedalloc_cpp)
+	endif()
+
+	if(WITH_MEM_MIMALLOC)
+		list(APPEND BLENDER_SORTED_LIBS extern_mimalloc)   # BGE-Remix, from BGE NEXT (CPU performance)
 	endif()
 
 	if(WITH_INTERNATIONAL)

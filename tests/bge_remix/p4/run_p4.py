@@ -15,11 +15,19 @@ CI (fake runtime, no GPU):
   T4.4a  picking: physics as in stock BGE, Remix picks through the fake
          runtime, the outline is asked for
   T4.5a  a Blender particle system reaches Remix as GPU particles
+  T4.8a  presentation (P4.8): copy mode without GL_NV_draw_vulkan_image; with
+         the test stand-in, direct mode: every frame waited for, drawn and
+         resumed exactly once, also across a window resize
+  T4.8b  the same game: physics and fountain end the same with each CPU
+         change (physics skip, mimalloc, pacing) on and off
+  T4.8c  the time split (logic, physics, animation, scene graph, adding and
+         removing objects) in the stats
   T4.0   the five scenes play in official 2.79b
 RTX (your PC):
   T4.1 characters next to OpenGL (sign-off), bending bar: bone space
   T4.2 physics, T4.3 fountain (with T4.5's sparks), T4.4 picking
-  B4.1-B4.4 benchmarks
+  T4.6 direct presentation against copy mode, a resize, a clean end
+  B4.1-B4.5 benchmarks, before/after of the P4.8 changes
 
   python run_p4.py --ours <build> --mock <mock> --official <2.79b> --out <dir>
   python run_p4.py --ours <build> --out <dir> --rtx
@@ -384,13 +392,108 @@ def run_ci(args, out):
 
     guarded('picking', ['T4.4a'], picking)
 
+    def presentation():
+        # T4.8a: copy mode without the extension (CI has none); direct mode with the stand-in
+        log_c, env_c = mock_env("present_copy", {"BGE_REMIX_P2_FRAMES": "120"})
+        rc = player(args.ours, out, "present_copy", os.path.join(scenes, "p4_characters.blend"), env_c)
+        st_c = rc["stats"] or {}
+        log_d, env_d = mock_env("present_direct", {"BGE_REMIX_P2_FRAMES": "200", "BGE_REMIX_FAKE_VK_DRAW": "1",
+                                                   "BGE_REMIX_P4_RESIZE_TIC": "60",
+                                                   "BGE_REMIX_P4_RESIZE_TO": "800x450"})
+        rd = player(args.ours, out, "present_direct", os.path.join(scenes, "p4_characters.blend"), env_d,
+                    size=(1280, 720))
+        st_d = rd["stats"] or {}
+        lines = p2.read_lines(log_d)
+        n_present = len(presents(lines))
+        ext = [int(l.split("=")[1]) for l in lines if l.startswith("ExternalSwapchain calls=")]
+        seq = [l for l in text_of("present_direct").splitlines() if l.startswith("BGE-Remix direct: ")]
+        kinds = [l.split()[2] for l in seq]
+        in_order = len(kinds) % 3 == 0 and kinds == ["wait", "draw", "signal"] * (len(kinds) // 3)
+        handles = all(("wait 2222" in a) and ("draw 1111" in b) and ("signal 3333" in c)
+                      for a, b, c in zip(seq[0::3], seq[1::3], seq[2::3]))
+        rects = []
+        for l in seq:
+            m = re.search(r" at ([-\d.]+),([-\d.]+)\.\.([-\d.]+),([-\d.]+)", l)
+            if m:
+                rects.append(tuple(float(v) for v in m.groups()))
+        c = {
+            "without the extension: copy mode, with the reason": st_c.get("mode") == "copy" and
+            "GL_NV_draw_vulkan_image" in (st_c.get("copy_mode_reason") or ""),
+            "the copy-mode game ran 120 frames": ran(rc, 120),
+            "with the stand-in: direct mode": st_d.get("mode") == "direct",
+            "Remix started without its window, with game settings":
+                "NoVkSwapchain requested editor=0 srgb_off=0" in lines,
+            "the direct-mode game ran 200 frames": ran(rd, 200),
+            "every frame waited for, drawn and resumed, in that order": in_order and bool(kinds),
+            "once per presented frame": len(kinds) // 3 == n_present and n_present >= 200,
+            "Remix's handles used as given": handles and bool(seq),
+            "the image fetched once per frame": bool(ext) and ext[0] == n_present,
+            "drawn over the whole window, before and after the resize":
+                (0.0, 0.0, 1280.0, 720.0) in rects and (0.0, 0.0, 800.0, 450.0) in rects,
+        }
+        res["T4.8a"] = dict(p2.test(c), detail={"copy": {k: st_c.get(k) for k in ("mode", "copy_mode_reason")},
+                                                "direct": {k: st_d.get(k) for k in ("mode", "direct_frames")},
+                                                "presents": n_present, "sequence": len(kinds), "ext": ext,
+                                                "rects": sorted(set(rects))[:6], "first": seq[:3]})
+
+    guarded('characters', ['T4.8a'], presentation)
+
+    split = {}
+
+    def same_game():
+        # T4.8b: each CPU change on and off; every body at frame 250 (the fake runtime's
+        # log, 5 decimals) must be the same
+        variants = (("default", {}), ("no_physics_skip", {"BGE_REMIX_NO_PHYSICS_SKIP": "1"}),
+                    ("no_mimalloc", {"BGE_REMIX_NO_MIMALLOC": "1"}), ("no_pacing", {"BGE_REMIX_NO_PACING": "1"}))
+        c, d = {}, {}
+        for scene in ("p4_physics", "p4_fountain"):
+            base = None
+            for tag, extra in variants:
+                name = "same_%s_%s" % (scene, tag)
+                log, env = mock_env(name, dict(extra, BGE_REMIX_MOCK_DRAWS_FRAME="250", BGE_REMIX_P2_FRAMES="260"))
+                r = player(args.ours, out, name, os.path.join(scenes, scene + ".blend"), env)
+                got = sorted((x["mesh_int"], tuple(x["m"])) for x in draws(p2.read_lines(log)) if x["frame"] == 250)
+                if tag == "default":
+                    base = got
+                    split[scene] = r["stats"] or {}
+                    c["%s: the run drew its objects at frame 250" % scene] = ran(r, 260) and len(got) > 20
+                else:
+                    diff = sum(1 for a, b in zip(base or [], got) if a != b) + abs(len(base or []) - len(got))
+                    d["%s %s" % (scene, tag)] = {"draws": len(got), "different": diff}
+                    c["%s: the same with %s" % (scene, tag.replace("_", " "))] = ran(r, 260) and diff == 0
+        res["T4.8b"] = dict(p2.test(c), detail=d)
+
+    guarded('physics', ['T4.8b'], same_game)
+
+    def time_split():
+        # T4.8c: the stats split BGE's own time
+        keys = ("logic_ms_median", "physics_ms_median", "animation_ms_median", "scenegraph_ms_median",
+                "addremove_ms_median")
+        ph, fo = split.get("p4_physics", {}), split.get("p4_fountain", {})
+        def parts(st):
+            return [st.get(k) for k in keys]
+        c = {
+            "the split is in the stats": all(isinstance(v, (int, float)) for v in parts(ph) + parts(fo)),
+            "no part is negative": all((v or 0) >= 0 for v in parts(ph) + parts(fo)),
+            "adding and removing measured in the fountain": (fo.get("addremove_ms_median") or 0) > 0,
+            "nothing added or removed in the physics scene": ph.get("addremove_ms_median") == 0,
+            "the parts fit in BGE's time": all(
+                sum((st.get(k) or 0) for k in keys[:4]) <= 1.5 * (st.get("game_ms_median") or 0) + 0.5
+                for st in (ph, fo)),
+        }
+        res["T4.8c"] = dict(p2.test(c), detail={"physics": {k: ph.get(k) for k in keys + ("game_ms_median",)},
+                                                "fountain": {k: fo.get(k) for k in keys + ("game_ms_median",)}})
+
+    guarded('fountain', ['T4.8c'], time_split)
+
     # T4.0: official 2.79b
     res["T4.0"] = check_stock(args, out, scenes)
 
-    keys = ("T4.1a", "T4.1b", "T4.1c", "T4.2a", "T4.3a", "T4.4a", "T4.5a", "T4.0")
+    keys = ("T4.1a", "T4.1b", "T4.1c", "T4.2a", "T4.3a", "T4.4a", "T4.5a", "T4.8a", "T4.8b", "T4.8c", "T4.0")
     names = {"T4.1a": "Skinning data", "T4.1b": "Same maths as BGE", "T4.1c": "Deform fallback",
              "T4.2a": "Physics", "T4.3a": "Fountain, billboards", "T4.4a": "Picking",
-             "T4.5a": "Blender particles", "T4.0": "Plays in official 2.79b"}
+             "T4.5a": "Blender particles", "T4.8a": "Presentation choice", "T4.8b": "Same game",
+             "T4.8c": "Time split", "T4.0": "Plays in official 2.79b"}
     res["all_ok"] = all(res[k]["ok"] for k in keys)
     lines = ["BGE-Remix phase 4 results (CI, fake runtime)", "=" * 44, ""]
     for k in keys:
@@ -488,6 +591,43 @@ def run_rtx(args, out):
         [("OpenGL (tic 90)", gl["screenshot"])] + [(label, runs[k]["screenshot"]) for k, label, _ in variants],
         os.path.join(out, "T4.1_compare.png"))
 
+    # T4.6 (P4.8): direct presentation. T4.1's default run used the default
+    # mode (direct when the driver offers it); the same scene again in copy mode
+    # must look the same, and a resize and the game's end must not hang Remix
+    print("T4.6: direct presentation against copy mode, and a resize...", flush=True)
+    cp = player(args.ours, out, "T4.6_copy", blend("p4_characters"),
+                timed(10, dict(freeze, BGE_REMIX_PRESENT="copy")), size=(1280, 720), cwd=out)
+    rs = player(args.ours, out, "T4.6_resize", blend("p4_characters"),
+                timed(12, {"BGE_REMIX_P4_RESIZE_TIC": "120", "BGE_REMIX_P4_RESIZE_TO": "960x540"}),
+                size=(1280, 720), cwd=out)
+    dr = runs["default"]
+    tip["copy"] = red_centroid(cp["screenshot"])
+    diff = flipped = None
+    a, b = p2.image_pixels(dr["screenshot"]), p2.image_pixels(cp["screenshot"])
+    if a is not None and b is not None and a.shape == b.shape:
+        diff = float(abs(a.astype("float32") - b.astype("float32")).mean())
+        flipped = float(abs(a.astype("float32") - b[::-1].astype("float32")).mean())
+    ok_rs, _ = p2.has_picture(rs["screenshot"])
+    rs_text = ""
+    if os.path.isfile(os.path.join(out, "T4.6_resize.log")):
+        with open(os.path.join(out, "T4.6_resize.log"), encoding="utf-8", errors="replace") as f:
+            rs_text = f.read()
+    c = {
+        "direct mode used": (dr["stats"] or {}).get("mode") == "direct",
+        "copy mode when asked": (cp["stats"] or {}).get("mode") == "copy",
+        "the bar tip in the same place and size as in copy mode": near(tip.get("copy"), tip.get("default")),
+        "the same picture (mean difference under 12 of 255)": diff is not None and diff < 12.0,
+        "the right way up": diff is not None and flipped is not None and diff < flipped,
+        "the window resized during play": "window resized to 960x540" in rs_text,
+        "the resized game drew a picture and ended normally": rs["exit"] == 0 and bool(ok_rs),
+    }
+    res["T4.6"] = dict(p2.test(c), detail={"mean_difference": diff, "flipped_difference": flipped,
+                                          "copy_mode_reason": (dr["stats"] or {}).get("copy_mode_reason"),
+                                          "tips": {k: tip.get(k) for k in ("default", "copy")}})
+    res["T4.6"]["compare"] = p2.contact_sheet(
+        [("direct mode", dr["screenshot"]), ("copy mode", cp["screenshot"]), ("after a resize to 960x540", rs["screenshot"])],
+        os.path.join(out, "T4.6_compare.png"))
+
     # T4.2: physics, falling and settled
     print("T4.2: 200 rigid bodies and a cloth...", flush=True)
     fall = player(args.ours, out, "T4.2_falling", blend("p4_physics"), timed(1.6), size=(1280, 720), cwd=out)
@@ -568,24 +708,58 @@ def run_rtx(args, out):
                       "deformed_objects": b["stats"].get("deformed_objects"),
                       "draws": b["stats"].get("draws_last_frame"),
                       "game_ms": b["stats"].get("game_ms_median"), "copy_ms": b["stats"].get("copy_ms_median")}
-    # B4.3 breakdown: the fountain without one kind of content at a time,
-    # and in OpenGL (what BGE itself spends: logic, physics, drawing)
-    print("B4.3 breakdown: the fountain without drops, halo sparks or GPU sparks...", flush=True)
-    parts = {}
-    for tag, extra, a in (("remix_300_units", {"BGE_REMIX_UNIQUE_DISTANCE": "300"}, []),
-                          ("unique_1m", {"BGE_REMIX_UNIQUE_DISTANCE": "1.0"}, []),
-                          ("unique_0.3m", {"BGE_REMIX_UNIQUE_DISTANCE": "0.3"}, []),
-                          ("no_drops", {"BGE_REMIX_P4_NO_DROPS": "1"}, []),
-                          ("no_halo_sparks", {"BGE_REMIX_P4_NO_SPARKS": "1"}, []),
-                          ("no_gpu_sparks", {"BGE_REMIX_P4_NO_EMITTER": "1"}, []),
-                          ("opengl", {}, opengl)):
-        e = timed(15, extra)
+    def bench_run(tag, path, extra, a=(), seconds=15):
+        e = timed(seconds, extra)
         e.pop("RTX_ENABLE_ASYNC_COMPILATION")
-        b = player(args.ours, out, "B4.3_" + tag, blend("p4_fountain"), e, size=(1920, 1080), args=a, cwd=out)
-        parts[tag] = {"frame_ms_median": b["probe"].get("frame_ms_median"), "fps": p2.fps(b["probe"].get("frame_ms_median")),
-                      "draws": b["stats"].get("draws_last_frame"),
-                      "game_ms": b["stats"].get("game_ms_median"), "copy_ms": b["stats"].get("copy_ms_median")}
-    bench["B4.3_breakdown"] = parts
+        r = player(args.ours, out, tag, path, e, size=(1920, 1080), args=list(a), cwd=out)
+        st = r["stats"] or {}
+        return {"frame_ms_median": r["probe"].get("frame_ms_median"), "fps": p2.fps(r["probe"].get("frame_ms_median")),
+                "cpu_share": r["probe"].get("cpu_share"), "mode": st.get("mode"), "draws": st.get("draws_last_frame"),
+                "game_ms": st.get("game_ms_median"), "copy_ms": st.get("copy_ms_median"),
+                "logic_ms": st.get("logic_ms_median"), "physics_ms": st.get("physics_ms_median"),
+                "addremove_ms": st.get("addremove_ms_median")}
+
+    # P4.8: what each change brings. "Before": copy mode, Remix's own merging and
+    # the CPU changes off (whole-program optimization and AVX2 cannot be switched off)
+    cpu_off = {"BGE_REMIX_NO_MIMALLOC": "1", "BGE_REMIX_NO_PHYSICS_SKIP": "1", "BGE_REMIX_NO_PACING": "1"}
+    before = dict(cpu_off, BGE_REMIX_PRESENT="copy", BGE_REMIX_BLAS_MERGING="1")
+    print("B4.3: the fountain with Remix's merging and ours, in copy and direct mode...", flush=True)
+    fountain = {"ours_direct": bench["B4.3_fountain"]}
+    for tag, extra in (("merged_copy", {"BGE_REMIX_BLAS_MERGING": "1", "BGE_REMIX_PRESENT": "copy"}),
+                       ("merged_direct", {"BGE_REMIX_BLAS_MERGING": "1"}),
+                       ("ours_copy", {"BGE_REMIX_PRESENT": "copy"})):
+        fountain[tag] = bench_run("B4.3_" + tag, blend("p4_fountain"), extra)
+    bench["B4.3_combinations"] = fountain
+
+    print("Before and after P4.8: crowd, physics, fountain, P2's instances, P3's room...", flush=True)
+    scenes_ba = [("crowd", blend("p4_crowd"), bench["B4.1_gpu"]),
+                 ("physics", blend("p4_physics"), bench["B4.2_physics"]),
+                 ("fountain", blend("p4_fountain"), bench["B4.3_fountain"])]
+    try:
+        s2, _ = p2.make_scenes(args.ours, os.path.join(out, "p2"))
+        scenes_ba.append(("p2_instances", os.path.join(s2, "p2_instances.blend"), None))
+        sys.path.insert(0, os.path.join(os.path.dirname(HERE), "p3"))
+        import run_p3 as p3  # noqa: E402
+        s3, _ = p3.make_scenes(args.ours, os.path.join(out, "p3"))
+        scenes_ba.append(("p3_room", os.path.join(s3, "p3_room.blend"), None))
+    except (SystemExit, Exception) as e:  # the P4 scenes are still compared
+        print("making the P2/P3 scenes failed: %s" % e)
+    compare = {}
+    for tag, path, after in scenes_ba:
+        b4 = bench_run("BA_before_" + tag, path, before)
+        if after is None:
+            after = bench_run("BA_after_" + tag, path, {})
+        compare[tag] = {"before": b4, "after": after}
+    bench["before_after"] = compare
+    slower = [t for t, v in compare.items()
+              if v["before"]["frame_ms_median"] and v["after"]["frame_ms_median"] and
+              v["after"]["frame_ms_median"] > 1.05 * v["before"]["frame_ms_median"]]
+    bench["slower_than_before"] = slower
+
+    print("B4.5: CPU use at a 60 FPS cap, with and without pacing...", flush=True)
+    capped = ["-g", "fixedtime", "=", "0"]
+    bench["B4.5"] = {"pacing": bench_run("B4.5_pacing", blend("p4_crowd"), {}, capped),
+                     "spinning": bench_run("B4.5_spinning", blend("p4_crowd"), {"BGE_REMIX_NO_PACING": "1"}, capped)}
     res["B4"] = bench
     res["B4"]["targets_60fps"] = all((bench[k]["fps"] or 0) >= 60 for k in ("B4.1_gpu", "B4.2_physics", "B4.3_fountain"))
     res["B4.4"] = {"pick_frames_mean": pr["stats"].get("pick_frames_mean"),
@@ -593,7 +767,9 @@ def run_rtx(args, out):
 
     res["logs"] = p2.collect_logs(out, since, [out, args.ours])
     res["warmup"] = p2.warmups(out)
-    res["all_ok"] = all(res[k]["ok"] for k in ("T4.1", "T4.2", "T4.3", "T4.4"))
+    res["all_ok"] = all(res[k]["ok"] for k in ("T4.1", "T4.2", "T4.3", "T4.4", "T4.6"))
+    res["gate"] = {"fountain_60fps": (bench["B4.3_fountain"]["fps"] or 0) >= 60, "none_slower": not slower,
+                   "T4.6": res["T4.6"]["ok"]}
 
     lines = ["BGE-Remix phase 4 results (RTX)", "=" * 31, ""]
     lines.append("T4.1 Characters                      %s   bar matches OpenGL with: %s   (sign-off: T4.1_compare.png)" % (
@@ -604,7 +780,13 @@ def run_rtx(args, out):
     for name, v in res["T4.4"]["points"].items():
         if not (v["physics_ok"] and v["remix_ok"]):
             lines.append("       %-12s physics %s, Remix %s" % (name, v["physics"], v["remix"]))
-    lines += ["", "Benchmarks (1080p, copy mode)", "-" * 29]
+    lines.append("T4.6 Direct presentation             %s   (T4.6_compare.png)" % p2.mark(res["T4.6"]["ok"]))
+    for name, ok in res["T4.6"]["checks"].items():
+        if not ok:
+            lines.append("       failed: " + name)
+    if res["T4.6"]["detail"].get("copy_mode_reason"):
+        lines.append("       copy mode because: " + res["T4.6"]["detail"]["copy_mode_reason"])
+    lines += ["", "Benchmarks (1080p, %s mode)" % (bench["B4.1_gpu"].get("mode") or "?"), "-" * 29]
     for k in ("B4.1_gpu", "B4.1_cpu", "B4.2_physics", "B4.3_fountain"):
         b = bench[k]
         lines.append("%-14s median %s ms = %s FPS, 95th pct %s ms, skinning/deforming %s ms a frame" % (
@@ -612,9 +794,24 @@ def run_rtx(args, out):
         lines.append("%-14s   of which BGE (logic, physics) %s ms, waiting for Remix's picture %s ms" % (
             "", p2._r(b["game_ms"]), p2._r(b["copy_ms"])))
     lines.append("     target (60 FPS): %s" % ("met" if res["B4"]["targets_60fps"] else "NOT met"))
-    for k, b in bench["B4.3_breakdown"].items():
-        lines.append("B4.3 %-16s median %s ms = %s FPS, %s draws, BGE %s ms, Remix wait %s ms" % (
-            k, p2._r(b["frame_ms_median"]), b["fps"], b["draws"], p2._r(b["game_ms"]), p2._r(b["copy_ms"])))
+    names = {"merged_copy": "Remix's merging, copy mode", "merged_direct": "Remix's merging, direct mode",
+             "ours_copy": "own structures, copy mode", "ours_direct": "own structures, direct mode"}
+    for k in ("merged_copy", "merged_direct", "ours_copy", "ours_direct"):
+        b = bench["B4.3_combinations"][k]
+        lines.append("B4.3 %-30s %s ms = %s FPS" % (names[k], p2._r(b["frame_ms_median"]), b["fps"]))
+    lines += ["", "Before and after P4.8 (before: copy mode, Remix's merging, CPU changes off)", "-" * 75]
+    labels = {"crowd": "crowd (25 characters)", "physics": "physics (200 bodies)", "fountain": "fountain",
+              "p2_instances": "P2 1,000 instances", "p3_room": "P3 material room"}
+    for k, v in bench["before_after"].items():
+        b0, b1 = v["before"]["frame_ms_median"], v["after"]["frame_ms_median"]
+        change = "%+.0f%%" % (100.0 * (b1 - b0) / b0) if b0 and b1 else "-"
+        lines.append("%-24s %s ms -> %s ms (%s)" % (labels[k], p2._r(b0), p2._r(b1), change))
+    lines.append("     no scene more than 5%% slower: %s" % ("yes" if not bench["slower_than_before"]
+                                                          else "NO (%s)" % ", ".join(bench["slower_than_before"])))
+    b5 = bench["B4.5"]
+    share = lambda b: "%.0f%%" % (100.0 * b["cpu_share"]) if b.get("cpu_share") is not None else "-"
+    lines.append("B4.5 crowd at a 60 FPS cap: CPU %s of a core with pacing, %s spinning (%s / %s FPS)" % (
+        share(b5["pacing"]), share(b5["spinning"]), b5["pacing"]["fps"], b5["spinning"]["fps"]))
     lines.append("B4.4 pick answered after %s frames on average" % p2._r(res["B4.4"]["pick_frames_mean"]))
     slow = [(n, w) for n, w in sorted(res["warmup"].items()) if w is None or w > 1.0]
     lines += ["", "Remix warm-up (start to first ray-traced frame)", "-" * 47]

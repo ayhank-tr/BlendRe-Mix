@@ -402,10 +402,14 @@ bool KX_BlenderSceneConverter::GetCacheMaterials()
 void KX_BlenderSceneConverter::RegisterBlenderMaterial(BL_Material *mat)
 {
 	// First make sure we don't register the material twice
-	vector<pair<KX_Scene *, BL_Material *> >::iterator it;
-	for (it = m_materials.begin(); it != m_materials.end(); ++it)
-		if (it->second == mat)
-			return;
+	/* BGE-Remix, from BGE NEXT (perf): a set of every material seen answers "never registered" at once; the list
+	 * search (slow with thousands of materials: loading was quadratic) only for one seen before */
+	if (!m_seenMaterials.insert(mat).second) {
+		vector<pair<KX_Scene *, BL_Material *> >::iterator it;
+		for (it = m_materials.begin(); it != m_materials.end(); ++it)
+			if (it->second == mat)
+				return;
+	}
 
 	m_materials.push_back(pair<KX_Scene *, BL_Material *> (m_currentScene, mat));
 }
@@ -467,10 +471,12 @@ RAS_MeshObject *KX_BlenderSceneConverter::FindGameMesh(Mesh *for_blendermesh)
 void KX_BlenderSceneConverter::RegisterPolyMaterial(RAS_IPolyMaterial *polymat)
 {
 	// First make sure we don't register the material twice
-	vector<pair<KX_Scene *, RAS_IPolyMaterial *> >::iterator it;
-	for (it = m_polymaterials.begin(); it != m_polymaterials.end(); ++it)
-		if (it->second == polymat)
-			return;
+	if (!m_seenMaterials.insert(polymat).second) {   /* BGE-Remix, from BGE NEXT (perf): see RegisterBlenderMaterial */
+		vector<pair<KX_Scene *, RAS_IPolyMaterial *> >::iterator it;
+		for (it = m_polymaterials.begin(); it != m_polymaterials.end(); ++it)
+			if (it->second == polymat)
+				return;
+	}
 	m_polymaterials.push_back(pair<KX_Scene *, RAS_IPolyMaterial *> (m_currentScene, polymat));
 }
 

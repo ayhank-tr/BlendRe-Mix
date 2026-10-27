@@ -266,6 +266,8 @@ public:
 
 	///returns true if an update happened to indicate -> Render
 	bool			NextFrame();
+	/* BGE-Remix: sleep until the next logic tic is due (limited frame rate only) */
+	void			PaceUntilNextTic(double timestep);
 	void			Render();
 	void			RenderShadowBuffers(KX_Scene *scene);
 	

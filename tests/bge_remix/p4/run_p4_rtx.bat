@@ -4,7 +4,7 @@ rem Needs Python 3 (python.org, "Add python.exe to PATH") and the runtime
 rem installed by the phase 1 tests (Preferences > System > RTX Remix).
 rem Expects the CI build extracted to C:\BGE-Remix\builds\blendremix-win64.
 rem
-rem Takes about 10 minutes.
+rem Takes about 20 minutes.
 rem Game windows open and close by themselves. Leave the PC alone meanwhile,
 rem and close any picture viewer showing the results folder.
 
