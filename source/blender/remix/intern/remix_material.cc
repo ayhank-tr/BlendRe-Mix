@@ -114,6 +114,7 @@ void defaults(MaterialSpec &s)
 	}
 	s.notes.clear();
 	s.source = MaterialSpec::DEFAULT;
+	s.particle = false;
 }
 
 TextureRequest texture(Image *ima, int kind, int channel = 0, int flags = 0)
@@ -325,6 +326,11 @@ void from_blender_internal(const Material *ma, MaterialSpec &s)
 		}
 		if ((mtex->mapto & MAP_ALPHA) && tex->ima != albedo_image) {
 			note(s, slot + ": alpha from an image other than the colour texture, left out");
+		}
+		else if ((mtex->mapto & MAP_ALPHA) && tex->ima == albedo_image) {
+			/* the image's alpha is the opacity (a sprite: material alpha 0,
+			 * the texture brings it back), as BGE draws it */
+			d.opacity = 1.0f;
 		}
 	}
 }
@@ -715,6 +721,9 @@ void translate_material(const Material *ma, MaterialSpec &r_spec)
 	if (!ma) {
 		return;
 	}
+	/* whatever the material's source: sprites and particles */
+	r_spec.particle = prop_int(ma, "bge_remix_particle", 0) != 0 ||
+	                  (ma->game.face_orientation & GEMAT_HALO) != 0;
 	if (from_panel(ma, r_spec)) {
 		return;
 	}

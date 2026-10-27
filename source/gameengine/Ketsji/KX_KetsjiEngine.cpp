@@ -1305,6 +1305,17 @@ void KX_KetsjiEngine::RenderFrame(KX_Scene* scene, KX_Camera* cam)
 
 	scene->CalculateVisibleMeshes(m_rasterizer,cam);
 
+#ifdef WITH_REMIX
+	if (m_remix && scene == m_remixScene && !cam->GetViewport()) {
+		/* BGE-Remix: Remix also shows what the camera does not see (shadows,
+		 * reflections), so nothing counts as culled: every character is
+		 * animated (UpdateAnimations skips culled ones). */
+		CListValue *objects = scene->GetObjectList();
+		for (int i = 0; i < objects->GetCount(); i++)
+			((KX_GameObject *)objects->GetValue(i))->SetCulled(false);
+	}
+#endif
+
 	m_logger->StartLog(tc_animations, m_kxsystem->GetTimeInSeconds(), true);
 	SG_SetActiveStage(SG_STAGE_ANIMATION_UPDATE);
 	UpdateAnimations(scene);

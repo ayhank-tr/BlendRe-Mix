@@ -33,6 +33,15 @@
  *
  * Remix on but unusable (not installed, too old, no RTX card): the game
  * runs in OpenGL and a one-line notice says why.
+ *
+ * P4, moving content: armature-skinned meshes go to Remix once with their
+ * bone weights and are skinned by Remix on the GPU (only the bone matrices
+ * each frame); every other deformer (shape keys, modifiers, soft bodies,
+ * armatures Remix cannot reproduce) runs on the CPU as in BGE and the
+ * object's mesh is sent again on the frames it changed. Halo and Billboard
+ * faces turn to the camera, Shadow faces are left out (Remix casts real
+ * shadows), Blender particle systems become Remix GPU particles, and every
+ * object drawn gets a picking ID (bge.render.remixPick / remixHighlight).
  */
 
 #ifndef __KX_REMIXRENDERER_H__
@@ -42,10 +51,14 @@
 
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "MT_Matrix4x4.h"
+
+#include "bge_remix_bridge.h"  /* C linkage inside */
 
 class KX_Scene;
 class KX_Camera;
@@ -55,8 +68,11 @@ class RAS_ICanvas;
 class RAS_MeshObject;
 class RAS_IPolyMaterial;
 class RAS_Rect;
+class RAS_Deformer;
+class BL_SkinDeformer;
 struct BRMX_Bridge;
 struct brb_light_desc;
+struct Object;
 namespace brmx {
 struct MaterialSpec;
 class TextureCache;
@@ -106,7 +122,33 @@ public:
 	/* For tests: with BGE_REMIX_TRACE set, prints (and flushes) a step. */
 	static void Trace(const char *what);
 
+	/* bge.render.remixPick: the object Remix drew at a pixel of the game
+	 * window (top left origin). The answer comes a frame or two after the
+	 * first call for a point; until then the answer for the previous point
+	 * (exact = false) or NULL (exact = true). NULL when nothing is there. */
+	KX_GameObject *Pick(int x, int y, bool exact);
+	/* bge.render.remixHighlight: outline these objects (empty: none). */
+	void SetHighlight(const std::vector<KX_GameObject *> &objects, const float color[3]);
+	bool IsRunning() const { return m_running; }
+
 private:
+	/* What one mesh hands to Remix (Collect), one entry per surface. */
+	struct Geometry {
+		std::vector<std::vector<brb_vertex> > verts;
+		std::vector<std::vector<uint32_t> > indices;
+		std::vector<uint64_t> materials;
+		std::vector<std::vector<float> > weights;   /* skinned: bones_per_vertex per vertex */
+		std::vector<std::vector<uint32_t> > bones;
+		uint32_t bones_per_vertex;
+		bool double_sided;
+		bool blend;
+		bool particle;
+		int billboard;     /* 0 no, 1 Halo (faces the camera), 2 Billboard (turns around Z) */
+		int shadow_faces;  /* surfaces left out (Shadow face orientation) */
+		uint64_t content;  /* hash of the positions and normals */
+		int max_influences;/* skinned: most bones on one vertex before keeping 4 */
+		Geometry();
+	};
 	struct MeshEntry {
 		uint64_t hash;
 		KX_Scene *scene;
@@ -114,6 +156,34 @@ private:
 		std::string name;
 		bool double_sided;
 		bool blend;        /* has alpha-blended surfaces */
+		bool particle;
+		int billboard;
+	};
+	/* a mesh skinned by Remix: one per mesh and armature */
+	struct SkinEntry {
+		uint64_t hash;
+		KX_Scene *scene;
+		std::string name;
+		int polygons;
+		int groups;        /* deform groups; bones sent = groups + 1 */
+		bool double_sided;
+		bool blend;
+		bool particle;
+	};
+	/* an object deformed on the CPU: its own Remix mesh */
+	struct DeformEntry {
+		uint64_t hash;
+		KX_Scene *scene;
+		std::string name;
+		uint64_t content;  /* last sent */
+		int last_seen;     /* frame */
+		bool double_sided;
+		bool blend;
+		bool particle;
+	};
+	struct PickEntry {
+		uint32_t id;
+		int last_seen;
 	};
 	struct MaterialEntry {
 		uint64_t hash;
@@ -121,6 +191,7 @@ private:
 		std::string name;
 		std::shared_ptr<brmx::MaterialSpec> spec; /* what the translator made of it */
 		bool blend;        /* alpha blended */
+		bool particle;     /* drawn as a particle (Halo, or the panel's Particle) */
 		bool waiting;      /* sent without some textures that are still being encoded */
 	};
 	struct LightEntry {
@@ -135,6 +206,22 @@ private:
 	void SetNotice(const std::string &text);
 	uint64_t UniqueHash(const std::string &kind, const std::string &name, const void *key);
 	bool EnsureMesh(KX_Scene *scene, RAS_MeshObject *mesh, MeshEntry *&r_entry);
+	/* client: the object whose own (deformed) vertices to read, NULL = the
+	 * mesh's shared ones; weights (by Blender vertex): a skinned mesh */
+	void Collect(KX_Scene *scene, RAS_MeshObject *mesh, void *client, const void *weights, Geometry &g,
+	             uint32_t identity_bone = 0);
+	void CollectDerived(KX_Scene *scene, RAS_MeshObject *mesh, struct DerivedMesh *dm, Geometry &g);
+	bool SendGeometry(uint64_t hash, const Geometry &g);
+	bool DrawSkinned(KX_Scene *scene, KX_GameObject *obj, RAS_Deformer *def, const float model[16], uint32_t pick);
+	bool DrawDeformed(KX_Scene *scene, KX_GameObject *obj, RAS_Deformer *def, const float model[16], uint32_t pick);
+	bool DrawEmitters(KX_Scene *scene, KX_GameObject *obj, struct Object *ob, const float model[16], uint32_t pick);
+	void SkinCheck(KX_GameObject *obj, BL_SkinDeformer *skin, uint64_t mesh, const float model[16], uint32_t pick);
+	void ReleaseSkinning(KX_Scene *scene);
+	void PruneDynamic(KX_Scene *scene);
+	uint32_t PickId(KX_GameObject *obj);
+	void UpdatePicking(KX_Scene *scene);
+	bool ObjectAlive(KX_GameObject *obj);
+	void NoteOnce(const std::string &text);
 	uint64_t EnsureMaterial(KX_Scene *scene, RAS_IPolyMaterial *mat);
 	void SendMaterial(MaterialEntry &e);
 	void UpdateTextures(KX_Scene *scene);
@@ -161,6 +248,29 @@ private:
 	std::map<const void *, MaterialEntry> m_materials;
 	std::map<const void *, LightEntry> m_lights;
 	std::map<uint64_t, const void *> m_hashes;
+	std::map<std::pair<const void *, const void *>, SkinEntry> m_skins; /* (mesh, armature) */
+	std::map<const void *, DeformEntry> m_deformed;                    /* object */
+	KX_Scene *m_gpu_scene;     /* objects of this scene are skinned by Remix */
+	bool m_cpu_skinning;       /* BGE_REMIX_CPU_SKINNING=1: never on the GPU (B4.1) */
+	std::string m_skin_check;  /* BGE_REMIX_SKIN_CHECK: frames to compare with BGE's skinning */
+	std::set<std::string> m_noted;
+	bool m_colliders;          /* this frame: some object has Collision on (GPU particles bounce) */
+	float m_collider_bounce;
+	float m_gravity;
+
+	/* picking */
+	std::map<const void *, PickEntry> m_pick_ids;
+	std::map<uint32_t, KX_GameObject *> m_pick_frame; /* drawn this frame */
+	uint32_t m_next_pick;
+	bool m_pick_wanted, m_pick_pending, m_pick_has;
+	int m_pick_x, m_pick_y;          /* asked for (window pixels) */
+	int m_pick_req_x, m_pick_req_y;  /* the request on its way */
+	int m_pick_ans_x, m_pick_ans_y;  /* the last answer's point */
+	KX_GameObject *m_pick_answer;
+	int m_pick_sent_frame;
+	std::vector<KX_GameObject *> m_highlight;
+	float m_highlight_color[3];
+	int m_vp_x0, m_vp_y0;      /* the viewport's top left corner in the window */
 	brmx::TextureCache *m_cache;
 	int m_materials_waiting;   /* entries with waiting set */
 	int m_materials_swapped;   /* sent again with their textures */
@@ -189,6 +299,15 @@ private:
 	std::vector<float> m_upload_ms;
 	int m_last_draws, m_last_lights;
 	int m_screenshot_frame;
+	/* P4 */
+	int m_skinned_objects, m_deformed_objects, m_billboards, m_emitters, m_particle_draws; /* last frame */
+	int m_deform_uploads;      /* CPU-deformed meshes sent (again) */
+	int m_cpu_skin_notes;      /* skinned objects Remix cannot skin */
+	int m_shadow_faces;        /* surfaces left out */
+	int m_picks_answered;
+	int m_pick_frames_total, m_pick_frames_count; /* frames from request to answer */
+	double m_skin_ms_total;    /* time spent on bones and CPU deformation */
+	int m_skin_ms_frames;
 };
 
 #endif  /* __KX_REMIXRENDERER_H__ */

@@ -60,12 +60,25 @@
 
 #include "MT_Transform.h"
 
+#include "BL_SkinDeformer.h"
+#include "BL_ModifierDeformer.h"
+#ifdef WITH_BULLET
+#  include "KX_SoftBodyDeformer.h"
+#endif
+
+#include <typeinfo>
+
 extern "C" {
 #  include "BKE_idprop.h"
+#  include "BLI_math.h"
+#  include "BKE_DerivedMesh.h"
 #  include "DNA_ID.h"
 #  include "DNA_lamp_types.h"
 #  include "DNA_material_types.h"
+#  include "DNA_meshdata_types.h"
 #  include "DNA_object_types.h"
+#  include "DNA_object_force.h"
+#  include "DNA_particle_types.h"
 #  include "DNA_scene_types.h"
 }
 
@@ -211,6 +224,54 @@ static void object_matrix(KX_GameObject *obj, float r_m[16])
 	trans.getValue(r_m);
 }
 
+/* Halo (screen) and Billboard (axis) faces: the same rotation as
+ * RAS_OpenGLRasterizer::applyTransform. The polygons' normal is +X. */
+static void billboard_matrix(KX_GameObject *obj, const MT_Point3 &campos, bool screen, float r_m[16])
+{
+	const MT_Point3 objpos = obj->NodeGetWorldPosition();
+	MT_Vector3 dir = (campos - objpos).safe_normalized();
+	MT_Vector3 up(0.0, 0.0, 1.0);
+	const MT_Vector3 size = obj->NodeGetWorldScaling();
+	if (screen) {
+		up = (up - up.dot(dir) * dir).safe_normalized();
+	}
+	else {
+		dir = (dir - up.dot(dir) * up).safe_normalized();
+	}
+	MT_Vector3 left = dir.safe_normalized();
+	dir = up.cross(left).safe_normalized();
+	left *= size[0];
+	dir *= size[1];
+	up *= size[2];
+	const float m[16] = {(float)left[0], (float)left[1], (float)left[2], 0.0f,
+	                     (float)dir[0],  (float)dir[1],  (float)dir[2],  0.0f,
+	                     (float)up[0],   (float)up[1],   (float)up[2],   0.0f,
+	                     (float)objpos[0], (float)objpos[1], (float)objpos[2], 1.0f};
+	memcpy(r_m, m, sizeof(m));
+}
+
+static uint64_t hash_bytes(const void *data, size_t n, uint64_t h)
+{
+	const unsigned char *p = (const unsigned char *)data;
+	for (size_t i = 0; i < n; i++) {
+		h ^= p[i];
+		h *= 1099511628211ull;
+	}
+	return h;
+}
+
+/* "1,5,20" holds 5 */
+static bool frame_listed(const std::string &list, int frame)
+{
+	if (list.empty()) {
+		return false;
+	}
+	const std::string l = "," + list + ",";
+	char buf[24];
+	snprintf(buf, sizeof(buf), ",%d,", frame);
+	return l.find(buf) != std::string::npos;
+}
+
 /* ------------------------------------------------------------------------- */
 /* Settings */
 
@@ -284,6 +345,29 @@ KX_RemixRenderer::KX_RemixRenderer(RAS_ICanvas *canvas, bool window_mode_allowed
 		m_screenshot_frame = _wtoi(f.c_str());
 	}
 	m_status = "off";
+	/* P4 */
+	m_gpu_scene = NULL;
+	m_cpu_skinning = env_path(L"BGE_REMIX_CPU_SKINNING", f) && f == L"1";
+	if (env_path(L"BGE_REMIX_SKIN_CHECK", f)) {
+		m_skin_check.assign(f.begin(), f.end());
+	}
+	m_colliders = false;
+	m_collider_bounce = 0.5f;
+	m_gravity = 9.81f;
+	m_next_pick = 0;
+	m_pick_wanted = m_pick_pending = m_pick_has = false;
+	m_pick_x = m_pick_y = m_pick_req_x = m_pick_req_y = m_pick_ans_x = m_pick_ans_y = -1;
+	m_pick_answer = NULL;
+	m_pick_sent_frame = 0;
+	m_highlight_color[0] = 1.0f;
+	m_highlight_color[1] = 0.6f;
+	m_highlight_color[2] = 0.1f;
+	m_vp_x0 = m_vp_y0 = 0;
+	m_skinned_objects = m_deformed_objects = m_billboards = m_emitters = m_particle_draws = 0;
+	m_deform_uploads = m_cpu_skin_notes = m_shadow_faces = m_picks_answered = 0;
+	m_pick_frames_total = m_pick_frames_count = 0;
+	m_skin_ms_total = 0.0;
+	m_skin_ms_frames = 0;
 }
 
 KX_RemixRenderer::~KX_RemixRenderer()
@@ -440,6 +524,13 @@ KX_Scene *KX_RemixRenderer::PickScene(const std::vector<KX_Scene *> &scenes, boo
 		/* window mode: OpenGL shows this frame, not the last Remix picture */
 		ShowRemixWindow(false);
 	}
+	if (m_gpu_scene && m_gpu_scene != picked) {
+		/* OpenGL draws that scene now: BGE skins its characters again */
+		if (std::find(scenes.begin(), scenes.end(), m_gpu_scene) != scenes.end()) {
+			ReleaseSkinning(m_gpu_scene);
+		}
+		m_gpu_scene = NULL;
+	}
 	return picked;
 }
 
@@ -510,6 +601,40 @@ void KX_RemixRenderer::RemoveScene(KX_Scene *scene)
 		else {
 			++it;
 		}
+	}
+	for (auto it = m_skins.begin(); it != m_skins.end();) {
+		if (it->second.scene == scene) {
+			if (m_running && it->second.hash) {
+				m_bridge->mesh_destroy(it->second.hash);
+			}
+			m_hashes.erase(it->second.hash);
+			it = m_skins.erase(it);
+		}
+		else {
+			++it;
+		}
+	}
+	for (auto it = m_deformed.begin(); it != m_deformed.end();) {
+		if (it->second.scene == scene) {
+			if (m_running && it->second.hash) {
+				m_bridge->mesh_destroy(it->second.hash);
+			}
+			m_hashes.erase(it->second.hash);
+			it = m_deformed.erase(it);
+		}
+		else {
+			++it;
+		}
+	}
+	if (scene == m_gpu_scene) {
+		m_gpu_scene = NULL;
+	}
+	if (scene == m_scene) {
+		m_pick_ids.clear();
+		m_pick_frame.clear();
+		m_highlight.clear();
+		m_pick_answer = NULL;
+		m_pick_has = m_pick_pending = m_pick_wanted = false;
 	}
 	for (auto it = m_lights.begin(); it != m_lights.end();) {
 		if (it->second.scene == scene) {
@@ -599,6 +724,7 @@ uint64_t KX_RemixRenderer::EnsureMaterial(KX_Scene *scene, RAS_IPolyMaterial *pm
 	e.scene = scene;
 	e.name = name;
 	e.blend = e.spec->desc.alpha_blend != 0;
+	e.particle = e.spec->particle;
 	e.waiting = false;
 	SendMaterial(e);
 	m_materials[pm] = e;
@@ -669,38 +795,48 @@ void KX_RemixRenderer::UpdateTextures(KX_Scene *scene)
 	}
 }
 
-bool KX_RemixRenderer::EnsureMesh(KX_Scene *scene, RAS_MeshObject *mesh, MeshEntry *&r_entry)
+KX_RemixRenderer::Geometry::Geometry()
+    : bones_per_vertex(0),
+      double_sided(false),
+      blend(false),
+      particle(false),
+      billboard(0),
+      shadow_faces(0),
+      content(1469598103934665603ull),
+      max_influences(0)
 {
-	const std::string name = mesh->GetName().ReadPtr();
-	const int polygons = mesh->NumPolygons();
-	std::map<const void *, MeshEntry>::iterator found = m_meshes.find(mesh);
-	if (found != m_meshes.end()) {
-		if (found->second.name == name && found->second.polygons == polygons) {
-			r_entry = &found->second;
-			return found->second.hash != 0; /* 0: nothing to draw */
-		}
-		/* a different mesh at the address of a freed one */
-		if (found->second.hash) {
-			m_bridge->mesh_destroy(found->second.hash);
-			m_hashes.erase(found->second.hash);
-		}
-		m_meshes.erase(found);
-	}
+}
 
-	std::vector<std::vector<brb_vertex> > verts;
-	std::vector<std::vector<uint32_t> > indices;
-	std::vector<uint64_t> materials;
-	bool double_sided = false;
-	bool blend = false;
+void KX_RemixRenderer::Collect(KX_Scene *scene, RAS_MeshObject *mesh, void *client, const void *weights_in,
+                               Geometry &g, uint32_t identity_bone)
+{
+	typedef BL_SkinDeformer::RemixWeights RW;
+	const std::vector<RW> *weights = (const std::vector<RW> *)weights_in;
+	g = Geometry();
+	std::vector<std::vector<const RW *> > vw;
 
 	for (std::list<RAS_MeshMaterial>::iterator mit = mesh->GetFirstMaterial(); mit != mesh->GetLastMaterial(); ++mit) {
 		RAS_MeshSlot *slot = mit->m_baseslot;
+		if (client) {
+			/* the object's own copy, where its deformer writes */
+			RAS_MeshSlot **sp = mit->m_slots[client];
+			if (sp && *sp) {
+				slot = *sp;
+			}
+		}
 		RAS_IPolyMaterial *pm = mit->m_bucket ? mit->m_bucket->GetPolyMaterial() : NULL;
 		if (!slot) {
 			continue;
 		}
+		const int mode = pm ? pm->GetDrawingMode() : 0;
+		if (mode & RAS_IPolyMaterial::SHADOW) {
+			/* fake blob shadows, cast to the ground in OpenGL: Remix casts real ones */
+			g.shadow_faces++;
+			continue;
+		}
 		std::vector<brb_vertex> v;
 		std::vector<uint32_t> idx;
+		std::vector<const RW *> w;
 		RAS_MeshSlot::iterator it;
 		for (slot->begin(it); !slot->end(it); slot->next(it)) {
 			const uint32_t base = (uint32_t)v.size();
@@ -713,6 +849,11 @@ bool KX_RemixRenderer::EnsureMesh(KX_Scene *scene, RAS_MeshObject *mesh, MeshEnt
 				memcpy(o.uv, tv.getUV(0), sizeof(o.uv));
 				memcpy(&o.color, tv.getRGBA(), sizeof(o.color));
 				v.push_back(o);
+				g.content = hash_bytes(o.position, sizeof(o.position) + sizeof(o.normal), g.content);
+				if (weights) {
+					const unsigned int orig = tv.getOrigIndex();
+					w.push_back(orig < weights->size() ? &(*weights)[orig] : NULL);
+				}
 			}
 			const int type = it.array->m_type;
 			for (size_t i = 0; i + (size_t)type <= it.totindex; i += type) {
@@ -745,16 +886,199 @@ bool KX_RemixRenderer::EnsureMesh(KX_Scene *scene, RAS_MeshObject *mesh, MeshEnt
 		}
 		Material *ma = pm ? pm->GetBlenderMaterial() : NULL;
 		if (!ma || !(ma->game.flag & GEMAT_BACKCULL)) {
-			double_sided = true;
+			g.double_sided = true;
 		}
-		materials.push_back(EnsureMaterial(scene, pm));
+		g.materials.push_back(EnsureMaterial(scene, pm));
 		/* see-through as the translator decided (game settings, Cycles'
 		 * Transparent BSDF, the RTX Remix panel) */
-		if (m_materials[pm].blend) {
-			blend = true;
+		const MaterialEntry &me = m_materials[pm];
+		g.blend = g.blend || me.blend;
+		g.particle = g.particle || me.particle;
+		if (mode & RAS_IPolyMaterial::BILLBOARD_SCREENALIGNED) {
+			g.billboard = 1;
 		}
-		verts.push_back(v);
-		indices.push_back(idx);
+		else if ((mode & RAS_IPolyMaterial::BILLBOARD_AXISALIGNED) && g.billboard == 0) {
+			g.billboard = 2;
+		}
+		g.verts.push_back(v);
+		g.indices.push_back(idx);
+		vw.push_back(w);
+	}
+
+	if (!weights) {
+		return;
+	}
+	/* the fewest bones per vertex that hold every vertex's influences */
+	uint32_t bpv = 1;
+	for (size_t s = 0; s < vw.size(); s++) {
+		for (size_t i = 0; i < vw[s].size(); i++) {
+			const RW *r = vw[s][i];
+			if (r) {
+				g.max_influences = std::max(g.max_influences, r->count);
+				bpv = std::max(bpv, (uint32_t)std::min(std::max(r->count, 1), 4));
+			}
+		}
+	}
+	g.bones_per_vertex = bpv;
+	g.weights.resize(vw.size());
+	g.bones.resize(vw.size());
+	for (size_t s = 0; s < vw.size(); s++) {
+		g.weights[s].assign(vw[s].size() * bpv, 0.0f);
+		g.bones[s].assign(vw[s].size() * bpv, 0u);
+		for (size_t i = 0; i < vw[s].size(); i++) {
+			const RW *r = vw[s][i];
+			for (uint32_t k = 0; k < bpv; k++) {
+				g.weights[s][i * bpv + k] = r ? r->weights[k] : (k == 0 ? 1.0f : 0.0f);
+				/* no weights: the identity bone, the last one */
+				g.bones[s][i * bpv + k] = r ? r->bones[k] : identity_bone;
+			}
+			if (bpv < 4 && r) {
+				/* the kept weights add up to 1 again */
+				float sum = 0.0f;
+				for (uint32_t k = 0; k < bpv; k++) {
+					sum += g.weights[s][i * bpv + k];
+				}
+				if (sum > 0.0f) {
+					for (uint32_t k = 0; k < bpv; k++) {
+						g.weights[s][i * bpv + k] /= sum;
+					}
+				}
+			}
+		}
+	}
+}
+
+/* A modifier deformer's result (Subdivision Surface, Mirror...): BGE draws
+ * the derived mesh itself instead of the vertex arrays. */
+void KX_RemixRenderer::CollectDerived(KX_Scene *scene, RAS_MeshObject *mesh, DerivedMesh *dm, Geometry &g)
+{
+	g = Geometry();
+	DM_ensure_tessface(dm);
+	const int nf = dm->getNumTessFaces(dm);
+	const MFace *faces = dm->getTessFaceArray(dm);
+	const MVert *mv = dm->getVertArray(dm);
+	const int nv = dm->getNumVerts(dm);
+	const MTFace *tf = (const MTFace *)dm->getTessFaceDataArray(dm, CD_MTFACE);
+	if (!faces || !mv) {
+		return;
+	}
+	for (std::list<RAS_MeshMaterial>::iterator mit = mesh->GetFirstMaterial(); mit != mesh->GetLastMaterial(); ++mit) {
+		RAS_IPolyMaterial *pm = mit->m_bucket ? mit->m_bucket->GetPolyMaterial() : NULL;
+		const int mode = pm ? pm->GetDrawingMode() : 0;
+		if (mode & RAS_IPolyMaterial::SHADOW) {
+			g.shadow_faces++;
+			continue;
+		}
+		const int matnr = pm ? pm->GetMaterialIndex() : 0;
+		std::vector<brb_vertex> v;
+		std::vector<uint32_t> idx;
+		for (int f = 0; f < nf; f++) {
+			const MFace &mf = faces[f];
+			if (mf.mat_nr != matnr) {
+				continue;
+			}
+			const unsigned int corner[4] = {mf.v1, mf.v2, mf.v3, mf.v4};
+			const int n = mf.v4 ? 4 : 3;
+			bool ok = true;
+			for (int k = 0; k < n; k++) {
+				ok = ok && (int)corner[k] < nv;
+			}
+			if (!ok) {
+				continue;
+			}
+			float fno[3];
+			if (n == 4) {
+				normal_quad_v3(fno, mv[corner[0]].co, mv[corner[1]].co, mv[corner[2]].co, mv[corner[3]].co);
+			}
+			else {
+				normal_tri_v3(fno, mv[corner[0]].co, mv[corner[1]].co, mv[corner[2]].co);
+			}
+			const uint32_t base = (uint32_t)v.size();
+			for (int k = 0; k < n; k++) {
+				brb_vertex o;
+				memcpy(o.position, mv[corner[k]].co, sizeof(o.position));
+				if (mf.flag & ME_SMOOTH) {
+					normal_short_to_float_v3(o.normal, mv[corner[k]].no);
+				}
+				else {
+					memcpy(o.normal, fno, sizeof(o.normal));
+				}
+				o.uv[0] = tf ? tf[f].uv[k][0] : 0.0f;
+				o.uv[1] = tf ? tf[f].uv[k][1] : 0.0f;
+				o.color = 0xFFFFFFFFu;
+				v.push_back(o);
+				g.content = hash_bytes(o.position, sizeof(o.position) + sizeof(o.normal), g.content);
+			}
+			idx.push_back(base);
+			idx.push_back(base + 1);
+			idx.push_back(base + 2);
+			if (n == 4) {
+				idx.push_back(base);
+				idx.push_back(base + 2);
+				idx.push_back(base + 3);
+			}
+		}
+		if (idx.empty()) {
+			continue;
+		}
+		Material *ma = pm ? pm->GetBlenderMaterial() : NULL;
+		if (!ma || !(ma->game.flag & GEMAT_BACKCULL)) {
+			g.double_sided = true;
+		}
+		g.materials.push_back(EnsureMaterial(scene, pm));
+		const MaterialEntry &me = m_materials[pm];
+		g.blend = g.blend || me.blend;
+		g.particle = g.particle || me.particle;
+		g.verts.push_back(v);
+		g.indices.push_back(idx);
+	}
+}
+
+bool KX_RemixRenderer::SendGeometry(uint64_t hash, const Geometry &g)
+{
+	const size_t n = g.verts.size();
+	std::vector<brb_surface_desc> surfaces(n);
+	std::vector<brb_skin_desc> skins(n);
+	for (size_t s = 0; s < n; s++) {
+		surfaces[s].vertices = g.verts[s].data();
+		surfaces[s].vertex_count = (uint32_t)g.verts[s].size();
+		surfaces[s].indices = g.indices[s].data();
+		surfaces[s].index_count = (uint32_t)g.indices[s].size();
+		surfaces[s].material = g.materials[s];
+		surfaces[s].skin = NULL;
+		if (g.bones_per_vertex && s < g.weights.size()) {
+			skins[s].bones_per_vertex = g.bones_per_vertex;
+			skins[s].weights = g.weights[s].data();
+			skins[s].bones = g.bones[s].data();
+			surfaces[s].skin = &skins[s];
+		}
+	}
+	return !surfaces.empty() && m_bridge->mesh_create(hash, surfaces.data(), (uint32_t)surfaces.size()) == 0;
+}
+
+bool KX_RemixRenderer::EnsureMesh(KX_Scene *scene, RAS_MeshObject *mesh, MeshEntry *&r_entry)
+{
+	const std::string name = mesh->GetName().ReadPtr();
+	const int polygons = mesh->NumPolygons();
+	std::map<const void *, MeshEntry>::iterator found = m_meshes.find(mesh);
+	if (found != m_meshes.end()) {
+		if (found->second.name == name && found->second.polygons == polygons) {
+			r_entry = &found->second;
+			return found->second.hash != 0; /* 0: nothing to draw */
+		}
+		/* a different mesh at the address of a freed one */
+		if (found->second.hash) {
+			m_bridge->mesh_destroy(found->second.hash);
+			m_hashes.erase(found->second.hash);
+		}
+		m_meshes.erase(found);
+	}
+
+	Geometry g;
+	Collect(scene, mesh, NULL, NULL, g);
+	if (g.shadow_faces) {
+		m_shadow_faces += g.shadow_faces;
+		NoteOnce("mesh \"" + name + "\": Shadow faces are left out (Remix casts real shadows)");
 	}
 
 	MeshEntry e;
@@ -762,25 +1086,448 @@ bool KX_RemixRenderer::EnsureMesh(KX_Scene *scene, RAS_MeshObject *mesh, MeshEnt
 	e.scene = scene;
 	e.polygons = polygons;
 	e.name = name;
-	e.double_sided = double_sided;
-	e.blend = blend;
-
-	std::vector<brb_surface_desc> surfaces(verts.size());
-	for (size_t s = 0; s < verts.size(); s++) {
-		surfaces[s].vertices = verts[s].data();
-		surfaces[s].vertex_count = (uint32_t)verts[s].size();
-		surfaces[s].indices = indices[s].data();
-		surfaces[s].index_count = (uint32_t)indices[s].size();
-		surfaces[s].material = materials[s];
-	}
-	if (surfaces.empty() ||
-	    m_bridge->mesh_create(e.hash, surfaces.data(), (uint32_t)surfaces.size()) != 0)
-	{
+	e.double_sided = g.double_sided;
+	e.blend = g.blend;
+	e.particle = g.particle;
+	e.billboard = g.billboard;
+	if (!SendGeometry(e.hash, g)) {
 		/* nothing to draw; remembered so it is not tried every frame */
 		e.hash = 0;
 	}
 	r_entry = &(m_meshes[mesh] = e);
 	return e.hash != 0;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Moving content (P4) */
+
+void KX_RemixRenderer::NoteOnce(const std::string &text)
+{
+	if (m_noted.insert(text).second) {
+		printf("BGE-Remix: %s\n", text.c_str());
+		fflush(stdout);
+	}
+}
+
+bool KX_RemixRenderer::ObjectAlive(KX_GameObject *obj)
+{
+	return obj && m_scene && m_scene->GetObjectList()->SearchValue(obj);
+}
+
+bool KX_RemixRenderer::DrawSkinned(KX_Scene *scene, KX_GameObject *obj, RAS_Deformer *def, const float model[16],
+                                   uint32_t pick)
+{
+	/* only the plain armature deformer: shape keys and modifiers subclass it */
+	if (m_cpu_skinning || typeid(*def) != typeid(BL_SkinDeformer)) {
+		return false;
+	}
+	BL_SkinDeformer *skin = static_cast<BL_SkinDeformer *>(def);
+	std::string why;
+	if (!skin->RemixCanSkin(why)) {
+		if (m_noted.find("skin:" + std::string(obj->GetName().ReadPtr())) == m_noted.end()) {
+			m_noted.insert("skin:" + std::string(obj->GetName().ReadPtr()));
+			printf("BGE-Remix: object \"%s\": skinned on the CPU (%s)\n", obj->GetName().ReadPtr(), why.c_str());
+			fflush(stdout);
+			m_cpu_skin_notes++;
+		}
+		return false;
+	}
+	RAS_MeshObject *mesh = obj->GetMesh(0);
+	if (!mesh || !skin->RemixArmature()) {
+		return false;
+	}
+	const void *arm = skin->RemixArmature()->GetArmature();
+	const std::pair<const void *, const void *> key(mesh, arm);
+	const std::string name = mesh->GetName().ReadPtr();
+	const int polygons = mesh->NumPolygons();
+	std::map<std::pair<const void *, const void *>, SkinEntry>::iterator found = m_skins.find(key);
+	if (found != m_skins.end() && (found->second.name != name || found->second.polygons != polygons)) {
+		if (found->second.hash) {
+			m_bridge->mesh_destroy(found->second.hash);
+			m_hashes.erase(found->second.hash);
+		}
+		m_skins.erase(found);
+		found = m_skins.end();
+	}
+	if (found == m_skins.end()) {
+		std::vector<BL_SkinDeformer::RemixWeights> weights;
+		if (!skin->RemixVertexWeights(weights)) {
+			return false;
+		}
+		SkinEntry &e = m_skins[key];
+		Geometry g;
+		Collect(scene, mesh, NULL, &weights, g, (uint32_t)skin->RemixGroupCount());
+		e.hash = UniqueHash("skin", name, &e);
+		e.scene = scene;
+		e.name = name;
+		e.polygons = polygons;
+		e.groups = skin->RemixGroupCount();
+		e.double_sided = g.double_sided;
+		e.blend = g.blend;
+		e.particle = g.particle;
+		if (g.max_influences > 4) {
+			NoteOnce("mesh \"" + name + "\": vertices with more than 4 bones keep their strongest 4");
+		}
+		if (!SendGeometry(e.hash, g)) {
+			e.hash = 0;
+		}
+		found = m_skins.find(key);
+	}
+	const SkinEntry &e = found->second;
+	if (!e.hash) {
+		return false;
+	}
+	skin->SetRemixGPU(true);
+	m_gpu_scene = scene;
+
+	std::vector<float> bones;
+	skin->RemixBoneMatrices(bones);
+	brb_draw_desc d;
+	memset(&d, 0, sizeof(d));
+	d.mesh = e.hash;
+	memcpy(d.model, model, sizeof(d.model));
+	d.flags = (e.double_sided ? BRB_DRAW_DOUBLE_SIDED : 0) | (e.blend ? BRB_DRAW_BLEND : 0);
+	d.categories = e.particle ? BRB_CATEGORY_PARTICLE : 0;
+	d.pick_id = pick;
+	d.bones = bones.data();
+	d.bone_count = (uint32_t)(bones.size() / 16);
+	m_bridge->frame_draw_ex(&d);
+	m_skinned_objects++;
+
+	if (frame_listed(m_skin_check, m_frames)) {
+		SkinCheck(obj, skin, e.hash, model, pick);
+	}
+	return true;
+}
+
+/* For T4.1b: BGE's own CPU skinning of this frame, world positions in the
+ * order the fake runtime prints the GPU-skinned ones (first use in the
+ * triangle lists). */
+void KX_RemixRenderer::SkinCheck(KX_GameObject *obj, BL_SkinDeformer *skin, uint64_t mesh, const float model[16],
+                                 uint32_t pick)
+{
+	skin->SetRemixGPU(false);
+	skin->ForceUpdate();
+	skin->Update();
+	Geometry g;
+	Collect(m_scene, obj->GetMesh(0), obj, NULL, g);
+	skin->SetRemixGPU(true);
+	std::string out;
+	int n = 0;
+	for (size_t s = 0; s < g.verts.size(); s++) {
+		std::vector<char> seen(g.verts[s].size(), 0);
+		for (uint32_t v : g.indices[s]) {
+			if (v >= seen.size() || seen[v]) {
+				continue;
+			}
+			seen[v] = 1;
+			const float *p = g.verts[s][v].position;
+			float w[3];
+			for (int r = 0; r < 3; r++) {
+				w[r] = model[0 * 4 + r] * p[0] + model[1 * 4 + r] * p[1] + model[2 * 4 + r] * p[2] + model[3 * 4 + r];
+			}
+			char buf[64];
+			snprintf(buf, sizeof(buf), "%s%.4f,%.4f,%.4f", n ? ";" : "", w[0], w[1], w[2]);
+			out += buf;
+			n++;
+		}
+	}
+	printf("BGE-Remix skincheck frame=%d mesh=%llx pick=%u object=%s n=%d pos=%s\n", m_frames,
+	       (unsigned long long)mesh, pick, obj->GetName().ReadPtr(), n, out.c_str());
+	fflush(stdout);
+}
+
+bool KX_RemixRenderer::DrawDeformed(KX_Scene *scene, KX_GameObject *obj, RAS_Deformer *def, const float model[16],
+                                    uint32_t pick)
+{
+	RAS_MeshObject *mesh = obj->GetMesh(0);
+	if (!mesh) {
+		return false;
+	}
+	static const float identity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+	const float *m = model;
+	/* bring BGE's own result up to date (it does nothing when it is) */
+	if (BL_SkinDeformer *skin = dynamic_cast<BL_SkinDeformer *>(def)) {
+		skin->SetRemixGPU(false);
+	}
+#ifdef WITH_BULLET
+	if (KX_SoftBodyDeformer *soft = dynamic_cast<KX_SoftBodyDeformer *>(def)) {
+		/* soft bodies: world-space vertices, written per material */
+		for (std::list<RAS_MeshMaterial>::iterator mit = mesh->GetFirstMaterial(); mit != mesh->GetLastMaterial(); ++mit) {
+			if (mit->m_bucket) {
+				soft->Apply(mit->m_bucket->GetPolyMaterial());
+			}
+		}
+		m = identity;
+	}
+	else
+#endif
+	{
+		def->Update();
+	}
+
+	DeformEntry &e = m_deformed[obj];
+	const std::string name = obj->GetName().ReadPtr();
+	if (e.hash == 0 || e.name != name || e.scene != scene) {
+		if (e.hash) {
+			m_bridge->mesh_destroy(e.hash);
+			m_hashes.erase(e.hash);
+		}
+		e.hash = UniqueHash("deformed", name, obj);
+		e.scene = scene;
+		e.name = name;
+		e.content = 0;
+	}
+	e.last_seen = m_frames;
+	/* a deformer that never changes its result (a static modifier stack)
+	 * is read once */
+	if (e.content == 0 || def->IsDynamic()) {
+		Geometry g;
+		BL_ModifierDeformer *mod = dynamic_cast<BL_ModifierDeformer *>(def);
+		if (mod && !mod->UseVertexArray() && mod->GetFinalMesh()) {
+			CollectDerived(scene, mesh, mod->GetFinalMesh(), g);
+		}
+		else {
+			Collect(scene, mesh, obj, NULL, g);
+		}
+		if (g.verts.empty()) {
+			return false;
+		}
+		if (e.content != g.content) {
+			/* changed since it was sent: send again (Remix replaces it) */
+			if (!SendGeometry(e.hash, g)) {
+				e.content = 0;
+				return false;
+			}
+			e.content = g.content;
+			e.double_sided = g.double_sided;
+			e.blend = g.blend;
+			e.particle = g.particle;
+			m_deform_uploads++;
+		}
+	}
+	brb_draw_desc d;
+	memset(&d, 0, sizeof(d));
+	d.mesh = e.hash;
+	memcpy(d.model, m, sizeof(d.model));
+	d.flags = (e.double_sided ? BRB_DRAW_DOUBLE_SIDED : 0) | (e.blend ? BRB_DRAW_BLEND : 0);
+	d.categories = e.particle ? BRB_CATEGORY_PARTICLE : 0;
+	d.pick_id = pick;
+	m_bridge->frame_draw_ex(&d);
+	m_deformed_objects++;
+	return true;
+}
+
+void KX_RemixRenderer::ReleaseSkinning(KX_Scene *scene)
+{
+	CListValue *objects = scene->GetObjectList();
+	for (int i = 0; i < objects->GetCount(); i++) {
+		KX_GameObject *obj = (KX_GameObject *)objects->GetValue(i);
+		RAS_Deformer *def = obj->GetDeformer();
+		if (def && typeid(*def) == typeid(BL_SkinDeformer)) {
+			static_cast<BL_SkinDeformer *>(def)->SetRemixGPU(false);
+		}
+	}
+}
+
+/* Objects deformed on the CPU that were not drawn for a second: their
+ * meshes go (the objects were ended, or are hidden). */
+void KX_RemixRenderer::PruneDynamic(KX_Scene *scene)
+{
+	if (m_frames % 60 != 0) {
+		return;
+	}
+	for (std::map<const void *, DeformEntry>::iterator it = m_deformed.begin(); it != m_deformed.end();) {
+		if (it->second.scene == scene && it->second.last_seen < m_frames - 60) {
+			if (it->second.hash) {
+				m_bridge->mesh_destroy(it->second.hash);
+				m_hashes.erase(it->second.hash);
+			}
+			m_deformed.erase(it++);
+		}
+		else {
+			++it;
+		}
+	}
+	for (std::map<const void *, PickEntry>::iterator it = m_pick_ids.begin(); it != m_pick_ids.end();) {
+		if (it->second.last_seen < m_frames - 60) {
+			m_pick_ids.erase(it++);
+		}
+		else {
+			++it;
+		}
+	}
+}
+
+/* ------------------------------------------------------------------------- */
+/* Blender particle systems as Remix GPU particles (P4.6) */
+
+bool KX_RemixRenderer::DrawEmitters(KX_Scene *scene, KX_GameObject *obj, Object *ob, const float model[16],
+                                    uint32_t pick)
+{
+	RAS_MeshObject *mesh = obj->GetMeshCount() ? obj->GetMesh(0) : NULL;
+	MeshEntry *me = NULL;
+	if (!mesh || !EnsureMesh(scene, mesh, me) || !me) {
+		return false;
+	}
+	Scene *bscene = scene->GetBlenderScene();
+	const float fps = (bscene && bscene->r.frs_sec > 0) ?
+	                      (float)bscene->r.frs_sec / std::max(bscene->r.frs_sec_base, 0.001f) : 24.0f;
+	bool any = false, hide = true;
+	for (ParticleSystem *psys = (ParticleSystem *)ob->particlesystem.first; psys; psys = psys->next) {
+		ParticleSettings *part = psys->part;
+		if (!part || part->type != PART_EMITTER || (psys->flag & PSYS_DISABLED) || part->totpart <= 0) {
+			continue;
+		}
+		brb_particle_desc p;
+		memset(&p, 0, sizeof(p));
+		/* emission: totpart over the emission frames, again and again */
+		const float frames = std::max(part->end - part->sta, 1.0f);
+		p.spawn_rate = (float)part->totpart / frames * fps;
+		p.lifetime_max = std::max(part->lifetime, 1.0f) / fps;
+		p.lifetime_min = p.lifetime_max * (1.0f - std::min(std::max(part->randlife, 0.0f), 1.0f));
+		p.max_particles = (uint32_t)std::max<float>((float)part->totpart, p.spawn_rate * p.lifetime_max * 1.1f + 16.0f);
+		p.speed_normal = part->normfac;
+		p.cone_angle_deg = (float)(std::atan2((double)part->randfac, (double)std::max(std::fabs(part->normfac), 0.001f)) *
+		                           180.0 / PI);
+		p.cone_angle_deg = std::min(p.cone_angle_deg, 90.0f);
+		p.speed_from_motion = part->obfac;
+		const float gweight = part->effector_weights ? part->effector_weights->global_gravity : 1.0f;
+		p.gravity = m_gravity * gweight;
+		p.drag = part->dragfac;
+		p.size_max = std::max(part->size, 0.001f);
+		p.size_min = p.size_max * (1.0f - std::min(std::max(part->randsize, 0.0f), 1.0f));
+		p.size_end_scale = 1.0f;
+		const float start[4] = {1.0f, 1.0f, 1.0f, 1.0f}, end[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+		memcpy(p.color_start, start, sizeof(start));
+		memcpy(p.color_end, end, sizeof(end)); /* fade out at the end of life */
+		p.rotation_speed = part->avemode ? (float)(part->avefac / (2.0 * PI)) : 0.0f;
+		p.collide = m_colliders ? 1 : 0;
+		p.restitution = m_collider_bounce;
+		p.hide_emitter = 1; /* the emitter itself is drawn by the normal draw (or not) */
+		p.billboard = 0;
+		if (part->ren_as == PART_DRAW_BB) {
+			if (part->bb_align == PART_BB_Z) {
+				p.billboard = 1;
+			}
+			else if (part->bb_align == PART_BB_VEL) {
+				p.align_to_velocity = 1;
+			}
+		}
+		else if (part->ren_as != PART_DRAW_HALO) {
+			NoteOnce(std::string("particle system \"") + psys->name + "\": shown as sprites (Halo or Billboard rendering)");
+		}
+		if (part->draw & PART_DRAW_EMITTER) {
+			hide = false;
+		}
+		brb_draw_desc d;
+		memset(&d, 0, sizeof(d));
+		d.mesh = me->hash;
+		memcpy(d.model, model, sizeof(d.model));
+		d.flags = me->double_sided ? BRB_DRAW_DOUBLE_SIDED : 0;
+		d.categories = BRB_CATEGORY_PARTICLE_EMITTER;
+		d.pick_id = pick;
+		d.particles = &p;
+		m_bridge->frame_draw_ex(&d);
+		m_emitters++;
+		any = true;
+	}
+	/* true: the emitter mesh is not to be drawn (Blender's "Emitter" off) */
+	return any && hide;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Picking (P4.5) */
+
+uint32_t KX_RemixRenderer::PickId(KX_GameObject *obj)
+{
+	PickEntry &p = m_pick_ids[obj];
+	if (p.id == 0) {
+		if (++m_next_pick == 0) {
+			++m_next_pick;
+		}
+		p.id = m_next_pick;
+	}
+	p.last_seen = m_frames;
+	m_pick_frame[p.id] = obj;
+	return p.id;
+}
+
+void KX_RemixRenderer::UpdatePicking(KX_Scene *scene)
+{
+	(void)scene;
+	/* an answer? */
+	if (m_pick_pending) {
+		uint32_t ids[16];
+		int n = 0;
+		const int r = m_bridge->pick_result(ids, 16, &n);
+		if (r != 0) {
+			m_pick_pending = false;
+			m_pick_has = true;
+			m_pick_ans_x = m_pick_req_x;
+			m_pick_ans_y = m_pick_req_y;
+			m_pick_answer = NULL;
+			if (r == 1 && n > 0) {
+				std::map<uint32_t, KX_GameObject *>::iterator it = m_pick_frame.find(ids[0]);
+				m_pick_answer = (it != m_pick_frame.end()) ? it->second : NULL;
+			}
+			m_picks_answered++;
+			m_pick_frames_total += m_frames - m_pick_sent_frame;
+			m_pick_frames_count++;
+		}
+		else if (m_frames - m_pick_sent_frame > 30) {
+			m_pick_pending = false; /* lost; ask again */
+		}
+	}
+	/* a new question */
+	if (m_pick_wanted && !m_pick_pending) {
+		const int x = m_pick_x - m_vp_x0, y = m_pick_y - m_vp_y0;
+		if (x >= 0 && y >= 0 && x < m_width && y < m_height &&
+		    m_bridge->pick_request(x, y, x + 1, y + 1) == 0)
+		{
+			m_pick_pending = true;
+			m_pick_req_x = m_pick_x;
+			m_pick_req_y = m_pick_y;
+			m_pick_sent_frame = m_frames;
+		}
+		m_pick_wanted = false;
+	}
+	/* outlines */
+	if (!m_highlight.empty()) {
+		std::vector<uint32_t> ids;
+		for (size_t i = 0; i < m_highlight.size(); i++) {
+			std::map<const void *, PickEntry>::iterator it = m_pick_ids.find(m_highlight[i]);
+			if (it != m_pick_ids.end() && it->second.last_seen == m_frames) {
+				ids.push_back(it->second.id);
+			}
+		}
+		if (!ids.empty()) {
+			m_bridge->highlight(ids.data(), (int)ids.size(), m_highlight_color[0], m_highlight_color[1],
+			                    m_highlight_color[2]);
+		}
+	}
+}
+
+KX_GameObject *KX_RemixRenderer::Pick(int x, int y, bool exact)
+{
+	if (!m_running) {
+		return NULL;
+	}
+	m_pick_wanted = true;
+	m_pick_x = x;
+	m_pick_y = y;
+	if (!m_pick_has || (exact && (m_pick_ans_x != x || m_pick_ans_y != y))) {
+		return NULL;
+	}
+	return ObjectAlive(m_pick_answer) ? m_pick_answer : NULL;
+}
+
+void KX_RemixRenderer::SetHighlight(const std::vector<KX_GameObject *> &objects, const float color[3])
+{
+	m_highlight = objects;
+	if (color) {
+		memcpy(m_highlight_color, color, sizeof(m_highlight_color));
+	}
 }
 
 void KX_RemixRenderer::SendLight(KX_Scene *scene, const void *key, const brb_light_desc &desc)
@@ -943,28 +1690,85 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 	m_bridge->frame_camera(v, p);
 
 	int draws = 0;
+	m_vp_x0 = x;
+	m_vp_y0 = y;
+	m_skinned_objects = m_deformed_objects = m_billboards = m_emitters = m_particle_draws = 0;
+	m_pick_frame.clear();
+	const double ts = now_seconds();
+	double dynamic_s = 0.0;
+	const MT_Point3 campos = cam ? cam->NodeGetWorldPosition() : MT_Point3(0.0, 0.0, 0.0);
 	CListValue *objects = scene->GetObjectList();
+
+	/* GPU particles bounce where Blender's would: off objects with Collision on */
+	m_colliders = false;
+	Scene *bscene = scene->GetBlenderScene();
+	m_gravity = bscene ? std::fabs(bscene->gm.gravity) : 9.81f;
+	for (int i = 0; i < objects->GetCount() && bscene; i++) {
+		Object *ob = ((KX_GameObject *)objects->GetValue(i))->GetBlenderObject();
+		if (ob && ob->pd && ob->pd->deflect) {
+			m_colliders = true;
+			m_collider_bounce = std::min(std::max(1.0f - ob->pd->pdef_damp, 0.0f), 1.0f);
+			break;
+		}
+	}
+
 	for (int i = 0; i < objects->GetCount(); i++) {
 		KX_GameObject *obj = (KX_GameObject *)objects->GetValue(i);
 		if (!obj->GetVisible() || obj->GetMeshCount() == 0 || obj->GetGameObjectType() == SCA_IObject::OBJ_TEXT) {
 			continue;
 		}
 		float model[16];
-		bool have_matrix = false;
-		for (int m = 0; m < obj->GetMeshCount(); m++) {
+		object_matrix(obj, model);
+		const uint32_t pick = PickId(obj);
+		int first = 0;
+		/* armatures, shape keys, modifiers, soft bodies (mesh 0) */
+		if (RAS_Deformer *def = obj->GetDeformer()) {
+			const double t = now_seconds();
+			if (DrawSkinned(scene, obj, def, model, pick) || DrawDeformed(scene, obj, def, model, pick)) {
+				first = 1;
+				draws++;
+			}
+			dynamic_s += now_seconds() - t;
+		}
+		/* Blender particle systems */
+		bool hide_emitter = false;
+		Object *ob = obj->GetBlenderObject();
+		if (ob && ob->particlesystem.first) {
+			hide_emitter = DrawEmitters(scene, obj, ob, model, pick);
+		}
+		for (int m = first; m < obj->GetMeshCount(); m++) {
+			if (m == 0 && hide_emitter) {
+				continue;
+			}
 			MeshEntry *e = NULL;
 			if (!EnsureMesh(scene, obj->GetMesh(m), e) || !e) {
 				continue;
 			}
-			if (!have_matrix) {
-				object_matrix(obj, model);
-				have_matrix = true;
+			brb_draw_desc d;
+			memset(&d, 0, sizeof(d));
+			d.mesh = e->hash;
+			if (e->billboard) {
+				billboard_matrix(obj, campos, e->billboard == 1, d.model);
+				m_billboards++;
 			}
-			m_bridge->frame_draw(e->hash, model, (e->double_sided ? BRB_DRAW_DOUBLE_SIDED : 0) |
-			                                     (e->blend ? BRB_DRAW_BLEND : 0));
+			else {
+				memcpy(d.model, model, sizeof(d.model));
+			}
+			d.flags = (e->double_sided ? BRB_DRAW_DOUBLE_SIDED : 0) | (e->blend ? BRB_DRAW_BLEND : 0);
+			d.categories = e->particle ? BRB_CATEGORY_PARTICLE : 0;
+			m_particle_draws += e->particle ? 1 : 0;
+			d.pick_id = pick;
+			m_bridge->frame_draw_ex(&d);
 			draws++;
 		}
 	}
+	if (m_skinned_objects || m_deformed_objects) {
+		m_skin_ms_total += dynamic_s * 1000.0;
+		m_skin_ms_frames++;
+	}
+	(void)ts;
+	PruneDynamic(scene);
+	UpdatePicking(scene);
 
 	UpdateLights(scene, m_settings.light_scale);
 	const double t1 = now_seconds();
@@ -1153,8 +1957,20 @@ void KX_RemixRenderer::WriteStats()
 	        m_cache ? m_cache->waiting() : 0, m_cache ? m_cache->encode_seconds : 0.0);
 	fprintf(f, "  \"first_textured_frame\": %d,\n  \"first_textured_seconds\": %.4f,\n",
 	        m_first_textured_frame, m_first_textured_seconds);
-	fprintf(f, "  \"materials_swapped\": %d,\n  \"material_notes\": %d,\n  \"swap_ms_max\": %.4f\n",
+	fprintf(f, "  \"materials_swapped\": %d,\n  \"material_notes\": %d,\n  \"swap_ms_max\": %.4f,\n",
 	        m_materials_swapped, m_material_notes, m_max_swap_ms);
+	/* P4 (the counts are the last frame's) */
+	fprintf(f, "  \"skinned_objects\": %d,\n  \"skinned_draws\": %d,\n  \"bones_last_frame\": %d,\n",
+	        m_skinned_objects, st.skinned_draws, st.bones);
+	fprintf(f, "  \"skin_meshes\": %d,\n  \"cpu_skinning\": %s,\n  \"cpu_skin_notes\": %d,\n",
+	        (int)m_skins.size(), m_cpu_skinning ? "true" : "false", m_cpu_skin_notes);
+	fprintf(f, "  \"deformed_objects\": %d,\n  \"deform_uploads\": %d,\n  \"shadow_faces_hidden\": %d,\n",
+	        m_deformed_objects, m_deform_uploads, m_shadow_faces);
+	fprintf(f, "  \"dynamic_ms_mean\": %.4f,\n", m_skin_ms_frames ? m_skin_ms_total / m_skin_ms_frames : 0.0);
+	fprintf(f, "  \"billboards\": %d,\n  \"particle_draws\": %d,\n  \"emitters\": %d,\n  \"gpu_emitters\": %d,\n",
+	        m_billboards, m_particle_draws, m_emitters, st.emitters);
+	fprintf(f, "  \"picks_answered\": %d,\n  \"pick_frames_mean\": %.3f\n", m_picks_answered,
+	        m_pick_frames_count ? (double)m_pick_frames_total / m_pick_frames_count : -1.0);
 	fprintf(f, "}\n");
 	fclose(f);
 }

@@ -37,6 +37,10 @@
 #include <Eigen/Core>
 #include <Eigen/LU>
 
+#include <algorithm>
+#include <cstring>
+#include <utility>
+
 #include "BL_SkinDeformer.h"
 #include "CTR_Map.h"
 #include "STR_HashedString.h"
@@ -96,7 +100,8 @@ BL_SkinDeformer::BL_SkinDeformer(BL_DeformableGameObject *gameobj,
 							m_poseApplied(false),
 							m_recalcNormal(true),
 							m_copyNormals(false),
-							m_dfnrToPC(NULL)
+							m_dfnrToPC(NULL),
+							m_remixGPU(false)
 {
 	copy_m4_m4(m_obmat, bmeshobj->obmat);
 	m_deformflags = get_deformflags(bmeshobj);
@@ -116,8 +121,10 @@ BL_SkinDeformer::BL_SkinDeformer(
 		//m_defbase(&bmeshobj_old->defbase),
 		m_releaseobject(release_object),
 		m_recalcNormal(recalc_normal),
+		m_poseApplied(false),
 		m_copyNormals(false),
-		m_dfnrToPC(NULL)
+		m_dfnrToPC(NULL),
+		m_remixGPU(false)
 	{
 		// this is needed to ensure correct deformation of mesh:
 		// the deformation is done with Blender's armature_deform_verts() function
@@ -175,6 +182,7 @@ void BL_SkinDeformer::ProcessReplica()
 	m_lastArmaUpdate = -1;
 	m_releaseobject = false;
 	m_dfnrToPC = NULL;
+	m_remixGPU = false;
 }
 
 void BL_SkinDeformer::BlenderDeformVerts()
@@ -210,21 +218,9 @@ void BL_SkinDeformer::BGEDeformVerts()
 		return;
 
 	defbase_tot = BLI_listbase_count(&m_objMesh->defbase);
+	(void)dg;
 
-	if (m_dfnrToPC == NULL)
-	{
-		m_dfnrToPC = new bPoseChannel*[defbase_tot];
-		int i;
-		for (i=0, dg=(bDeformGroup*)m_objMesh->defbase.first;
-			dg;
-			++i, dg = dg->next)
-		{
-			m_dfnrToPC[i] = BKE_pose_channel_find_name(par_arma->pose, dg->name);
-
-			if (m_dfnrToPC[i] && m_dfnrToPC[i]->bone->flag & BONE_NO_DEFORM)
-				m_dfnrToPC[i] = NULL;
-		}
-	}
+	InitGroupMap();
 
 	post_mat = Eigen::Matrix4f::Map((float*)m_obmat).inverse() * Eigen::Matrix4f::Map((float*)m_armobj->GetArmatureObject()->obmat);
 	pre_mat = post_mat.inverse();
@@ -292,6 +288,163 @@ void BL_SkinDeformer::BGEDeformVerts()
 	m_copyNormals = true;
 }
 
+void BL_SkinDeformer::InitGroupMap()
+{
+	if (m_dfnrToPC != NULL)
+		return;
+	Object *par_arma = m_armobj->GetArmatureObject();
+	const int defbase_tot = BLI_listbase_count(&m_objMesh->defbase);
+	m_dfnrToPC = new bPoseChannel*[defbase_tot > 0 ? defbase_tot : 1];
+	int i;
+	bDeformGroup *dg;
+	for (i=0, dg=(bDeformGroup*)m_objMesh->defbase.first;
+		dg;
+		++i, dg = dg->next)
+	{
+		m_dfnrToPC[i] = BKE_pose_channel_find_name(par_arma->pose, dg->name);
+
+		if (m_dfnrToPC[i] && m_dfnrToPC[i]->bone->flag & BONE_NO_DEFORM)
+			m_dfnrToPC[i] = NULL;
+	}
+}
+
+/* ------------------------------------------------------------------------- */
+/* BGE-Remix (P4): GPU skinning through RTX Remix */
+
+int BL_SkinDeformer::RemixGroupCount()
+{
+	return BLI_listbase_count(&m_objMesh->defbase);
+}
+
+bool BL_SkinDeformer::RemixCanSkin(std::string &r_why)
+{
+	if (!m_armobj || !m_bmesh || !m_bmesh->dvert) {
+		r_why = "no armature or no vertex groups";
+		return false;
+	}
+	if (RemixGroupCount() + 1 > 256) {
+		r_why = "more than 255 vertex groups";
+		return false;
+	}
+	if (m_armobj->GetVertDeformType() == ARM_VDEF_BGE_CPU) {
+		/* BGEDeformVerts: vertex groups, linear blending, nothing else */
+		return true;
+	}
+	if (!(m_deformflags & ARM_DEF_VGROUP)) {
+		r_why = "the armature does not deform by vertex groups";
+		return false;
+	}
+	if (m_deformflags & ARM_DEF_ENVELOPE) {
+		r_why = "bone envelopes";
+		return false;
+	}
+	if (m_deformflags & ARM_DEF_QUATERNION) {
+		r_why = "preserve volume (dual quaternion)";
+		return false;
+	}
+	if (m_deformflags & ARM_DEF_INVERT_VGROUP) {
+		r_why = "an inverted vertex group";
+		return false;
+	}
+	/* B-bones bend inside a bone: not one matrix per bone */
+	bArmature *arm = m_armobj->GetArmature();
+	if (arm) {
+		Object *par_arma = m_armobj->GetArmatureObject();
+		bPose *pose = par_arma ? par_arma->pose : NULL;
+		for (bPoseChannel *pchan = pose ? (bPoseChannel *)pose->chanbase.first : NULL; pchan; pchan = pchan->next) {
+			if (pchan->bone && !(pchan->bone->flag & BONE_NO_DEFORM) && pchan->bone->segments > 1) {
+				r_why = "B-bones (bone segments)";
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+bool BL_SkinDeformer::RemixVertexWeights(std::vector<RemixWeights> &r_weights)
+{
+	if (!m_bmesh || !m_bmesh->dvert) {
+		return false;
+	}
+	m_armobj->ApplyPose();
+	InitGroupMap();
+	m_armobj->RestorePose();
+
+	const int groups = RemixGroupCount();
+	r_weights.resize(m_bmesh->totvert);
+	MDeformVert *dv = m_bmesh->dvert;
+	for (int i = 0; i < m_bmesh->totvert; i++, dv++) {
+		RemixWeights &w = r_weights[i];
+		std::vector<std::pair<float, unsigned int> > infl;
+		MDeformWeight *dw = dv->dw;
+		for (int j = 0; j < dv->totweight; j++, dw++) {
+			if (dw->def_nr < groups && m_dfnrToPC[dw->def_nr] && dw->weight > 0.0f) {
+				infl.push_back(std::make_pair(dw->weight, (unsigned int)dw->def_nr));
+			}
+		}
+		std::sort(infl.begin(), infl.end(),
+		          [](const std::pair<float, unsigned int> &a, const std::pair<float, unsigned int> &b) {
+		              return a.first > b.first;
+		          });
+		w.count = (int)infl.size();
+		float sum = 0.0f;
+		for (int k = 0; k < 4; k++) {
+			if (k < (int)infl.size()) {
+				w.bones[k] = infl[k].second;
+				w.weights[k] = infl[k].first;
+				sum += infl[k].first;
+			}
+			else {
+				w.bones[k] = (unsigned int)groups;
+				w.weights[k] = 0.0f;
+			}
+		}
+		if (sum > 0.0f) {
+			for (int k = 0; k < 4; k++) {
+				w.weights[k] /= sum;
+			}
+		}
+		else {
+			/* no deforming bone: BGE leaves the vertex where it is */
+			w.bones[0] = (unsigned int)groups;
+			w.weights[0] = 1.0f;
+		}
+	}
+	return true;
+}
+
+void BL_SkinDeformer::RemixBoneMatrices(std::vector<float> &r_matrices)
+{
+	const int groups = RemixGroupCount();
+	r_matrices.assign((size_t)(groups + 1) * 16, 0.0f);
+	m_armobj->ApplyPose();
+	InitGroupMap();
+	/* the same matrices as BGEDeformVerts: mesh space -> armature space,
+	 * the pose channel, and back */
+	Eigen::Matrix4f post_mat = Eigen::Matrix4f::Map((float*)m_obmat).inverse() *
+	                           Eigen::Matrix4f::Map((float*)m_armobj->GetArmatureObject()->obmat);
+	Eigen::Matrix4f pre_mat = post_mat.inverse();
+	for (int i = 0; i <= groups; i++) {
+		Eigen::Matrix4f m = Eigen::Matrix4f::Identity();
+		if (i < groups && m_dfnrToPC[i]) {
+			m = post_mat * Eigen::Matrix4f::Map((float*)m_dfnrToPC[i]->chan_mat) * pre_mat;
+		}
+		memcpy(&r_matrices[(size_t)i * 16], m.data(), sizeof(float) * 16);
+	}
+	m_armobj->RestorePose();
+	/* the pose of this frame is used */
+	m_lastArmaUpdate = m_armobj->GetLastFrame();
+}
+
+void BL_SkinDeformer::SetRemixGPU(bool on)
+{
+	if (m_remixGPU && !on) {
+		/* OpenGL again: skin on the CPU from the next update */
+		ForceUpdate();
+	}
+	m_remixGPU = on;
+}
+
 void BL_SkinDeformer::UpdateTransverts()
 {
 	RAS_MeshSlot::iterator it;
@@ -331,6 +484,10 @@ void BL_SkinDeformer::UpdateTransverts()
 
 bool BL_SkinDeformer::UpdateInternal(bool shape_applied)
 {
+	/* BGE-Remix: Remix skins on the GPU (RemixBoneMatrices) */
+	if (m_remixGPU && !shape_applied) {
+		return false;
+	}
 	/* See if the armature has been updated for this frame */
 	if (PoseUpdated()) {
 

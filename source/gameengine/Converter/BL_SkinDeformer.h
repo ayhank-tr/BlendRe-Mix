@@ -47,6 +47,9 @@
 
 #include "RAS_Deformer.h"
 
+#include <string>
+#include <vector>
+
 
 class BL_SkinDeformer : public BL_MeshDeformer  
 {
@@ -93,6 +96,28 @@ public:
 	{
 		m_lastArmaUpdate = -1.0;
 	};
+
+	/* BGE-Remix (P4): RTX Remix skins the mesh on the GPU instead. */
+	struct RemixWeights {
+		unsigned int bones[4];   /* deform group index; RemixGroupCount() = no bone (identity) */
+		float weights[4];        /* the strongest 4, adding up to 1 */
+		int count;               /* influences before keeping 4 */
+	};
+	/* Whether this deformer's maths is plain vertex-group skinning with
+	 * linear blending (what Remix does); r_why says why not. */
+	bool RemixCanSkin(std::string &r_why);
+	/* Number of deform groups (vertex groups) of the mesh object. */
+	int RemixGroupCount();
+	/* Weights per original (Blender) vertex, by mvert index. */
+	bool RemixVertexWeights(std::vector<RemixWeights> &r_weights);
+	/* RemixGroupCount() + 1 OpenGL matrices (column major): each deform
+	 * group's bone, mapping the rest mesh to the posed mesh in the mesh
+	 * object's space (the last one is the identity), as BGEDeformVerts does. */
+	void RemixBoneMatrices(std::vector<float> &r_matrices);
+	/* On: Update() leaves the CPU skinning out (Remix does it). */
+	void SetRemixGPU(bool on);
+	bool GetRemixGPU() const { return m_remixGPU; }
+	BL_ArmatureObject *RemixArmature() { return m_armobj; }
 	virtual bool ShareVertexArray()
 	{
 		return false;
@@ -110,6 +135,10 @@ protected:
 	bool					m_copyNormals; // dirty flag so we know if Apply() needs to copy normal information (used for BGEDeformVerts())
 	struct bPoseChannel**	m_dfnrToPC;
 	short					m_deformflags;
+	bool					m_remixGPU;
+
+	/* m_dfnrToPC from the current pose (needs ApplyPose) */
+	void InitGroupMap();
 
 	void BlenderDeformVerts();
 	void BGEDeformVerts();

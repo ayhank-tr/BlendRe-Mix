@@ -261,6 +261,8 @@ public:
 	void			RenderRemixNotice(const char *text);
 	/// BGE-Remix: tell the Remix renderer a scene goes away
 	void			RemixRemoveScene(KX_Scene *scene);
+	/* NULL until a game has used Remix (bge.render.remixPick...) */
+	class KX_RemixRenderer *GetRemix() { return m_remix; }
 
 	///returns true if an update happened to indicate -> Render
 	bool			NextFrame();
