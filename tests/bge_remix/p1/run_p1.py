@@ -39,7 +39,6 @@ EXPECTED_CONFIG = {
     "rtx.captureShowMenuOnHotkey=False",
     "rtx.postfx.desaturateOthersOnHighlight=False",  # P4: highlighting keeps other colours
     "rtx.uniqueObjectDistance=3.0",  # P4: Remix's 3 m in metres
-    "rtx.minimizeBlasMerging=True",  # P4.8: moving small objects don't rebuild a merged BLAS
 }
 
 
@@ -135,7 +134,7 @@ def t14_check(seq, log_lines):
     frames = (seq.get("triangle") or {}).get("frames", -1)
     checks = {
         "one Startup with a real window": starts == ["Startup hwnd_valid=1"],
-        "exactly the seven config values": config == EXPECTED_CONFIG,
+        "exactly the six config values": config == EXPECTED_CONFIG,
         "one Present per frame": presents == frames and frames > 0,
         "one Shutdown, at Blender's exit": len(shutdowns) == 1 and shutdowns[0] == len(log_lines) - 1,
         "no window message reaches Remix after Shutdown": not after,

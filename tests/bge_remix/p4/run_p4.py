@@ -712,28 +712,56 @@ def run_rtx(args, out):
                       "deformed_objects": b["stats"].get("deformed_objects"),
                       "draws": b["stats"].get("draws_last_frame"),
                       "game_ms": b["stats"].get("game_ms_median"), "copy_ms": b["stats"].get("copy_ms_median")}
-    def bench_run(tag, path, extra, a=(), seconds=15):
+    def bench_run(tag, path, extra, a=(), seconds=15, conf=None):
+        """conf: lines for an rtx.conf in the game's folder (Remix reads it at start)"""
         e = timed(seconds, extra)
         e.pop("RTX_ENABLE_ASYNC_COMPILATION")
-        r = player(args.ours, out, tag, path, e, size=(1920, 1080), args=list(a), cwd=out)
+        conf_path = os.path.join(out, "rtx.conf")
+        if conf:
+            with open(conf_path, "w") as f:
+                f.write("\n".join(conf) + "\n")
+        try:
+            r = player(args.ours, out, tag, path, e, size=(1920, 1080), args=list(a), cwd=out)
+        finally:
+            if os.path.isfile(conf_path):
+                os.remove(conf_path)
         st = r["stats"] or {}
+        applied = None
+        if conf:
+            try:
+                with open(os.path.join(out, tag + ".log"), encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+                applied = all(re.search(re.escape(line.split("=")[0].strip()) + r"\s*=", text) for line in conf)
+            except OSError:
+                applied = False
         return {"frame_ms_median": r["probe"].get("frame_ms_median"), "fps": p2.fps(r["probe"].get("frame_ms_median")),
+                "screenshot": r["screenshot"], "conf_applied": applied,
                 "cpu_share": r["probe"].get("cpu_share"), "mode": st.get("mode"), "draws": st.get("draws_last_frame"),
                 "game_ms": st.get("game_ms_median"), "copy_ms": st.get("copy_ms_median"),
                 "logic_ms": st.get("logic_ms_median"), "physics_ms": st.get("physics_ms_median"),
                 "addremove_ms": st.get("addremove_ms_median")}
 
-    # P4.8: what each change brings. "Before": copy mode, Remix's own merging and
-    # the CPU changes off (whole-program optimization and AVX2 cannot be switched off)
+    # P4.8: what each change brings. "Before": copy mode and the CPU changes off
+    # (whole-program optimization and AVX2 cannot be switched off)
     cpu_off = {"BGE_REMIX_NO_MIMALLOC": "1", "BGE_REMIX_NO_PHYSICS_SKIP": "1", "BGE_REMIX_NO_PACING": "1"}
-    before = dict(cpu_off, BGE_REMIX_PRESENT="copy", BGE_REMIX_BLAS_MERGING="1")
-    print("B4.3: the fountain with Remix's merging and ours, in copy and direct mode...", flush=True)
-    fountain = {"ours_direct": bench["B4.3_fountain"]}
-    for tag, extra in (("merged_copy", {"BGE_REMIX_BLAS_MERGING": "1", "BGE_REMIX_PRESENT": "copy"}),
-                       ("merged_direct", {"BGE_REMIX_BLAS_MERGING": "1"}),
-                       ("ours_copy", {"BGE_REMIX_PRESENT": "copy"})):
-        fountain[tag] = bench_run("B4.3_" + tag, blend("p4_fountain"), extra)
-    bench["B4.3_combinations"] = fountain
+    before = dict(cpu_off, BGE_REMIX_PRESENT="copy")
+    print("B4.3: the fountain in copy mode...", flush=True)
+    bench["B4.3_copy"] = bench_run("B4.3_copy", blend("p4_fountain"), {"BGE_REMIX_PRESENT": "copy"})
+
+    # B4.6: Remix's own quality settings (an rtx.conf; nothing else changes). The
+    # graphics preset resets the DLSS level unless the DLSS preset is Custom (2).
+    print("B4.6: DLSS level, volumetrics and graphics preset...", flush=True)
+    quality = {}
+    for tag, conf in (("dlss_performance", ["rtx.dlssPreset = 2", "rtx.qualityDLSS = 1"]),
+                      ("dlss_balanced", ["rtx.dlssPreset = 2", "rtx.qualityDLSS = 2"]),
+                      ("dlss_quality", ["rtx.dlssPreset = 2", "rtx.qualityDLSS = 3"]),
+                      ("no_volumetrics", ["rtx.volumetrics.enable = False"]),
+                      ("preset_low", ["rtx.graphicsPreset = 3"])):
+        for scene, path in (("crowd", blend("p4_crowd")), ("fountain", blend("p4_fountain"))):
+            if scene == "crowd" and tag in ("no_volumetrics", "preset_low"):
+                continue
+            quality["%s_%s" % (scene, tag)] = bench_run("B4.6_%s_%s" % (scene, tag), path, {}, conf=conf)
+    bench["B4.6"] = quality
 
     print("Before and after P4.8: crowd, physics, fountain, P2's instances, P3's room...", flush=True)
     scenes_ba = [("crowd", blend("p4_crowd"), bench["B4.1_gpu"]),
@@ -755,6 +783,16 @@ def run_rtx(args, out):
             after = bench_run("BA_after_" + tag, path, {})
         compare[tag] = {"before": b4, "after": after}
     bench["before_after"] = compare
+    # the still scenes must look the same before and after (a Remix setting that
+    # moves objects showed up only in the pictures in the first P4.8 run)
+    same = {}
+    for tag in ("p2_instances", "p3_room"):
+        if tag in compare:
+            pa = p2.image_pixels(compare[tag]["before"].get("screenshot"))
+            pb = p2.image_pixels(compare[tag]["after"].get("screenshot"))
+            same[tag] = float(abs(pa.astype("float32") - pb.astype("float32")).mean()) \
+                if pa is not None and pb is not None and pa.shape == pb.shape else None
+    bench["same_picture"] = same
     slower = [t for t, v in compare.items()
               if v["before"]["frame_ms_median"] and v["after"]["frame_ms_median"] and
               v["after"]["frame_ms_median"] > 1.05 * v["before"]["frame_ms_median"]]
@@ -771,9 +809,10 @@ def run_rtx(args, out):
 
     res["logs"] = p2.collect_logs(out, since, [out, args.ours])
     res["warmup"] = p2.warmups(out)
-    res["all_ok"] = all(res[k]["ok"] for k in ("T4.1", "T4.2", "T4.3", "T4.4", "T4.6"))
+    same_ok = bool(bench["same_picture"]) and all(v is not None and v < 12.0 for v in bench["same_picture"].values())
+    res["all_ok"] = all(res[k]["ok"] for k in ("T4.1", "T4.2", "T4.3", "T4.4", "T4.6")) and same_ok
     res["gate"] = {"fountain_60fps": (bench["B4.3_fountain"]["fps"] or 0) >= 60, "none_slower": not slower,
-                   "T4.6": res["T4.6"]["ok"]}
+                   "T4.6": res["T4.6"]["ok"], "same_picture": same_ok}
 
     lines = ["BGE-Remix phase 4 results (RTX)", "=" * 31, ""]
     lines.append("T4.1 Characters                      %s   bar matches OpenGL with: %s   (sign-off: T4.1_compare.png)" % (
@@ -798,11 +837,8 @@ def run_rtx(args, out):
         lines.append("%-14s   of which BGE (logic, physics) %s ms, waiting for Remix's picture %s ms" % (
             "", p2._r(b["game_ms"]), p2._r(b["copy_ms"])))
     lines.append("     target (60 FPS): %s" % ("met" if res["B4"]["targets_60fps"] else "NOT met"))
-    names = {"merged_copy": "Remix's merging, copy mode", "merged_direct": "Remix's merging, direct mode",
-             "ours_copy": "own structures, copy mode", "ours_direct": "own structures, direct mode"}
-    for k in ("merged_copy", "merged_direct", "ours_copy", "ours_direct"):
-        b = bench["B4.3_combinations"][k]
-        lines.append("B4.3 %-30s %s ms = %s FPS" % (names[k], p2._r(b["frame_ms_median"]), b["fps"]))
+    b = bench["B4.3_copy"]
+    lines.append("B4.3 fountain in copy mode      %s ms = %s FPS" % (p2._r(b["frame_ms_median"]), b["fps"]))
     lines += ["", "Before and after P4.8 (before: copy mode, Remix's merging, CPU changes off)", "-" * 75]
     labels = {"crowd": "crowd (25 characters)", "physics": "physics (200 bodies)", "fountain": "fountain",
               "p2_instances": "P2 1,000 instances", "p3_room": "P3 material room"}
@@ -812,6 +848,13 @@ def run_rtx(args, out):
         lines.append("%-24s %s ms -> %s ms (%s)" % (labels[k], p2._r(b0), p2._r(b1), change))
     lines.append("     no scene more than 5%% slower: %s" % ("yes" if not bench["slower_than_before"]
                                                           else "NO (%s)" % ", ".join(bench["slower_than_before"])))
+    lines.append("     still scenes look the same before and after: %s %s" % (
+        "yes" if same_ok else "NO", json.dumps({k: (round(v, 2) if v is not None else None)
+                                               for k, v in bench["same_picture"].items()})))
+    lines += ["", "B4.6 Remix quality settings (1080p, everything else as above)", "-" * 61]
+    for k, b in bench["B4.6"].items():
+        lines.append("%-28s %s ms = %s FPS%s" % (k, p2._r(b["frame_ms_median"]), b["fps"],
+                                                  "" if b.get("conf_applied") else "   (setting not confirmed in the log)"))
     b5 = bench["B4.5"]
     share = lambda b: "%.0f%%" % (100.0 * b["cpu_share"]) if b.get("cpu_share") is not None else "-"
     lines.append("B4.5 crowd at a 60 FPS cap: CPU %s of a core with pacing, %s spinning (%s / %s FPS)" % (

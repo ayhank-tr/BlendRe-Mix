@@ -79,13 +79,13 @@ void set_scene_defaults()
 	char buf[32];
 	const DWORD n = GetEnvironmentVariableA("BGE_REMIX_UNIQUE_DISTANCE", buf, sizeof(buf));
 	brb_set_config("rtx.uniqueObjectDistance", (n > 0 && n < sizeof(buf)) ? buf : "3.0");
-	/* Remix puts every mesh under 1,000 triangles into one merged ray-tracing structure that
-	 * has each object's position baked in, and rebuilds it whenever one of them moves
-	 * (rtx_accel_manager.cpp). Games move many small objects (bullets, debris, spawned
-	 * drops), so each shared mesh gets its own reusable structure instead and a moving copy
-	 * only updates its entry (P4.8, B4.3). BGE_REMIX_BLAS_MERGING=1 keeps Remix's default. */
-	const DWORD m = GetEnvironmentVariableA("BGE_REMIX_BLAS_MERGING", buf, sizeof(buf));
-	if (!(m == 1 && buf[0] == '1')) {
+	/* Remix puts every mesh under 1,000 triangles into one merged ray-tracing structure and
+	 * rebuilds it whenever one of them moves (rtx_accel_manager.cpp). rtx.minimizeBlasMerging
+	 * avoids that, but in Remix 1.6.1 it misplaces still objects through the API (P4.8 RTX
+	 * run: walls, ramps and pedestals missing or moved), so Remix's default stays.
+	 * BGE_REMIX_MINIMIZE_BLAS=1 turns it on, for testing newer runtimes only. */
+	const DWORD m = GetEnvironmentVariableA("BGE_REMIX_MINIMIZE_BLAS", buf, sizeof(buf));
+	if (m == 1 && buf[0] == '1') {
 		brb_set_config("rtx.minimizeBlasMerging", "True");
 	}
 }
