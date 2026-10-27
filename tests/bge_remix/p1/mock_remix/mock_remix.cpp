@@ -32,7 +32,7 @@
  * weight buffer (one float of stride per vertex, the last weight implied).
  * Present also counts skinned draws, bones, emitters, particle-category
  * draws and highlighted ids. Picking requests are answered at the next
- * Present from the drawn objects' screen bounds (front-most first).
+ * Present: the first drawn object whose world bounds the ray meets.
  *   BGE_REMIX_MOCK_DRAWS_FRAME=a,b logs every draw of those frames ("Draw ...")
  *   BGE_REMIX_MOCK_SKIN_FRAMES=a,b logs the skinned positions of skinned
  *                                  draws on those frames ("Skinned ...")
@@ -45,6 +45,7 @@
 #define REMIX_WINAPI_NO_LIBRARY_LOADER
 #include <remix/remix_c.h>
 
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -606,37 +607,54 @@ bool project(const float p[3], float &x, float &y, float &depth)
 	return true;
 }
 
-/* the front-most drawn object whose screen bounds hold the request's centre */
+/* The first drawn object whose world bounds the ray through the request's
+ * centre meets (bounds, not triangles: no cut-out alpha, no exact shapes). */
 void answer_pick()
 {
 	if (!g_pick_pending) {
 		return;
 	}
 	g_pick_pending = false;
+	int w = 0, h = 0;
+	uint32_t best = 0;
 	const float px = 0.5f * (float)(g_pick_rect.left + g_pick_rect.right);
 	const float py = 0.5f * (float)(g_pick_rect.top + g_pick_rect.bottom);
-	uint32_t best = 0;
-	float best_depth = 1e30f;
-	for (const MockDraw &d : g_draws) {
-		if (!d.pick_id || d.lo[0] > d.hi[0]) {
-			continue;
+	if (mock_backbuffer_size(&w, &h) && w > 0 && h > 0) {
+		const float *v = g_camera, *pr = g_camera + 16; /* column major */
+		const float nx = px / (float)w * 2.0f - 1.0f, ny = 1.0f - py / (float)h * 2.0f;
+		/* view-space direction (z = -1), with the projection's shift */
+		const float dv[3] = {(nx + pr[2 * 4 + 0]) / pr[0 * 4 + 0], (ny + pr[2 * 4 + 1]) / pr[1 * 4 + 1], -1.0f};
+		/* the view matrix is rigid: world = R^T (view - t) */
+		float o[3], d[3];
+		for (int i = 0; i < 3; i++) {
+			o[i] = -(v[i * 4 + 0] * v[12] + v[i * 4 + 1] * v[13] + v[i * 4 + 2] * v[14]);
+			d[i] = v[i * 4 + 0] * dv[0] + v[i * 4 + 1] * dv[1] + v[i * 4 + 2] * dv[2];
 		}
-		float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f, zmin = 1e30f;
-		bool ok = true;
-		for (int corner = 0; corner < 8 && ok; corner++) {
-			const float p[3] = {(corner & 1) ? d.hi[0] : d.lo[0], (corner & 2) ? d.hi[1] : d.lo[1],
-			                    (corner & 4) ? d.hi[2] : d.lo[2]};
-			float x, y, z;
-			ok = project(p, x, y, z);
-			x0 = std::min(x0, x);
-			x1 = std::max(x1, x);
-			y0 = std::min(y0, y);
-			y1 = std::max(y1, y);
-			zmin = std::min(zmin, z);
-		}
-		if (ok && px >= x0 && px <= x1 && py >= y0 && py <= y1 && zmin < best_depth) {
-			best = d.pick_id;
-			best_depth = zmin;
+		float best_t = 1e30f;
+		for (const MockDraw &dr : g_draws) {
+			if (!dr.pick_id || dr.lo[0] > dr.hi[0]) {
+				continue;
+			}
+			float t0 = 0.0f, t1 = 1e30f;
+			bool hit = true;
+			for (int k = 0; k < 3 && hit; k++) {
+				const float lo = dr.lo[k] - 1e-3f, hi = dr.hi[k] + 1e-3f;
+				if (std::fabs(d[k]) < 1e-9f) {
+					hit = o[k] >= lo && o[k] <= hi;
+					continue;
+				}
+				float a = (lo - o[k]) / d[k], b = (hi - o[k]) / d[k];
+				if (a > b) {
+					std::swap(a, b);
+				}
+				t0 = std::max(t0, a);
+				t1 = std::min(t1, b);
+				hit = t0 <= t1;
+			}
+			if (hit && t0 < best_t) {
+				best_t = t0;
+				best = dr.pick_id;
+			}
 		}
 	}
 	mlog("Pick x=%d y=%d answer=%u", (int)px, (int)py, best);

@@ -1136,11 +1136,11 @@ bool KX_RemixRenderer::DrawSkinned(KX_Scene *scene, KX_GameObject *obj, RAS_Defo
 	if (!mesh || !skin->RemixArmature()) {
 		return false;
 	}
-	const void *arm = skin->RemixArmature()->GetArmature();
-	const std::pair<const void *, const void *> key(mesh, arm);
+	const ID *arm = (const ID *)skin->RemixArmature()->GetArmature();
 	const std::string name = mesh->GetName().ReadPtr();
+	const std::pair<std::string, const void *> key(name + "|" + (arm ? arm->name : ""), scene);
 	const int polygons = mesh->NumPolygons();
-	std::map<std::pair<const void *, const void *>, SkinEntry>::iterator found = m_skins.find(key);
+	std::map<std::pair<std::string, const void *>, SkinEntry>::iterator found = m_skins.find(key);
 	if (found != m_skins.end() && (found->second.name != name || found->second.polygons != polygons)) {
 		if (found->second.hash) {
 			m_bridge->mesh_destroy(found->second.hash);
@@ -1206,34 +1206,65 @@ bool KX_RemixRenderer::DrawSkinned(KX_Scene *scene, KX_GameObject *obj, RAS_Defo
 void KX_RemixRenderer::SkinCheck(KX_GameObject *obj, BL_SkinDeformer *skin, uint64_t mesh, const float model[16],
                                  uint32_t pick)
 {
+	/* the GPU formula on the CPU, from the same rest pose, weights and
+	 * bones the bridge was given (tells a maths error from a layout one) */
+	std::vector<BL_SkinDeformer::RemixWeights> weights;
+	skin->RemixVertexWeights(weights);
+	std::vector<float> bones;
+	skin->RemixBoneMatrices(bones);
+	Geometry rest;
+	Collect(m_scene, obj->GetMesh(0), NULL, &weights, rest, (uint32_t)skin->RemixGroupCount());
+
 	skin->SetRemixGPU(false);
 	skin->ForceUpdate();
 	skin->Update();
 	Geometry g;
 	Collect(m_scene, obj->GetMesh(0), obj, NULL, g);
 	skin->SetRemixGPU(true);
-	std::string out;
-	int n = 0;
-	for (size_t s = 0; s < g.verts.size(); s++) {
-		std::vector<char> seen(g.verts[s].size(), 0);
-		for (uint32_t v : g.indices[s]) {
-			if (v >= seen.size() || seen[v]) {
-				continue;
+
+	for (int pass = 0; pass < 2; pass++) {
+		const Geometry &src = pass ? rest : g;
+		std::string out;
+		int n = 0;
+		for (size_t s = 0; s < src.verts.size(); s++) {
+			std::vector<char> seen(src.verts[s].size(), 0);
+			for (uint32_t v : src.indices[s]) {
+				if (v >= seen.size() || seen[v]) {
+					continue;
+				}
+				seen[v] = 1;
+				float p[3];
+				memcpy(p, src.verts[s][v].position, sizeof(p));
+				if (pass) {
+					const uint32_t bpv = src.bones_per_vertex;
+					float acc[3] = {0.0f, 0.0f, 0.0f};
+					for (uint32_t k = 0; k < bpv; k++) {
+						const float wk = src.weights[s][v * bpv + k];
+						const uint32_t b = src.bones[s][v * bpv + k];
+						if (wk <= 0.0f || (size_t)(b + 1) * 16 > bones.size()) {
+							continue;
+						}
+						const float *m = &bones[(size_t)b * 16];
+						for (int r = 0; r < 3; r++) {
+							acc[r] += wk * (m[0 * 4 + r] * p[0] + m[1 * 4 + r] * p[1] + m[2 * 4 + r] * p[2] + m[3 * 4 + r]);
+						}
+					}
+					memcpy(p, acc, sizeof(p));
+				}
+				float w[3];
+				for (int r = 0; r < 3; r++) {
+					w[r] = model[0 * 4 + r] * p[0] + model[1 * 4 + r] * p[1] + model[2 * 4 + r] * p[2] + model[3 * 4 + r];
+				}
+				char buf[64];
+				snprintf(buf, sizeof(buf), "%s%.4f,%.4f,%.4f", n ? ";" : "", w[0], w[1], w[2]);
+				out += buf;
+				n++;
 			}
-			seen[v] = 1;
-			const float *p = g.verts[s][v].position;
-			float w[3];
-			for (int r = 0; r < 3; r++) {
-				w[r] = model[0 * 4 + r] * p[0] + model[1 * 4 + r] * p[1] + model[2 * 4 + r] * p[2] + model[3 * 4 + r];
-			}
-			char buf[64];
-			snprintf(buf, sizeof(buf), "%s%.4f,%.4f,%.4f", n ? ";" : "", w[0], w[1], w[2]);
-			out += buf;
-			n++;
 		}
+		printf("BGE-Remix %s frame=%d mesh=%llx pick=%u object=%s n=%d pos=%s\n",
+		       pass ? "skinformula" : "skincheck", m_frames, (unsigned long long)mesh, pick,
+		       obj->GetName().ReadPtr(), n, out.c_str());
 	}
-	printf("BGE-Remix skincheck frame=%d mesh=%llx pick=%u object=%s n=%d pos=%s\n", m_frames,
-	       (unsigned long long)mesh, pick, obj->GetName().ReadPtr(), n, out.c_str());
 	fflush(stdout);
 }
 

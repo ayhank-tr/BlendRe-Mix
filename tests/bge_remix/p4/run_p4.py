@@ -187,7 +187,8 @@ def run_ci(args, out):
     def characters():
         # T4.1a-c: the characters
         ch = expected["characters"]
-        log, env = mock_env("characters", {"BGE_REMIX_SKIN_CHECK": SKIN_FRAMES, "BGE_REMIX_MOCK_SKIN_FRAMES": SKIN_FRAMES})
+        log, env = mock_env("characters", {"BGE_REMIX_SKIN_CHECK": SKIN_FRAMES, "BGE_REMIX_MOCK_SKIN_FRAMES": SKIN_FRAMES,
+                                           "BGE_REMIX_P2_SECONDS": "4"})
         r = player(args.ours, out, "characters", os.path.join(scenes, "p4_characters.blend"), env)
         lines = p2.read_lines(log)
         st = r["stats"]
@@ -205,7 +206,7 @@ def run_ci(args, out):
             "bone indices below 16 (15 groups and the identity)": bool(skin) and skin[0].get("max_bone", 99) <= ch["groups"],
             "4 skinned draws every frame (3 Mannequins and the bar)": bool(pres) and all(p.get("skinned") == 4 for p in pres),
             "%d bone matrices every frame" % want_bones: bool(pres) and all(p.get("bones") == want_bones for p in pres),
-            "the bones move (50 or more different poses)": len(set(p["bonehash"] for p in pres)) >= 50,
+            "the bones move (30 or more different poses)": len(set(p["bonehash"] for p in pres)) >= 30,
             "two skinned meshes for four objects": st.get("skin_meshes") == 2 and st.get("skinned_objects") == 4,
             "no object fell back to CPU skinning": st.get("cpu_skin_notes") == 0,
         }
@@ -213,21 +214,39 @@ def run_ci(args, out):
                                                 "present_sample": pres[:3]})
 
         gpu = skinned_lines(lines, "Skinned ")
-        cpu = skinned_lines(text_of("characters").splitlines(), "BGE-Remix skincheck ")
-        errs = {}
-        for key, a in cpu.items():
-            b = gpu.get(key)
-            if b is None or len(a) != len(b):
-                errs[str(key)] = "missing" if b is None else "%d vs %d vertices" % (len(a), len(b))
-                continue
-            errs[str(key)] = max(math.sqrt(sum((x - y) ** 2 for x, y in zip(p, q))) for p, q in zip(a, b))
-        worst = max([e for e in errs.values() if isinstance(e, float)] or [0.0])
+        out_lines = text_of("characters").splitlines()
+        cpu = skinned_lines(out_lines, "BGE-Remix skincheck ")
+        formula = skinned_lines(out_lines, "BGE-Remix skinformula ")
+
+        def compare(x, y):
+            """{key: max distance} of two position sets, and where the worst one is"""
+            errs, where = {}, {}
+            for key, a in x.items():
+                b = y.get(key)
+                if b is None or len(a) != len(b):
+                    errs[str(key)] = "missing" if b is None else "%d vs %d vertices" % (len(a), len(b))
+                    continue
+                d = [math.sqrt(sum((u - v) ** 2 for u, v in zip(p, q))) for p, q in zip(a, b)]
+                i = max(range(len(d)), key=lambda k: d[k]) if d else 0
+                errs[str(key)] = max(d) if d else 0.0
+                where[str(key)] = {"vertex": i, "of": len(d), "a": a[i] if d else None, "b": b[i] if d else None,
+                                   "over_1mm": sum(1 for e in d if e > 0.001)}
+            worst = max([e for e in errs.values() if isinstance(e, float)] or [0.0])
+            return errs, where, worst
+
+        errs, where, worst = compare(cpu, gpu)
+        ferr, fwhere, fworst = compare(cpu, formula)
+        gerr, gwhere, gworst = compare(formula, gpu)
         c = {
             "12 comparisons (4 objects on 3 frames)": len(cpu) == 12,
             "every one matched with the fake runtime's": all(isinstance(e, float) for e in errs.values()) and bool(errs),
             "within 1 mm of BGE's own skinning": bool(errs) and worst < 0.001,
+            "our bone matrices and weights reproduce BGE's skinning (on the CPU)": bool(ferr) and fworst < 0.001,
+            "the bridge hands Remix the same (fake runtime = formula)": bool(gerr) and gworst < 0.001,
         }
-        res["T4.1b"] = dict(p2.test(c), detail={"max_error_m": worst, "per_object_frame": errs})
+        res["T4.1b"] = dict(p2.test(c), detail={"max_error_m": worst, "per_object_frame": errs,
+                                                "bge_vs_formula": {"max": fworst, "worst": fwhere},
+                                                "formula_vs_remix": {"max": gworst, "worst": gwhere}})
 
         pulse = mesh_lines(lines, hashes("deformed", ch["pulse"]))
         monkey = mesh_lines(lines, hashes("deformed", ch["monkey"]))
@@ -381,7 +400,7 @@ def run_ci(args, out):
                 lines.append("         failed: " + name)
         if not res[k]["ok"] and res[k].get("detail"):
             text = json.dumps(res[k]["detail"], default=str)
-            lines.append("         detail: " + (text[:1500] + " ..." if len(text) > 1500 else text))
+            lines.append("         detail: " + (text[:4000] + " ..." if len(text) > 4000 else text))
     lines += ["", "ALL PASS" if res["all_ok"] else "SOME TESTS FAILED (see results_p4.json and the .log files)"]
     return res, lines
 

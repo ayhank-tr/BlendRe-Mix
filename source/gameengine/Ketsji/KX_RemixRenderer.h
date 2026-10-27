@@ -248,7 +248,9 @@ private:
 	std::map<const void *, MaterialEntry> m_materials;
 	std::map<const void *, LightEntry> m_lights;
 	std::map<uint64_t, const void *> m_hashes;
-	std::map<std::pair<const void *, const void *>, SkinEntry> m_skins; /* (mesh, armature) */
+	/* by mesh and armature names (BGE gives every armature object its own
+	 * copy of the armature data, CI run 29) and scene */
+	std::map<std::pair<std::string, const void *>, SkinEntry> m_skins;
 	std::map<const void *, DeformEntry> m_deformed;                    /* object */
 	KX_Scene *m_gpu_scene;     /* objects of this scene are skinned by Remix */
 	bool m_cpu_skinning;       /* BGE_REMIX_CPU_SKINNING=1: never on the GPU (B4.1) */

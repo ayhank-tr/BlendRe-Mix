@@ -59,11 +59,9 @@ ob["t"] = t
 if "action" in ob:
     start, length = ob["start"], ob["length"]
     frame = start + (t * ob["speed"] + ob["phase"]) % length
-    if not ob.get("playing"):
-        ob.playAction(ob["action"], start, start + length, layer=0, play_mode=bge.logic.KX_ACTION_MODE_LOOP,
-                      speed=0.0)
-        ob["playing"] = True
-    ob.setActionFrame(frame, 0)
+    # one frame, played anew every tic (speed 0 with setActionFrame makes
+    # BL_Action divide by zero: the frame becomes NaN, CI run 29)
+    ob.playAction(ob["action"], frame, frame, layer=0, play_mode=bge.logic.KX_ACTION_MODE_PLAY)
 if ob.get("radius", 0.0) > 0.0:
     # around (cx, cy), facing the way it walks (the Mannequin looks down -Y)
     a = t * ob["turn"]
