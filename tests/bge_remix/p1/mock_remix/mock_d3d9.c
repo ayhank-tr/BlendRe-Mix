@@ -150,6 +150,17 @@ typedef struct MockDevice {
 
 static MockDevice *g_device;
 
+/* the back buffer's size (P4: the fake picking answers in its pixels) */
+int mock_backbuffer_size(int *w, int *h)
+{
+	if (!g_device) {
+		return 0;
+	}
+	*w = (int)g_device->width;
+	*h = (int)g_device->height;
+	return 1;
+}
+
 static ULONG STDMETHODCALLTYPE dev_AddRef(IDirect3DDevice9Ex *d)
 {
 	return (ULONG)InterlockedIncrement(&((MockDevice *)d)->refs);
