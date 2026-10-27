@@ -18,7 +18,7 @@ official NVIDIA runtime. OpenGL stays the default renderer, and every stock
 | P1 | Remix bridge DLL and runtime loader | Done (bge-remix-p1) |
 | P2 | Game engine, static scenes | Done (bge-remix-p2) |
 | P3 | Materials and texture cache | Done (bge-remix-p3) |
-| P4 | Skinning, physics, particles, picking | Planned |
+| P4 | Skinning, physics, particles, picking | In progress |
 | P5 | "RTX Remix" render engine for the 3D view and F12 | Planned |
 | P6 | OpenUSD mod export and capture import | Planned |
 | P7 | Hardening and release | Planned |
