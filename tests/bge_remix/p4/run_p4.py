@@ -428,8 +428,12 @@ def run_ci(args, out):
             "once per presented frame": len(kinds) // 3 == n_present and n_present >= 200,
             "Remix's handles used as given": handles and bool(seq),
             "the image fetched once per frame": bool(ext) and ext[0] == n_present,
-            "drawn over the whole window, before and after the resize":
-                (0.0, 0.0, 1280.0, 720.0) in rects and (0.0, 0.0, 800.0, 450.0) in rects,
+            # the first size is the game's viewport, which CI's small screen can shrink
+            # (the window is clamped, the 16:9 picture letterboxed); after the resize
+            # the window is 800 x 450 and the picture fills it
+            "drawn over the game's viewport, before and after the resize":
+                len(set(rects)) >= 2 and rects[0][2] > rects[0][0] and rects[0][3] > rects[0][1] and
+                rects[-1] == (0.0, 0.0, 800.0, 450.0),
         }
         res["T4.8a"] = dict(p2.test(c), detail={"copy": {k: st_c.get(k) for k in ("mode", "copy_mode_reason")},
                                                 "direct": {k: st_d.get(k) for k in ("mode", "direct_frames")},
