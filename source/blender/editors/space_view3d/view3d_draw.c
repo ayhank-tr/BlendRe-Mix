@@ -3571,7 +3571,7 @@ void ED_scene_draw_fps(Scene *scene, const rcti *rect)
 
 static bool view3d_main_region_do_render_draw(Scene *scene)
 {
-	RenderEngineType *type = RE_engines_find(scene->r.engine);
+	RenderEngineType *type = RE_engines_find(RE_engine_id_scene(scene));
 
 	return (type && type->view_update && type->view_draw);
 }
@@ -3625,11 +3625,17 @@ static bool view3d_main_region_draw_engine(const bContext *C, Scene *scene,
 	RenderEngineType *type;
 	GLint scissor[4];
 
+	/* BGE-Remix: the scene's engine changed without Blender noticing (a game
+	 * scene's Rasterizer set to or from RTX Remix) */
+	type = RE_engines_find(RE_engine_id_scene(scene));
+	if (rv3d->render_engine && rv3d->render_engine->type != type) {
+		RE_engine_free(rv3d->render_engine);
+		rv3d->render_engine = NULL;
+	}
+
 	/* create render engine */
 	if (!rv3d->render_engine) {
 		RenderEngine *engine;
-
-		type = RE_engines_find(scene->r.engine);
 
 		if (!(type->view_update && type->view_draw))
 			return false;
@@ -4034,17 +4040,30 @@ void view3d_main_region_draw(const bContext *C, ARegion *ar)
 {
 	Scene *scene = CTX_data_scene(C);
 	View3D *v3d = CTX_wm_view3d(C);
+	RegionView3D *rv3d = ar->regiondata;
 	const char *grid_unit = NULL;
 	rcti border_rect;
-	bool render_border, clip_border;
+	bool render_border, clip_border, engine_fallback;
 
 	/* if we only redraw render border area, skip opengl draw and also
 	 * don't do scissor because it's already set */
 	render_border = ED_view3d_calc_render_border(scene, v3d, ar, &border_rect);
 	clip_border = (render_border && !BLI_rcti_compare(&ar->drawrct, &border_rect));
 
+	/* BGE-Remix: an engine the scene no longer renders with (a game scene's
+	 * Rasterizer set back to OpenGL) gives up what it holds */
+	if (v3d->drawtype == OB_RENDER && rv3d->render_engine && !view3d_main_region_do_render_draw(scene)) {
+		RE_engine_free(rv3d->render_engine);
+		rv3d->render_engine = NULL;
+	}
+	/* BGE-Remix: an engine that cannot show its picture in this view asks for
+	 * the normal drawing (RE_ENGINE_VIEW_FALLBACK) */
+	engine_fallback = v3d->drawtype == OB_RENDER && rv3d->render_engine &&
+	                  (rv3d->render_engine->flag & RE_ENGINE_VIEW_FALLBACK) &&
+	                  rv3d->render_engine->type == RE_engines_find(RE_engine_id_scene(scene));
+
 	/* draw viewport using opengl */
-	if (v3d->drawtype != OB_RENDER || !view3d_main_region_do_render_draw(scene) || clip_border) {
+	if (v3d->drawtype != OB_RENDER || !view3d_main_region_do_render_draw(scene) || clip_border || engine_fallback) {
 		view3d_main_region_draw_objects(C, scene, v3d, ar, &grid_unit);
 		
 #ifdef DEBUG_DRAW
@@ -4057,8 +4076,15 @@ void view3d_main_region_draw(const bContext *C, ARegion *ar)
 	}
 
 	/* draw viewport using external renderer */
-	if (v3d->drawtype == OB_RENDER)
-		view3d_main_region_draw_engine(C, scene, ar, v3d, clip_border, &border_rect);
+	if (v3d->drawtype == OB_RENDER) {
+		if (engine_fallback) {
+			/* the engine draws only when it can take over (and says why not) */
+			rv3d->render_engine->type->view_draw(rv3d->render_engine, C);
+		}
+		else {
+			view3d_main_region_draw_engine(C, scene, ar, v3d, clip_border, &border_rect);
+		}
+	}
 	
 	view3d_main_region_draw_info(C, scene, ar, v3d, grid_unit, render_border);
 

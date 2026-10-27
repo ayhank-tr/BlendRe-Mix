@@ -91,6 +91,28 @@
 
 #include "render_intern.h"
 
+#ifdef WITH_REMIX
+#  include "BRMX_view.h"
+#endif
+
+/* BGE-Remix: RTX Remix starts on the main thread, before the render thread
+ * uses it (its window must belong to a thread that lives on). */
+static bool render_remix_prepare(Scene *scene, ReportList *reports)
+{
+#ifdef WITH_REMIX
+	if (STREQ(RE_engine_id_scene(scene), RE_engine_id_RTX_REMIX)) {
+		const char *message = NULL;
+		if (!BRMX_render_prepare(scene, &message)) {
+			BKE_report(reports, RPT_ERROR, (message && message[0]) ? message : "RTX Remix could not start");
+			return false;
+		}
+	}
+#else
+	UNUSED_VARS(scene, reports);
+#endif
+	return true;
+}
+
 /* Render Callbacks */
 static int render_break(void *rjv);
 
@@ -302,6 +324,10 @@ static int screen_render_exec(bContext *C, wmOperator *op)
 
 	if (!is_animation && is_write_still && BKE_imtype_is_movie(scene->r.im_format.imtype)) {
 		BKE_report(op->reports, RPT_ERROR, "Cannot write a single file with an animation format selected");
+		return OPERATOR_CANCELLED;
+	}
+
+	if (!render_remix_prepare(scene, op->reports)) {
 		return OPERATOR_CANCELLED;
 	}
 
@@ -848,6 +874,10 @@ static int screen_render_invoke(bContext *C, wmOperator *op, const wmEvent *even
 		return OPERATOR_CANCELLED;
 	}
 	
+	if (!render_remix_prepare(scene, op->reports)) {
+		return OPERATOR_CANCELLED;
+	}
+
 	/* stop all running jobs, except screen one. currently previews frustrate Render */
 	WM_jobs_kill_all_except(CTX_wm_manager(C), CTX_wm_screen(C));
 

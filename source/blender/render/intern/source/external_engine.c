@@ -44,6 +44,7 @@
 
 #include "BKE_camera.h"
 #include "BKE_global.h"
+#include "BKE_idprop.h"
 #include "BKE_colortools.h"
 #include "BKE_report.h"
 #include "BKE_scene.h"
@@ -112,6 +113,25 @@ void RE_engines_exit(void)
 	}
 }
 
+const char *RE_engine_id_scene(const Scene *scene)
+{
+	if (scene && STREQ(scene->r.engine, RE_engine_id_BLENDER_GAME) && scene->id.properties) {
+		IDProperty *prop = IDP_GetPropertyFromGroup(scene->id.properties, "bge_remix");
+		if (prop && prop->type == IDP_INT && IDP_Int(prop) == 1 &&
+		    BLI_findstring(&R_engines, RE_engine_id_RTX_REMIX, offsetof(RenderEngineType, idname)))
+		{
+			return RE_engine_id_RTX_REMIX;
+		}
+	}
+	return scene ? scene->r.engine : RE_engine_id_BLENDER_RENDER;
+}
+
+/* the engine of a render (BGE-Remix: see RE_engine_id_scene) */
+static const char *render_engine_id(Render *re)
+{
+	return re->scene ? RE_engine_id_scene(re->scene) : re->r.engine;
+}
+
 RenderEngineType *RE_engines_find(const char *idname)
 {
 	RenderEngineType *type;
@@ -125,7 +145,7 @@ RenderEngineType *RE_engines_find(const char *idname)
 
 bool RE_engine_is_external(Render *re)
 {
-	RenderEngineType *type = RE_engines_find(re->r.engine);
+	RenderEngineType *type = RE_engines_find(render_engine_id(re));
 	return (type && type->render);
 }
 
@@ -601,7 +621,7 @@ static bool render_layer_exclude_animated(Scene *scene, SceneRenderLayer *srl)
 
 int RE_engine_render(Render *re, int do_all)
 {
-	RenderEngineType *type = RE_engines_find(re->r.engine);
+	RenderEngineType *type = RE_engines_find(render_engine_id(re));
 	RenderEngine *engine;
 	bool persistent_data = (re->r.mode & R_PERSISTENT_DATA) != 0;
 
