@@ -440,8 +440,8 @@ class RENDER_PT_game_remix(RenderButtonsPanel, Panel):
         bpy.types.Scene.bge_remix_exposure = FloatProperty(
             name="Exposure",
             description="Stops added to RTX Remix's automatic exposure (positive: brighter); "
-                        "+2 matches Cycles' brightness",
-            default=2.0, min=-10.0, max=10.0)
+                        "+1 matches Cycles' brightness",
+            default=1.0, min=-10.0, max=10.0)
 
     @classmethod
     def unregister(cls):

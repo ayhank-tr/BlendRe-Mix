@@ -19,7 +19,6 @@
 #                                   RTX Remix panel (gold metal, T3.4)
 #                          on a grey floor before a grey wall, sun + area lamp
 #                          + sky, camera straight on
-#   p3_grid_exposure_1.blend  the same grid at exposure +1 (the default is +2)
 #   p3_room.blend          the P2 room, textured: tiled floor (packed colour,
 #                          normal, roughness), brick back wall (external PNGs
 #                          next to the .blend), plaster side walls and ceiling
@@ -437,11 +436,6 @@ def make_grid(folder):
     area.data.size = 2.0
     p2.camera(scene, (0.0, -8.5, 2.1), (0.0, 0.0, 2.1), lens=40.0)
     finish(scene, os.path.join(folder, "p3_grid.blend"))
-    # the same grid one stop darker, for re-checking the default exposure
-    # (+2, chosen in P2) now that colours are no longer darkened twice
-    scene["bge_remix_exposure"] = 1.0
-    p2.save(os.path.join(folder, "p3_grid_exposure_1.blend"))
-    del scene["bge_remix_exposure"]
     return E
 
 

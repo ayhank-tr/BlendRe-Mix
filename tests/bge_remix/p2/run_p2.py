@@ -367,16 +367,16 @@ def run_ci(args, out):
     # The exposure setting: Remix's local tone mapper (its default) and the
     # global one both get it (0.75 is Remix's default local exposure)
     log, env = mock_env("exposure")
-    r = player(args.ours, out, "exposure", os.path.join(scenes, "p2_room_exposure_1.blend"), env)
+    r = player(args.ours, out, "exposure", os.path.join(scenes, "p2_room_exposure_2.blend"), env)
     config = [l for l in read_lines(log) if "Config " in l]
     room_config = [l for l in lines if "Config " in l]
     c = {
         "the player ran 300 frames": ran(r),
-        "default exposure +2: local tone mapper 0.75 x 4 = 3":
-            any("rtx.localtonemap.exposure=3" in l for l in room_config),
-        "default exposure +2: global tone mapper bias 2": any("rtx.tonemap.exposureBias=2" in l for l in room_config),
-        "exposure +1: local tone mapper 0.75 x 2 = 1.5": any("rtx.localtonemap.exposure=1.5" in l for l in config),
-        "exposure +1: global tone mapper bias 1": any("rtx.tonemap.exposureBias=1" in l for l in config),
+        "default exposure +1: local tone mapper 0.75 x 2 = 1.5":
+            any("rtx.localtonemap.exposure=1.5" in l for l in room_config),
+        "default exposure +1: global tone mapper bias 1": any("rtx.tonemap.exposureBias=1" in l for l in room_config),
+        "exposure +2: local tone mapper 0.75 x 4 = 3": any("rtx.localtonemap.exposure=3" in l for l in config),
+        "exposure +2: global tone mapper bias 2": any("rtx.tonemap.exposureBias=2" in l for l in config),
     }
     res["T2.1e"] = dict(test(c), detail={"config": config})
 
@@ -637,7 +637,7 @@ def run_rtx(args, out):
 
     print("T2.1: the room at higher exposure, and the spot lamp alone (sign-off)...", flush=True)
     sheet = [("Cycles", res["T2.1"]["cycles"]["image"]),
-             ("Remix (light scale 0.125, default exposure +2)", t21["screenshot"])]
+             ("Remix (light scale 0.125, default exposure +1)", t21["screenshot"])]
     sheet_runs = {}
     for ev in EXPOSURES:
         tag = ("%g" % ev).replace(".", "_")

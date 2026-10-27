@@ -84,10 +84,12 @@ static const double NOTICE_SECONDS = 8.0;
  * with 1, the lamps outshine everything else under Remix's automatic
  * exposure (the glowing panel disappears) */
 static const float DEFAULT_LIGHT_SCALE = 0.125f;
-/* Chosen against the room's Cycles render (P2 sign-off, RTX 3080, run 7):
- * +2 stops keeps shadows and the spot pool's contrast; +3 burns out the
- * glowing panel. Same default as the Rasterizer panel's Exposure. */
-static const float DEFAULT_EXPOSURE = 2.0f;
+/* Chosen against the material grid's Cycles render (P3 sign-off, RTX 3080):
+ * +1 stop matches the backdrop's mid-grey and keeps light balls, glass and
+ * metals from washing out. (P2 picked +2 while colours were still decoded
+ * from gamma twice, which darkened them.) Same default as the Rasterizer
+ * panel's Exposure. */
+static const float DEFAULT_EXPOSURE = 1.0f;
 /* Remix's own default for rtx.localtonemap.exposure (1.6.1) */
 static const double LOCAL_TONEMAP_EXPOSURE = 0.75;
 static const double PI = 3.14159265358979323846;
