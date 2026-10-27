@@ -164,6 +164,19 @@ LRESULT CALLBACK mock_window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
 
 static bool g_external = false;
 static int g_external_calls = 0;
+/* P5: direct mode's picture size, changed by Present like Remix 1.6.1 does
+ * (rtx_remix_api.cpp: only when the window's width and height both differ) */
+static HWND g_ext_window = nullptr;
+static int g_ext_w = 0, g_ext_h = 0;
+static int g_ext_resets = 0;
+
+static void client_size(HWND hwnd, int &w, int &h)
+{
+	RECT r = {};
+	GetClientRect(hwnd, &r);
+	w = (int)(r.right - r.left);
+	h = (int)(r.bottom - r.top);
+}
 
 void hook_window(HWND hwnd)
 {
@@ -181,6 +194,11 @@ remixapi_ErrorCode REMIXAPI_CALL m_Startup(const remixapi_StartupInfo *info)
 		mlog("NoVkSwapchain requested editor=%d srgb_off=%d", info->editorModeEnabled ? 1 : 0,
 		     info->disableSrgbConversionForOutput ? 1 : 0);
 		g_external = true;
+		g_ext_window = info->hwnd;
+		if (IsWindow(info->hwnd)) {
+			client_size(info->hwnd, g_ext_w, g_ext_h);
+			mlog("External size %dx%d", g_ext_w, g_ext_h);
+		}
 	}
 	if (valid) {
 		/* hook the window, like the real runtime (also before a failed start) */
@@ -213,7 +231,7 @@ remixapi_ErrorCode REMIXAPI_CALL m_dxvk_GetExternalSwapchain(uint64_t *out_image
 remixapi_ErrorCode REMIXAPI_CALL m_Shutdown(void)
 {
 	if (g_external) {
-		mlog("ExternalSwapchain calls=%d", g_external_calls);
+		mlog("ExternalSwapchain calls=%d resets=%d", g_external_calls, g_ext_resets);
 	}
 	if (g_dev) { /* registered: both are alive */
 		mlog("Copies %d", g_copies);
@@ -748,6 +766,18 @@ remixapi_ErrorCode REMIXAPI_CALL m_Present(const remixapi_PresentInfo *)
 	g_frame_skinned = g_frame_bones = g_frame_emitters = g_frame_particles = g_frame_highlighted = 0;
 	g_draws.clear();
 	g_present_count++;
+	if (g_external && g_ext_window && IsWindow(g_ext_window)) {
+		/* as remixapi_Present: after presenting, reset to the window's size when
+		 * both sides differ */
+		int w = 0, h = 0;
+		client_size(g_ext_window, w, h);
+		if (w > 0 && h > 0 && w != g_ext_w && h != g_ext_h) {
+			g_ext_w = w;
+			g_ext_h = h;
+			g_ext_resets++;
+			mlog("External reset %dx%d", w, h);
+		}
+	}
 	return REMIXAPI_ERROR_CODE_SUCCESS;
 }
 

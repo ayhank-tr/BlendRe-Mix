@@ -53,7 +53,7 @@ extern "C" {
  * 3: P3 (textures, glass, subsurface, alpha test).
  * 4: P4 (skinning, draw categories, picking, particle systems).
  * 5: P4.8 (direct presentation: brb_frame_vk). */
-#define BRB_ABI_VERSION 5
+#define BRB_ABI_VERSION 6
 
 typedef enum brb_status {
 	BRB_STATUS_NOT_LOADED = 0,           /* nothing tried yet */
@@ -236,21 +236,28 @@ typedef struct brb_frame_stats {
 	int bones;                   /* last frame: bone matrices sent */
 	int emitters;                /* last frame: GPU particle emitters drawn */
 	int picks;                   /* pick requests answered since the last reset */
+	/* interface 6 */
+	int resets;                  /* direct mode: picture size changes since the last reset */
+	int reads;                   /* frames read with brb_frame_read since the last reset */
 } brb_frame_stats;
 
 /* Start Remix for a game. mode is BRB_MODE_COPY (a hidden window of the
  * bridge's own; the game draws the copied picture), BRB_MODE_CHILD (a child
  * window of parent_hwnd at x, y, client coordinates, top left) or
  * BRB_MODE_DIRECT (no window; the game draws Remix's image, brb_frame_vk).
- * Needs READY. In direct mode the picture keeps the starting size: a later
- * brb_resize changes nothing and the game scales the image.
- * Remix keeps running after the game ends, for the next one; brb_scene_clear
- * removes the game's objects. */
+ * Needs READY. Remix keeps running after the game ends, for the next one (and
+ * for the 3D view and F12, P5); brb_scene_clear removes the game's objects. */
 BRB_API brb_status brb_startup_ex(int mode, int width, int height, void *parent_hwnd, int x, int y);
 
 BRB_API int brb_get_mode(void);
 
-/* New render size (and position, child mode). Returns 0 on success. */
+/* New render size (and position, child mode). Returns 0 on success.
+ * Direct mode (interface 6): Remix's own present call resizes its picture to
+ * its hidden window, but only when the width and the height both change
+ * (rtx_remix_api.cpp, Remix 1.6.1); the bridge resizes the window and, when
+ * only one side changes, goes through an in-between size. The new size shows
+ * one or two frames later; until then brb_frame_vk returns 2 for the frames
+ * Remix resized on. */
 BRB_API int brb_resize(int width, int height, int x, int y);
 
 /* Child mode: show or hide Remix's window over the game (hidden while the
@@ -289,8 +296,10 @@ BRB_API const void *brb_frame_pixels(int *r_width, int *r_height, int *r_pitch);
  * (VkImage) and its two binary semaphores (VkSemaphore): "done" is signalled
  * when the picture is ready, and Remix waits for "resume" before it renders
  * the next frame. The caller MUST wait for done and then signal resume exactly
- * once for every frame this returns 1 for, or Remix stops for good. Returns 0
- * when no frame waits (not direct mode, or already taken). */
+ * once for every frame this returns 1 or 2 for, or Remix stops for good.
+ * 2 (interface 6): Remix changed its picture size on this frame and the image
+ * holds no picture yet: wait and signal, but do not draw it. Returns 0 when no
+ * frame waits (not direct mode, or already taken). */
 BRB_API int brb_frame_vk(uint64_t *r_image, uint64_t *r_done, uint64_t *r_resume, int *r_width, int *r_height);
 
 /* Save what Remix shows (copy mode: the last frame; window modes: the
@@ -414,6 +423,28 @@ BRB_API int brb_texture_poll(int ticket, brb_texture_result *r_result);
 
 /* Jobs waiting or being encoded. */
 BRB_API int brb_texture_pending(void);
+
+/* ------------------------------------------------------------------------- */
+/* Interface version 6: the 3D view and F12 (P5) */
+
+/* Read the frame the last brb_frame_end presented into memory: 32-bit RGBA,
+ * rows from the top, width * 4 bytes each; max_bytes is the buffer's size.
+ * Copy mode: the copied frame. Direct mode: the bridge waits for the frame,
+ * draws it with an OpenGL context of its own (any thread; the caller's OpenGL
+ * state is not touched) and signals Remix to go on; the frame is then taken,
+ * so it is not drawn as well. Returns 1 when read, 0 when there is nothing
+ * to read, -1 when the buffer is too small (r_width, r_height still set). */
+BRB_API int brb_frame_read(unsigned char *r_rgba, int max_bytes, int *r_width, int *r_height);
+/* r_rgba NULL and max_bytes 0: only take the frame (direct mode: wait and
+ * signal, so that Remix goes on), e.g. the frames before the last one of an
+ * F12 render. Direct mode keeps the bridge's OpenGL context of the calling
+ * thread from one read to the next; brb_frame_read_end (same thread) frees it. */
+BRB_API void brb_frame_read_end(void);
+
+/* Whether the driver offers GL_NV_draw_vulkan_image (direct mode), checked
+ * with an OpenGL context of the bridge's own: for choosing the mode where
+ * the caller has no OpenGL context of its own. */
+BRB_API int brb_gl_direct_supported(void);
 
 #ifdef __cplusplus
 }

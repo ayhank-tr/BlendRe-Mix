@@ -86,6 +86,11 @@ typedef struct BRMX_Bridge {
 	int (*highlight)(const uint32_t *ids, int count, float r, float g, float b);
 
 	int (*frame_vk)(uint64_t *r_image, uint64_t *r_done, uint64_t *r_resume, int *r_width, int *r_height);
+
+	/* interface 6 (P5) */
+	int (*frame_read)(unsigned char *r_rgba, int max_bytes, int *r_width, int *r_height);
+	void (*frame_read_end)(void);
+	int (*gl_direct_supported)(void);
 } BRMX_Bridge;
 
 /* The bridge, loaded on first use; NULL when it is missing or from another

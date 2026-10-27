@@ -420,7 +420,7 @@ class RENDER_PT_game_remix(RenderButtonsPanel, Panel):
 
     @classmethod
     def register(cls):
-        from bpy.props import BoolProperty, EnumProperty, FloatProperty
+        from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty
         bpy.types.Scene.bge_remix = EnumProperty(
             name="Rasterizer",
             description="How the game engine draws this scene",
@@ -442,12 +442,80 @@ class RENDER_PT_game_remix(RenderButtonsPanel, Panel):
             description="Stops added to RTX Remix's automatic exposure (positive: brighter); "
                         "+1 matches Cycles' brightness",
             default=1.0, min=-10.0, max=10.0)
+        # P5.1: Remix's quality settings, for the game, the 3D view and F12
+        # (the menus' numbers are what source/blender/remix/intern/remix_session.c reads)
+        bpy.types.Scene.bge_remix_preset = EnumProperty(
+            name="Quality",
+            description="RTX Remix's quality preset (light bounces, effects); Auto lets Remix choose for the "
+                        "graphics card",
+            items=(('AUTO', "Auto", "RTX Remix chooses for the graphics card", 0),
+                   ('LOW', "Low", "Fastest", 1),
+                   ('MEDIUM', "Medium", "", 2),
+                   ('HIGH', "High", "", 3),
+                   ('ULTRA', "Ultra", "Best looking", 4)),
+            default='AUTO')
+        bpy.types.Scene.bge_remix_dlss = EnumProperty(
+            name="DLSS",
+            description="How much smaller RTX Remix renders before DLSS scales the picture up (smaller is faster)",
+            items=(('AUTO', "Auto", "RTX Remix chooses for the picture size", 0),
+                   ('ULTRA_PERFORMANCE', "Ultra Performance", "A third of the size on each side", 1),
+                   ('PERFORMANCE', "Performance", "Half the size on each side", 2),
+                   ('BALANCED', "Balanced", "About 58% on each side", 3),
+                   ('QUALITY', "Quality", "About two thirds on each side", 4),
+                   ('DLAA', "DLAA", "Full size (DLSS only smooths the edges)", 5)),
+            default='AUTO')
+        bpy.types.Scene.bge_remix_rr = BoolProperty(
+            name="Ray Reconstruction",
+            description="DLSS Ray Reconstruction removes the noise of the path tracer (else Remix's own denoiser)",
+            default=True)
+        bpy.types.Scene.bge_remix_volumetrics = BoolProperty(
+            name="Volumetrics",
+            description="Light in the air (fog, light shafts)",
+            default=True)
+        # P5.6: F12 with RTX Remix
+        bpy.types.Scene.bge_remix_f12_mode = EnumProperty(
+            name="F12",
+            description="How F12 renders with RTX Remix",
+            items=(('REALTIME', "Real-time", "As the game shows it: a number of frames, denoised", 0),
+                   ('REFERENCE', "Reference", "Samples added up without a denoiser: slower, no noise left", 1)),
+            default='REALTIME')
+        bpy.types.Scene.bge_remix_f12_frames = IntProperty(
+            name="Frames",
+            description="Real-time: frames rendered before the picture is taken (the denoiser settles)",
+            default=32, min=1, max=4096)
+        bpy.types.Scene.bge_remix_f12_samples = IntProperty(
+            name="Samples",
+            description="Reference: frames added up",
+            default=256, min=1, max=1024)
 
     @classmethod
     def unregister(cls):
-        for name in ("bge_remix", "bge_remix_fast", "bge_remix_light_scale", "bge_remix_exposure"):
+        for name in ("bge_remix", "bge_remix_fast", "bge_remix_light_scale", "bge_remix_exposure",
+                     "bge_remix_preset", "bge_remix_dlss", "bge_remix_rr", "bge_remix_volumetrics",
+                     "bge_remix_f12_mode", "bge_remix_f12_frames", "bge_remix_f12_samples"):
             if hasattr(bpy.types.Scene, name):
                 delattr(bpy.types.Scene, name)
+
+    @staticmethod
+    def draw_remix_settings(layout, scene):
+        """The settings the game, the 3D view and F12 share (also the RTX Remix engine's panel)."""
+        col = layout.column()
+        col.prop(scene, "bge_remix_light_scale")
+        col.prop(scene, "bge_remix_exposure")
+        col.separator()
+        col.prop(scene, "bge_remix_preset")
+        col.prop(scene, "bge_remix_dlss")
+        row = col.row()
+        row.prop(scene, "bge_remix_rr")
+        row.prop(scene, "bge_remix_volumetrics")
+        col.separator()
+        row = col.row()
+        row.prop(scene, "bge_remix_f12_mode", expand=True)
+        if scene.bge_remix_f12_mode == 'REFERENCE':
+            col.prop(scene, "bge_remix_f12_samples")
+        else:
+            col.prop(scene, "bge_remix_f12_frames")
+        col.label("F12 gives what Remix shows: use the Standard view transform", icon='INFO')
 
     def draw(self, context):
         layout = self.layout
@@ -455,10 +523,9 @@ class RENDER_PT_game_remix(RenderButtonsPanel, Panel):
         layout.row().prop(scene, "bge_remix", expand=True)
         if scene.bge_remix != 'RTX_REMIX':
             return
-        col = layout.column()
-        col.prop(scene, "bge_remix_light_scale")
-        col.prop(scene, "bge_remix_exposure")
-        col.prop(scene, "bge_remix_fast")
+        RENDER_PT_game_remix.draw_remix_settings(layout, scene)
+        layout.prop(scene, "bge_remix_fast")
+        layout.label("3D view: Rendered shading shows RTX Remix", icon='INFO')
         try:
             import bge_remix
             ok = bge_remix.available() and bge_remix.installed()

@@ -104,6 +104,12 @@ void device_release();
 void device_frame_unlock();
 /* Present, and in copy mode copy the picture out. */
 remixapi_ErrorCode device_present();
+/* copy mode: the copied frame (NULL: none) */
+const void *device_pixels(int *r_width, int *r_height, int *r_pitch);
+/* direct mode: a presented frame waits to be taken */
+bool device_has_vk();
+/* direct mode: take the waiting frame (brb_frame_vk); 0 none, 1 frame, 2 resized frame */
+int device_take_vk(uint64_t *r_image, uint64_t *r_done, uint64_t *r_resume, int *r_width, int *r_height);
 
 /* bridge_scene.cpp */
 extern brb_frame_stats g_stats;

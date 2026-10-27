@@ -20,6 +20,7 @@ add_library(bge_remix_bridge SHARED
 	bridge.cpp
 	bridge_device.cpp
 	bridge_load.cpp
+	bridge_read.cpp
 	bridge_scene.cpp
 	bridge_startup.cpp
 	bridge_texture.cpp
@@ -34,7 +35,7 @@ target_include_directories(bge_remix_bridge PRIVATE
 	${CMAKE_SOURCE_DIR}/extern/remix_sdk
 )
 
-target_link_libraries(bge_remix_bridge user32 gdi32 extern_directxtex)
+target_link_libraries(bge_remix_bridge user32 gdi32 opengl32 extern_directxtex)
 
 if(MSVC)
 	# /EHs /EHc-: C++ exceptions may come out of extern "C" functions. Remix's

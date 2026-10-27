@@ -69,6 +69,7 @@
 #include <typeinfo>
 
 extern "C" {
+#  include "BKE_global.h"
 #  include "BKE_idprop.h"
 #  include "BLI_math.h"
 #  include "BKE_DerivedMesh.h"
@@ -83,15 +84,16 @@ extern "C" {
 }
 
 #include "BRMX_loader.h"  /* C linkage inside */
+#include "BRMX_light.h"
 #include "BRMX_material.h"
+#include "BRMX_present.h"
+#include "BRMX_session.h"
 
 /* The world colour and the lamps, in Blender Internal's units, are turned
  * into Remix's physical units so that a white surface lit by a lamp of
  * energy 1 at distance D comes out as bright as in Blender Internal (far
  * from the lamp); bge_remix_light_scale is a global factor on top, tuned by
  * eye against the room's Cycles render (P2 sign-off). */
-static const float SUN_ANGULAR_DIAMETER_DEG = 0.53f;
-static const float MIN_LIGHT_RADIUS = 0.02f;
 static const double NOTICE_SECONDS = 8.0;
 /* Chosen by eye against the room's Cycles render (P2 sign-off, RTX 3080):
  * with 1, the lamps outshine everything else under Remix's automatic
@@ -103,12 +105,16 @@ static const float DEFAULT_LIGHT_SCALE = 0.125f;
  * from gamma twice, which darkened them.) Same default as the Rasterizer
  * panel's Exposure. */
 static const float DEFAULT_EXPOSURE = 1.0f;
-/* Remix's own default for rtx.localtonemap.exposure (1.6.1) */
-static const double LOCAL_TONEMAP_EXPOSURE = 0.75;
 static const double PI = 3.14159265358979323846;
 
 /* ------------------------------------------------------------------------- */
 /* Helpers */
+
+/* P5: one caller of Remix at a time (the 3D view, F12 on its own thread) */
+struct RemixLock {
+	RemixLock() { BRMX_lock(); }
+	~RemixLock() { BRMX_unlock(); }
+};
 
 static uint64_t fnv1a(const std::string &s, uint64_t h = 1469598103934665603ull)
 {
@@ -202,16 +208,6 @@ static void column(const MT_Matrix3x3 &m, int c, float r_v[3])
 	r_v[2] = (float)m[2][c];
 }
 
-static void normalize3(float v[3])
-{
-	const float len = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-	if (len > 1e-8f) {
-		v[0] /= len;
-		v[1] /= len;
-		v[2] /= len;
-	}
-}
-
 /* The object's OpenGL matrix, as KX_GameObject::GetOpenGLMatrix computes it
  * (without touching the object's "dirty" flag). */
 static void object_matrix(KX_GameObject *obj, float r_m[16])
@@ -280,7 +276,8 @@ KX_RemixRenderer::Settings KX_RemixRenderer::GetSettings(KX_Scene *scene, int ov
 	Settings s = {0, 0, DEFAULT_LIGHT_SCALE, DEFAULT_EXPOSURE};
 	Scene *bscene = scene ? scene->GetBlenderScene() : NULL;
 	IDProperty *props = bscene ? bscene->id.properties : NULL;
-	s.enabled = idprop_int(props, "bge_remix", 0) != 0;
+	/* P5: a scene rendered with the RTX Remix engine plays with Remix too */
+	s.enabled = idprop_int(props, "bge_remix", 0) != 0 || (bscene && strcmp(bscene->r.engine, "RTX_REMIX") == 0);
 	s.window_mode = idprop_int(props, "bge_remix_fast", 0) != 0;
 	s.light_scale = idprop_float(props, "bge_remix_light_scale", DEFAULT_LIGHT_SCALE);
 	s.exposure = idprop_float(props, "bge_remix_exposure", DEFAULT_EXPOSURE);
@@ -315,16 +312,7 @@ KX_RemixRenderer::KX_RemixRenderer(RAS_ICanvas *canvas, bool window_mode_allowed
       m_x(-1),
       m_y(-1),
       m_shown(true),
-      m_texture(0),
-      m_tex_w(0),
-      m_tex_h(0),
-      m_vk_draw(NULL),
-      m_vk_wait(NULL),
-      m_vk_signal(NULL),
-      m_vk_fake(false),
-      m_vk_sampler(0),
-      m_direct_frames(0),
-      m_direct_error_noted(false),
+      m_direct_frames_base(0),
       m_notice_until(0.0),
       m_notice_shown(false),
       m_filters_noted(false),
@@ -383,18 +371,17 @@ KX_RemixRenderer::~KX_RemixRenderer()
 	Trace("game end: writing stats");
 	WriteStats();
 	if (m_bridge && m_running) {
-		/* Remix keeps running for the next game; this game's objects go. */
+		/* Remix keeps running for the next game (and the 3D view, P5); this
+		 * game's objects go. */
+		BRMX_lock();
 		ShowRemixWindow(false);
 		Trace("game end: clearing the Remix scene");
 		m_bridge->scene_clear();
+		BRMX_owner_release(this);
+		BRMX_unlock();
 	}
-	if (m_texture) {
-		Trace("game end: freeing the picture texture");
-		glDeleteTextures(1, (GLuint *)&m_texture);
-	}
-	if (m_vk_sampler && glDeleteSamplers) {
-		glDeleteSamplers(1, (GLuint *)&m_vk_sampler);
-	}
+	Trace("game end: freeing the picture texture");
+	BRMX_present_free();
 	delete m_cache;
 	Trace("game end: Remix renderer closed");
 }
@@ -459,11 +446,13 @@ bool KX_RemixRenderer::Start(KX_Scene *scene, int width, int height, const Setti
 	else if (settings.window_mode) {
 		SetNotice("RTX Remix window mode works in blenderplayer only; using copy mode.");
 	}
-	if (mode == BRB_MODE_COPY && DirectAvailable()) {
+	const char *copy_reason = "";
+	if (mode == BRB_MODE_COPY && BRMX_present_direct_available(&copy_reason)) {
 		/* P4.8: OpenGL draws Remix's own image; nothing is copied */
 		mode = BRB_MODE_DIRECT;
 	}
 	else if (mode == BRB_MODE_COPY) {
+		m_direct_note = copy_reason ? copy_reason : "";
 		printf("BGE-Remix: copy mode (%s).\n", m_direct_note.c_str());
 		fflush(stdout);
 	}
@@ -472,7 +461,8 @@ bool KX_RemixRenderer::Start(KX_Scene *scene, int width, int height, const Setti
 	 * mode: Remix cannot change between them, so this game uses the same one. */
 	if (status == BRB_STATUS_RUNNING && mode != m_bridge->get_mode() &&
 	    (mode == BRB_MODE_COPY || mode == BRB_MODE_DIRECT) &&
-	    (m_bridge->get_mode() == BRB_MODE_COPY || (m_bridge->get_mode() == BRB_MODE_DIRECT && DirectAvailable())))
+	    (m_bridge->get_mode() == BRB_MODE_COPY ||
+	     (m_bridge->get_mode() == BRB_MODE_DIRECT && BRMX_present_direct_available(NULL))))
 	{
 		mode = m_bridge->get_mode();
 	}
@@ -486,14 +476,33 @@ bool KX_RemixRenderer::Start(KX_Scene *scene, int width, int height, const Setti
 		          "The game runs in OpenGL.");
 		return false;
 	}
+	/* P5: Remix may be in use by the 3D view (its objects go) or by F12 (the
+	 * game waits for it to finish) */
+	BRMX_lock();
+	if (BRMX_owner_kind() == BRMX_OWNER_RENDER || G.is_rendering) {
+		BRMX_unlock();
+		m_status = "busy rendering";
+		SetNotice("RTX Remix is rendering (F12); the game runs in OpenGL.");
+		return false;
+	}
 	status = m_bridge->startup_ex(mode, width, height, parent, x, y);
 	if (status != BRB_STATUS_RUNNING) {
+		BRMX_unlock();
 		m_status = m_bridge->status_text();
 		SetNotice(std::string(m_bridge->status_text()) + " The game runs in OpenGL.");
 		return false;
 	}
+	BRMX_owner_take(BRMX_OWNER_GAME, this, NULL);
 	m_bridge->reset_stats();
+	m_direct_frames_base = BRMX_present_direct_frames();
 	ApplyExposure(settings);
+	{
+		/* P5.1: the scene's preset, DLSS mode, ray reconstruction, volumetrics */
+		BRMX_Quality quality;
+		BRMX_quality_from_scene(scene->GetBlenderScene(), &quality);
+		BRMX_quality_apply(&quality);
+	}
+	BRMX_unlock();
 	m_running = true;
 	m_start_time = now_seconds();
 	m_mode = mode;
@@ -512,16 +521,8 @@ bool KX_RemixRenderer::Start(KX_Scene *scene, int width, int height, const Setti
 
 void KX_RemixRenderer::ApplyExposure(const Settings &settings)
 {
-	/* Stops on top of Remix's automatic exposure. Remix's default tone mapper
-	 * (rtx.tonemappingMode Local) ignores rtx.tonemap.exposureBias and scales
-	 * by rtx.localtonemap.exposure instead (P2 RTX run 5: four exposures,
-	 * one picture), so both are set: the local factor from Remix's default,
-	 * the global bias for scenes that switch to the global tone mapper. */
-	char value[32];
-	snprintf(value, sizeof(value), "%g", LOCAL_TONEMAP_EXPOSURE * std::pow(2.0, (double)settings.exposure));
-	m_bridge->set_config("rtx.localtonemap.exposure", value);
-	snprintf(value, sizeof(value), "%g", settings.exposure);
-	m_bridge->set_config("rtx.tonemap.exposureBias", value);
+	/* stops on top of Remix's automatic exposure (source/blender/remix/intern/remix_light.cc) */
+	brmx::apply_exposure(m_bridge, settings.exposure);
 }
 
 void KX_RemixRenderer::Trace(const char *what)
@@ -620,6 +621,7 @@ void KX_RemixRenderer::RemoveScene(KX_Scene *scene)
 	if (!m_bridge) {
 		return;
 	}
+	RemixLock lock;
 	for (auto it = m_meshes.begin(); it != m_meshes.end();) {
 		if (it->second.scene == scene) {
 			if (m_running && it->second.hash) {
@@ -1615,6 +1617,7 @@ void KX_RemixRenderer::SendLight(KX_Scene *scene, const void *key, const brb_lig
 
 void KX_RemixRenderer::UpdateLights(KX_Scene *scene, float light_scale)
 {
+	/* the formulas are shared with the 3D view and F12 (source/blender/remix/intern/remix_light.cc) */
 	float dome[3] = {0.0f, 0.0f, 0.0f};
 
 	CListValue *lights = scene->GetLightList();
@@ -1626,82 +1629,37 @@ void KX_RemixRenderer::UpdateLights(KX_Scene *scene, float light_scale)
 		if (!data || !light->GetVisible() || (la && (la->mode & LA_NEG))) {
 			continue;
 		}
-		const float energy = data->m_energy * light_scale;
-		if (energy <= 0.0f) {
-			continue;
-		}
-		const float color[3] = {std::fabs(data->m_color[0]), std::fabs(data->m_color[1]), std::fabs(data->m_color[2])};
-		const int type = la ? la->type : (data->m_type == RAS_ILightObject::LIGHT_SUN ? LA_SUN :
-		                                  data->m_type == RAS_ILightObject::LIGHT_SPOT ? LA_SPOT : LA_LOCAL);
-		if (type == LA_HEMI) {
-			/* Hemi: light from the whole sky, added to the dome */
-			for (int k = 0; k < 3; k++) {
-				dome[k] += color[k] * energy;
-			}
-			continue;
-		}
+		brmx::LampInput in;
+		in.type = la ? la->type : (data->m_type == RAS_ILightObject::LIGHT_SUN ? LA_SUN :
+		                           data->m_type == RAS_ILightObject::LIGHT_SPOT ? LA_SPOT : LA_LOCAL);
+		in.energy = data->m_energy;
+		in.color[0] = data->m_color[0];
+		in.color[1] = data->m_color[1];
+		in.color[2] = data->m_color[2];
+		in.dist = data->m_distance;
+		in.spotsize = data->m_spotsize;
+		in.spotblend = data->m_spotblend;
+		in.have_lamp = la != NULL;
+		in.area_size = la ? la->area_size : 0.1f;
+		in.area_sizey = la ? la->area_sizey : 0.1f;
+		in.area_square = la ? la->area_shape == LA_AREA_SQUARE : true;
+		const MT_Vector3 &sc = light->NodeGetWorldScaling();
+		in.scale[0] = (float)sc[0];
+		in.scale[1] = (float)sc[1];
 
 		const MT_Matrix3x3 &ori = light->NodeGetWorldOrientation();
 		const MT_Point3 &pos = light->NodeGetWorldPosition();
+		const float p[3] = {(float)pos[0], (float)pos[1], (float)pos[2]};
+		float ax[3], ay[3], az[3];
+		column(ori, 0, ax);
+		column(ori, 1, ay);
+		column(ori, 2, az);
 		brb_light_desc d;
 		memset(&d, 0, sizeof(d));
 		d.hash = UniqueHash("light", light->GetName().ReadPtr(), light);
-		d.position[0] = (float)pos[0];
-		d.position[1] = (float)pos[1];
-		d.position[2] = (float)pos[2];
-		/* lamps shine along their local -Z */
-		column(ori, 2, d.direction);
-		d.direction[0] = -d.direction[0];
-		d.direction[1] = -d.direction[1];
-		d.direction[2] = -d.direction[2];
-		normalize3(d.direction);
-		const float dist = std::max(data->m_distance, 0.001f);
-		float scale = 1.0f;
-
-		if (type == LA_SUN) {
-			/* Remix's distant light "radiance" is the irradiance it gives (as
-			 * Remix converts D3D9 sun lights): pi * E. Dividing by the sun's
-			 * solid angle burnt the sunlit floor out (RTX 3080, P2 room). */
-			d.type = BRB_LIGHT_DISTANT;
-			d.angular_diameter_deg = SUN_ANGULAR_DIAMETER_DEG;
-			scale = (float)(PI * energy);
+		if (brmx::lamp_light(in, p, ax, ay, az, light_scale, d, dome) == 1) {
+			SendLight(scene, light, d);
 		}
-		else if (type == LA_AREA && la) {
-			d.type = BRB_LIGHT_RECT;
-			column(ori, 0, d.x_axis);
-			column(ori, 1, d.y_axis);
-			normalize3(d.x_axis);
-			normalize3(d.y_axis);
-			const MT_Vector3 &s = light->NodeGetWorldScaling();
-			d.size[0] = std::max(la->area_size * (float)std::fabs(s[0]), 0.001f);
-			d.size[1] = std::max((la->area_shape == LA_AREA_SQUARE ? la->area_size : la->area_sizey) *
-			                     (float)std::fabs(s[1]), 0.001f);
-			/* intensity pi * E * D over the lamp's area */
-			scale = (float)(PI * energy * dist / (d.size[0] * d.size[1]));
-		}
-		else {
-			/* point and spot: a small sphere; Blender Internal's falloff
-			 * E * D / (D + r^2) is E * D / r^2 far away, so the intensity is
-			 * pi * E * D, spread over the sphere's disc pi * R^2 */
-			d.type = BRB_LIGHT_SPHERE;
-			d.radius = std::max(la ? la->area_size : 0.1f, MIN_LIGHT_RADIUS);
-			scale = energy * dist / (d.radius * d.radius);
-			if (type == LA_SPOT) {
-				d.shaped = 1;
-				const double half = data->m_spotsize * 0.5;
-				d.cone_angle_deg = (float)(half * 180.0 / PI);
-				/* Remix fades the cone edge over coneSoftness in cosine units
-				 * (smoothstep(cos(cone), cos(cone) + softness, cos(angle))), as
-				 * Blender does over (1 - cos(cone)) * blend; passing the blend
-				 * itself dimmed and blurred the pool (P2 RTX run 5) */
-				const float blend = std::min(std::max(data->m_spotblend, 0.0f), 1.0f);
-				d.cone_softness = (float)((1.0 - std::cos(half)) * blend);
-			}
-		}
-		d.radiance[0] = color[0] * scale;
-		d.radiance[1] = color[1] * scale;
-		d.radiance[2] = color[2] * scale;
-		SendLight(scene, light, d);
 	}
 
 	/* The world: its horizon colour as a uniform sky (as background and as
@@ -1713,14 +1671,10 @@ void KX_RemixRenderer::UpdateLights(KX_Scene *scene, float light_scale)
 			dome[k] += bg[k];
 		}
 	}
-	if (dome[0] > 0.0f || dome[1] > 0.0f || dome[2] > 0.0f) {
-		brb_light_desc d;
-		memset(&d, 0, sizeof(d));
-		d.hash = UniqueHash("dome", scene->GetName().ReadPtr(), world);
-		d.type = BRB_LIGHT_DOME;
-		d.radiance[0] = dome[0];
-		d.radiance[1] = dome[1];
-		d.radiance[2] = dome[2];
+	brb_light_desc d;
+	memset(&d, 0, sizeof(d));
+	d.hash = UniqueHash("dome", scene->GetName().ReadPtr(), world);
+	if (brmx::dome_light(dome, d)) {
 		SendLight(scene, world, d);
 	}
 }
@@ -1731,6 +1685,7 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 	if (!m_running || !m_bridge) {
 		return;
 	}
+	RemixLock lock;
 	const double t0 = now_seconds();
 	/* the window's size (BGE's viewport rectangle includes its right and top
 	 * edge: 1920 x 1080 shows as 0..1920, 0..1080) */
@@ -1871,7 +1826,7 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 
 	if (m_mode == BRB_MODE_DIRECT) {
 		const double t2 = now_seconds();
-		DrawDirect(viewport.GetLeft(), viewport.GetBottom(), width, height);
+		BRMX_present_draw(viewport.GetLeft(), viewport.GetBottom(), width, height);
 		m_upload_ms.push_back((float)((now_seconds() - t2) * 1000.0));
 		std::wstring path;
 		if (m_frames == m_screenshot_frame && env_path(L"BGE_REMIX_SCREENSHOT", path)) {
@@ -1884,7 +1839,7 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 
 	if (m_mode == BRB_MODE_COPY) {
 		const double t2 = now_seconds();
-		DrawPicture(width, height);
+		BRMX_present_draw(viewport.GetLeft(), viewport.GetBottom(), width, height);
 		m_upload_ms.push_back((float)((now_seconds() - t2) * 1000.0));
 	}
 	m_last_end = now_seconds();
@@ -1893,233 +1848,7 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 }
 
 /* ------------------------------------------------------------------------- */
-/* Picture */
-
-void KX_RemixRenderer::DrawPicture(int width, int height)
-{
-	int w = 0, h = 0, pitch = 0;
-	const void *pixels = m_bridge->frame_pixels(&w, &h, &pitch);
-	if (!pixels || w <= 0 || h <= 0) {
-		return;
-	}
-	/* the shader program is not on the attribute stack */
-	GLint program = 0;
-	if (GLEW_VERSION_2_0) {
-		glGetIntegerv(GL_CURRENT_PROGRAM, &program);
-	}
-	glPushAttrib(GL_ALL_ATTRIB_BITS);
-	glPushClientAttrib(GL_CLIENT_PIXEL_STORE_BIT);
-
-	if (!m_texture) {
-		glGenTextures(1, (GLuint *)&m_texture);
-	}
-	glActiveTextureARB(GL_TEXTURE0_ARB);
-	glBindTexture(GL_TEXTURE_2D, m_texture);
-	glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-	glPixelStorei(GL_UNPACK_ROW_LENGTH, pitch / 4);
-	if (w != m_tex_w || h != m_tex_h) {
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
-		m_tex_w = w;
-		m_tex_h = h;
-	}
-	else {
-		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
-	}
-
-	glMatrixMode(GL_TEXTURE);
-	glPushMatrix();
-	glLoadIdentity();
-	glMatrixMode(GL_PROJECTION);
-	glPushMatrix();
-	glLoadIdentity();
-	glMatrixMode(GL_MODELVIEW);
-	glPushMatrix();
-	glLoadIdentity();
-
-	if (GLEW_VERSION_2_0) {
-		glUseProgram(0);
-	}
-	glDisable(GL_DEPTH_TEST);
-	glDisable(GL_LIGHTING);
-	glDisable(GL_BLEND);
-	glDisable(GL_ALPHA_TEST);
-	glDisable(GL_CULL_FACE);
-	glDisable(GL_FOG);
-	glDisable(GL_STENCIL_TEST);
-	glDepthMask(GL_FALSE);
-	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-	glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-	glEnable(GL_TEXTURE_2D);
-	glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
-	glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-
-	/* the picture's rows go from the top; OpenGL's from the bottom */
-	glBegin(GL_QUADS);
-	glTexCoord2f(0.0f, 1.0f); glVertex2f(-1.0f, -1.0f);
-	glTexCoord2f(1.0f, 1.0f); glVertex2f(1.0f, -1.0f);
-	glTexCoord2f(1.0f, 0.0f); glVertex2f(1.0f, 1.0f);
-	glTexCoord2f(0.0f, 0.0f); glVertex2f(-1.0f, 1.0f);
-	glEnd();
-
-	glBindTexture(GL_TEXTURE_2D, 0);
-	glMatrixMode(GL_TEXTURE);
-	glPopMatrix();
-	glMatrixMode(GL_PROJECTION);
-	glPopMatrix();
-	glMatrixMode(GL_MODELVIEW);
-	glPopMatrix();
-
-	glPopClientAttrib();
-	glPopAttrib();
-	if (GLEW_VERSION_2_0) {
-		glUseProgram((GLuint)program);
-	}
-	(void)width;
-	(void)height;
-}
-
-/* ------------------------------------------------------------------------- */
-/* Direct presentation (P4.8): GL_NV_draw_vulkan_image */
-
-typedef void (APIENTRY *BRMX_DrawVkImageNV)(GLuint64 vkImage, GLuint sampler, GLfloat x0, GLfloat y0, GLfloat x1,
-                                           GLfloat y1, GLfloat z, GLfloat s0, GLfloat t0, GLfloat s1, GLfloat t1);
-typedef void (APIENTRY *BRMX_VkSemaphoreNV)(GLuint64 vkSemaphore);
-
-/* CI has no NVIDIA driver: with BGE_REMIX_FAKE_VK_DRAW=1 these stand in for the
- * extension and print what the game would do, so the tests can check that every
- * presented frame is waited for, drawn and resumed exactly once, in that order. */
-static void APIENTRY fake_draw_vk(GLuint64 image, GLuint, GLfloat x0, GLfloat y0, GLfloat x1, GLfloat y1, GLfloat,
-                                  GLfloat, GLfloat t0, GLfloat, GLfloat t1)
-{
-	printf("BGE-Remix direct: draw %llx at %g,%g..%g,%g t %g..%g\n", (unsigned long long)image, x0, y0, x1, y1, t0,
-	       t1);
-}
-static void APIENTRY fake_wait_vk(GLuint64 semaphore)
-{
-	printf("BGE-Remix direct: wait %llx\n", (unsigned long long)semaphore);
-}
-static void APIENTRY fake_signal_vk(GLuint64 semaphore)
-{
-	printf("BGE-Remix direct: signal %llx\n", (unsigned long long)semaphore);
-	fflush(stdout);
-}
-
-static bool has_gl_extension(const char *name)
-{
-	const char *ext = (const char *)glGetString(GL_EXTENSIONS);
-	if (!ext) {
-		return false;
-	}
-	const size_t n = strlen(name);
-	for (const char *p = strstr(ext, name); p; p = strstr(p + 1, name)) {
-		if ((p == ext || p[-1] == ' ') && (p[n] == ' ' || p[n] == '\0')) {
-			return true;
-		}
-	}
-	return false;
-}
-
-bool KX_RemixRenderer::DirectAvailable()
-{
-	if (m_vk_draw && m_vk_wait && m_vk_signal) {
-		return true;
-	}
-	std::wstring v;
-	char buf[16];
-	const DWORD n = GetEnvironmentVariableA("BGE_REMIX_PRESENT", buf, sizeof(buf));
-	if (n > 0 && n < sizeof(buf) && _stricmp(buf, "copy") == 0) {
-		m_direct_note = "BGE_REMIX_PRESENT=copy";
-		return false;
-	}
-	if (GetEnvironmentVariableA("BGE_REMIX_FAKE_VK_DRAW", buf, sizeof(buf)) > 0 && buf[0] == '1') {
-		m_vk_fake = true;
-		m_vk_draw = (void *)fake_draw_vk;
-		m_vk_wait = (void *)fake_wait_vk;
-		m_vk_signal = (void *)fake_signal_vk;
-		return true;
-	}
-	if (!has_gl_extension("GL_NV_draw_vulkan_image")) {
-		m_direct_note = "the graphics driver has no GL_NV_draw_vulkan_image";
-		return false;
-	}
-	m_vk_draw = (void *)wglGetProcAddress("glDrawVkImageNV");
-	m_vk_wait = (void *)wglGetProcAddress("glWaitVkSemaphoreNV");
-	m_vk_signal = (void *)wglGetProcAddress("glSignalVkSemaphoreNV");
-	if (!m_vk_draw || !m_vk_wait || !m_vk_signal) {
-		m_vk_draw = m_vk_wait = m_vk_signal = NULL;
-		m_direct_note = "GL_NV_draw_vulkan_image is listed but its functions are missing";
-		return false;
-	}
-	return true;
-}
-
-void KX_RemixRenderer::DrawDirect(int x, int y, int width, int height)
-{
-	GLuint64 image = 0, done = 0, resume = 0;
-	int w = 0, h = 0;
-	if (!m_bridge->frame_vk((uint64_t *)&image, (uint64_t *)&done, (uint64_t *)&resume, &w, &h)) {
-		return;
-	}
-	BRMX_DrawVkImageNV draw = (BRMX_DrawVkImageNV)m_vk_draw;
-	BRMX_VkSemaphoreNV wait = (BRMX_VkSemaphoreNV)m_vk_wait;
-	BRMX_VkSemaphoreNV signal = (BRMX_VkSemaphoreNV)m_vk_signal;
-
-	/* Remix has signalled "done" and holds its next frame until "resume": from
-	 * here on, resume is signalled whatever happens. */
-	if (m_vk_fake) {
-		wait(done);
-		draw(image, 0, (GLfloat)x, (GLfloat)y, (GLfloat)(x + width), (GLfloat)(y + height), 0.0f, 0.0f, 1.0f, 1.0f,
-		     0.0f);
-		signal(resume);
-		m_direct_frames++;
-		return;
-	}
-	GLint program = 0;
-	if (GLEW_VERSION_2_0) {
-		glGetIntegerv(GL_CURRENT_PROGRAM, &program);
-		glUseProgram(0);
-	}
-	glPushAttrib(GL_ENABLE_BIT | GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_POLYGON_BIT);
-	glDisable(GL_DEPTH_TEST);
-	glDisable(GL_BLEND);
-	glDisable(GL_ALPHA_TEST);
-	glDisable(GL_STENCIL_TEST);
-	glDisable(GL_FOG);
-	glDepthMask(GL_FALSE);
-	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-	if (!m_vk_sampler && glGenSamplers && glSamplerParameteri) {
-		glGenSamplers(1, (GLuint *)&m_vk_sampler);
-		glSamplerParameteri(m_vk_sampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-		glSamplerParameteri(m_vk_sampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-		glSamplerParameteri(m_vk_sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-		glSamplerParameteri(m_vk_sampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-	}
-
-	wait(done);
-	/* window coordinates; the picture's rows go from the top, OpenGL's from the
-	 * bottom, so t runs from 1 at the bottom edge to 0 at the top */
-	draw(image, m_vk_sampler, (GLfloat)x, (GLfloat)y, (GLfloat)(x + width), (GLfloat)(y + height), 0.0f, 0.0f,
-	     1.0f, 1.0f, 0.0f);
-	signal(resume);
-	m_direct_frames++;
-
-	const GLenum err = glGetError();
-	if (err != GL_NO_ERROR && !m_direct_error_noted) {
-		m_direct_error_noted = true;
-		printf("BGE-Remix: drawing Remix's image failed (OpenGL error 0x%04x); Remix keeps running.\n", err);
-		fflush(stdout);
-	}
-	glPopAttrib();
-	if (GLEW_VERSION_2_0) {
-		glUseProgram((GLuint)program);
-	}
-	(void)w;
-	(void)h;
-}
+/* Picture: drawn by the shared presenter (source/blender/remix/intern/remix_present.c) */
 
 bool KX_RemixRenderer::SaveWindowBmp(const std::wstring &path, int x, int y, int width, int height)
 {
@@ -2210,12 +1939,15 @@ void KX_RemixRenderer::WriteStats()
 	fprintf(f, "  \"running\": %s,\n", m_running ? "true" : "false");
 	fprintf(f, "  \"mode\": \"%s\",\n", m_mode == BRB_MODE_COPY ? "copy" : m_mode == BRB_MODE_CHILD ? "window" :
 	                                       m_mode == BRB_MODE_DIRECT ? "direct" : "none");
-	fprintf(f, "  \"direct_frames\": %d,\n", m_direct_frames);
+	fprintf(f, "  \"direct_frames\": %d,\n", BRMX_present_direct_frames() - m_direct_frames_base);
 	fprintf(f, "  \"copy_mode_reason\": \"%s\",\n", m_direct_note.c_str());
 	fprintf(f, "  \"status\": \"%s\",\n", status.c_str());
 	fprintf(f, "  \"notice\": \"%s\",\n", notice.c_str());
 	fprintf(f, "  \"frames\": %d,\n", m_frames);
 	fprintf(f, "  \"width\": %d,\n  \"height\": %d,\n", m_width, m_height);
+	/* P5: Remix's picture size (direct mode follows the window a frame or two later) */
+	fprintf(f, "  \"picture_width\": %d,\n  \"picture_height\": %d,\n  \"resets\": %d,\n", st.width, st.height,
+	        st.resets);
 	fprintf(f, "  \"draws_last_frame\": %d,\n  \"lights_last_frame\": %d,\n", m_last_draws, m_last_lights);
 	fprintf(f, "  \"meshes_created\": %d,\n  \"materials_created\": %d,\n  \"lights_created\": %d,\n",
 	        st.meshes_created, st.materials_created, st.lights_created);
