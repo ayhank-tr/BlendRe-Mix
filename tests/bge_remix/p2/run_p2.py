@@ -162,6 +162,15 @@ def created(lines, prefix):
     return result
 
 
+def srgb(c):
+    """linear -> sRGB-encoded, as the bridge sends colours (Remix's shaders
+    decode them from gamma themselves); a list is converted per channel"""
+    if isinstance(c, list):
+        return [srgb(x) for x in c]
+    c = min(max(float(c), 0.0), 1.0)
+    return c * 12.92 if c <= 0.0031308 else 1.055 * c ** (1.0 / 2.4) - 0.055
+
+
 def close(a, b, tol=1e-3):
     if isinstance(a, list) or isinstance(b, list):
         if not isinstance(a, list) or not isinstance(b, list) or len(a) != len(b):
@@ -260,9 +269,9 @@ def check_materials(lines, expected):
         if f is None:
             checks[e["name"] + " arrives"] = False
             continue
-        ok = close(f["albedo"], e["albedo"]) and close(f["opacity"], e["opacity"]) and f.get("blend") == e["blend"]
+        ok = close(f["albedo"], srgb(e["albedo"])) and close(f["opacity"], e["opacity"]) and f.get("blend") == e["blend"]
         if e["emit"] > 0:
-            ok = ok and close(f["intensity"], e["emit"]) and close(f["emissive"], e["color"])
+            ok = ok and close(f["intensity"], e["emit"]) and close(f["emissive"], srgb(e["color"]))
         else:
             ok = ok and f.get("intensity") == 0
         checks["%s: colour, alpha, emit" % e["name"]] = ok
@@ -358,16 +367,16 @@ def run_ci(args, out):
     # The exposure setting: Remix's local tone mapper (its default) and the
     # global one both get it (0.75 is Remix's default local exposure)
     log, env = mock_env("exposure")
-    r = player(args.ours, out, "exposure", os.path.join(scenes, "p2_room_exposure_1.blend"), env)
+    r = player(args.ours, out, "exposure", os.path.join(scenes, "p2_room_exposure_2.blend"), env)
     config = [l for l in read_lines(log) if "Config " in l]
     room_config = [l for l in lines if "Config " in l]
     c = {
         "the player ran 300 frames": ran(r),
-        "default exposure +2: local tone mapper 0.75 x 4 = 3":
-            any("rtx.localtonemap.exposure=3" in l for l in room_config),
-        "default exposure +2: global tone mapper bias 2": any("rtx.tonemap.exposureBias=2" in l for l in room_config),
-        "exposure +1: local tone mapper 0.75 x 2 = 1.5": any("rtx.localtonemap.exposure=1.5" in l for l in config),
-        "exposure +1: global tone mapper bias 1": any("rtx.tonemap.exposureBias=1" in l for l in config),
+        "default exposure +1: local tone mapper 0.75 x 2 = 1.5":
+            any("rtx.localtonemap.exposure=1.5" in l for l in room_config),
+        "default exposure +1: global tone mapper bias 1": any("rtx.tonemap.exposureBias=1" in l for l in room_config),
+        "exposure +2: local tone mapper 0.75 x 4 = 3": any("rtx.localtonemap.exposure=3" in l for l in config),
+        "exposure +2: global tone mapper bias 2": any("rtx.tonemap.exposureBias=2" in l for l in config),
     }
     res["T2.1e"] = dict(test(c), detail={"config": config})
 
@@ -628,7 +637,7 @@ def run_rtx(args, out):
 
     print("T2.1: the room at higher exposure, and the spot lamp alone (sign-off)...", flush=True)
     sheet = [("Cycles", res["T2.1"]["cycles"]["image"]),
-             ("Remix (light scale 0.125, default exposure +2)", t21["screenshot"])]
+             ("Remix (light scale 0.125, default exposure +1)", t21["screenshot"])]
     sheet_runs = {}
     for ev in EXPOSURES:
         tag = ("%g" % ev).replace(".", "_")

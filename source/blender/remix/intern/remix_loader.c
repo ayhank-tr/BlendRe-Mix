@@ -126,6 +126,10 @@ static int load_bridge(void)
 	BRIDGE_FN(save_bmp, "brb_save_bmp");
 	BRIDGE_FN(get_stats, "brb_get_stats");
 	BRIDGE_FN(reset_stats, "brb_reset_stats");
+	BRIDGE_FN(texture_write, "brb_texture_write");
+	BRIDGE_FN(texture_submit, "brb_texture_submit");
+	BRIDGE_FN(texture_poll, "brb_texture_poll");
+	BRIDGE_FN(texture_pending, "brb_texture_pending");
 #undef BRIDGE_FN
 
 	/* Remix is shut down before the process ends, however it ends. */

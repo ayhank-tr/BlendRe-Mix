@@ -1049,6 +1049,110 @@ class MATERIAL_PT_volume_options(VolumeButtonsPanel, Panel):
         row.prop(mat, "use_light_group_exclusive", text="Exclusive")
 
 
+class MATERIAL_PT_game_remix(MaterialButtonsPanel, Panel):
+    """BGE-Remix: how RTX Remix sees this material, instead of the automatic
+    translation of its Blender Internal settings or Cycles nodes.
+
+    Stored as custom properties of the material (bge_remix_*), which stock
+    Blender 2.79b keeps and ignores. The defaults here are the C side's
+    (source/blender/remix/intern/remix_material.cc)."""
+    bl_label = "RTX Remix"
+    bl_options = {'DEFAULT_CLOSED'}
+    COMPAT_ENGINES = {'BLENDER_GAME'}
+
+    IMAGES = ("albedo", "normal", "roughness", "metallic", "emissive")
+
+    @classmethod
+    def register(cls):
+        from bpy.props import BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, StringProperty
+        M = bpy.types.Material
+        M.bge_remix_override = BoolProperty(
+            name="RTX Remix",
+            description="Use these settings under RTX Remix instead of translating the material",
+            default=False)
+        M.bge_remix_type = EnumProperty(
+            name="Type",
+            items=(('OPAQUE', "Opaque", "Remix's opaque PBR surface", 0),
+                   ('GLASS', "Glass", "Refracting glass, tinted by Transmittance", 1),
+                   ('SUBSURFACE', "Subsurface", "Light scatters under the surface (skin, wax, marble)", 2)),
+            default='OPAQUE')
+        M.bge_remix_albedo = FloatVectorProperty(
+            name="Albedo", subtype='COLOR', size=3, min=0.0, max=1.0, default=(0.8, 0.8, 0.8))
+        M.bge_remix_opacity = FloatProperty(name="Opacity", min=0.0, max=1.0, default=1.0)
+        M.bge_remix_roughness = FloatProperty(name="Roughness", min=0.0, max=1.0, default=0.5)
+        M.bge_remix_metallic = FloatProperty(name="Metallic", min=0.0, max=1.0, default=0.0)
+        M.bge_remix_emissive = FloatVectorProperty(
+            name="Emission", subtype='COLOR', size=3, min=0.0, max=1.0, default=(1.0, 1.0, 1.0))
+        M.bge_remix_emissive_strength = FloatProperty(name="Strength", min=0.0, soft_max=100.0, default=0.0)
+        M.bge_remix_alpha = EnumProperty(
+            name="Alpha",
+            items=(('OPAQUE', "Opaque", "No see-through parts", 0),
+                   ('BLEND', "Blend", "See-through by Opacity and the albedo image's alpha", 1),
+                   ('CLIP', "Clip", "Cut out where the albedo image's alpha is below the cutoff", 2)),
+            default='OPAQUE')
+        M.bge_remix_alpha_cutoff = FloatProperty(name="Cutoff", min=0.0, max=1.0, default=0.5)
+        M.bge_remix_ior = FloatProperty(name="IOR", min=1.0, max=3.0, default=1.5)
+        M.bge_remix_transmittance = FloatVectorProperty(
+            name="Transmittance", subtype='COLOR', size=3, min=0.0, max=1.0, default=(1.0, 1.0, 1.0),
+            description="The colour light keeps after half a metre (Blender unit) inside the glass")
+        M.bge_remix_subsurface_radius = FloatVectorProperty(
+            name="Radius", subtype='XYZ', size=3, min=0.0, default=(1.0, 0.2, 0.1),
+            description="How far light travels under the surface, per colour channel (Blender units)")
+        for name in cls.IMAGES:
+            setattr(M, "bge_remix_%s_image" % name, StringProperty(
+                name=name.capitalize() + " Image",
+                description="Image used as the %s map (by name)" % name))
+
+    @classmethod
+    def unregister(cls):
+        M = bpy.types.Material
+        for name in [n for n in dir(M) if n.startswith("bge_remix_")]:
+            delattr(M, name)
+
+    def draw_header(self, context):
+        self.layout.prop(context.material, "bge_remix_override", text="")
+
+    def draw(self, context):
+        layout = self.layout
+        mat = context.material
+        layout.active = mat.bge_remix_override
+        if not mat.bge_remix_override:
+            layout.label("Off: Remix translates the material's own settings or Cycles nodes", icon='INFO')
+        layout.row().prop(mat, "bge_remix_type", expand=True)
+
+        def image(col, name):
+            col.prop_search(mat, "bge_remix_%s_image" % name, bpy.data, "images", text="")
+
+        split = layout.split()
+        col = split.column()
+        if mat.bge_remix_type == 'GLASS':
+            col.prop(mat, "bge_remix_transmittance")
+            col.prop(mat, "bge_remix_ior")
+        else:
+            col.prop(mat, "bge_remix_albedo")
+            image(col, "albedo")
+            col.prop(mat, "bge_remix_roughness")
+            image(col, "roughness")
+            col.prop(mat, "bge_remix_metallic")
+            image(col, "metallic")
+        col = split.column()
+        col.label("Normal Map:")
+        image(col, "normal")
+        col.prop(mat, "bge_remix_emissive")
+        col.prop(mat, "bge_remix_emissive_strength")
+        image(col, "emissive")
+        if mat.bge_remix_type == 'SUBSURFACE':
+            layout.prop(mat, "bge_remix_subsurface_radius")
+        if mat.bge_remix_type != 'GLASS':
+            row = layout.row()
+            row.prop(mat, "bge_remix_alpha", expand=True)
+            sub = row.row()
+            if mat.bge_remix_alpha == 'BLEND':
+                sub.prop(mat, "bge_remix_opacity")
+            elif mat.bge_remix_alpha == 'CLIP':
+                sub.prop(mat, "bge_remix_alpha_cutoff")
+
+
 class MATERIAL_PT_custom_props(MaterialButtonsPanel, PropertyPanel, Panel):
     COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_GAME'}
     _context_path = "material"
@@ -1076,6 +1180,7 @@ classes = (
     MATERIAL_PT_options,
     MATERIAL_PT_shadow,
     MATERIAL_PT_transp_game,
+    MATERIAL_PT_game_remix,
     MATERIAL_PT_volume_density,
     MATERIAL_PT_volume_shading,
     MATERIAL_PT_volume_lighting,

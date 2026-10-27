@@ -197,6 +197,14 @@ jobs:
         run: |
           python blender/tests/bge_remix/p2/run_p2.py --ours ours --mock mock --out results/p2
 
+      - name: Phase 3 tests (fake runtime)
+        if: always()
+        shell: pwsh
+        env:
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          python blender/tests/bge_remix/p3/run_p3.py --ours ours --mock mock --official blender-2.79b-windows64 --out results/p3
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:

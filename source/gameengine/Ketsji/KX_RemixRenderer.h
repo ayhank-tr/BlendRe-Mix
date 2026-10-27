@@ -41,6 +41,7 @@
 #include <stdint.h>
 
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -56,6 +57,10 @@ class RAS_IPolyMaterial;
 class RAS_Rect;
 struct BRMX_Bridge;
 struct brb_light_desc;
+namespace brmx {
+struct MaterialSpec;
+class TextureCache;
+}
 
 class KX_RemixRenderer
 {
@@ -114,6 +119,9 @@ private:
 		uint64_t hash;
 		KX_Scene *scene;
 		std::string name;
+		std::shared_ptr<brmx::MaterialSpec> spec; /* what the translator made of it */
+		bool blend;        /* alpha blended */
+		bool waiting;      /* sent without some textures that are still being encoded */
 	};
 	struct LightEntry {
 		uint64_t hash;
@@ -128,6 +136,8 @@ private:
 	uint64_t UniqueHash(const std::string &kind, const std::string &name, const void *key);
 	bool EnsureMesh(KX_Scene *scene, RAS_MeshObject *mesh, MeshEntry *&r_entry);
 	uint64_t EnsureMaterial(KX_Scene *scene, RAS_IPolyMaterial *mat);
+	void SendMaterial(MaterialEntry &e);
+	void UpdateTextures(KX_Scene *scene);
 	void ShowRemixWindow(bool show);
 	void ApplyExposure(const Settings &settings);
 	void UpdateLights(KX_Scene *scene, float light_scale);
@@ -151,6 +161,16 @@ private:
 	std::map<const void *, MaterialEntry> m_materials;
 	std::map<const void *, LightEntry> m_lights;
 	std::map<uint64_t, const void *> m_hashes;
+	brmx::TextureCache *m_cache;
+	int m_materials_waiting;   /* entries with waiting set */
+	int m_materials_swapped;   /* sent again with their textures */
+	int m_material_notes;      /* lines the translator could not represent */
+	double m_max_swap_ms;      /* slowest frame that swapped materials */
+	double m_frame_ms_max;     /* longest gap between two Remix frames (after the first 10) */
+	double m_last_render;
+	int m_first_textured_frame;  /* first frame with every texture in place (-1: not yet) */
+	double m_first_textured_seconds; /* ... seconds after Remix started */
+	double m_start_time;
 
 	unsigned int m_texture;
 	int m_tex_w, m_tex_h;

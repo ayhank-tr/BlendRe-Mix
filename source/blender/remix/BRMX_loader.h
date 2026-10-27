@@ -74,6 +74,11 @@ typedef struct BRMX_Bridge {
 	int (*save_bmp)(const wchar_t *path);
 	void (*get_stats)(brb_frame_stats *r_stats);
 	void (*reset_stats)(void);
+
+	int (*texture_write)(const brb_texture_desc *desc, brb_texture_result *r_result);
+	int (*texture_submit)(const brb_texture_desc *desc);
+	int (*texture_poll)(int ticket, brb_texture_result *r_result);
+	int (*texture_pending)(void);
 } BRMX_Bridge;
 
 /* The bridge, loaded on first use; NULL when it is missing or from another

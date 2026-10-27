@@ -9,7 +9,8 @@
 
 # BGE-Remix, Blender side.
 #   bf_remix_loader: loads bge_remix_bridge.dll on first use and finds the
-#                    Remix runtime; no Python, linked into blender and
+#                    Remix runtime; the material translator and the texture
+#                    cache (C++); no Python, linked into blender and
 #                    blenderplayer (the game engine uses it).
 #   bf_remix:        the "_bge_remix" Python module (blender only).
 
@@ -17,7 +18,9 @@ set(INC
 	.
 	../blenkernel
 	../blenlib
+	../imbuf
 	../makesdna
+	../makesrna
 	../../../intern/guardedalloc
 	../../../intern/remix_bridge
 )
@@ -27,8 +30,11 @@ set(INC_SYS
 
 set(SRC
 	intern/remix_loader.c
+	intern/remix_material.cc
+	intern/remix_texcache.cc
 
 	BRMX_loader.h
+	BRMX_material.h
 )
 
 blender_add_lib(bf_remix_loader "${SRC}" "${INC}" "${INC_SYS}")

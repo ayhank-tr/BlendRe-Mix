@@ -354,4 +354,6 @@ def main():
         json.dump(expected, f, indent=2)
 
 
-main()
+# Blender runs a --python script as __main__; P3 imports this file for its helpers
+if __name__ == "__main__":
+    main()
