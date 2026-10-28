@@ -543,8 +543,9 @@ def run_rtx(args, out):
               # the first time, Remix compiles its shaders and draws black for some seconds
               "the view showed Remix's picture (after %s s)" % opened.get("ready_seconds"): opened.get("ready") is True}
     local = {}
+    # the selection's outline moves too: from the ball (edited last) to the new cone
     for a, b, names in (("open", "move", ["GlassCube"]), ("move", "recolour", ["Monkey"]),
-                        ("recolour", "edit", ["CheckerBall"]), ("lamp", "add", ["AddedCone"])):
+                        ("recolour", "edit", ["CheckerBall"]), ("lamp", "add", ["AddedCone", "CheckerBall"])):
         share, n = near(a, b, names)
         local[b] = {"share_near": share, "changed": n}
         checks["%s: the picture changed where %s is" % (b, names[0])] = share is not None and n > 200 and share >= 0.6

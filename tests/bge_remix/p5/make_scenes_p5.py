@@ -57,7 +57,7 @@ FRAMES = 24
 MARKER_X = (-3.0, 3.0)
 MARKER_Y = -1.5
 MARKER_Z = 0.15
-ADDED_CONE = (-2.8, -2.5, 0.3)  # where p5_ui_probe.py adds a cone (T5.1)
+ADDED_CONE = (-1.6, -2.5, 0.3)  # where p5_ui_probe.py adds a cone (T5.1)
 
 
 def mesh_from(name, ob_name, location, ma, kind, **kw):

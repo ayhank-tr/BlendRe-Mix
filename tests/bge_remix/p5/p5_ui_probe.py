@@ -193,10 +193,11 @@ def a_lamp():
 def a_add():
     # 'EXEC_DEFAULT', True: an undo step, as the menu's operator makes (from a
     # script Blender makes none)
-    # a small cone at the front left, clear of the objects T5.2 clicks on (undo
-    # brings it back for those clicks)
+    # a small cone at the front left, in the picture and clear of the objects
+    # T5.2 clicks on (undo brings it back for those clicks); the same place as
+    # ADDED_CONE in make_scenes_p5.py
     bpy.ops.mesh.primitive_cone_add(override(), 'EXEC_DEFAULT', True, radius1=0.3, depth=0.6,
-                                    location=(-2.8, -2.5, 0.3))
+                                    location=(-1.6, -2.5, 0.3))
     bpy.context.scene.objects.active.name = "AddedCone"
     bpy.ops.ed.undo_push(message="Rename the cone")
 
