@@ -383,6 +383,14 @@ def a_bench(full=True):
     return act
 
 
+def a_idle_start():
+    """B5.3 starts here: the bench step's own wait (which asks for redraws, 10
+    a second) is over; from now on nothing asks the view to draw"""
+    b = state.get("bench")
+    if b is not None:
+        b["idle_start_frames"] = (stats().get("bridge") or {}).get("frames")
+
+
 def a_game():
     o = override()
     print("P5 probe: starting the game", flush=True)
@@ -405,7 +413,7 @@ if "ortho" in PARTS:
 if "split" in PARTS:
     STEPS += [("split", a_split)]
 if "bench" in PARTS:
-    STEPS = [("solid", a_solid), ("bench", a_bench(True)), ("idle", lambda: None)]
+    STEPS = [("solid", a_solid), ("bench", a_bench(True)), ("idle", a_idle_start)]
 if "bench_view" in PARTS:
     STEPS = [("solid", a_solid), ("bench", a_bench(False))]
 QUIET = {"idle"}  # steps whose wait does not ask for redraws (B5.3)
