@@ -27,6 +27,7 @@
  */
 
 #include <Python.h>
+#include <stdint.h>
 
 #ifndef WIN32_LEAN_AND_MEAN
 #  define WIN32_LEAN_AND_MEAN
@@ -37,6 +38,7 @@
 
 #include "BRMX_loader.h"
 #include "BRMX_remix.h"
+#include "BRMX_view.h"
 
 /* ------------------------------------------------------------------------- */
 /* Bridge DLL (loaded by the shared loader, BRMX_loader.h) */
@@ -250,6 +252,112 @@ static PyObject *brmx_shutdown(PyObject *UNUSED_self)
 	Py_RETURN_NONE;
 }
 
+/* ------------------------------------------------------------------------- */
+/* P5: the RTX Remix render engine (release/scripts/startup/render_remix).
+ * The engine passes its own pointers (as_pointer()); see BRMX_view.h. */
+
+#define PTR(type, v) ((type *)(uintptr_t)(v))
+
+PyDoc_STRVAR(brmx_view_update_doc,
+".. function:: view_update(engine, data, scene, region, space, region_data)\n"
+"\n"
+"   RenderEngine.view_update: the scene changed (pointers from as_pointer()).\n");
+static PyObject *brmx_view_update(PyObject *UNUSED_self, PyObject *args)
+{
+	unsigned long long engine, data, scene, region, space, rv3d;
+	if (!PyArg_ParseTuple(args, "KKKKKK", &engine, &data, &scene, &region, &space, &rv3d)) {
+		return NULL;
+	}
+	BRMX_view_update(PTR(struct RenderEngine, engine), PTR(struct Main, data), PTR(struct Scene, scene),
+	                 PTR(struct ARegion, region), PTR(struct View3D, space), PTR(struct RegionView3D, rv3d));
+	Py_RETURN_NONE;
+}
+
+PyDoc_STRVAR(brmx_view_draw_doc,
+".. function:: view_draw(engine, data, scene, region, space, region_data)\n"
+"\n"
+"   RenderEngine.view_draw: draw the view. True when it should be drawn again soon.\n"
+"\n"
+"   :rtype: bool\n");
+static PyObject *brmx_view_draw(PyObject *UNUSED_self, PyObject *args)
+{
+	unsigned long long engine, data, scene, region, space, rv3d;
+	int again;
+	if (!PyArg_ParseTuple(args, "KKKKKK", &engine, &data, &scene, &region, &space, &rv3d)) {
+		return NULL;
+	}
+	again = BRMX_view_draw(PTR(struct RenderEngine, engine), PTR(struct Main, data), PTR(struct Scene, scene),
+	                       PTR(struct ARegion, region), PTR(struct View3D, space), PTR(struct RegionView3D, rv3d));
+	return PyBool_FromLong(again);
+}
+
+PyDoc_STRVAR(brmx_engine_free_doc,
+".. function:: engine_free(engine)\n"
+"\n"
+"   The engine goes away: its 3D view and F12 data go too.\n");
+static PyObject *brmx_engine_free(PyObject *UNUSED_self, PyObject *args)
+{
+	unsigned long long engine;
+	if (!PyArg_ParseTuple(args, "K", &engine)) {
+		return NULL;
+	}
+	BRMX_view_free(PTR(struct RenderEngine, engine));
+	BRMX_render_free(PTR(struct RenderEngine, engine));
+	Py_RETURN_NONE;
+}
+
+PyDoc_STRVAR(brmx_render_sync_doc,
+".. function:: render_sync(engine, data, scene)\n"
+"\n"
+"   RenderEngine.update (F12): read the scene. Returns (ok, message).\n"
+"\n"
+"   :rtype: tuple\n");
+static PyObject *brmx_render_sync(PyObject *UNUSED_self, PyObject *args)
+{
+	unsigned long long engine, data, scene;
+	const char *message = "";
+	int ok;
+	if (!PyArg_ParseTuple(args, "KKK", &engine, &data, &scene)) {
+		return NULL;
+	}
+	Py_BEGIN_ALLOW_THREADS
+	ok = BRMX_render_sync(PTR(struct RenderEngine, engine), PTR(struct Main, data), PTR(struct Scene, scene),
+	                      &message);
+	Py_END_ALLOW_THREADS
+	return Py_BuildValue("(Ns)", PyBool_FromLong(ok), message ? message : "");
+}
+
+PyDoc_STRVAR(brmx_render_frame_doc,
+".. function:: render_frame(engine, scene)\n"
+"\n"
+"   RenderEngine.render (F12): render and fill the result. Returns (ok, message).\n"
+"\n"
+"   :rtype: tuple\n");
+static PyObject *brmx_render_frame(PyObject *UNUSED_self, PyObject *args)
+{
+	unsigned long long engine, scene;
+	const char *message = "";
+	int ok;
+	if (!PyArg_ParseTuple(args, "KK", &engine, &scene)) {
+		return NULL;
+	}
+	Py_BEGIN_ALLOW_THREADS
+	ok = BRMX_render_frame(PTR(struct RenderEngine, engine), PTR(struct Scene, scene), &message);
+	Py_END_ALLOW_THREADS
+	return Py_BuildValue("(Ns)", PyBool_FromLong(ok), message ? message : "");
+}
+
+PyDoc_STRVAR(brmx_view_stats_doc,
+".. function:: view_stats()\n"
+"\n"
+"   Counters of the 3D view and F12, for the tests (JSON text).\n"
+"\n"
+"   :rtype: str\n");
+static PyObject *brmx_view_stats(PyObject *UNUSED_self)
+{
+	return PyUnicode_FromString(BRMX_view_stats_json());
+}
+
 static PyMethodDef brmx_methods[] = {
 	{"bridge_info", (PyCFunction)brmx_bridge_info, METH_NOARGS, brmx_bridge_info_doc},
 	{"status", (PyCFunction)brmx_status, METH_NOARGS, brmx_status_doc},
@@ -259,6 +367,12 @@ static PyMethodDef brmx_methods[] = {
 	{"triangle_test", (PyCFunction)brmx_triangle_test, METH_VARARGS | METH_KEYWORDS, brmx_triangle_test_doc},
 	{"runtime_dir", (PyCFunction)brmx_runtime_dir, METH_NOARGS, brmx_runtime_dir_doc},
 	{"shutdown", (PyCFunction)brmx_shutdown, METH_NOARGS, brmx_shutdown_doc},
+	{"view_update", (PyCFunction)brmx_view_update, METH_VARARGS, brmx_view_update_doc},
+	{"view_draw", (PyCFunction)brmx_view_draw, METH_VARARGS, brmx_view_draw_doc},
+	{"engine_free", (PyCFunction)brmx_engine_free, METH_VARARGS, brmx_engine_free_doc},
+	{"render_sync", (PyCFunction)brmx_render_sync, METH_VARARGS, brmx_render_sync_doc},
+	{"render_frame", (PyCFunction)brmx_render_frame, METH_VARARGS, brmx_render_frame_doc},
+	{"view_stats", (PyCFunction)brmx_view_stats, METH_NOARGS, brmx_view_stats_doc},
 	{NULL, NULL, 0, NULL}
 };
 

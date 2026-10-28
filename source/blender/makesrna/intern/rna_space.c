@@ -695,7 +695,7 @@ static void rna_RegionView3D_view_matrix_set(PointerRNA *ptr, const float *value
 static int rna_SpaceView3D_viewport_shade_get(PointerRNA *ptr)
 {
 	Scene *scene = ((bScreen *)ptr->id.data)->scene;
-	RenderEngineType *type = RE_engines_find(scene->r.engine);
+	RenderEngineType *type = RE_engines_find(RE_engine_id_scene(scene)); /* BGE-Remix: game scenes with RTX Remix */
 	View3D *v3d = (View3D *)ptr->data;
 	int drawtype = v3d->drawtype;
 
@@ -718,7 +718,7 @@ static EnumPropertyItem *rna_SpaceView3D_viewport_shade_itemf(bContext *UNUSED(C
                                                               PropertyRNA *UNUSED(prop), bool *r_free)
 {
 	Scene *scene = ((bScreen *)ptr->id.data)->scene;
-	RenderEngineType *type = RE_engines_find(scene->r.engine);
+	RenderEngineType *type = RE_engines_find(RE_engine_id_scene(scene)); /* BGE-Remix: game scenes with RTX Remix */
 
 	EnumPropertyItem *item = NULL;
 	int totitem = 0;

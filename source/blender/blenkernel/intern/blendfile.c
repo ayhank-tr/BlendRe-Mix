@@ -222,6 +222,7 @@ static void setup_app_data(
 	RNA_property_update_cache_free();
 
 	G.main = bfd->main;
+	G.main_generation++;
 
 	CTX_data_main_set(C, G.main);
 

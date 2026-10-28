@@ -38,7 +38,8 @@
  *   (dxvk_GetExternalSwapchain); the game waits for done, draws the image with
  *   GL_NV_draw_vulkan_image and signals resume. Nothing is copied, and the
  *   game's thread does not wait for Remix's graphics work. Remix keeps its
- *   device to itself in this mode, so the picture keeps its starting size.
+ *   device to itself in this mode; its present call resizes the picture to
+ *   the hidden window (P5: the bridge resizes that window).
  */
 
 #include <algorithm>
@@ -66,7 +67,13 @@ static bool g_copy_from_back = false;
 
 /* direct mode: the last presented frame, until brb_frame_vk takes it */
 static bool g_direct_pending = false;
+static bool g_direct_resized = false; /* Remix changed the picture size on that frame */
 static uint64_t g_vk_image = 0, g_vk_done = 0, g_vk_resume = 0;
+/* direct mode sizes: g_width x g_height is the picture's (Remix's back buffer),
+ * the hidden window's client area is g_win_w x g_win_h, and the size asked
+ * for is g_target_w x g_target_h */
+static int g_win_w = 0, g_win_h = 0;
+static int g_target_w = 0, g_target_h = 0;
 
 static const wchar_t *CHILD_CLASS = L"BGERemixBridgeChild";
 
@@ -207,7 +214,44 @@ void device_release()
 	g_d3d = nullptr;
 	g_width = g_height = 0;
 	g_direct_pending = false;
+	g_direct_resized = false;
 	g_vk_image = g_vk_done = g_vk_resume = 0;
+	g_win_w = g_win_h = g_target_w = g_target_h = 0;
+}
+
+/* Direct mode: Remix's present call (remixapi_Present, 1.6.1) resets its
+ * picture to the window's client size, but only when the width and the
+ * height both differ from the picture's. The window goes straight to the size
+ * asked for when both sides change, and through an in-between size (both
+ * sides different from the old and from the new size) when only one does. */
+static void direct_set_window(int w, int h)
+{
+	if (w == g_win_w && h == g_win_h) {
+		return;
+	}
+	SetWindowPos(g_hwnd, nullptr, 0, 0, w, h, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE);
+	RECT r = {};
+	GetClientRect(g_hwnd, &r);
+	g_win_w = (int)(r.right - r.left);
+	g_win_h = (int)(r.bottom - r.top);
+}
+
+static void direct_size_step()
+{
+	if (!g_hwnd || g_target_w <= 0 || g_target_h <= 0) {
+		return;
+	}
+	if (g_target_w == g_width && g_target_h == g_height) {
+		direct_set_window(g_width, g_height);
+	}
+	else if (g_target_w != g_width && g_target_h != g_height) {
+		direct_set_window(g_target_w, g_target_h);
+	}
+	else {
+		const int iw = (g_target_w + 1 != g_width) ? g_target_w + 1 : g_target_w + 2;
+		const int ih = (g_target_h + 1 != g_height) ? g_target_h + 1 : g_target_h + 2;
+		direct_set_window(iw, ih);
+	}
 }
 
 static remixapi_ErrorCode copy_frame()
@@ -243,9 +287,23 @@ static remixapi_ErrorCode copy_frame()
 
 remixapi_ErrorCode device_present()
 {
+	/* direct mode: this present resizes the picture when the window's width and
+	 * height both differ from it (see direct_size_step) */
+	const bool resizes = g_mode == BRB_MODE_DIRECT && g_win_w > 0 && g_win_h > 0 && g_win_w != g_width &&
+	                     g_win_h != g_height;
 	const double t0 = now_ms();
 	remixapi_ErrorCode r = guarded("Present", [] { return g_remix.Present(nullptr); });
 	const double t1 = now_ms();
+	if (r == REMIXAPI_ERROR_CODE_SUCCESS && resizes) {
+		log("direct mode: picture %dx%d -> %dx%d", g_width, g_height, g_win_w, g_win_h);
+		g_width = g_win_w;
+		g_height = g_win_h;
+		g_stats.width = g_width;
+		g_stats.height = g_height;
+		g_stats.resets++;
+		/* from an in-between size on to the size asked for */
+		direct_size_step();
+	}
 	g_stats.present_ms = t1 - t0;
 	g_stats.copy_ms = 0.0;
 	if (r == REMIXAPI_ERROR_CODE_SUCCESS && g_mode == BRB_MODE_COPY) {
@@ -271,6 +329,7 @@ remixapi_ErrorCode device_present()
 			g_vk_done = done;
 			g_vk_resume = resume;
 			g_direct_pending = true;
+			g_direct_resized = resizes;
 		}
 		else {
 			log("direct mode: no external swapchain after Present (%u)", (unsigned)e);
@@ -335,6 +394,52 @@ static bool env_is(const char *name, const char *value)
 	return n > 0 && n < sizeof(buf) && _stricmp(buf, value) == 0;
 }
 
+const void *device_pixels(int *r_width, int *r_height, int *r_pitch)
+{
+	if (g_mode != BRB_MODE_COPY || !g_locked || !g_have_pixels) {
+		return nullptr;
+	}
+	if (r_width) {
+		*r_width = g_width;
+	}
+	if (r_height) {
+		*r_height = g_height;
+	}
+	if (r_pitch) {
+		*r_pitch = (int)g_lock.Pitch;
+	}
+	return g_lock.pBits;
+}
+
+bool device_has_vk()
+{
+	return g_mode == BRB_MODE_DIRECT && g_direct_pending;
+}
+
+int device_take_vk(uint64_t *r_image, uint64_t *r_done, uint64_t *r_resume, int *r_width, int *r_height)
+{
+	if (g_mode != BRB_MODE_DIRECT || !g_direct_pending) {
+		return 0;
+	}
+	g_direct_pending = false;
+	if (r_image) {
+		*r_image = g_vk_image;
+	}
+	if (r_done) {
+		*r_done = g_vk_done;
+	}
+	if (r_resume) {
+		*r_resume = g_vk_resume;
+	}
+	if (r_width) {
+		*r_width = g_width;
+	}
+	if (r_height) {
+		*r_height = g_height;
+	}
+	return g_direct_resized ? 2 : 1;
+}
+
 }  /* namespace brb */
 
 using namespace brb;
@@ -358,6 +463,18 @@ static brb_status startup_ex_impl(int mode, int width, int height, HWND parent, 
 	g_hwnd = (mode == BRB_MODE_CHILD) ? create_child_window(parent, x, y, width, height) :
 	                                    create_hidden_window(width, height);
 	g_direct_pending = false;
+	g_direct_resized = false;
+	if (g_hwnd) {
+		RECT rc = {};
+		GetClientRect(g_hwnd, &rc);
+		g_win_w = g_target_w = (int)(rc.right - rc.left);
+		g_win_h = g_target_h = (int)(rc.bottom - rc.top);
+		if (mode == BRB_MODE_DIRECT) {
+			/* Remix takes the window's size as its picture's */
+			g_width = g_win_w;
+			g_height = g_win_h;
+		}
+	}
 	if (!g_hwnd) {
 		g_mode = BRB_MODE_NONE;
 		set_status(BRB_STATUS_STARTUP_FAILED, "RTX Remix could not start: Windows refused to create its window.");
@@ -418,8 +535,8 @@ static brb_status startup_ex_impl(int mode, int width, int height, HWND parent, 
 		return g_status;
 	}
 	g_started = true;
-	g_stats.width = width;
-	g_stats.height = height;
+	g_stats.width = g_width;
+	g_stats.height = g_height;
 
 	set_scene_defaults();
 	if (env_is("BGE_REMIX_NO_REPLACEMENTS", "1")) {
@@ -470,14 +587,19 @@ BRB_API brb_status brb_startup_ex(int mode, int width, int height, void *parent_
 BRB_API int brb_resize(int width, int height, int x, int y)
 {
 	if (g_status == BRB_STATUS_RUNNING && g_mode == BRB_MODE_DIRECT) {
-		/* Remix keeps its device to itself here: the picture keeps its starting
-		 * size and the game scales it to the window */
-		static bool noted = false;
-		if (!noted && (width != g_width || height != g_height)) {
-			noted = true;
-			log("direct mode: the window is now %dx%d; the picture stays %dx%d and is scaled",
-			    width, height, g_width, g_height);
+		/* Remix keeps its device to itself here; its present call follows the
+		 * hidden window's size (direct_size_step) */
+		if (!g_hwnd) {
+			return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
 		}
+		width = std::max(width, 8);
+		height = std::max(height, 8);
+		if (width != g_target_w || height != g_target_h) {
+			log("direct mode: resize to %dx%d asked (picture %dx%d)", width, height, g_width, g_height);
+		}
+		g_target_w = width;
+		g_target_h = height;
+		direct_size_step();
 		return REMIXAPI_ERROR_CODE_SUCCESS;
 	}
 	if (g_status != BRB_STATUS_RUNNING || !g_device || !g_hwnd) {
@@ -529,43 +651,12 @@ BRB_API void brb_show(int visible)
 
 BRB_API const void *brb_frame_pixels(int *r_width, int *r_height, int *r_pitch)
 {
-	if (g_mode != BRB_MODE_COPY || !g_locked || !g_have_pixels) {
-		return nullptr;
-	}
-	if (r_width) {
-		*r_width = g_width;
-	}
-	if (r_height) {
-		*r_height = g_height;
-	}
-	if (r_pitch) {
-		*r_pitch = (int)g_lock.Pitch;
-	}
-	return g_lock.pBits;
+	return device_pixels(r_width, r_height, r_pitch);
 }
 
 BRB_API int brb_frame_vk(uint64_t *r_image, uint64_t *r_done, uint64_t *r_resume, int *r_width, int *r_height)
 {
-	if (g_mode != BRB_MODE_DIRECT || !g_direct_pending) {
-		return 0;
-	}
-	g_direct_pending = false;
-	if (r_image) {
-		*r_image = g_vk_image;
-	}
-	if (r_done) {
-		*r_done = g_vk_done;
-	}
-	if (r_resume) {
-		*r_resume = g_vk_resume;
-	}
-	if (r_width) {
-		*r_width = g_width;
-	}
-	if (r_height) {
-		*r_height = g_height;
-	}
-	return 1;
+	return device_take_vk(r_image, r_done, r_resume, r_width, r_height);
 }
 
 BRB_API int brb_save_bmp(const wchar_t *path)

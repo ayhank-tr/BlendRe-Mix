@@ -72,6 +72,10 @@ struct BakePixel;
 #define RE_ENGINE_RENDERING		16
 #define RE_ENGINE_HIGHLIGHT_TILES	32
 #define RE_ENGINE_USED_FOR_VIEWPORT	64
+/* BGE-Remix: a viewport engine that cannot show its picture in this view
+ * (RTX Remix: shown in another view, an orthographic view, the game or F12
+ * has Remix) asks for the view's normal drawing, with its text on top */
+#define RE_ENGINE_VIEW_FALLBACK	128
 
 /* RenderEngine.update_flag, used by internal now */
 #define RE_ENGINE_UPDATE_MA			1
@@ -171,6 +175,13 @@ void RE_engines_init(void);
 void RE_engines_exit(void);
 
 RenderEngineType *RE_engines_find(const char *idname);
+
+/* BGE-Remix: the engine that renders the scene: scene->r.engine, except that
+ * a Blender Game scene whose Rasterizer is RTX Remix (the scene's bge_remix
+ * property) is shown in Rendered 3D views and rendered with F12 by the
+ * RTX_REMIX engine, while it stays a Blender Game scene. */
+#define RE_engine_id_RTX_REMIX "RTX_REMIX"
+const char *RE_engine_id_scene(const struct Scene *scene);
 
 rcti* RE_engine_get_current_tiles(struct Render *re, int *r_total_tiles, bool *r_needs_free);
 struct RenderData *RE_engine_get_render_data(struct Render *re);

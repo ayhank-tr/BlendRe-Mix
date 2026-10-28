@@ -65,6 +65,13 @@ if(WITH_HEADLESS)
 	add_definitions(-DWITH_HEADLESS)
 endif()
 
+if(WITH_REMIX)
+	list(APPEND INC
+		../../remix
+	)
+	add_definitions(-DWITH_REMIX)
+endif()
+
 add_definitions(${GL_DEFINITIONS})
 
 if(WITH_FREESTYLE)

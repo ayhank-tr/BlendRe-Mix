@@ -233,11 +233,7 @@ private:
 	void ApplyExposure(const Settings &settings);
 	void UpdateLights(KX_Scene *scene, float light_scale);
 	void SendLight(KX_Scene *scene, const void *key, const struct brb_light_desc &desc);
-	void DrawPicture(int width, int height);
 	void MaybeScreenshot();
-	/* P4.8 direct mode: GL_NV_draw_vulkan_image draws Remix's Vulkan image */
-	bool DirectAvailable();
-	void DrawDirect(int x, int y, int width, int height);
 	bool SaveWindowBmp(const std::wstring &path, int x, int y, int width, int height);
 
 	const BRMX_Bridge *m_bridge;
@@ -294,15 +290,8 @@ private:
 	double m_first_textured_seconds; /* ... seconds after Remix started */
 	double m_start_time;
 
-	unsigned int m_texture;
-	int m_tex_w, m_tex_h;
-
-	/* direct mode: the extension's functions (or the test stubs), a sampler */
-	void *m_vk_draw, *m_vk_wait, *m_vk_signal;
-	bool m_vk_fake;          /* BGE_REMIX_FAKE_VK_DRAW: logging stubs (CI) */
-	unsigned int m_vk_sampler;
-	int m_direct_frames;
-	bool m_direct_error_noted;
+	/* direct mode (P4.8): the shared presenter draws the picture (BRMX_present.h) */
+	int m_direct_frames_base;    /* its frame count when this game started */
 	std::string m_direct_note;   /* why copy mode was used, for the stats */
 
 	/* P4.8 time split (ms per frame) */
