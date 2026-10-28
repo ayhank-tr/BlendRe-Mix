@@ -241,6 +241,9 @@ option(WITH_REMIX        "Enable the NVIDIA RTX Remix renderer bridge (Windows 6
 if(WITH_REMIX AND NOT (WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8))
 	set(WITH_REMIX OFF)
 endif()
+# BGE-Remix (P6): NVIDIA PhysX 5 as a second game engine physics engine
+option(WITH_PHYSX        "Enable NVIDIA PhysX 5 as a game engine physics engine (needs PHYSX_ROOT_DIR)" OFF)
+set(PHYSX_ROOT_DIR "" CACHE PATH "PhysX 5 SDK install (with include/ and bin/<platform>/release/)")
 if(APPLE)
 	set(WITH_GAMEENGINE_DECKLINK OFF)
 else()
@@ -1274,6 +1277,40 @@ else()
 endif()
 
 #-----------------------------------------------------------------------------
+# Configure PhysX (BGE-Remix P6): static libraries, the GPU part as
+# PhysXGpu_64.dll next to the program (loaded only by GPU scenes)
+
+if(WITH_PHYSX AND NOT (WITH_GAMEENGINE AND WITH_BULLET))
+	message(STATUS "PhysX needs the game engine and Bullet: WITH_PHYSX turned off")
+	set(WITH_PHYSX OFF)
+endif()
+if(WITH_PHYSX)
+	set(PHYSX_INCLUDE_DIRS "${PHYSX_ROOT_DIR}/include")
+	file(GLOB _physx_libdirs "${PHYSX_ROOT_DIR}/bin/*/release")
+	list(GET _physx_libdirs 0 PHYSX_LIBRARY_DIR)
+	if(NOT EXISTS "${PHYSX_INCLUDE_DIRS}/PxPhysicsAPI.h" OR NOT PHYSX_LIBRARY_DIR)
+		message(FATAL_ERROR "WITH_PHYSX: no PhysX SDK in PHYSX_ROOT_DIR (\"${PHYSX_ROOT_DIR}\")")
+	endif()
+	set(PHYSX_LIBRARIES)
+	foreach(_lib PhysXCharacterKinematic PhysXExtensions PhysX PhysXCooking PhysXCommon PhysXPvdSDK PhysXFoundation)
+		find_library(PHYSX_${_lib}_LIBRARY NAMES ${_lib}_static_64 ${_lib}_static ${_lib}_64 ${_lib}
+		             PATHS "${PHYSX_LIBRARY_DIR}" NO_DEFAULT_PATH)
+		if(NOT PHYSX_${_lib}_LIBRARY)
+			message(FATAL_ERROR "WITH_PHYSX: ${_lib} not found in ${PHYSX_LIBRARY_DIR}")
+		endif()
+		list(APPEND PHYSX_LIBRARIES ${PHYSX_${_lib}_LIBRARY})
+	endforeach()
+	set(PHYSX_GPU_DLL "${PHYSX_LIBRARY_DIR}/PhysXGpu_64.dll")
+	if(NOT EXISTS "${PHYSX_GPU_DLL}")
+		message(STATUS "PhysX: no PhysXGpu_64.dll, PhysX runs on the CPU only")
+		set(PHYSX_GPU_DLL "")
+	endif()
+	message(STATUS "PhysX: ${PHYSX_LIBRARY_DIR}")
+	# the PhysX headers: static libraries (no dllimport)
+	add_definitions(-DPX_PHYSX_STATIC_LIB)
+endif()
+
+#-----------------------------------------------------------------------------
 # Configure Python.
 
 if(WITH_PYTHON_MODULE)
@@ -1737,6 +1774,7 @@ if(FIRST_RUN)
 	info_cfg_option(WITH_REMIX)
 	info_cfg_option(WITH_PLAYER)
 	info_cfg_option(WITH_BULLET)
+	info_cfg_option(WITH_PHYSX)
 	info_cfg_option(WITH_IK_SOLVER)
 	info_cfg_option(WITH_IK_ITASC)
 	info_cfg_option(WITH_OPENCOLLADA)

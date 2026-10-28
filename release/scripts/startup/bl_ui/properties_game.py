@@ -612,6 +612,8 @@ class SCENE_PT_game_physics(SceneButtonsPanel, Panel):
         gs = context.scene.game_settings
 
         layout.prop(gs, "physics_engine", text="Engine")
+        if gs.physics_engine == 'PHYSX':  # BGE-Remix (P6)
+            layout.prop(gs, "physx_device", text="Device", expand=True)
         if gs.physics_engine != 'NONE':
             layout.prop(gs, "physics_gravity", text="Gravity")
 

@@ -20,8 +20,20 @@ official NVIDIA runtime. OpenGL stays the default renderer, and every stock
 | P3 | Materials and texture cache | Done (bge-remix-p3) |
 | P4 | Skinning, physics, particles, picking | Done (bge-remix-p4) |
 | P5 | "RTX Remix" render engine for the 3D view and F12 | Done (bge-remix-p5) |
-| P6 | OpenUSD mod export and capture import | Planned |
-| P7 | Hardening and release | Planned |
+| P6 | NVIDIA PhysX 5 as a second game physics engine (CPU or GPU) | Done (bge-remix-p6) |
+| P7 | OpenUSD mod export and capture import | Planned |
+| P8 | Hardening and release | Planned |
+
+## Physics: Bullet or PhysX (P6)
+
+Each scene chooses its game physics engine in World > Physics: Bullet (as in
+2.79b), PhysX, or None; PhysX runs on the CPU or on an NVIDIA GPU. The same
+physics settings, logic bricks and Python API (`bge.constraints`, rays,
+sensors, the character and the vehicle) work with either engine. Cloth and
+soft bodies need the GPU under PhysX. A Ghost with Triangle Mesh bounds senses
+with its convex hull under PhysX, as does a moving object with them. A file set to PhysX opens in stock
+2.79b with Bullet. PhysX 5.9.1 (Apache 2.0) is built into the program;
+`PhysXGpu_64.dll` next to it is only loaded by GPU scenes.
 
 ## Platform
 
@@ -45,4 +57,9 @@ Blender is licensed under the GNU GPL v2 or later (see `COPYING` and
 runtime is not included in this repository. It is downloaded separately from
 NVIDIA's official releases. The bridge DLL includes DirectXTex (MIT,
 `extern/directxtex`) to write the DDS textures Remix reads. The Windows build
-uses mimalloc (MIT, `extern/mimalloc`) as its memory allocator.
+uses mimalloc (MIT, `extern/mimalloc`) as its memory allocator. The Windows
+build includes NVIDIA PhysX 5.9.1 (Apache 2.0, built by CI from
+<https://github.com/NVIDIA-Omniverse/PhysX>, not stored here; its license is
+shipped as `PhysX-license.md`). Apache 2.0 code is compatible with the GPL
+version 3, so builds that include PhysX are distributed under the GPL v3
+(Blender's "or later" allows this).

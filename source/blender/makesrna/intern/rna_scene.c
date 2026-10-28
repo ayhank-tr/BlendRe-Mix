@@ -1902,6 +1902,88 @@ static void rna_Scene_sync_mode_set(PointerRNA *ptr, int value)
 	}
 }
 
+/* BGE-Remix (P6): PhysX. The file keeps physicsEngine = Bullet (stock 2.79
+ * opens it with Bullet) and the scene ID property BGE_PHYSX_IDPROP: 1 PhysX
+ * on the CPU, 2 PhysX on the GPU. */
+static int rna_GameSettings_physx_mode(PointerRNA *ptr)
+{
+	Scene *scene = (Scene *)ptr->id.data;
+	IDProperty *prop;
+	if (!scene || !scene->id.properties) {
+		return 0;
+	}
+	prop = IDP_GetPropertyFromGroup(scene->id.properties, BGE_PHYSX_IDPROP);
+	return (prop && prop->type == IDP_INT) ? IDP_Int(prop) : 0;
+}
+
+static void rna_GameSettings_physx_mode_set(PointerRNA *ptr, int mode)
+{
+	Scene *scene = (Scene *)ptr->id.data;
+	IDProperty *group, *prop;
+	if (!scene) {
+		return;
+	}
+	if (mode <= 0) {
+		if (scene->id.properties) {
+			prop = IDP_GetPropertyFromGroup(scene->id.properties, BGE_PHYSX_IDPROP);
+			if (prop) {
+				IDP_FreeFromGroup(scene->id.properties, prop);
+			}
+		}
+		return;
+	}
+	group = IDP_GetProperties(&scene->id, true);
+	prop = IDP_GetPropertyFromGroup(group, BGE_PHYSX_IDPROP);
+	if (prop && prop->type == IDP_INT) {
+		IDP_Int(prop) = mode;
+		return;
+	}
+	if (prop) {
+		IDP_FreeFromGroup(group, prop);
+	}
+	{
+		IDPropertyTemplate val = {0};
+		val.i = mode;
+		IDP_AddToGroup(group, IDP_New(IDP_INT, &val, BGE_PHYSX_IDPROP));
+	}
+}
+
+static int rna_GameSettings_physics_engine_get(PointerRNA *ptr)
+{
+	GameData *gm = (GameData *)ptr->data;
+	if (gm->physicsEngine == WOPHY_BULLET && rna_GameSettings_physx_mode(ptr) > 0) {
+		return WOPHY_PHYSX;
+	}
+	return gm->physicsEngine;
+}
+
+static void rna_GameSettings_physics_engine_set(PointerRNA *ptr, int value)
+{
+	GameData *gm = (GameData *)ptr->data;
+	if (value == WOPHY_PHYSX) {
+		gm->physicsEngine = WOPHY_BULLET;
+		if (rna_GameSettings_physx_mode(ptr) <= 0) {
+			rna_GameSettings_physx_mode_set(ptr, 1);
+		}
+	}
+	else {
+		gm->physicsEngine = value;
+		rna_GameSettings_physx_mode_set(ptr, 0);
+	}
+}
+
+static int rna_GameSettings_physx_device_get(PointerRNA *ptr)
+{
+	return rna_GameSettings_physx_mode(ptr) == 2 ? 2 : 1;
+}
+
+static void rna_GameSettings_physx_device_set(PointerRNA *ptr, int value)
+{
+	if (rna_GameSettings_physx_mode(ptr) > 0) {
+		rna_GameSettings_physx_mode_set(ptr, value == 2 ? 2 : 1);
+	}
+}
+
 static int rna_GameSettings_auto_start_get(PointerRNA *UNUSED(ptr))
 {
 	return (G.fileflags & G_FILE_AUTOPLAY) != 0;
@@ -4539,6 +4621,15 @@ static void rna_def_scene_game_data(BlenderRNA *brna)
 	static EnumPropertyItem physics_engine_items[] = {
 		{WOPHY_NONE, "NONE", 0, "None", "Don't use a physics engine"},
 		{WOPHY_BULLET, "BULLET", 0, "Bullet", "Use the Bullet physics engine"},
+		{WOPHY_PHYSX, "PHYSX", 0, "PhysX",
+		 "Use NVIDIA PhysX 5 (BGE-Remix; the file opens with Bullet in Blender 2.79)"},
+		{0, NULL, 0, NULL, NULL}
+	};
+
+	static EnumPropertyItem physx_device_items[] = {
+		{1, "CPU", 0, "CPU", "PhysX on the processor (soft bodies stay still)"},
+		{2, "GPU", 0, "GPU",
+		 "PhysX on an NVIDIA GPU: rigid bodies, cloth and soft bodies (the CPU when no GPU is found)"},
 		{0, NULL, 0, NULL, NULL}
 	};
 
@@ -4719,8 +4810,17 @@ static void rna_def_scene_game_data(BlenderRNA *brna)
 	prop = RNA_def_property(srna, "physics_engine", PROP_ENUM, PROP_NONE);
 	RNA_def_property_enum_sdna(prop, NULL, "physicsEngine");
 	RNA_def_property_enum_items(prop, physics_engine_items);
+	RNA_def_property_enum_funcs(prop, "rna_GameSettings_physics_engine_get", "rna_GameSettings_physics_engine_set", NULL);
 	RNA_def_property_enum_default(prop, WOPHY_BULLET);
 	RNA_def_property_ui_text(prop, "Physics Engine", "Physics engine used for physics simulation in the game engine");
+	RNA_def_property_update(prop, NC_SCENE, NULL);
+
+	/* BGE-Remix (P6) */
+	prop = RNA_def_property(srna, "physx_device", PROP_ENUM, PROP_NONE);
+	RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
+	RNA_def_property_enum_items(prop, physx_device_items);
+	RNA_def_property_enum_funcs(prop, "rna_GameSettings_physx_device_get", "rna_GameSettings_physx_device_set", NULL);
+	RNA_def_property_ui_text(prop, "PhysX Device", "Where PhysX runs");
 	RNA_def_property_update(prop, NC_SCENE, NULL);
 
 	prop = RNA_def_property(srna, "physics_gravity", PROP_FLOAT, PROP_ACCELERATION);

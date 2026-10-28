@@ -167,6 +167,9 @@ extern Material defmaterial;	/* material.c */
 #ifdef WITH_BULLET
 #include "CcdPhysicsEnvironment.h"
 #include "CcdGraphicController.h"
+#ifdef WITH_PHYSX
+#include "PxPhysicsEnvironment.h"
+#endif
 #endif
 
 #include "KX_MotionState.h"
@@ -1302,8 +1305,16 @@ static void BL_CreateGraphicObjectNew(KX_GameObject* gameobj,
 		{
 #ifdef WITH_BULLET
 		case UseBullet:
+#ifdef WITH_PHYSX
+		case UsePhysX:  /* BGE-Remix (P6): view culling stays on Bullet's tree */
+#endif
 			{
 				CcdPhysicsEnvironment* env = (CcdPhysicsEnvironment*)kxscene->GetPhysicsEnvironment();
+#ifdef WITH_PHYSX
+				if (physics_engine == UsePhysX)
+					env = (CcdPhysicsEnvironment *)static_cast<PxPhysicsEnvironment *>(kxscene->GetPhysicsEnvironment())
+					              ->GetCullingEnvironment();
+#endif
 				assert(env);
 				PHY_IMotionState* motionstate = new KX_MotionState(gameobj->GetSGNode());
 				CcdGraphicController* ctrl = new CcdGraphicController(env, motionstate);

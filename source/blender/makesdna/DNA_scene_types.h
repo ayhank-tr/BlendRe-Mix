@@ -939,6 +939,11 @@ typedef struct GameData {
 /* physicsEngine */
 #define WOPHY_NONE		0
 #define WOPHY_BULLET	5
+/* BGE-Remix (P6): PhysX, only in RNA and the game engine. Files keep
+ * WOPHY_BULLET (stock 2.79 opens them with Bullet) and the scene ID property
+ * "_bge_physx": 1 PhysX on the CPU, 2 PhysX on the GPU. */
+#define WOPHY_PHYSX		6
+#define BGE_PHYSX_IDPROP	"_bge_physx"
 
 /* obstacleSimulation */
 #define OBSTSIMULATION_NONE		0
