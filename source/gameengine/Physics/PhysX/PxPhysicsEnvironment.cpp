@@ -237,7 +237,7 @@ void PxPhysicsEnvironment::InitScene(bool useGpu)
 	desc.simulationEventCallback = m_events;
 	desc.kineKineFilteringMode = PxPairFilteringMode::eKEEP;
 	desc.staticKineFilteringMode = PxPairFilteringMode::eKEEP;
-	desc.flags |= PxSceneFlag::eENABLE_CCD | PxSceneFlag::eENABLE_PCM | PxSceneFlag::eENABLE_STABILIZATION;
+	desc.flags |= PxSceneFlag::eENABLE_CCD | PxSceneFlag::eENABLE_PCM;
 	desc.solverType = PxSolverType::eTGS;
 	desc.wakeCounterResetValue = m_deactivationTime;
 	if (useGpu) {
@@ -693,19 +693,27 @@ void PxPhysicsEnvironment::SetNumIterations(int numIter)
 
 void PxPhysicsEnvironment::SetDeactivationTime(float dTime)
 {
+	/* Bullet: 0 turns sleeping off (Blender's default); otherwise PhysX's
+	 * own wake counter (2 s) is used */
 	m_deactivationTime = dTime;
+	UpdateSleeping();
+}
+
+void PxPhysicsEnvironment::UpdateSleeping()
+{
+	for (PxPhysicsController *c : m_controllers) {
+		if (PxRigidDynamic *body = c->GetDynamic()) {
+			if (!c->IsKinematic() && !c->GetInfo().disableSleep) {
+				body->setSleepThreshold(SleepEnergy());
+			}
+		}
+	}
 }
 
 void PxPhysicsEnvironment::SetDeactivationLinearTreshold(float linTresh)
 {
 	m_linearSleep = linTresh;
-	for (PxPhysicsController *c : m_controllers) {
-		if (PxRigidDynamic *body = c->GetDynamic()) {
-			if (!c->IsKinematic() && !c->GetInfo().disableSleep) {
-				body->setSleepThreshold(0.5f * linTresh * linTresh);
-			}
-		}
-	}
+	UpdateSleeping();
 }
 
 void PxPhysicsEnvironment::SetDeactivationAngularTreshold(float angTresh)

@@ -378,8 +378,8 @@ def make_physics(folder):
     for k in range(3):
         b = ball(scene, "Pendulum_%d" % k, 0.15, (px + 1.0 + k, py, pz), material("PendMa%d" % k, (0.8, 0.8, 0.2)),
                  mass=1.0)
-        b.game.damping = 0.6
-        b.game.rotation_damping = 0.6
+        b.game.damping = 0.8
+        b.game.rotation_damping = 0.8
         joint(b, prev, 'BALL', pivot=(-1.0, 0, 0))
         chain.append(b.name)
         prev = b

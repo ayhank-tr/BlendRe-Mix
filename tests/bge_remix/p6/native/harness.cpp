@@ -17,6 +17,7 @@
 #include "PHY_IVehicle.h"
 #include "PHY_ICharacter.h"
 #include "CcdPhysicsController.h"
+#include "PxPhysicsAPI.h"
 
 static int g_fail = 0, g_pass = 0;
 static std::string g_test;
@@ -796,6 +797,33 @@ static void test_fh()
 	CHECK(fabs(b->GetLinearVelocity().z()) < 0.2, "settled (%.3f m/s)", b->GetLinearVelocity().z());
 }
 
+static void test_sleep()
+{
+	printf("sleep: Blender's default deactivation time 0 (Bullet: never sleeps); a damped chain swings down\n");
+	World w;
+	w.env->SetDeactivationTime(0.0f);
+	PxPhysicsController *prev = add(w, shape_box(0.05f, 0.05f, 0.05f), STATIC, 0, 0, 4, 0, 0.5f, 0,
+	                                [](PxCtrlInfo &ci) { ci.noResponse = true; });
+	std::vector<PxPhysicsController *> balls;
+	for (int k = 0; k < 3; k++) {
+		PxPhysicsController *b = add(w, shape_sphere(0.15f), RIGID, 1.0f + k, 0, 4, 1, 0.5f, 0,
+		                             [](PxCtrlInfo &ci) { ci.linearDamping = 0.8f; ci.angularDamping = 0.8f; });
+		w.env->CreateConstraint(b, prev, PHY_POINT2POINT_CONSTRAINT, -1, 0, 0, 0, 0, 0);
+		balls.push_back(b);
+		prev = b;
+	}
+	w.step(600);
+	double worst = 0;
+	for (int k = 0; k < 3; k++) {
+		worst = std::max(worst, (double)(pos(balls[k]) - MT_Vector3(0, 0, 3.0f - k)).length());
+	}
+	CHECK(worst < 0.05, "the chain hangs straight down after 10 s (worst %.3f m)", worst);
+	CHECK(!balls[2]->GetDynamic()->isSleeping(), "nothing sleeps");
+	w.env->SetDeactivationTime(2.0f);
+	w.step(300);
+	CHECK(balls[2]->GetDynamic()->isSleeping(), "with a deactivation time of 2 s it sleeps when still");
+}
+
 int main(int argc, char **argv)
 {
 	const char *only = argc > 1 ? argv[1] : NULL;
@@ -821,6 +849,7 @@ int main(int argc, char **argv)
 	    {"objects", test_suspend_replica},
 	    {"timing", test_substeps},
 	    {"fh", test_fh},
+	    {"sleep", test_sleep},
 	};
 	for (const T &t : tests) {
 		if (only && strcmp(only, t.name)) {

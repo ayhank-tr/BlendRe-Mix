@@ -364,6 +364,9 @@ def run_ci(args, out):
         for name, ok in res[k]["checks"].items():
             if not ok:
                 lines.append("         failed: " + name)
+        if not res[k]["ok"] and res[k].get("detail"):
+            # the numbers, readable on the CI page
+            lines.append("         detail: " + json.dumps(res[k]["detail"], default=str)[:1500])
     lines += ["", "physics ms per frame: " + ", ".join("%s %s" % (k, _r(v["physics_ms"])) for k, v in res["runs"].items()),
               "", "ALL PASS" if res["all_ok"] else "SOME TESTS FAILED (see results_p6.json and the .log files)"]
     return res, lines
@@ -545,6 +548,9 @@ def run_rtx(args, out):
         for name, ok in res[k]["checks"].items():
             if not ok:
                 lines.append("         failed: " + name)
+        if not res[k]["ok"] and res[k].get("detail"):
+            # the numbers, readable on the CI page
+            lines.append("         detail: " + json.dumps(res[k]["detail"], default=str)[:1500])
     lines.append("")
     lines.append("B6.1 physics ms per frame (1,000 / 5,000 boxes):")
     for key in ENGINES:

@@ -374,8 +374,7 @@ void PxPhysicsController::ApplyMass()
 	body->setMaxAngularVelocity(1000.0f);
 	if (m_env) {
 		/* Bullet sleeps below these speeds: kinetic energy per mass */
-		const float v = m_env->SleepLinear();
-		body->setSleepThreshold(m_info.disableSleep ? 0.0f : 0.5f * v * v);
+		body->setSleepThreshold(m_info.disableSleep ? 0.0f : m_env->SleepEnergy());
 	}
 	PxRigidDynamicLockFlags lock;
 	if (m_info.linearFactor.x == 0.0f) {

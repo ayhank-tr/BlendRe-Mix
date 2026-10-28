@@ -143,6 +143,10 @@ public:
 	void RebindJoints(PxPhysicsController *ctrl);
 	physx::PxControllerManager *ControllerManager();
 	float SleepLinear() const { return m_linearSleep; }
+	/* PhysX's sleep threshold (kinetic energy per mass) for Bullet's
+	 * linear threshold; 0 (never) when the deactivation time is 0, as Bullet */
+	float SleepEnergy() const { return m_deactivationTime > 0.0f ? 0.5f * m_linearSleep * m_linearSleep : 0.0f; }
+	void UpdateSleeping();
 	float SleepAngular() const { return m_angularSleep; }
 	float Step() const { return m_lastStep; }
 	const physx::PxVec3 &Gravity() const { return m_gravity; }
