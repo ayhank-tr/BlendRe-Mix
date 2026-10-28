@@ -259,6 +259,14 @@ else()
 	WINDOWS_SIGN_TARGET(blender)
 endif()
 
+# BGE-Remix (P6): PhysX's GPU part, loaded by GPU physics scenes only
+if(WITH_PHYSX AND PHYSX_GPU_DLL)
+	install(FILES ${PHYSX_GPU_DLL} DESTINATION ".")
+endif()
+if(WITH_PHYSX AND EXISTS "${PHYSX_ROOT_DIR}/LICENSE.md")
+	install(FILES "${PHYSX_ROOT_DIR}/LICENSE.md" DESTINATION "." RENAME "PhysX-license.md")
+endif()
+
 if(WITH_BUILDINFO)
 	# explicitly say that the executable depends on the buildinfo
 	add_dependencies(blender buildinfo)

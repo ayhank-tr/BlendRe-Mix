@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- BGE-Remix (P6): PhysX 5 for Blender 2.79 (static libraries, static CRT /MT
+     like Blender, PhysXGpu_64.dll for GPU scenes, no snippets or OmniPVD) -->
+<preset name="vc17win64-bgeremix" comment="VC17 Win64 PhysX for BGE-Remix">
+  <platform targetPlatform="win64" compiler="vc17" />
+  <CMakeSwitches>
+    <cmakeSwitch name="PX_BUILDSNIPPETS" value="False" comment="Generate the snippets" />
+    <cmakeSwitch name="PX_BUILDPVDRUNTIME" value="False" comment="Generate the OmniPVD project" />
+    <cmakeSwitch name="PX_GENERATE_STATIC_LIBRARIES" value="True" comment="Generate static libraries" />
+    <cmakeSwitch name="PX_GENERATE_GPU_PROJECTS" value="True" comment="Generate the GPU projects, if possible." />
+    <cmakeSwitch name="PX_GENERATE_GPU_PROJECTS_ONLY" value="False" comment="Generate ONLY the GPU projects, if possible." />
+    <cmakeSwitch name="PX_SCALAR_MATH" value="False" comment="Disable SIMD math" />
+    <cmakeSwitch name="NV_USE_STATIC_WINCRT" value="True" comment="/MT, as Blender 2.79" />
+    <cmakeSwitch name="NV_USE_DEBUG_WINCRT" value="False" comment="release runtime in debug builds" />
+    <cmakeSwitch name="PX_FLOAT_POINT_PRECISE_MATH" value="False" comment="Float point precise math" />
+    <cmakeSwitch name="PX_GENERATE_GPU_STATIC_LIBRARIES" value="False" comment="PhysXGpu stays a DLL, loaded only by GPU scenes" />
+    <cmakeSwitch name="PX_GENERATE_GPU_REDUCED_ARCHITECTURES" value="True" comment="our list, set by build_physx.ps1" />
+  </CMakeSwitches>
+  <CMakeParams>
+    <cmakeParam name="CMAKE_INSTALL_PREFIX" value="install/vc17win64-bgeremix/PhysX" comment="Install path relative to PhysX SDK root" />
+  </CMakeParams>
+</preset>

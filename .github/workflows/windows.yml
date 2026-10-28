@@ -14,6 +14,8 @@ env:
   LIB_URL: https://svn.blender.org/svnroot/bf-blender/tags/blender-2.79a-release/lib/win64_vc14
   LIB_KEY: lib-win64_vc14-blender-2.79a-release
   OFFICIAL_URL: https://download.blender.org/release/Blender2.79/blender-2.79b-windows64.zip
+  # NVIDIA PhysX 5 (P6), Apache 2.0
+  PHYSX_TAG: 110.3-omni-and-physx-5.9.1
 
 jobs:
   # Blender 2.79's pre-compiled Windows libraries (the 2.79a tag also covers
@@ -61,8 +63,72 @@ jobs:
           path: lib/win64_vc14
           key: ${{ env.LIB_KEY }}
 
+  # NVIDIA PhysX 5.9.1 (P6): static libraries and PhysXGpu_64.dll, built with
+  # CUDA 12.8 once and cached (the key changes with build_files/physx)
+  physx:
+    runs-on: windows-2022
+    timeout-minutes: 300
+    concurrency:
+      group: physx-sdk
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: blender
+          sparse-checkout: build_files/physx
+
+      - name: Restore PhysX
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: physx_sdk
+          key: physx-${{ env.PHYSX_TAG }}-${{ hashFiles('blender/build_files/physx/**') }}
+          lookup-only: true
+
+      - name: CUDA 12.8
+        if: steps.cache.outputs.cache-hit != 'true'
+        id: cuda
+        uses: Jimver/cuda-toolkit@v0.2.21
+        with:
+          cuda: '12.8.0'
+          method: network
+          sub-packages: '["nvcc", "cudart", "thrust", "nvtx", "visual_studio_integration"]'
+          use-github-cache: false
+          use-local-cache: false
+
+      - name: PhysX source
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch $env:PHYSX_TAG --filter=blob:none --sparse https://github.com/NVIDIA-Omniverse/PhysX.git physx_src
+          git -C physx_src sparse-checkout set physx
+          Get-Content physx_src/physx/version.txt
+
+      - name: Build PhysX
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $t = [Diagnostics.Stopwatch]::StartNew()
+          blender/build_files/physx/build_physx.ps1 -PhysX physx_src/physx -Cuda "${{ steps.cuda.outputs.CUDA_PATH }}" -Out physx_sdk 2>&1 | Tee-Object -FilePath physx_build.log
+          if (-not $?) { exit 1 }
+          Write-Host "PhysX build: $([math]::Round($t.Elapsed.TotalMinutes, 1)) minutes"
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: physx-build-log
+          path: physx_build.log
+          if-no-files-found: ignore
+
+      - name: Save PhysX
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: physx_sdk
+          key: physx-${{ env.PHYSX_TAG }}-${{ hashFiles('blender/build_files/physx/**') }}
+
   build:
-    needs: libs
+    needs: [libs, physx]
     runs-on: windows-2022
     timeout-minutes: 360
     steps:
@@ -77,6 +143,13 @@ jobs:
           key: ${{ env.LIB_KEY }}
           fail-on-cache-miss: true
 
+      - name: Restore PhysX
+        uses: actions/cache/restore@v4
+        with:
+          path: physx_sdk
+          key: physx-${{ env.PHYSX_TAG }}-${{ hashFiles('blender/build_files/physx/**') }}
+          fail-on-cache-miss: true
+
       # Official 2.79b release options; CUDA kernels off (2.79b's kernels stop
       # at sm_61 and need CUDA 8, so they would not run on RTX cards anyway).
       - name: Configure
@@ -86,6 +159,7 @@ jobs:
             -C blender/build_files/cmake/config/blender_release.cmake `
             -DWITH_CYCLES_CUDA_BINARIES=OFF `
             -DWITH_LTO=ON -DWITH_CPU_AVX2=ON -DWITH_MEM_MIMALLOC=ON `
+            -DWITH_PHYSX=ON -DPHYSX_ROOT_DIR="$pwd/physx_sdk" `
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 2>&1 | Tee-Object -FilePath configure.log
           if ($LASTEXITCODE -ne 0) {
             $lines = Select-String -Path configure.log -Pattern 'CMake Error' -Context 0,4 | Select-Object -First 8 |
@@ -129,6 +203,17 @@ jobs:
         with:
           name: blendremix-win64
           path: build/bin/Release
+
+      # P6: the PhysX backend on its own (CPU scenes, no Blender): stacking,
+      # bounce, friction, sensors, rays, joints, character, vehicle
+      - name: PhysX native checks
+        shell: pwsh
+        run: |
+          cmake -S blender/tests/bge_remix/p6/native -B p6native -G "Visual Studio 17 2022" -A x64 -DPHYSX_ROOT_DIR="$pwd/physx_sdk"
+          cmake --build p6native --config Release -- /m /v:minimal
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          p6native/Release/p6_physx_checks.exe
+          if ($LASTEXITCODE -ne 0) { Write-Output "::error title=PhysX native checks::some checks failed (see the log)"; exit 1 }
 
   test:
     needs: build
@@ -221,6 +306,14 @@ jobs:
           GALLIUM_DRIVER: llvmpipe
         run: |
           python blender/tests/bge_remix/p5/run_p5.py --ours ours --mock mock --out results/p5
+
+      - name: Phase 6 tests (PhysX on the CPU)
+        if: always()
+        shell: pwsh
+        env:
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          python blender/tests/bge_remix/p6/run_p6.py --ours ours --official blender-2.79b-windows64 --out results/p6
 
       - uses: actions/upload-artifact@v4
         if: always()

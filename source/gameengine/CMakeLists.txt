@@ -31,6 +31,11 @@ if(WITH_PYTHON)
 	add_definitions(-DWITH_PYTHON)
 endif()
 
+# BGE-Remix (P6)
+if(WITH_PHYSX)
+	add_definitions(-DWITH_PHYSX)
+endif()
+
 add_subdirectory(BlenderRoutines)
 add_subdirectory(Converter)
 add_subdirectory(Expressions)
@@ -46,6 +51,10 @@ add_subdirectory(SceneGraph)
 
 if(WITH_BULLET)
 	add_subdirectory(Physics/Bullet)
+endif()
+
+if(WITH_PHYSX)
+	add_subdirectory(Physics/PhysX)
 endif()
 
 if(WITH_PYTHON)
