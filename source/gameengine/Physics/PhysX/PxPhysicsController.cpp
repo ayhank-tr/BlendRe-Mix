@@ -139,6 +139,8 @@ PxCtrlInfo::PxCtrlInfo()
 PxPhysicsController::PxPhysicsController(const PxCtrlInfo &info, PHY_IMotionState *motionState,
                                          PxPhysicsEnvironment *env)
     : m_inScene(false),
+      m_sleepTime(0.0f),
+      m_slept(false),
       m_info(info),
       m_motionState(motionState),
       m_env(env),
@@ -163,6 +165,8 @@ PxPhysicsController::PxPhysicsController(const PxCtrlInfo &info, PHY_IMotionStat
 PxPhysicsController::PxPhysicsController(const PxPhysicsController &other)
     : PHY_IPhysicsController(),
       m_inScene(false),
+      m_sleepTime(0.0f),
+      m_slept(false),
       m_info(other.m_info),
       m_motionState(other.m_motionState),
       m_env(other.m_env),

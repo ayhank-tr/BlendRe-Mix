@@ -495,6 +495,7 @@ void PxPhysicsEnvironment::SimulateOnce(float dt)
 	for (PxPhysicsController *c : m_controllers) {
 		c->SimulationTick(dt);
 	}
+	Deactivate(dt);
 	m_stats.steps++;
 }
 
@@ -697,6 +698,87 @@ void PxPhysicsEnvironment::SetDeactivationTime(float dTime)
 	 * own wake counter (2 s) is used */
 	m_deactivationTime = dTime;
 	UpdateSleeping();
+}
+
+void PxPhysicsEnvironment::Deactivate(float dt)
+{
+	if (m_deactivationTime <= 0.0f) {
+		return;
+	}
+	const float lin2 = m_linearSleep * m_linearSleep, ang2 = m_angularSleep * m_angularSleep;
+	std::vector<PxPhysicsController *> ready;
+	for (PxPhysicsController *c : m_controllers) {
+		PxRigidDynamic *body = c->GetDynamic();
+		if (!body || c->IsKinematic() || c->GetInfo().disableSleep || !c->GetInfo().dyna || !body->getScene()) {
+			continue;
+		}
+		if (body->isSleeping()) {
+			continue;
+		}
+		if (c->m_slept) {
+			/* woken (a touch, a joint, the game): Bullet's activate() starts over */
+			c->m_slept = false;
+			c->m_sleepTime = 0.0f;
+		}
+		if (body->getLinearVelocity().magnitudeSquared() < lin2 && body->getAngularVelocity().magnitudeSquared() < ang2) {
+			c->m_sleepTime += dt;
+			if (c->m_sleepTime > m_deactivationTime) {
+				ready.push_back(c);
+			}
+		}
+		else {
+			c->m_sleepTime = 0.0f;
+		}
+	}
+	/* the bodies joined to each by joints must be ready too */
+	std::set<PxPhysicsController *> done;
+	for (PxPhysicsController *c : ready) {
+		if (done.count(c)) {
+			continue;
+		}
+		std::vector<PxPhysicsController *> group(1, c), todo(1, c);
+		std::set<PxPhysicsController *> seen;
+		seen.insert(c);
+		bool all = true;
+		while (!todo.empty() && all) {
+			PxPhysicsController *x = todo.back();
+			todo.pop_back();
+			for (int id : x->m_constraints) {
+				Constraint *k = GetConstraint(id);
+				if (!k) {
+					continue;
+				}
+				for (PxPhysicsController *o : {k->c0, k->c1}) {
+					if (!o || seen.count(o) || !o->GetDynamic() || o->IsKinematic()) {
+						continue;
+					}
+					seen.insert(o);
+					if (o->GetDynamic()->isSleeping()) {
+						continue;
+					}
+					if (o->m_sleepTime <= m_deactivationTime) {
+						all = false;
+						break;
+					}
+					group.push_back(o);
+					todo.push_back(o);
+				}
+				if (!all) {
+					break;
+				}
+			}
+		}
+		for (PxPhysicsController *g : group) {
+			done.insert(g);
+		}
+		if (!all) {
+			continue;
+		}
+		for (PxPhysicsController *g : group) {
+			g->GetDynamic()->putToSleep();
+			g->m_slept = true;
+		}
+	}
 }
 
 void PxPhysicsEnvironment::UpdateSleeping()

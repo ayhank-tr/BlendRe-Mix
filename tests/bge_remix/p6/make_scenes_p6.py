@@ -367,7 +367,9 @@ def make_physics(folder):
     plank = box(scene, "Plank", (0.4, 3.0, 0.1), (SEESAW[0], SEESAW[1], 0.6), wood, mass=2.0)
     pivot = anchor(scene, "SeesawPivot", (SEESAW[0], SEESAW[1], 0.6))
     joint(plank, pivot, 'HINGE')
-    box(scene, "SeesawBox", 0.3, (SEESAW[0], SEESAW[1] + 1.1, 2.0), material("SeesawBoxMa", (0.9, 0.3, 0.1), friction=1.0),
+    # the box starts on the plank's +Y end (dropped from higher, it bounced
+    # off in Bullet and the end was a matter of chance)
+    box(scene, "SeesawBox", 0.3, (SEESAW[0], SEESAW[1] + 1.1, 0.81), material("SeesawBoxMa", (0.9, 0.3, 0.1), friction=1.0),
         mass=3.0)
 
     # the pendulum: three balls in a ball-joint chain, starting level along +X
@@ -380,6 +382,9 @@ def make_physics(folder):
                  mass=1.0)
         b.game.damping = 0.8
         b.game.rotation_damping = 0.8
+        # No Sleeping: both engines let it swing down to rest (Bullet and
+        # PhysX decide at slightly different moments that it is still)
+        b.game.use_sleep = True
         joint(b, prev, 'BALL', pivot=(-1.0, 0, 0))
         chain.append(b.name)
         prev = b

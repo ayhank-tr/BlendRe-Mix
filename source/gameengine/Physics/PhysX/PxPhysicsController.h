@@ -224,6 +224,9 @@ public:
 	std::vector<int> m_constraints;
 	/* the actor is in the scene */
 	bool m_inScene;
+	/* Bullet's deactivation (PxPhysicsEnvironment::Deactivate) */
+	float m_sleepTime;
+	bool m_slept;
 
 	/* a compound child joined this object's shape at conversion */
 	void ReinstanceCompound() { RebuildShapes(); }

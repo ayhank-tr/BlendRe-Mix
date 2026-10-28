@@ -143,9 +143,9 @@ public:
 	void RebindJoints(PxPhysicsController *ctrl);
 	physx::PxControllerManager *ControllerManager();
 	float SleepLinear() const { return m_linearSleep; }
-	/* PhysX's sleep threshold (kinetic energy per mass) for Bullet's
-	 * linear threshold; 0 (never) when the deactivation time is 0, as Bullet */
-	float SleepEnergy() const { return m_deactivationTime > 0.0f ? 0.5f * m_linearSleep * m_linearSleep : 0.0f; }
+	/* PhysX's own sleeping is off (threshold 0): bodies sleep as in Bullet,
+	 * see Deactivate() */
+	float SleepEnergy() const { return 0.0f; }
 	void UpdateSleeping();
 	float SleepAngular() const { return m_angularSleep; }
 	float Step() const { return m_lastStep; }
@@ -184,6 +184,10 @@ private:
 	void CallbackTriggers();
 	void ProcessFhSprings(float interval);
 	void SimulateOnce(float dt);
+	/* Bullet's deactivation: a body below the linear and angular thresholds
+	 * for the deactivation time may sleep; bodies joined by joints sleep
+	 * together, when all of them may; 0 = never */
+	void Deactivate(float dt);
 	struct Constraint;
 	Constraint *GetConstraint(int id);
 	void RemoveConstraint(Constraint *c);
