@@ -315,6 +315,14 @@ jobs:
         run: |
           python blender/tests/bge_remix/p6/run_p6.py --ours ours --official blender-2.79b-windows64 --out results/p6
 
+      - name: Phase 7 study (the Game View before building it)
+        if: always()
+        shell: pwsh
+        env:
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          python blender/tests/bge_remix/p7/run_p7_study.py --ours ours --out results/p7_study
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:

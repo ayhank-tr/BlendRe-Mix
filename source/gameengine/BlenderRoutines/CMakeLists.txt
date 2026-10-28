@@ -37,6 +37,7 @@ set(INC_SYS
 )
 
 set(SRC
+	BL_GameViewStudy.cpp
 	BL_KetsjiEmbedStart.cpp
 	BL_System.cpp
 	KX_BlenderCanvas.cpp
