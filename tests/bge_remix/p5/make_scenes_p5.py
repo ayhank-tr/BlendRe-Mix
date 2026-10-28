@@ -57,6 +57,7 @@ FRAMES = 24
 MARKER_X = (-3.0, 3.0)
 MARKER_Y = -1.5
 MARKER_Z = 0.15
+ADDED_CONE = (-2.8, -2.5, 0.3)  # where p5_ui_probe.py adds a cone (T5.1)
 
 
 def mesh_from(name, ob_name, location, ma, kind, **kw):
@@ -182,6 +183,8 @@ def make_studio(folder):
             co.z += 0.75
         targets[n] = project(scene, co)
     targets["Floor"] = project(scene, (-1.0, -1.0, 0.0))
+    # the cone p5_ui_probe.py adds (T5.1)
+    targets["AddedCone"] = project(scene, ADDED_CONE)
     return {
         "objects": names,
         # meshes Remix gets: floor and wall share nothing (two meshes), monkey (own:

@@ -10,11 +10,16 @@
 #   BGE_REMIX_P5_DIR     where the screenshots go
 #   BGE_REMIX_P5_WAIT    tenths of a second to wait after each step (default 30)
 #   BGE_REMIX_P5_PARTS   which parts run: edit,select,ortho,split,game (default all)
+#
+# After "open" the probe waits until the 3D view shows a picture: the first
+# time RTX Remix runs (or after its shader cache is gone) it compiles its ray
+# tracing shaders for some seconds and draws black meanwhile.
 
 import json
 import os
 import traceback
 
+import bgl
 import bpy
 from bpy_extras import view3d_utils
 from mathutils import Vector
@@ -73,6 +78,35 @@ def ob(name):
 
 def shade(mode, area=None):
     (area or main_area()).spaces.active.viewport_shade = mode
+
+
+READY_STEPS = {"open"}
+READY_TIMEOUT = 1800  # tenths of a second
+
+
+def _watch_pixels():
+    """after the 3D view has drawn: the brightest of 16 x 16 pixels in its
+    middle (0..1), while a step waits for a picture"""
+    if not state.get("watch"):
+        return
+    try:
+        vp = bgl.Buffer(bgl.GL_INT, 4)
+        bgl.glGetIntegerv(bgl.GL_VIEWPORT, vp)
+        x, y, w, h = vp[0], vp[1], vp[2], vp[3]
+        n = 16
+        buf = bgl.Buffer(bgl.GL_FLOAT, n * n * 4)
+        bgl.glReadPixels(x + w // 2 - n // 2, y + h // 2 - n // 2, n, n, bgl.GL_RGBA, bgl.GL_FLOAT, buf)
+        values = buf.to_list()
+        state["px_max"] = max(v for i, v in enumerate(values) if i % 4 != 3)
+    except Exception as ex:
+        state["px_max"] = None
+        result["errors"].append("watching the pixels: %r" % ex)
+        state["watch"] = False
+
+
+def picture_ready():
+    v = state.get("px_max")
+    return v is not None and v > 0.05
 
 
 def screenshot(name):
@@ -319,13 +353,19 @@ def a_bench(full=True):
             f0 = (stats().get("bridge") or {}).get("frames")
             state["idle_from"] = f0
             out["idle_start_frames"] = f0
-            # B5.6: Rendered off and on 10 times
+            # B5.6: Rendered off and on 20 times; the memory after each time
+            # tells a leak (growing all along) from pools that fill once
             ram0, vram0 = process_ram_mb(), vram_mb()
-            for i in range(10):
+            out["vram_each_mb"] = []
+            out["ram_each_mb"] = []
+            for i in range(20):
                 shade('SOLID')
                 swap(3)
                 shade('RENDERED')
                 swap(10)
+                v, r = vram_mb(), process_ram_mb()
+                out["vram_each_mb"].append(None if v is None or vram0 is None else round(v - vram0, 1))
+                out["ram_each_mb"].append(None if r is None or ram0 is None else round(r - ram0, 1))
             shade('SOLID')
             swap(3)
             shade('RENDERED')
@@ -392,12 +432,28 @@ class P5UIProbe(bpy.types.Operator):
                     result["errors"].append("%s: %s" % (name, traceback.format_exc()))
                 state["phase"] = "wait"
                 state["until"] = state["ticks"] + (50 if name in QUIET else WAIT)
+                if name in READY_STEPS:
+                    state["watch"] = True
+                    state["px_max"] = None
+                    state["ready_from"] = state["ticks"]
                 # Blender redraws the views; Remix refines meanwhile
                 if name not in QUIET:
                     for a in view3d_areas():
                         a.tag_redraw()
+            elif state["ticks"] >= state["until"] and state.get("watch") and not picture_ready() and \
+                    state["ticks"] - state["ready_from"] < READY_TIMEOUT:
+                # still black: Remix is getting ready
+                for a in view3d_areas():
+                    a.tag_redraw()
             elif state["ticks"] >= state["until"]:
                 extra = {"click": state.pop("click", None)} if name.startswith("select_") else None
+                if state.get("watch"):
+                    state["watch"] = False
+                    ready = picture_ready()
+                    extra = dict(extra or {}, ready=ready,
+                                 ready_seconds=round((state["ticks"] - state["ready_from"]) / 10.0, 1))
+                    print("P5 probe: the view %s after %.1f s" % ("shows a picture" if ready else "is still black",
+                                                                  extra["ready_seconds"]), flush=True)
                 if name == "bench":
                     extra = {"bench": state.get("bench")}
                 if name == "idle":
@@ -432,6 +488,7 @@ class P5UIProbe(bpy.types.Operator):
 
 
 bpy.utils.register_class(P5UIProbe)
+bpy.types.SpaceView3D.draw_handler_add(_watch_pixels, (), 'WINDOW', 'POST_PIXEL')
 try:
     bpy.ops.wm.bge_remix_p5_ui_probe('INVOKE_DEFAULT')
 except Exception:

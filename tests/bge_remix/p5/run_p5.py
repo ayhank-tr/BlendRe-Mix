@@ -498,7 +498,8 @@ def yellow_centroid(path):
     if a is None:
         return None
     import numpy as np
-    m = (a[:, :, 0] > 170) & (a[:, :, 1] > 130) & (a[:, :, 2] < 110)
+    # Remix draws the glowing marker pale yellow (about 250, 249, 130)
+    m = (a[:, :, 0] > 200) & (a[:, :, 1] > 200) & (a[:, :, 0] - a[:, :, 2] > 60)
     if m.sum() < 20:
         return None
     ys, xs = np.nonzero(m)
@@ -538,10 +539,12 @@ def run_rtx(args, out):
 
     checks = {"Blender ran the steps and quit cleanly": ran,
               "the view is in direct mode": bridge(opened, "mode") == 4,
-              "Remix drew the scene (%s objects)" % bridge(opened, "draws"): bridge(opened, "draws") == st_exp.get("draws")}
+              "Remix drew the scene (%s objects)" % bridge(opened, "draws"): bridge(opened, "draws") == st_exp.get("draws"),
+              # the first time, Remix compiles its shaders and draws black for some seconds
+              "the view showed Remix's picture (after %s s)" % opened.get("ready_seconds"): opened.get("ready") is True}
     local = {}
     for a, b, names in (("open", "move", ["GlassCube"]), ("move", "recolour", ["Monkey"]),
-                        ("recolour", "edit", ["CheckerBall"]), ("lamp", "add", ["GlassCube"])):
+                        ("recolour", "edit", ["CheckerBall"]), ("lamp", "add", ["AddedCone"])):
         share, n = near(a, b, names)
         local[b] = {"share_near": share, "changed": n}
         checks["%s: the picture changed where %s is" % (b, names[0])] = share is not None and n > 200 and share >= 0.6
@@ -606,22 +609,27 @@ def run_rtx(args, out):
               settings={"bge_remix_f12_mode": 1, "bge_remix_f12_samples": 256})
     q = f12(args.ours, out, "T5.0_quality", studio, env(), settings=dict(QUALITY, bge_remix_f12_frames=8))
     qlog = bridge_log(q["tmp"])
-    c = {line: any(line in l for l in qlog) for line in QUALITY_LINES}
-    effective = [l for l in q["text"].splitlines() if "rtx.graphicsPreset" in l or "rtx.qualityDLSS" in l or
-                 "rtx.enableRayReconstruction" in l or "rtx.volumetrics.enable" in l]
-    c["Remix lists them among its effective settings"] = len(effective) >= 2
-    res["T5.0"] = {"ok": all(c.values()), "checks": c, "effective": effective[:10]}
+    # Remix logs no list of its settings: each one is checked by its call's
+    # result (0: Remix took it; rtx.graphicsPreset applies the preset at once,
+    # rtx_options.cpp graphicsPresetOnChange)
+    c = {line + " (Remix took it)": any(line in l and l.rstrip().endswith("-> 0") for l in qlog)
+         for line in QUALITY_LINES}
+    res["T5.0"] = {"ok": all(c.values()), "checks": c}
 
     an = f12(args.ours, out, "T5.3_anim", anim, env(), settings={"bge_remix_f12_frames": 16}, anim=True)
     want = (expected.get("anim") or {}).get("marker_screen", [])
     got = [yellow_centroid(f) for f in an["files"]]
+    # frames where the whole marker is in the picture (it starts and ends at the edges)
+    inside = [0.05 < w[0] < 0.95 and 0.05 < w[1] < 0.95 for w in want]
     off = [None if g is None else round(math.hypot((g[0] - w[0]) * 1280, (g[1] - w[1]) * 720), 1)
            for g, w in zip(got, want)]
+    off_inside = [o for o, i in zip(off, inside) if i]
     c = {"Real-time still": rt["exit"] == 0 and len(rt["files"]) == 1 and bool(p2.has_picture(rt["files"][0] if rt["files"] else None)[0]),
          "Reference still": ref["exit"] == 0 and len(ref["files"]) == 1 and bool(p2.has_picture(ref["files"][0] if ref["files"] else None)[0]),
          "24 animation frames": an["exit"] == 0 and len(an["files"]) == len(want),
-         "the marker within 10 px of where it belongs, every frame": bool(off) and all(o is not None and o < 10 for o in off)}
-    res["T5.3"] = {"ok": all(c.values()), "checks": c, "marker_offset_px": off,
+         "the marker within 10 px of where it belongs, every frame it is in the picture":
+             len(off_inside) >= 12 and all(o is not None and o < 10 for o in off_inside)}
+    res["T5.3"] = {"ok": all(c.values()), "checks": c, "marker_offset_px": off, "marker_inside": inside,
                    "note": "look at T5.3_compare.png: Real-time and Reference next to Cycles"}
     res["T5.3"]["compare"] = p2.contact_sheet(
         [("Cycles (CPU, 128 samples)", cyc["image"]), ("Remix F12 Real-time (32 frames)", rt["files"][0] if rt["files"] else None),
@@ -698,8 +706,11 @@ def run_rtx(args, out):
                      ("subdivision_ms", "subdivision 63,000 triangles")):
         lines.append("B5.2 latency %-30s %s ms" % (label, p2._r(sb.get(k))))
     lines.append("B5.3 Remix frames drawn in 5 s without input: %s" % sb.get("idle_frames"))
-    lines.append("B5.6 memory after Rendered on/off 10 times: video %s MB, system %s MB more" % (
+    lines.append("B5.6 memory after Rendered on/off 20 times: video %s MB, system %s MB more" % (
         sb.get("vram_growth_mb"), sb.get("ram_growth_mb")))
+    each = sb.get("vram_each_mb") or []
+    if each:
+        lines.append("     video memory after each time (MB more): %s" % ", ".join(str(v) for v in each))
     for tag, b in b54.items():
         lines.append("B5.4 F12 1920x1080 %-16s %s s%s" % (tag, b["seconds"], "" if b["ok"] else "  (failed)"))
     lines.append("B5.5 F12 animation: %s s per frame (%d frames, Real-time 16)" % (res["B5.5"]["seconds_per_frame"],
