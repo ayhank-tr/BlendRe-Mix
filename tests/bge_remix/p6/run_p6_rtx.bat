@@ -1,0 +1,27 @@
+@echo off
+rem BGE-Remix phase 6 tests on this PC (RTX graphics card, real RTX Remix runtime).
+rem Needs Python 3 (python.org, "Add python.exe to PATH") and the runtime
+rem installed by the phase 1 tests (Preferences > System > RTX Remix).
+rem Expects the CI build extracted to C:\BGE-Remix\builds\blendremix-win64 and
+rem the bathroom demo in C:\BGE-Remix\transfer\bathroom_final_dof_noise.blend
+rem (only read: the test copies go to the results folder).
+rem
+rem Takes about 30 minutes.
+rem Game windows open and close by themselves. Leave the PC alone meanwhile,
+rem and close any picture viewer showing the results folder.
+
+setlocal
+set ROOT=C:\BGE-Remix
+set OURS=%ROOT%\builds\blendremix-win64
+set OUT=%ROOT%\results\p6
+
+if not exist "%OURS%\blenderplayer.exe" (
+  echo BGE-Remix build not found in %OURS%
+  pause
+  exit /b 1
+)
+python -m pip install --quiet pillow numpy
+python "%~dp0run_p6.py" --ours "%OURS%" --out "%OUT%" --rtx --bathroom "%ROOT%\transfer\bathroom_final_dof_noise.blend"
+echo.
+echo Results: %OUT%\summary_p6_rtx.txt
+pause
