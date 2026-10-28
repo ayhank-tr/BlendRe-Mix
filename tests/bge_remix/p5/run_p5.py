@@ -252,9 +252,11 @@ def run_ci(args, out):
                 diff(step("add"), step("delete"), "meshes_removed") == 1 and bridge(step("delete"), "draws") == st_exp.get("draws"),
             "undo brought it back": "AddedCone" in step("undo").get("objects", []) and
                 bridge(step("undo"), "draws") == st_exp.get("draws", 0) + 1,
-            # undo replaces every object, mesh and material in memory
-            "and the view started over for it": diff(step("delete"), step("undo"), "main_reloads") == 1 and
-                diff(step("delete"), step("undo"), "view_full_syncs") == 1,
+            # undo replaces every object, mesh and material in memory, and Blender
+            # gives the view a new engine: it sends the scene once more, and Remix
+            # keeps nothing twice (8 meshes: the 7 and the cone)
+            "and the view sent the scene again, nothing twice": diff(step("delete"), step("undo"), "view_full_syncs") == 1 and
+                bridge(step("undo"), "meshes") == st_exp.get("meshes", 0) + 1,
         }
         res["T5.1"] = dict(p2.test(c), detail={k: {"stats": v.get("stats"), "objects": v.get("objects")}
                                                 for k, v in s.items() if not k.startswith("select_")})
