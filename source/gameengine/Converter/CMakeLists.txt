@@ -112,6 +112,16 @@ if(WITH_BULLET)
 	add_definitions(-DWITH_BULLET)
 endif()
 
+# BGE-Remix (P6)
+if(WITH_PHYSX)
+	list(APPEND INC
+		../Physics/PhysX
+	)
+	list(APPEND INC_SYS
+		${PHYSX_INCLUDE_DIRS}
+	)
+endif()
+
 if(WITH_AUDASPACE)
 	add_definitions(${AUDASPACE_DEFINITIONS})
 

@@ -49,6 +49,11 @@
 
 #include "btBulletDynamicsCommon.h"
 
+#ifdef WITH_PHYSX  /* BGE-Remix (P6): soft bodies on PhysX's GPU deformables */
+#  include "PxPhysicsController.h"
+#  include "PxDeformable.h"
+#endif
+
 void KX_SoftBodyDeformer::Relink(CTR_Map<class CTR_HashedPtr, void*>*map)
 {
 	void **h_obj = (*map)[m_gameobj];
@@ -64,13 +69,24 @@ void KX_SoftBodyDeformer::Relink(CTR_Map<class CTR_HashedPtr, void*>*map)
 
 bool KX_SoftBodyDeformer::Apply(class RAS_IPolyMaterial *polymat)
 {
-	CcdPhysicsController* ctrl = (CcdPhysicsController*) m_gameobj->GetPhysicsController();
-	if (!ctrl)
+	PHY_IPhysicsController *phys = m_gameobj->GetPhysicsController();
+	if (!phys)
 		return false;
 
-	btSoftBody* softBody= ctrl->GetSoftBody();
+	/* BGE-Remix (P6): the soft body is Bullet's or PhysX's */
+	btSoftBody *softBody = NULL;
+	if (CcdPhysicsController *ctrl = dynamic_cast<CcdPhysicsController *>(phys))
+		softBody = ctrl->GetSoftBody();
+#ifdef WITH_PHYSX
+	PxDeformable *deformable = NULL;
+	if (PxPhysicsController *pxctrl = dynamic_cast<PxPhysicsController *>(phys))
+		deformable = pxctrl->GetDeformable();
+	if (!softBody && !deformable)
+		return false;
+#else
 	if (!softBody)
 		return false;
+#endif
 
 	//printf("apply\n");
 	RAS_MeshSlot::iterator it;
@@ -94,6 +110,22 @@ bool KX_SoftBodyDeformer::Apply(class RAS_IPolyMaterial *polymat)
 	// for each array
 	for (slot->begin(it); !slot->end(it); slot->next(it)) 
 	{
+#ifdef WITH_PHYSX
+		if (deformable) {
+			const std::vector<physx::PxVec3> &pos = deformable->WorldVertices();
+			const std::vector<physx::PxVec3> &nor = deformable->WorldNormals();
+			for (i = it.startvertex; i < it.endvertex; i++) {
+				RAS_TexVert& v = it.vertex[i];
+				const int si = v.getSoftBodyIndex();
+				if (si < 0 || si >= (int)pos.size())
+					continue;
+				v.SetXYZ(MT_Point3(pos[si].x, pos[si].y, pos[si].z));
+				if (si < (int)nor.size())
+					v.SetNormal(MT_Vector3(nor[si].x, nor[si].y, nor[si].z));
+			}
+			continue;
+		}
+#endif
 		btSoftBody::tNodeArray&   nodes(softBody->m_nodes);
 
 		int index = 0;

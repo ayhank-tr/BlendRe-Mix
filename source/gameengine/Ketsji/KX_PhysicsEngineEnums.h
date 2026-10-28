@@ -37,6 +37,7 @@ enum	e_PhysicsEngine
 		NoSelection = -1,
 		UseNone     =  0,
 		UseBullet   =  5,
+		UsePhysX    =  6,  /* BGE-Remix (P6) */
 };
 
 #endif  /* __KX_PHYSICSENGINEENUMS_H__ */

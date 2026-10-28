@@ -54,6 +54,14 @@
 #ifdef WITH_BULLET
 #include "CcdPhysicsEnvironment.h"
 #endif
+#ifdef WITH_PHYSX
+#include "PxPhysicsEnvironment.h"
+#include "PxShapes.h"
+#include "PxSystem.h"
+#endif
+extern "C" {
+#include "BKE_idprop.h"
+}
 
 #include "KX_LibLoadStatus.h"
 #include "KX_BlenderScalarInterpolator.h"
@@ -135,6 +143,12 @@ KX_BlenderSceneConverter::KX_BlenderSceneConverter(
 
 KX_BlenderSceneConverter::~KX_BlenderSceneConverter()
 {
+#ifdef WITH_PHYSX
+	/* BGE-Remix (P6): the scenes are gone (StopEngine), PhysX goes too; it
+	 * starts again with the next PhysX scene */
+	PxShapeDesc::FreeCooked();
+	PxSystem::Free();
+#endif
 	// clears meshes, and hashmaps from blender to gameengine data
 	// delete sumoshapes
 
@@ -246,6 +260,26 @@ void KX_BlenderSceneConverter::ConvertScene(KX_Scene *destinationscene, RAS_IRas
 		{
 			SYS_SystemHandle syshandle = SYS_GetSystem(); /*unused*/
 			int visualizePhysics = SYS_GetCommandLineInt(syshandle, "show_physics", 0);
+
+			/* BGE-Remix (P6): PhysX, chosen in World > Physics (kept in a scene
+			 * ID property: the file says Bullet to stock 2.79) */
+			IDProperty *pxprop = blenderscene->id.properties ?
+			        IDP_GetPropertyFromGroup(blenderscene->id.properties, BGE_PHYSX_IDPROP) : NULL;
+			const int physx = (pxprop && pxprop->type == IDP_INT) ? IDP_Int(pxprop) : 0;
+			if (physx > 0) {
+#ifdef WITH_PHYSX
+				phy_env = PxPhysicsEnvironment::Create(blenderscene, visualizePhysics, physx == 2);
+				if (phy_env) {
+					printf("BGE-Remix: scene \"%s\" uses PhysX (%s)\n", blenderscene->id.name + 2,
+					       static_cast<PxPhysicsEnvironment *>(phy_env)->DeviceName());
+					physics_engine = UsePhysX;
+					break;
+				}
+				printf("BGE-Remix: PhysX could not start, scene \"%s\" uses Bullet\n", blenderscene->id.name + 2);
+#else
+				printf("BGE-Remix: this build has no PhysX, scene \"%s\" uses Bullet\n", blenderscene->id.name + 2);
+#endif
+			}
 
 			phy_env = CcdPhysicsEnvironment::Create(blenderscene, visualizePhysics);
 			physics_engine = UseBullet;
