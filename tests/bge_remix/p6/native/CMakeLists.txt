@@ -44,7 +44,7 @@ target_include_directories(p6_physx_checks PRIVATE
 	${BLENDER}/intern/container ${BLENDER}/intern/guardedalloc ${BLENDER}/intern/string ${BLENDER}/intern/atomic
 	${BLENDER}/intern/moto/include ${BLENDER}/extern/bullet2/src
 )
-target_compile_definitions(p6_physx_checks PRIVATE WITH_BULLET WITH_PHYSX NDEBUG)
+target_compile_definitions(p6_physx_checks PRIVATE WITH_BULLET WITH_PHYSX NDEBUG PX_PHYSX_STATIC_LIB)
 target_link_libraries(p6_physx_checks ${PHYSX_LIBS})
 if(MSVC)
 	target_compile_definitions(p6_physx_checks PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)

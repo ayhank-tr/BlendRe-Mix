@@ -1306,6 +1306,8 @@ if(WITH_PHYSX)
 		set(PHYSX_GPU_DLL "")
 	endif()
 	message(STATUS "PhysX: ${PHYSX_LIBRARY_DIR}")
+	# the PhysX headers: static libraries (no dllimport)
+	add_definitions(-DPX_PHYSX_STATIC_LIB)
 endif()
 
 #-----------------------------------------------------------------------------
