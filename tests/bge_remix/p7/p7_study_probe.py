@@ -12,7 +12,7 @@
 # The study holograms: the avatars made from Blender's icons
 # (study_avatars/*.obj, *_tex.png) floating above some objects, each in one
 # state colour; drawn with bgl after the view, see-through, a ring under
-# each. With the depth pass the objects' own shapes are drawn first into the
+# each (after the view is drawn, also when RTX Remix draws it). With the depth pass the objects' own shapes are drawn first into the
 # depth buffer only, so a hologram behind an object is hidden.
 
 import json
@@ -219,15 +219,35 @@ def draw_avatar(name, st, base, facing):
     draw_ring(base + Vector((0, 0, 0.02)), size * 0.42, col, alpha)
 
 
+def read_region():
+    vp = bgl.Buffer(bgl.GL_INT, 4)
+    bgl.glGetIntegerv(bgl.GL_VIEWPORT, vp)
+    w, h = vp[2], vp[3]
+    buf = bgl.Buffer(bgl.GL_BYTE, w * h * 4)
+    bgl.glReadPixels(vp[0], vp[1], w, h, bgl.GL_RGBA, bgl.GL_UNSIGNED_BYTE, buf)
+    return buf.to_list(), w * h
+
+
 def draw_holograms():
     if not state["holo"]:
         return
+    measure = state.pop("measure", False)
+    before = read_region() if measure else None
     t0 = time.perf_counter()
     try:
         scene = bpy.context.scene
         rv3d = bpy.context.region_data
         view_pos = rv3d.view_matrix.inverted().translation
         bgl.glPushAttrib(bgl.GL_ALL_ATTRIB_BITS)
+        # drawn after the view's own drawing (POST_PIXEL: Blender calls it
+        # also when a render engine such as RTX Remix draws the view), so
+        # the view's 3D matrices are set here
+        bgl.glMatrixMode(bgl.GL_PROJECTION)
+        bgl.glPushMatrix()
+        bgl.glLoadMatrixf(bgl.Buffer(bgl.GL_FLOAT, [4, 4], [list(r) for r in rv3d.window_matrix.transposed()]))
+        bgl.glMatrixMode(bgl.GL_MODELVIEW)
+        bgl.glPushMatrix()
+        bgl.glLoadMatrixf(bgl.Buffer(bgl.GL_FLOAT, [4, 4], [list(r) for r in rv3d.view_matrix.transposed()]))
         bgl.glEnable(bgl.GL_DEPTH_TEST)
         if state["depth"]:
             # the objects' shapes into the depth buffer only
@@ -259,11 +279,27 @@ def draw_holograms():
             d = view_pos - base
             facing = math.atan2(d.y, d.x) - math.radians(90)
             draw_avatar(av, st, base, facing)
+        bgl.glMatrixMode(bgl.GL_PROJECTION)
+        bgl.glPopMatrix()
+        bgl.glMatrixMode(bgl.GL_MODELVIEW)
+        bgl.glPopMatrix()
         bgl.glPopAttrib()
     except Exception:
         result["errors"].append("drawing: " + traceback.format_exc())
         state["holo"] = False
     state["draw_ms"].append((time.perf_counter() - t0) * 1000.0)
+    if before is not None:
+        # how much of the view the holograms changed (sampled, 1 pixel in 7)
+        after, n = read_region()
+        a, b = before[0], after
+        changed = 0
+        samples = 0
+        for i in range(0, n * 4 - 3, 28):
+            samples += 1
+            if abs((a[i] & 255) - (b[i] & 255)) + abs((a[i + 1] & 255) - (b[i + 1] & 255)) + \
+                    abs((a[i + 2] & 255) - (b[i + 2] & 255)) > 40:
+                changed += 1
+        state["changed"] = round(100.0 * changed / max(samples, 1), 3)
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +343,8 @@ LONG = {"remix_nodepth": 150}   # Remix's first picture can take seconds (shader
 
 def record(name):
     entry = {"step": name, "screenshot": screenshot(name), "mem_mb": process_mb()}
+    if "changed" in state:
+        entry["view_changed_percent"] = state.pop("changed")
     if state["draw_ms"]:
         ms = sorted(state["draw_ms"])
         entry["draw_ms_median"] = round(ms[len(ms) // 2], 3)
@@ -341,6 +379,8 @@ class P7StudyProbe(bpy.types.Operator):
                     result["errors"].append("%s: %s" % (name, traceback.format_exc()))
                 state["phase"] = "wait"
                 state["until"] = state["ticks"] + LONG.get(name, WAIT)
+            elif state["ticks"] == state["until"] - 5 and state["holo"]:
+                state["measure"] = True
             elif state["ticks"] >= state["until"]:
                 try:
                     record(name)
@@ -367,7 +407,7 @@ class P7StudyProbe(bpy.types.Operator):
 
 
 bpy.utils.register_class(P7StudyProbe)
-bpy.types.SpaceView3D.draw_handler_add(draw_holograms, (), 'WINDOW', 'POST_VIEW')
+bpy.types.SpaceView3D.draw_handler_add(draw_holograms, (), 'WINDOW', 'POST_PIXEL')
 try:
     bpy.ops.wm.bge_remix_p7_study_probe('INVOKE_DEFAULT')
 except Exception:

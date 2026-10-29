@@ -133,8 +133,9 @@ def run(args, out, rtx):
                 if step in r["steps"]:
                     s = r["steps"][step]
                     d[step] = {"screenshot": s.get("screenshot"), "draw_ms_median": s.get("draw_ms_median"),
-                               "frames": s.get("draw_frames")}
+                               "frames": s.get("draw_frames"), "view_changed_percent": s.get("view_changed_percent")}
                     c["holograms drawn (%s)" % step] = bool(s.get("draw_frames"))
+                    c["holograms visible in the view (%s)" % step] = (s.get("view_changed_percent") or 0) > 0.1
         res[name] = {"ok": all(c.values()), "checks": c, "detail": d}
         table.append((name, d))
     if rtx and "gv_study_mixed" in res:
@@ -170,7 +171,8 @@ def run(args, out, rtx):
         lines += ["", "S7.2 holograms, draw time per frame (ms, median):"]
         for step in ("plain_holo", "remix_nodepth", "remix_depth"):
             if step in mixed:
-                lines.append("   %-16s %s" % (step, _r(mixed[step].get("draw_ms_median"))))
+                lines.append("   %-16s %s   (%s%% of the view changed)" % (
+                    step, _r(mixed[step].get("draw_ms_median")), mixed[step].get("view_changed_percent")))
     if res.get("sheet"):
         lines.append("S7.2 sheet: %s" % res["sheet"])
     lines += ["", "STUDY RAN" if res["all_ok"] else "SOMETHING BROKE (see results_p7_study.json and the .log files)"]
