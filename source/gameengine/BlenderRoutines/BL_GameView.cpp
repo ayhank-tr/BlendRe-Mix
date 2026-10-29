@@ -659,7 +659,7 @@ static PyObject *gv_kinds(PyObject *, PyObject *)
 	PyObject *list = PyList_New(n);
 	for (int i = 0; i < n; i++) {
 		PyList_SET_ITEM(list, i, Py_BuildValue("(sssi)", k[i].kind, BL_GameViewLayerId(k[i].layer), k[i].avatar,
-		                                       k[i].small));
+		                                       k[i].is_small));
 	}
 	return list;
 }

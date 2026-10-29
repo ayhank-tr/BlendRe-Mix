@@ -49,6 +49,7 @@ set(INC
 	../../blender/makesrna
 	../../blender/windowmanager
 	../../../intern/container
+	../../../intern/glew-mx
 	../../../intern/guardedalloc
 	../../../intern/string
 )
@@ -59,6 +60,7 @@ set(INC_SYS
 	${EIGEN3_INCLUDE_DIRS}
 	${PTHREADS_INCLUDE_DIRS}
 	${BOOST_INCLUDE_DIR}
+	${GLEW_INCLUDE_PATH}
 )
 
 set(SRC
@@ -104,6 +106,9 @@ set(SRC
 	KX_LibLoadStatus.h
 	KX_SoftBodyDeformer.h
 )
+
+# BGE-Remix P8: the converter checks that each GLSL shader builds (GLEW)
+add_definitions(${GL_DEFINITIONS})
 
 if(WITH_BULLET)
 	list(APPEND INC_SYS

@@ -662,7 +662,7 @@ int GVBuilder::Add(const char *kind, const char *name, Object *owner, const char
 	BLI_strncpy(e.owner, owner ? owner->id.name + 2 : "", sizeof(e.owner));
 	BLI_strncpy(e.avatar, k ? k->avatar : "QUESTION", sizeof(e.avatar));
 	BLI_strncpy(e.info, info ? info : "", sizeof(e.info));
-	if (k && k->small) {
+	if (k && k->is_small) {
 		e.flag |= GV_EL_SMALL;
 	}
 	if (!owner) {
@@ -2654,8 +2654,8 @@ void GVBuilder::Layout()
 		}
 		float z = z0;
 		for (auto &r : rows) {
-			const bool small = r.first > 0;
-			const float spacing = small ? 0.36f : 0.72f;
+			const bool small_row = r.first > 0;
+			const float spacing = small_row ? 0.36f : 0.72f;
 			if (r.first > 0) z += 0.42f;
 			const int n = (int)r.second.size();
 			for (int k = 0; k < n; k++) {

@@ -59,7 +59,7 @@ struct GVKind {
 	const char *kind;     /* "sensor:KEYBOARD" */
 	int layer;            /* GVLayer */
 	const char *avatar;   /* icon name */
-	int small;            /* a small avatar (bricks, tags) */
+	int is_small;         /* a small avatar (bricks, tags) */
 };
 
 const GVKind *BL_GameViewKinds(int *r_count);
