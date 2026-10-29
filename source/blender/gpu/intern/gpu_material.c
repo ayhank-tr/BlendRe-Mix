@@ -883,6 +883,11 @@ bool GPU_material_do_color_management(GPUMaterial *mat)
 	if (!BKE_scene_check_color_management_enabled(mat->scene))
 		return false;
 
+	/* BGE-Remix P8: the game setting "GLSL Color Management" (off for files
+	 * saved in Multitexture, which drew colours as they are) */
+	if (mat->scene->gm.flag & GAME_GLSL_NO_COLOR_MANAGEMENT)
+		return false;
+
 	return true;
 }
 

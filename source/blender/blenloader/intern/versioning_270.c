@@ -1677,9 +1677,12 @@ void blo_do_versions_270(FileData *fd, Library *UNUSED(lib), Main *main)
 }
 
 /* BGE-Remix P8: one material mode. A scene saved with Multitexture plays
- * as GLSL (stock 2.79 coloured a material by its object's colour only with
- * "Object Color" ticked, in both modes, so nothing else changes). Runs on
- * every load (files from stock 2.79 and older builds). */
+ * as GLSL. Multitexture drew colours as they are, where GLSL colour-manages
+ * them (a grey of 0.4 shows lighter), so such a scene gets "GLSL Color
+ * Management" off and keeps its look (stock 2.79 coloured a material by its
+ * object's colour only with "Object Color" ticked, in both modes, so that
+ * needs nothing). Runs on every load (files from stock 2.79 and older
+ * builds). */
 static void do_versions_bge_remix_one_material_mode(Main *main)
 {
 	Scene *sce;
@@ -1687,6 +1690,7 @@ static void do_versions_bge_remix_one_material_mode(Main *main)
 	for (sce = main->scene.first; sce; sce = sce->id.next) {
 		if (sce->gm.matmode != GAME_MAT_GLSL) {
 			sce->gm.matmode = GAME_MAT_GLSL;
+			sce->gm.flag |= GAME_GLSL_NO_COLOR_MANAGEMENT;
 		}
 	}
 }

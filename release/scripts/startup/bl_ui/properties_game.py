@@ -405,6 +405,8 @@ class RENDER_PT_game_shading(RenderButtonsPanel, Panel):
         col.prop(gs, "use_glsl_ramps", text="Ramps")
         col.prop(gs, "use_glsl_nodes", text="Nodes")
         col.prop(gs, "use_glsl_extra_textures", text="Extra Textures")
+        # BGE-Remix P8: off for files saved in Multitexture (colours as they were drawn)
+        col.prop(gs, "use_glsl_color_management", text="Color Management")
 
 
 class RENDER_PT_game_remix(RenderButtonsPanel, Panel):

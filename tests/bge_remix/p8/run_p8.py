@@ -76,7 +76,8 @@ for name in sorted(os.listdir(folder)):
             if "material_mode" in line and ".prop(" in line and not line.strip().startswith("#"):
                 found.append("%s:%d" % (name, n))
 sc = bpy.data.scenes.new("P8New")
-r = {"switches": found, "new_scene": sc.game_settings.material_mode}
+r = {"switches": found, "new_scene": sc.game_settings.material_mode,
+     "new_scene_color_management": sc.game_settings.use_glsl_color_management}
 sc.game_settings.material_mode = 'MULTITEXTURE'
 r["after_setting_multitexture"] = sc.game_settings.material_mode
 print("P8-UI " + json.dumps(r))
@@ -86,7 +87,7 @@ OPEN_SAVE = r'''
 import bpy, json, sys
 out = sys.argv[sys.argv.index("--") + 1]
 sc = bpy.context.scene
-r = {"mode": sc.game_settings.material_mode,
+r = {"mode": sc.game_settings.material_mode, "color_management": sc.game_settings.use_glsl_color_management,
      "object_color": {ob.name: bool(ob.active_material and ob.active_material.use_object_color)
                       for ob in sc.objects if ob.name.startswith("ObjCol")}}
 bpy.ops.wm.save_as_mainfile(filepath=out, copy=True)
@@ -445,6 +446,9 @@ def t81(args, out, scenes, mt_ours, api):
     c["an old Multitexture file opens as GLSL"] = opened.get("mode") == "GLSL"
     # stock 2.79 coloured a material by its object only with Object Color
     # ticked, in Multitexture too (its picture of mt_features), so it stays off
+    c["a new scene keeps GLSL Color Management on"] = ui.get("new_scene_color_management") is True
+    c["the old Multitexture file gets GLSL Color Management off (colours as Multitexture drew them)"] = \
+        opened.get("color_management") is False
     c["Object Color left as the file had it"] = bool(opened.get("object_color")) and \
         not any(opened["object_color"].values())
     c["the old file plays as GLSL"] = mt_ours.get("mt", {}).get("mode") == GLSL_CONSTANT
@@ -459,9 +463,19 @@ def t81(args, out, scenes, mt_ours, api):
 def t82(expected, mt_ours, mt_stock):
     rects = dict(expected.get("stock", {}).get("mt_features", {}))
     lit = {k: v for k, v in rects.items() if k.startswith("lit_")}
-    feats = {k: v for k, v in rects.items() if k not in lit}
+    # setBlending: stock 2.79's own picture shows no visible effect without a
+    # custom shader; ours applies it (P8.2), so it is checked for working
+    feats = {k: v for k, v in rects.items() if k not in lit and k != "setblending"}
     a, b = picture(mt_ours.get("shot_b")), picture(mt_stock.get("shot_b"))
     c, d = compare_rects(a, b, feats, TOL_MULTITEX)
+    blend = None
+    if a is not None and "setblending" in rects:
+        left, top, right, bottom = rects["setblending"]
+        blend = [round(float(v), 1) for v in a[top:bottom, left:right].reshape(-1, 3).mean(axis=0)]
+    solid = [102.0, 51.0, 26.0]  # MT_blended's colour (0.4, 0.2, 0.1) drawn on its own
+    c["setBlending (ONE, ONE) adds the card behind to the square's colour"] = blend is not None and \
+        all(x - s > 30.0 for x, s in zip(blend, solid))
+    d["setblending"] = {"ours": blend, "drawn_alone": solid}
     c["both pictures made"] = a is not None and b is not None
     m_o, m_s = mt_ours.get("mt", {}), mt_stock.get("mt", {})
     c["a lamp's type changed while playing"] = m_o.get("type_after") is not None and \
@@ -526,7 +540,10 @@ def t85(args, out, scenes, expected, shots):
     stock = expected.get("stock", {})
     # the script's changes (setBlending, the lamp that becomes a sun and
     # lights every sphere) are not in the 3D view
-    mt_rects = {k: v for k, v in stock.get("mt_features", {}).items() if k != "setblending" and not k.startswith("lit_")}
+    # (and the stand-in bitmap font is no real Blender font: the 3D view
+    # writes its text, the game shows the font image)
+    mt_rects = {k: v for k, v in stock.get("mt_features", {}).items()
+                if k not in ("setblending", "text") and not k.startswith("lit_")}
     sets = {
         "proc_textures_gl": {p["name"]: p["rect"] for p in expected["proc_textures"]["panels"] +
                              expected["proc_textures"]["bumps"]},
