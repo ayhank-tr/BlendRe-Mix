@@ -474,6 +474,14 @@ DerivedMesh *bake_mesh_from(Mesh *me)
 	dm->getVertCos(dm, orco);
 	BKE_mesh_orco_verts_transform(me, orco, totvert, 0);
 	DM_add_vert_layer(dm, CD_ORCO, CD_ASSIGN, orco);
+	/* the material slots, as DM_update_materials sets them for an object:
+	 * Blender's GLSL drawing sizes its tables by them (CDDM_from_mesh leaves
+	 * them empty, and drawing then writes past an empty table) */
+	dm->totmat = me->totcol + 1;
+	dm->mat = (Material **)MEM_calloc_arrayN(dm->totmat, sizeof(*dm->mat), "bake DerivedMesh.mat");
+	for (int i = 0; i < me->totcol; i++) {
+		dm->mat[i] = me->mat ? me->mat[i] : NULL;
+	}
 	return dm;
 }
 

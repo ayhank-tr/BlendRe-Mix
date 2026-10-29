@@ -1626,6 +1626,7 @@ static struct GPUMaterialState {
 
 	bool backface_culling;
 	bool two_sided_lighting;
+	bool game_glsl;  /* BGE-Remix P8: GLSL drawing of a game scene: as the game draws */
 
 	GPUBlendMode *alphablend;
 	GPUBlendMode alphablend_fixed[FIXEDMAT];
@@ -1765,6 +1766,11 @@ void GPU_begin_object_materials(
 	GMS.use_matcaps = use_matcap;
 
 	GMS.backface_culling = (v3d->flag2 & V3D_BACKFACE_CULLING) != 0;
+	/* BGE-Remix P8: Textured mode in a game scene draws as the game does:
+	 * each material's Backface Culling, Invisible materials left out */
+	GMS.game_glsl = glsl && BKE_scene_uses_blender_game(scene);
+	if (GMS.game_glsl)
+		GMS.backface_culling = true;
 
 	GMS.two_sided_lighting = false;
 	if (ob && ob->type == OB_MESH)
@@ -1976,6 +1982,13 @@ int GPU_object_material_bind(int nr, void *attribs)
 	else
 		GMS.lastretval = !GMS.is_alpha_pass;
 
+	/* BGE-Remix P8: the game draws no faces of an Invisible material */
+	if (GMS.lastretval && GMS.game_glsl && gattribs && GMS.gmatbuf[nr] &&
+	    (GMS.gmatbuf[nr]->game.flag & GEMAT_INVISIBLE))
+	{
+		GMS.lastretval = 0;
+	}
+
 	if (GMS.lastretval) {
 		/* for alpha pass, use alpha blend */
 		GPUBlendMode alphablend = GMS.alphablend[nr];
@@ -2018,7 +2031,7 @@ int GPU_object_material_bind(int nr, void *attribs)
 			if (GMS.is_alpha_pass) glDepthMask(1);
 
 			if (GMS.backface_culling) {
-				if (mat->game.flag)
+				if (GMS.game_glsl ? (mat->game.flag & GEMAT_BACKCULL) : mat->game.flag)
 					glEnable(GL_CULL_FACE);
 				else
 					glDisable(GL_CULL_FACE);

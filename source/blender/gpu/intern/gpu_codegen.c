@@ -421,6 +421,8 @@ const char *GPU_builtin_name(GPUBuiltin builtin)
 		return "unfparticleangvel";
 	else if (builtin == GPU_OBJECT_INFO)
 		return "unfobjectinfo";
+	else if (builtin == GPU_ORCO_MATRIX)
+		return "unforcomat";
 	else
 		return "";
 }

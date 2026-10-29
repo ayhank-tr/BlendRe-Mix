@@ -355,8 +355,11 @@ jobs:
         shell: pwsh
         run: |
           $dumps = Get-ChildItem results/dumps -Filter *.dmp -ErrorAction SilentlyContinue
-          if ($dumps) {
+          # a crash the console debugger caught prints "BGE-Remix crash" (run_p8.py)
+          $caught = Select-String -Path results/p8/*.log -Pattern 'BGE-Remix crash' -List -ErrorAction SilentlyContinue
+          if ($dumps -or $caught) {
             $dumps | ForEach-Object { Write-Output "::warning title=Crash dump::$($_.Name)" }
+            $caught | ForEach-Object { Write-Output "::warning title=Crash caught::$($_.Filename)" }
             Copy-Item ours/*.map results/dumps/ -ErrorAction SilentlyContinue
           }
 

@@ -243,13 +243,34 @@ def make_scenes(args, out):
     return scenes, expected
 
 
-def play(build, out, tag, blend, env=None, frames=300, seconds=0):
-    """blenderplayer at SIZE (960x540); the probe's screenshot at frame 100"""
-    e = {"BGE_REMIX_P2_FRAMES": str(frames), "BGE_REMIX_P2_SECONDS": str(seconds), "BGE_REMIX_RUNTIME_DIR": None}
+# Windows' console debugger (the Windows SDK's), when the machine has it: a
+# crash then prints where it happened (module + offset, read with the
+# linker's map, blenderplayer.map)
+CDB = r"C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe"
+ON_CRASH = ".echo BGE-Remix crash; .lastevent; r; kn 60; lm; q"
+
+
+def play(build, out, tag, blend, env=None, frames=300, seconds=0, debug=False):
+    """blenderplayer at SIZE (960x540); the probe's screenshot at frame 100;
+    debug: under the console debugger (when there is one)"""
+    res, stats, shot = (os.path.join(out, tag + x) for x in (".json", "_stats.json", ".png"))
+    for p in (res, stats, shot):
+        if os.path.isfile(p):
+            os.remove(p)
+    e = p2.base_env(out, tag)
+    e.update({"BGE_REMIX_P2_OUT": res, "BGE_REMIX_STATS": stats, "BGE_REMIX_P2_SHOT": shot,
+              "BGE_REMIX_P2_FRAMES": str(frames), "BGE_REMIX_P2_SECONDS": str(seconds), "BGE_REMIX_RUNTIME_DIR": None})
     e.update(env or {})
-    r = p2.player(build, out, tag, blend, e, size=SIZE, timeout=1200, cwd=os.path.dirname(blend))
-    r["text"] = log_text(out, tag)
-    r["ran"] = r["exit"] == 0 and r["frames"] >= frames and not r["traceback_in_output"]
+    cmd = [p2.exe(build, "blenderplayer"), "-w", str(SIZE[0]), str(SIZE[1]), blend]
+    if debug and os.path.isfile(CDB):
+        handlers = "; ".join('sxe -c "%s" %s' % (ON_CRASH, ev) for ev in ("av", "c0000374", "c0000409"))
+        cmd = [CDB, "-G", "-sins", "-c", handlers + "; g"] + cmd
+    code, text, secs = p2.run(cmd, e, os.path.join(out, tag + ".log"), timeout=1200, cwd=os.path.dirname(blend))
+    r = {"exit": code, "seconds_total": round(secs, 1), "probe": p2.read_json(res), "stats": p2.read_json(stats),
+         "screenshot": shot if os.path.isfile(shot) else None, "traceback_in_output": "Traceback" in text,
+         "text": text, "debugger": cmd[0] == CDB, "crashed": "BGE-Remix crash" in text}
+    r["frames"] = r["probe"].get("frames", 0)
+    r["ran"] = r["exit"] == 0 and r["frames"] >= frames and not r["traceback_in_output"] and not r["crashed"]
     return r
 
 
@@ -314,6 +335,34 @@ def region_diff(a, b, rect=None):
     return round(float(abs(a - b).mean()), 2)
 
 
+def blurred(a, radius=1.5):
+    """a picture softened a little, so a sub-pixel difference in framing
+    (OpenGL's pixel centres against Blender Internal's) counts less"""
+    if a is None:
+        return None
+    from PIL import Image, ImageFilter
+    import numpy as np
+    im = Image.fromarray(a.clip(0, 255).astype("uint8")).filter(ImageFilter.GaussianBlur(radius))
+    return np.asarray(im, dtype=np.float64)
+
+
+def aligned_diff(a, b, rect, reach=2):
+    """the region's mean difference at the best shift of up to `reach`
+    pixels (a and b blurred first)"""
+    if a is None or b is None or a.shape != b.shape:
+        return None
+    left, top, right, bottom = rect
+    h, w = a.shape[:2]
+    best = None
+    for dy in range(-reach, reach + 1):
+        for dx in range(-reach, reach + 1):
+            if top + dy < 0 or left + dx < 0 or bottom + dy > h or right + dx > w:
+                continue
+            d = float(abs(a[top:bottom, left:right] - b[top + dy:bottom + dy, left + dx:right + dx]).mean())
+            best = d if best is None else min(best, d)
+    return None if best is None else round(best, 2)
+
+
 def region_look(a, rect):
     """mean and spread (standard deviation) of a region's brightness"""
     if a is None:
@@ -322,11 +371,14 @@ def region_look(a, rect):
     return [round(float(g.mean()), 1), round(float(g.std()), 1)]
 
 
-def compare_rects(a, b, rects, tol, prefix=""):
-    """{name: difference} and a check per region"""
+def compare_rects(a, b, rects, tol, prefix="", aligned=False):
+    """{name: difference} and a check per region (aligned: pictures from two
+    different renderers, see aligned_diff)"""
     c, d = {}, {}
+    if aligned:
+        a, b = blurred(a), blurred(b)
     for name, rect in rects.items():
-        md = region_diff(a, b, rect)
+        md = aligned_diff(a, b, rect) if aligned else region_diff(a, b, rect)
         d[name] = md
         c["%s%s within %.0f" % (prefix, name, tol)] = md is not None and md <= tol
     return c, d
@@ -446,7 +498,7 @@ def t84(args, out, scenes, expected, normal_run):
         "reported in the Game View, on FailMe": len(ws) == 1 and ws[0]["name"] == "FailMe",
         "the failing material is drawn with its texture (fixed-function)": look is not None and look[1] > 20.0,
         "it looks like its neighbour": same is not None and same <= TOL_F12,
-        "the neighbour is unaffected": (region_diff(a, n, other) or 99) <= 2.0,
+        "the neighbour is unaffected": (lambda v: v is not None and v <= 2.0)(region_diff(a, n, other)),
     }
     return c, {"console": console, "report": report, "game_view": ws, "look": look, "same": same}
 
@@ -476,7 +528,7 @@ def t85(args, out, scenes, expected, shots):
         view = os.path.join(out, "t85_view_%s.png" % name)
         r = ui_probe(args.ours, out, "t85_" + name, blend, {"BGE_REMIX_P8_VIEW": view})
         a, b = picture(view), picture(shots.get(name))
-        cc, dd = compare_rects(a, b, rects, TOL_VIEW)
+        cc, dd = compare_rects(a, b, rects, TOL_VIEW, aligned=True)
         bad = sorted(k for k, v in dd.items() if v is None or v > TOL_VIEW)
         c["%s: the 3D view matches the game" % name] = a is not None and b is not None and not bad
         d[name] = {"differences": dd, "outside": bad, "probe_errors": r.get("errors"), "view": r.get("view")}
@@ -505,6 +557,7 @@ def t87(args, out, scenes, expected, shots):
                                    blend=os.path.join(scenes, "proc_textures_gl.blend"), timeout=1800)
     a, b = picture(shots.get("proc_textures_gl")), picture(f12)
     c = {"F12 rendered by stock 2.79": b is not None, "the game's picture made": a is not None}
+    sa, sb = blurred(a), blurred(b)
     d = {"panels": {}, "bumps": {}, "noise": None}
     for p in expected["proc_textures"]["panels"]:
         if p["noise"]:
@@ -513,11 +566,11 @@ def t87(args, out, scenes, expected, shots):
             c["noise: its look (brightness and spread)"] = ok
             d["noise"] = {"game": la, "f12": lb}
             continue
-        md = region_diff(a, b, p["rect"])
+        md = aligned_diff(sa, sb, p["rect"])
         d["panels"][p["name"]] = md
         c["%s within %.0f" % (p["name"], TOL_F12)] = md is not None and md <= TOL_F12
     for p in expected["proc_textures"]["bumps"]:
-        md = region_diff(a, b, p["rect"])
+        md = aligned_diff(sa, sb, p["rect"])
         d["bumps"][p["name"]] = md
         c["%s (bumped, lit) within %.0f" % (p["name"], TOL_F12_BUMP)] = md is not None and md <= TOL_F12_BUMP
     d["f12"] = f12
@@ -535,7 +588,7 @@ def t88(args, out, scenes, expected):
     dump = p3.fresh(os.path.join(out, "bake_dump"))
     log, env = mock_env(args, out, "t88_first", cache, dump=dump)
     env["BGE_REMIX_TRACE"] = "1"  # each step of a bake, to find a crash
-    first = play(args.ours, out, "t88_first", blend, env, frames=300, seconds=15)
+    first = play(args.ours, out, "t88_first", blend, env, frames=300, seconds=15, debug=True)
     mats = p3.material_lines(p2.read_lines(log))
     names = [p["name"] for p in expected["proc_textures"]["panels"]]
     bumps = [p["name"] for p in expected["proc_textures"]["bumps"]]
@@ -563,7 +616,8 @@ def t88(args, out, scenes, expected):
             continue
         ours = picture(os.path.join(dump, "MAM_%s_P_%s_%s.ppm" % (n, n, "normal" if n in bumps else "albedo")))
         theirs = picture(os.path.join(bi, "P_%s.png" % n))
-        md = region_diff(ours, theirs)
+        md = aligned_diff(blurred(ours), blurred(theirs), [2, 2, BAKE_TEST_SIZE - 2, BAKE_TEST_SIZE - 2]) \
+            if ours is not None and theirs is not None and ours.shape == theirs.shape else None
         diffs[n] = md
         tol = TOL_BAKE_NORMAL if n in bumps else TOL_BAKE
         if md is None or md > tol:
@@ -579,6 +633,7 @@ def t88(args, out, scenes, expected):
     c["a second start reuses the files (nothing encoded)"] = again["ran"] and s2.get("textures_encoded") == 0 and \
         (s2.get("textures_reused") or 0) >= len(names) + len(bumps)
     d["first"], d["again"] = st, s2
+    d["exits"] = {"first": first["exit"], "first_crashed": first["crashed"], "again": again["exit"]}
 
     # the panel without a UV map
     reports = check_lines(first["text"], "RMX_BAKE_NO_UV")
@@ -749,8 +804,9 @@ def run(args, out):
             if os.path.isfile(p):
                 os.remove(p)
         r = play(build, out, tag, S("mt_features"), {"BGE_REMIX_P8_SHOT_A": a, "BGE_REMIX_P8_SHOT_B": b,
-                                                      "BGE_REMIX_P8_MT": j}, frames=150)
-        res.update({"ran": r["ran"], "shot_a": a, "shot_b": b, "mt": p2.read_json(j), "screenshot": r["screenshot"]})
+                                                      "BGE_REMIX_P8_MT": j}, frames=150, debug=True)
+        res.update({"ran": r["ran"], "shot_a": a, "shot_b": b, "mt": p2.read_json(j), "screenshot": r["screenshot"],
+                    "exit": r["exit"], "crashed": r["crashed"], "debugger": r["debugger"]})
         return res
 
     mt_ours = mt_run(args.ours, "game_mt_features") if os.path.isfile(S("mt_features")) else {}

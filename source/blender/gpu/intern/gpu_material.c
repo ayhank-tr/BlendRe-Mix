@@ -129,6 +129,9 @@ struct GPUMaterial {
 	int partangvel;
 
 	int objectinfoloc;
+	int orcomatloc;            /* BGE-Remix P8.5 */
+	float orcomat[4][4];
+	bool orcomat_set;
 
 	ListBase lamps;
 	bool bound;
@@ -290,6 +293,8 @@ static int gpu_material_construct_end(GPUMaterial *material, const char *passnam
 			material->partangvel = GPU_shader_get_uniform(shader, GPU_builtin_name(GPU_PARTICLE_ANG_VELOCITY));
 		if (material->builtins & GPU_OBJECT_INFO)
 			material->objectinfoloc = GPU_shader_get_uniform(shader, GPU_builtin_name(GPU_OBJECT_INFO));
+		if (material->builtins & GPU_ORCO_MATRIX)
+			material->orcomatloc = GPU_shader_get_uniform(shader, GPU_builtin_name(GPU_ORCO_MATRIX));
 		return 1;
 	}
 	else {
@@ -792,8 +797,31 @@ void GPU_material_bind_uniforms(
 		if (material->builtins & GPU_OBJECT_INFO) {
 			GPU_shader_uniform_vector(shader, material->objectinfoloc, 3, 1, object_info);
 		}
-
+		/* BGE-Remix P8.5: the texture space of the mesh, when given */
+		if (material->builtins & GPU_ORCO_MATRIX) {
+			float unit[4][4];
+			unit_m4(unit);
+			GPU_shader_uniform_vector(shader, material->orcomatloc, 16, 1,
+			                          material->orcomat_set ? (float *)material->orcomat : (float *)unit);
+		}
 	}
+	material->orcomat_set = false;
+}
+
+void GPU_material_set_orco_space(GPUMaterial *material, const float loc[3], const float size[3])
+{
+	int i;
+	if (!material) {
+		return;
+	}
+	/* orco = (co - loc) / size */
+	unit_m4(material->orcomat);
+	for (i = 0; i < 3; i++) {
+		const float s = (fabsf(size[i]) > 1e-8f) ? size[i] : 1.0f;
+		material->orcomat[i][i] = 1.0f / s;
+		material->orcomat[3][i] = -loc[i] / s;
+	}
+	material->orcomat_set = true;
 }
 
 void GPU_material_unbind(GPUMaterial *material)
@@ -1591,7 +1619,9 @@ static void do_material_tex(GPUShadeInput *shi)
 	GPU_link(mat, "set_value", GPU_uniform(&one), &stencil);
 
 	GPU_link(mat, "texco_norm", GPU_builtin(GPU_VIEW_NORMAL), &texco_norm);
-	GPU_link(mat, "texco_orco", GPU_attribute(CD_ORCO, ""), &texco_orco);
+	/* BGE-Remix P8.5: in the mesh's texture space also where the drawing
+	 * sends raw coordinates (the game engine) */
+	GPU_link(mat, "texco_orco_space", GPU_attribute(CD_ORCO, ""), GPU_builtin(GPU_ORCO_MATRIX), &texco_orco);
 	GPU_link(mat, "texco_object", GPU_builtin(GPU_INVERSE_VIEW_MATRIX),
 		GPU_builtin(GPU_INVERSE_OBJECT_MATRIX),
 		GPU_builtin(GPU_VIEW_POSITION), &texco_object);

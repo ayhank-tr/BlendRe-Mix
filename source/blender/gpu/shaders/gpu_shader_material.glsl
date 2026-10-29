@@ -952,6 +952,13 @@ void texco_orco(vec3 attorco, out vec3 orco)
 	orco = attorco;
 }
 
+/* BGE-Remix P8.5: orco in the mesh's texture space (orcomat: identity where
+ * the attribute already is) */
+void texco_orco_space(vec3 attorco, mat4 orcomat, out vec3 orco)
+{
+	orco = (orcomat * vec4(attorco, 1.0)).xyz;
+}
+
 void texco_uv(vec2 attuv, out vec3 uv)
 {
 	/* disabled for now, works together with leaving out mtex_2d_mapping

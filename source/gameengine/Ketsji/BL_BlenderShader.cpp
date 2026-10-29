@@ -31,6 +31,7 @@
 #include "BKE_global.h"
 #include "BKE_main.h"
 #include "BKE_DerivedMesh.h"
+#include "BKE_mesh.h"
 
 #include "BL_BlenderShader.h"
 #include "BL_Material.h"
@@ -172,6 +173,16 @@ void BL_BlenderShader::Update(const RAS_MeshSlot & ms, RAS_IRasterizer* rasty )
 
 	rasty->GetViewMatrix().getValue(&viewmat[0][0]);
 	float auto_bump_scale = ms.m_pDerivedMesh!=0 ? ms.m_pDerivedMesh->auto_bump_scale : 1.0f;
+
+	/* BGE-Remix P8.5: the game sends the mesh's own coordinates as Generated
+	 * (orco) ones; Blender draws them in the mesh's texture space (a
+	 * modified mesh's DerivedMesh already has them there) */
+	Mesh *me = (!ms.m_pDerivedMesh && ms.m_mesh) ? ms.m_mesh->GetMesh() : NULL;
+	if (me) {
+		float loc[3], size[3];
+		BKE_mesh_texspace_get(me, loc, NULL, size);
+		GPU_material_set_orco_space(gpumat, loc, size);
+	}
 	GPU_material_bind_uniforms(gpumat, obmat, viewmat, obcol, auto_bump_scale, NULL, NULL);
 
 	mAlphaBlend = GPU_material_alpha_blend(gpumat, obcol);

@@ -345,8 +345,10 @@ def t75(out, clean_r, walls_r, kind):
                                                                              spot(off, box, p["xy"], p["r"]))})
     hid = [x["difference"] for x in res["hidden"] if x["difference"] is not None]
     shown = [x["difference"] for x in res["shown"] if x["difference"] is not None]
-    c["holograms behind the wall are hidden"] = bool(hid) and max(hid) < 4.0
-    c["holograms in front of the wall are drawn"] = bool(shown) and max(shown) > 10.0
+    # behind the wall only the wall's own holograms (its outline, a light
+    # fill) change the picture: far less than an avatar drawn there does
+    c["holograms behind the wall are hidden"] = bool(hid) and bool(shown) and max(hid) < 0.5 * min(shown)
+    c["holograms in front of the wall are drawn"] = bool(shown) and min(shown) > 10.0
     d["walls"] = res
     return c, d
 

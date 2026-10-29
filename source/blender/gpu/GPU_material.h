@@ -99,7 +99,11 @@ typedef enum GPUBuiltin {
 	GPU_PARTICLE_ANG_VELOCITY = (1 << 12),
 	GPU_LOC_TO_VIEW_MATRIX =    (1 << 13),
 	GPU_INVERSE_LOC_TO_VIEW_MATRIX = (1 << 14),
-	GPU_OBJECT_INFO =           (1 << 15)
+	GPU_OBJECT_INFO =           (1 << 15),
+	/* BGE-Remix P8.5: from the mesh's own coordinates to its texture space
+	 * (Generated/Orco), for drawing that sends the raw coordinates (the
+	 * game engine); identity where the orco layer is already in it */
+	GPU_ORCO_MATRIX =           (1 << 16)
 } GPUBuiltin;
 
 typedef enum GPUOpenGLBuiltin {
@@ -274,6 +278,9 @@ void GPU_material_bind_uniforms(
         GPUMaterial *material, float obmat[4][4], float viewmat[4][4], float obcol[4],
         float autobumpscale, GPUParticleInfo *pi, float object_info[3]);
 void GPU_material_unbind(GPUMaterial *material);
+/* BGE-Remix P8.5: the texture space (location, size) of the mesh drawn next,
+ * for the next GPU_material_bind_uniforms only (then identity again) */
+void GPU_material_set_orco_space(GPUMaterial *material, const float loc[3], const float size[3]);
 bool GPU_material_bound(GPUMaterial *material);
 struct Scene *GPU_material_scene(GPUMaterial *material);
 GPUMatType GPU_Material_get_type(GPUMaterial *material);
