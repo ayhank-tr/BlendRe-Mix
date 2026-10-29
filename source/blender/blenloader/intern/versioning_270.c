@@ -1704,7 +1704,7 @@ static void do_versions_bge_remix_one_material_mode(Main *main)
 		for (i = 1; i <= ob->totcol; i++) {
 			Material *ma = give_current_material(ob, i);
 			if (ma && ma->id.lib == NULL) {
-				ma->mode |= MA_OBCOLOR;
+				ma->shade_flag |= MA_OBCOLOR;
 			}
 		}
 	}

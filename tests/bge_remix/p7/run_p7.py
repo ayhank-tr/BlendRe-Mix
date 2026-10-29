@@ -64,7 +64,8 @@ print("P7 stock open:", bpy.data.filepath, len(bpy.data.objects), "objects;", " 
 sys.stdout.flush()
 '''
 
-CHECK_LINE = re.compile(r"^BGE-Remix check: ([^:]+): (.*): (.*) \[([A-Z0-9_]+)\]\s*$")
+# layer: owner: text [CODE] (the text may hold colons itself)
+CHECK_LINE = re.compile(r"^BGE-Remix check: ([^:]+): ([^:]*): (.*) \[([A-Z0-9_]+)\]\s*$")
 
 
 # ---------------------------------------------------------------------------

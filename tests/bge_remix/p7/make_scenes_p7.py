@@ -777,7 +777,8 @@ def make_remix(folder):
 
 
 def make_walls(folder):
-    """a wall between the camera and the object Hidden; Shown stands in front"""
+    """a wall between the camera and the object Hidden; Shown stands in front,
+    off to the side, so its holograms do not cover Hidden's on the screen"""
     scene = p2.empty_scene()
     scene.name = "Walls"
     p2.world(scene, (0.05, 0.06, 0.08))
@@ -785,8 +786,8 @@ def make_walls(folder):
     p2.plane(scene, "Floor", 20.0, (0, 0, 0), (0, 0, 0), grey)
     wall = p2.cube(scene, "Wall", 1.0, (0, 0, 2.5), grey)
     wall.scale = (8, 0.3, 5)
-    for name, y in (("Hidden", 4.0), ("Shown", -4.0)):
-        ob = p2.cube(scene, name, 1.0, (0, y, 0.5), grey)
+    for name, x, y in (("Hidden", 1.5, 4.0), ("Shown", -2.5, -4.0)):
+        ob = p2.cube(scene, name, 1.0, (x, y, 0.5), grey)
         body(ob, 'RIGID_BODY', 'BOX')
         chain(ob, 'ALWAYS', 'LOGIC_AND', 'MOTION', name)
     p2.lamp(scene, "Sun", 'SUN', (0, 0, 8), (math.radians(30), 0, 0))

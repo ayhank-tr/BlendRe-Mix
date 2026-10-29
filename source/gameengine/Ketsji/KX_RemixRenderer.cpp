@@ -795,12 +795,14 @@ void KX_RemixRenderer::Bake(MaterialEntry &e)
 	Mesh *me = e.mesh ? e.mesh->GetMesh() : NULL;
 	brmx::BakeResult r;
 	const double t0 = now_seconds();
+	Trace("bake: the mesh");
 	DerivedMesh *dm = brmx::bake_mesh_from(me);
 	float obmat[4][4];
 	memcpy(obmat, e.obmat, sizeof(obmat));
 	const std::string name = e.name + "_" + e.mesh->GetName().ReadPtr();
 	const bool ok = dm && brmx::bake_material(e.scene->GetBlenderScene(), ma, dm, e.pm->GetMaterialIndex() + 1, obmat,
 	                                         name, r);
+	Trace("bake: releasing the mesh");
 	if (dm) {
 		dm->release(dm);
 	}

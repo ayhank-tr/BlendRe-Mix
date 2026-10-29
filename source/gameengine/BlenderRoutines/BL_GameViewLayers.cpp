@@ -30,6 +30,7 @@
 #  include <windows.h>
 #endif
 
+#include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -538,24 +539,62 @@ std::string old_api(const std::string &source)
 }
 
 /* the files a script loads with LibLoad("...") or LibLoad(logic.expandPath("...")) */
+/* a quoted path at i, or one inside expandPath("...") there */
+static bool quoted_path_at(const std::string &src, size_t i, std::string &r_path)
+{
+	while (i < src.size() && (src[i] == ' ' || src[i] == '\t')) i++;
+	const size_t ep = src.find("expandPath(", i);
+	if (ep != std::string::npos && ep < i + 24 && src.find_first_of("\"'", i) > ep) {
+		i = ep + 11;
+		while (i < src.size() && (src[i] == ' ' || src[i] == '\t')) i++;
+	}
+	if (i >= src.size() || (src[i] != '"' && src[i] != '\'')) return false;
+	const char q = src[i];
+	const size_t end = src.find(q, i + 1);
+	if (end == std::string::npos) return false;
+	r_path = src.substr(i + 1, end - i - 1);
+	return true;
+}
+
+static bool ident_char(char c)
+{
+	return isalnum((unsigned char)c) || c == '_';
+}
+
+/* LibLoad("file.blend"), LibLoad(expandPath("//file.blend")), or
+ * LibLoad(path) where path = one of those earlier in the script */
 std::vector<std::string> libload_paths(const std::string &src)
 {
 	std::vector<std::string> paths;
 	size_t at = 0;
 	while ((at = src.find("LibLoad(", at)) != std::string::npos) {
 		size_t i = at + 8;
+		const size_t call = at;
 		at = i;
 		while (i < src.size() && (src[i] == ' ' || src[i] == '\t')) i++;
-		const size_t ep = src.find("expandPath(", i);
-		if (ep != std::string::npos && ep < i + 24 && src.find_first_of("\"'", i) > ep) {
-			i = ep + 11;
-			while (i < src.size() && (src[i] == ' ' || src[i] == '\t')) i++;
+		std::string path;
+		if (quoted_path_at(src, i, path)) {
+			paths.push_back(path);
+			continue;
 		}
-		if (i >= src.size() || (src[i] != '"' && src[i] != '\'')) continue;
-		const char q = src[i];
-		const size_t end = src.find(q, i + 1);
-		if (end == std::string::npos) continue;
-		paths.push_back(src.substr(i + 1, end - i - 1));
+		/* a variable: its last assignment before the call */
+		size_t e = i;
+		while (e < src.size() && ident_char(src[e])) e++;
+		if (e == i) continue;
+		const std::string name = src.substr(i, e - i);
+		size_t found = std::string::npos;
+		for (size_t p = src.find(name); p != std::string::npos && p < call; p = src.find(name, p + 1)) {
+			if (p > 0 && (ident_char(src[p - 1]) || src[p - 1] == '.')) continue;
+			size_t q = p + name.size();
+			if (q < src.size() && ident_char(src[q])) continue;
+			while (q < src.size() && (src[q] == ' ' || src[q] == '\t')) q++;
+			if (q + 1 < src.size() && src[q] == '=' && src[q + 1] != '=') {
+				found = q + 1;
+			}
+		}
+		if (found != std::string::npos && quoted_path_at(src, found, path)) {
+			paths.push_back(path);
+		}
 	}
 	return paths;
 }
@@ -741,6 +780,13 @@ float GVBuilder::Top(Object *ob) const
 
 /* ------------------------------------------------------------------------- */
 
+const std::vector<bSensor *> &GVBuilder::SensorsOf(const bController *c) const
+{
+	static const std::vector<bSensor *> none;
+	std::map<const bController *, std::vector<bSensor *> >::const_iterator it = m_sensorsOf.find(c);
+	return it == m_sensorsOf.end() ? none : it->second;
+}
+
 void GVBuilder::Build()
 {
 	/* the scene's objects, and those of its set scenes (the converter makes both) */
@@ -753,6 +799,15 @@ void GVBuilder::Build()
 		}
 	}
 	m_camera = m_scene->camera;
+	for (Object *ob : m_objects) {
+		for (bSensor *s = (bSensor *)ob->sensors.first; s; s = s->next) {
+			for (int i = 0; i < s->totlinks; i++) {
+				if (s->links && s->links[i]) {
+					m_sensorsOf[s->links[i]].push_back(s);
+				}
+			}
+		}
+	}
 
 	IDProperty *props = m_scene->id.properties;
 	const int physx = idprop_int(props, BGE_PHYSX_IDPROP, 0);
@@ -1564,7 +1619,7 @@ void GVBuilder::Logic()
 				BLI_strncpy(elements[el].info, "deactivated", sizeof(elements[el].info));
 				continue;
 			}
-			if (c->totslinks == 0) {
+			if (SensorsOf(c).empty()) {
 				Warn(el, "LOG_UNCONNECTED", GV_WARN_BLACK, "no sensor is linked to it");
 			}
 			if (c->totlinks == 0 && c->type != CONT_PYTHON) {
@@ -1659,9 +1714,9 @@ void GVBuilder::Logic()
 	for (Object *ob : m_objects) {
 		for (bController *c = (bController *)ob->controllers.first; c; c = c->next) {
 			if (!brick.count(c)) continue;
-			for (int i = 0; i < c->totslinks; i++) {
-				if (c->slinks[i] && brick.count(c->slinks[i])) {
-					Shape(GV_SHAPE_LINE, GV_LAYER_LOGIC, brick[c->slinks[i]], brick[c]);
+			for (bSensor *s : SensorsOf(c)) {
+				if (brick.count(s)) {
+					Shape(GV_SHAPE_LINE, GV_LAYER_LOGIC, brick[s], brick[c]);
 				}
 			}
 			for (int i = 0; i < c->totlinks; i++) {
@@ -1671,10 +1726,10 @@ void GVBuilder::Logic()
 			}
 			/* every frame into a script */
 			if (c->type == CONT_PYTHON) {
-				for (int i = 0; i < c->totslinks; i++) {
-					if (c->slinks[i] && brick_every_frame(c->slinks[i])) {
+				for (bSensor *s : SensorsOf(c)) {
+					if (brick_every_frame(s)) {
 						Warn(brick[c], "LOG_EVERY_FRAME", GV_WARN_NOTE,
-						     fmt("%s fires it every frame: its script runs every frame", c->slinks[i]->name).c_str());
+						     fmt("%s fires it every frame: its script runs every frame", s->name).c_str());
 						break;
 					}
 				}
@@ -2225,9 +2280,9 @@ void GVBuilder::Input()
 				unsigned int sa = 0, sb = 0;
 				std::set<void *> acts_a, acts_b;
 				for (bController *c = (bController *)a.ob->controllers.first; c; c = c->next) {
-					for (int k = 0; k < c->totslinks; k++) {
-						if (c->slinks[k] == a.s) { sa |= c->state_mask; for (int l = 0; l < c->totlinks; l++) acts_a.insert(c->links[l]); }
-						if (c->slinks[k] == b.s) { sb |= c->state_mask; for (int l = 0; l < c->totlinks; l++) acts_b.insert(c->links[l]); }
+					for (bSensor *s : SensorsOf(c)) {
+						if (s == a.s) { sa |= c->state_mask; for (int l = 0; l < c->totlinks; l++) acts_a.insert(c->links[l]); }
+						if (s == b.s) { sb |= c->state_mask; for (int l = 0; l < c->totlinks; l++) acts_b.insert(c->links[l]); }
 					}
 				}
 				if ((sa & sb) && acts_a != acts_b) {

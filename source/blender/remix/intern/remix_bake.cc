@@ -94,6 +94,59 @@ unsigned char to_byte(float v)
 int g_slot = 0;
 GPUMaterial *g_material = NULL;
 
+/* for tests (BGE_REMIX_TRACE): each step of a bake, printed and flushed, so
+ * a crash shows where it happened */
+void trace(const char *step, const std::string &what)
+{
+	static int on = -1;
+	if (on < 0) {
+		const char *env = getenv("BGE_REMIX_TRACE");
+		on = (env && env[0]) ? 1 : 0;
+	}
+	if (on) {
+		printf("BGE-Remix bake: %s %s\n", step, what.c_str());
+		fflush(stdout);
+	}
+}
+
+/* The game engine leaves its own vertex arrays enabled (and pointing into
+ * its buffers) between draws; a bake draws with Blender's DerivedMesh code,
+ * so it starts from no arrays and no buffers, and puts the game's back. */
+struct CleanArrays {
+	GLint array_buffer, element_buffer, client_texture;
+	CleanArrays()
+	{
+		glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &array_buffer);
+		glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &element_buffer);
+		glGetIntegerv(GL_CLIENT_ACTIVE_TEXTURE, &client_texture);
+		glPushClientAttrib(GL_CLIENT_ALL_ATTRIB_BITS);
+		glBindBuffer(GL_ARRAY_BUFFER, 0);
+		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+		GLint attribs = 0;
+		glGetIntegerv(GL_MAX_VERTEX_ATTRIBS, &attribs);
+		for (GLint i = 0; i < attribs && i < 32; i++) {
+			glDisableVertexAttribArray(i);
+		}
+		GLint units = 0;
+		glGetIntegerv(GL_MAX_TEXTURE_COORDS, &units);
+		for (GLint i = 0; i < units && i < 8; i++) {
+			glClientActiveTexture(GL_TEXTURE0 + i);
+			glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+		}
+		glClientActiveTexture(GL_TEXTURE0);
+		glDisableClientState(GL_VERTEX_ARRAY);
+		glDisableClientState(GL_NORMAL_ARRAY);
+		glDisableClientState(GL_COLOR_ARRAY);
+	}
+	~CleanArrays()
+	{
+		glPopClientAttrib();
+		glBindBuffer(GL_ARRAY_BUFFER, array_buffer);
+		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, element_buffer);
+		glClientActiveTexture(client_texture);
+	}
+};
+
 int set_material(int matnr, void *attribs)
 {
 	if (matnr != g_slot || !g_material) {
@@ -108,12 +161,14 @@ int set_material(int matnr, void *attribs)
 bool render_value(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const float obmat[4][4], int size,
                   int channel, float scale, std::vector<unsigned char> &r_px, std::string &r_error)
 {
+	trace("shader", std::to_string(channel));
 	GPUMaterial *mat = GPU_material_bake_create(scene, ma, channel, scale);
 	if (!mat) {
 		r_error = "its shader for baking could not be built";
 		return false;
 	}
 	char err[256] = "";
+	trace("offscreen", std::to_string(size));
 	GPUOffScreen *ofs = GPU_offscreen_create(size, size, 0, err);
 	if (!ofs) {
 		GPU_material_bake_free(mat);
@@ -121,6 +176,7 @@ bool render_value(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const f
 		return false;
 	}
 
+	CleanArrays arrays;
 	GPU_offscreen_bind(ofs, true);
 	glPushAttrib(GL_ALL_ATTRIB_BITS);
 	glViewport(0, 0, size, size);
@@ -150,13 +206,16 @@ bool render_value(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const f
 	unit_m4(view);
 	unit_m4(viewinv);
 	copy_m4_m4(ob, (float (*)[4])obmat);
+	trace("bind", "");
 	GPU_material_bind(mat, ~0, ~0, 0.0, 1, view, viewinv, NULL, false);
 	GPU_material_bind_uniforms(mat, ob, view, obcol, 1.0f, NULL, NULL);
 	g_slot = slot;
 	g_material = mat;
+	trace("draw", std::to_string(slot));
 	dm->drawMappedFacesGLSL(dm, set_material, NULL, NULL);
 	g_material = NULL;
 	GPU_material_unbind(mat);
+	trace("read", "");
 
 	r_px.assign((size_t)size * size * 4, 0);
 	glPixelStorei(GL_PACK_ALIGNMENT, 1);
@@ -173,6 +232,7 @@ bool render_value(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const f
 	GPU_offscreen_unbind(ofs, true);
 	GPU_offscreen_free(ofs);
 	GPU_material_bake_free(mat);
+	trace("done", "");
 	return true;
 }
 
@@ -435,6 +495,7 @@ bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const 
 	}
 	const int size = bake_size(ma);
 	std::vector<unsigned char> color, value;
+	trace("material", name);
 
 	/* albedo (and the emissive colour): the colour, with the alpha */
 	/* the emissive colour: the base colour (Classic: emit lights the

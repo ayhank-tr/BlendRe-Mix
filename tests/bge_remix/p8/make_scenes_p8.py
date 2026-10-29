@@ -45,8 +45,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "p3"))
 import make_scenes_p2 as p2  # noqa: E402  (probe, lamps, materials)
 import make_scenes_p3 as p3  # noqa: E402  (images, UV geometry)
 
-# the game window and the orthographic view (Blender units across)
-WIDTH, HEIGHT = 1280, 720
+# the game window and the orthographic view (Blender units across); the CI
+# machines' screen is 1024x768, so the window is smaller than 1280x720
+WIDTH, HEIGHT = 960, 540
 ORTHO = 12.0
 VIEW_H = ORTHO * HEIGHT / WIDTH
 

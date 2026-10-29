@@ -45,7 +45,7 @@ import run_p7 as p7  # noqa: E402  (the Game View probe)
 
 UI_PROBE = os.path.join(HERE, "p8_ui_probe.py")
 REFERENCE = os.path.join(HERE, "reference")
-SIZE = (1280, 720)
+SIZE = (960, 540)  # as make_scenes_p8.py: fits the CI machines' 1024x768 screen
 WINDOW = ["-p", "0", "0", "1600", "900"]
 BAKE_TEST_SIZE = 256
 GLSL_CONSTANT = 2  # bge.render.KX_BLENDER_GLSL_MATERIAL
@@ -244,7 +244,7 @@ def make_scenes(args, out):
 
 
 def play(build, out, tag, blend, env=None, frames=300, seconds=0):
-    """blenderplayer at 1280x720; the probe's screenshot at frame 100"""
+    """blenderplayer at SIZE (960x540); the probe's screenshot at frame 100"""
     e = {"BGE_REMIX_P2_FRAMES": str(frames), "BGE_REMIX_P2_SECONDS": str(seconds), "BGE_REMIX_RUNTIME_DIR": None}
     e.update(env or {})
     r = p2.player(build, out, tag, blend, e, size=SIZE, timeout=1200, cwd=os.path.dirname(blend))
@@ -278,7 +278,9 @@ def ui_probe(build, out, tag, blend, env, timeout=900):
     e = p2.base_env(out, tag)
     e.update({"BGE_REMIX_P8_DONE": done})
     e.update(env)
-    code, text, secs = p2.run([p2.exe(build, "blender")] + WINDOW + [blend, "--python", UI_PROBE], e,
+    # without Blender's crash handler, so a crash leaves a dump (CI)
+    code, text, secs = p2.run([p2.exe(build, "blender"), "--disable-crash-handler"] + WINDOW +
+                              [blend, "--python", UI_PROBE], e,
                               os.path.join(out, tag + ".log"), timeout=timeout, cwd=out)
     r = p2.read_json(done)
     r.update({"exit": code, "seconds": round(secs, 1), "text": text})
@@ -532,6 +534,7 @@ def t88(args, out, scenes, expected):
     cache = p3.fresh(os.path.join(out, "cache_proc"))
     dump = p3.fresh(os.path.join(out, "bake_dump"))
     log, env = mock_env(args, out, "t88_first", cache, dump=dump)
+    env["BGE_REMIX_TRACE"] = "1"  # each step of a bake, to find a crash
     first = play(args.ours, out, "t88_first", blend, env, frames=300, seconds=15)
     mats = p3.material_lines(p2.read_lines(log))
     names = [p["name"] for p in expected["proc_textures"]["panels"]]
@@ -587,6 +590,7 @@ def t88(args, out, scenes, expected):
     anim = os.path.join(scenes, "proc_animated.blend")
     cache3 = p3.fresh(os.path.join(out, "cache_anim"))
     log3, env3 = mock_env(args, out, "t88_animated", cache3)
+    env3["BGE_REMIX_TRACE"] = "1"
     stats3 = os.path.join(out, "t88_animated_stats.json")
     env3.update({"BGE_REMIX_P8_GAME": "1", "BGE_REMIX_STATS": stats3, "BGE_REMIX_P2_FRAMES": "200",
                  "BGE_REMIX_P2_SECONDS": "8", "BGE_REMIX_P2_OUT": os.path.join(out, "t88_animated_probe.json")})
@@ -739,7 +743,8 @@ def run(args, out):
 
     def mt_run(build, tag):
         res = {}
-        a, b, j = (os.path.join(out, tag + x) for x in ("_a.png", "_b.png", ".json"))
+        # not tag + ".json": that is the probe's own result file
+        a, b, j = (os.path.join(out, tag + x) for x in ("_a.png", "_b.png", "_mt.json"))
         for p in (a, b, j):
             if os.path.isfile(p):
                 os.remove(p)

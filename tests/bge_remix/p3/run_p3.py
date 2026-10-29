@@ -229,7 +229,10 @@ def run_ci(args, out):
         bad = check_material(f, e)
         d[e["name"]] = {"got": f, "problems": bad}
         c[e["name"]] = not bad
-    others = [l for l in text.splitlines() if l.startswith("BGE-Remix: material ") and "MAUnsupported" not in l]
+    # P8.3: Cycles-node materials have no GLSL shader in the game (as in
+    # stock 2.79); their OpenGL drawing notes are not about Remix
+    others = [l for l in text.splitlines() if l.startswith("BGE-Remix: material ") and "MAUnsupported" not in l
+              and "its GLSL shader could not be built" not in l]
     c["no other ball needs a note"] = not others
     c["the player ran 300 frames"] = ran(r)
     c["every texture arrived (none still waiting)"] = r["stats"].get("textures_waiting") == 0 and \

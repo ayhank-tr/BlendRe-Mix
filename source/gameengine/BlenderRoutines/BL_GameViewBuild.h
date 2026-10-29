@@ -36,6 +36,8 @@ struct ID;
 struct Main;
 struct Object;
 struct Scene;
+struct bController;
+struct bSensor;
 class KX_Scene;
 
 /* what the game's converter made of the scene */
@@ -106,6 +108,11 @@ private:
 	int m_physx;                                  /* 0 Bullet, 1 PhysX CPU, 2 PhysX GPU, -1 none */
 	bool m_remix;                                 /* the scene uses RTX Remix */
 	std::set<std::string> m_libloads;             /* files loaded by scripts */
+	/* the sensors linked to each controller, from the sensors' own links:
+	 * a controller's slinks are not saved in files (readfile clears them;
+	 * only the logic editor fills them again) */
+	std::map<const bController *, std::vector<bSensor *> > m_sensorsOf;
+	const std::vector<bSensor *> &SensorsOf(const bController *c) const;
 
 	/* adding */
 	int Add(const char *kind, const char *name, Object *owner, const char *info = "");
