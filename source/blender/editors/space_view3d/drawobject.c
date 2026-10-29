@@ -316,7 +316,9 @@ bool draw_glsl_material(Scene *scene, Object *ob, View3D *v3d, const char dt)
 		return false;
 }
 
-static bool check_alpha_pass(Base *base)
+/* whether the object's see-through materials are drawn after the solid ones
+ * (BGE-Remix P8: also in the GLSL drawing of a game scene, as the game sorts) */
+static bool check_alpha_pass_game(Base *base, bool game_glsl)
 {
 	if (base->flag & OB_FROMDUPLI)
 		return false;
@@ -327,7 +329,7 @@ static bool check_alpha_pass(Base *base)
 	if (base->object->mode & OB_MODE_ALL_PAINT)
 		return false;
 
-	return (base->object->dtx & OB_DRAWTRANSP);
+	return game_glsl || (base->object->dtx & OB_DRAWTRANSP);
 }
 
 /***/
@@ -4432,7 +4434,10 @@ static bool draw_mesh_object(Scene *scene, ARegion *ar, View3D *v3d, RegionView3
 				const bool glsl = draw_glsl_material(scene, ob, v3d, dt);
 
 				if (dt == OB_SOLID || glsl) {
-					const bool check_alpha = check_alpha_pass(base);
+					/* BGE-Remix P8: Textured mode in a game scene draws as the game
+					 * does: see-through materials after the solid ones, without the
+					 * object's Transparency display option */
+					const bool check_alpha = check_alpha_pass_game(base, glsl && BKE_scene_uses_blender_game(scene));
 					GPU_begin_object_materials(v3d, rv3d, scene, ob, glsl,
 					                           (check_alpha) ? &do_alpha_after : NULL);
 				}

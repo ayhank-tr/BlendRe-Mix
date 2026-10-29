@@ -1225,6 +1225,7 @@ static void gpu_node_input_link(GPUNode *node, GPUNodeLink *link, const GPUType 
 		input->textarget = GL_TEXTURE_2D;
 		input->textype = type;
 		input->dynamictex = true;
+		input->dynamictype = link->dynamictype;  /* BGE-Remix P8: kept, as for dynamic uniforms */
 		input->dynamicdata = link->ptr2;
 		MEM_freeN(link);
 	}

@@ -649,12 +649,17 @@ void KX_BlenderMaterial::ActivateMeshSlot(const RAS_MeshSlot & ms, RAS_IRasteriz
 		if (ELEM(alphablend, GEMAT_SOLID, GEMAT_ALPHA, GEMAT_ALPHA_SORT) && mMaterial->alphablend != GEMAT_SOLID)
 			alphablend = mMaterial->alphablend;
 
-		rasty->SetAlphaBlend(alphablend);
-
-		/* BGE-Remix P8: setBlending() works without a custom shader too */
+		/* BGE-Remix P8: setBlending() works without a custom shader too, as
+		 * in Multitexture: the rasterizer is told it is a custom mode (-1), so
+		 * the next material sets its own blending again */
 		if (mUserDefBlend) {
+			rasty->SetAlphaBlend(GEMAT_SOLID);
+			rasty->SetAlphaBlend(-1);
 			glEnable(GL_BLEND);
 			glBlendFunc(mBlendFunc[0], mBlendFunc[1]);
+		}
+		else {
+			rasty->SetAlphaBlend(alphablend);
 		}
 	}
 }

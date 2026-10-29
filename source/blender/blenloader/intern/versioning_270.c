@@ -1677,35 +1677,16 @@ void blo_do_versions_270(FileData *fd, Library *UNUSED(lib), Main *main)
 }
 
 /* BGE-Remix P8: one material mode. A scene saved with Multitexture plays
- * as GLSL; what made it look the way it did is carried over: Multitexture
- * coloured every material by its object's colour, GLSL only those with
- * "Object Color", so that is ticked where an object has a colour. Runs on
+ * as GLSL (stock 2.79 coloured a material by its object's colour only with
+ * "Object Color" ticked, in both modes, so nothing else changes). Runs on
  * every load (files from stock 2.79 and older builds). */
 static void do_versions_bge_remix_one_material_mode(Main *main)
 {
 	Scene *sce;
-	Object *ob;
-	bool multitex = false;
 
 	for (sce = main->scene.first; sce; sce = sce->id.next) {
 		if (sce->gm.matmode != GAME_MAT_GLSL) {
 			sce->gm.matmode = GAME_MAT_GLSL;
-			multitex = true;
-		}
-	}
-	if (!multitex) {
-		return;
-	}
-	for (ob = main->object.first; ob; ob = ob->id.next) {
-		short i;
-		if (ob->col[0] == 1.0f && ob->col[1] == 1.0f && ob->col[2] == 1.0f && ob->col[3] == 1.0f) {
-			continue;
-		}
-		for (i = 1; i <= ob->totcol; i++) {
-			Material *ma = give_current_material(ob, i);
-			if (ma && ma->id.lib == NULL) {
-				ma->shade_flag |= MA_OBCOLOR;
-			}
 		}
 	}
 }

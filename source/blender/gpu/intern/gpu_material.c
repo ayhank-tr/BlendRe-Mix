@@ -623,8 +623,7 @@ static void gpu_material_bind_face_image(GPUMaterial *material, double time, int
 		tex = gpu_face_image_blank();
 	}
 	for (input = material->pass->inputs.first; input; input = input->next) {
-		if (input->dynamictex && input->dynamictype == GPU_DYNAMIC_SAMPLER_2DIMAGE &&
-		    input->dynamicdata == material)
+		if (input->dynamictex && input->dynamicdata == material)
 		{
 			input->tex = tex;
 		}
