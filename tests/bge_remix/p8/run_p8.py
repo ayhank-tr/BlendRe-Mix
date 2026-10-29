@@ -22,6 +22,8 @@ T8.9  one physical material: pbr_spheres against its reference pictures;
       the translated values; the file opens in stock 2.79
 T8.10 Classic into Remix: each classic_remix material reaches Remix as the
       right kind; the invisible material is hidden
+T8.20 regression: P0-P7 unchanged (their results from the same CI run;
+      P7's own tests are the Game View's, built and tested with P8)
 B8.1-B8.5 reported (their targets are for the RTX run at the end of P8)
 
   python run_p8.py --ours <build> --official <stock 2.79b> --mock <fake runtime> --out <dir>   (CI)
@@ -686,6 +688,20 @@ def t89(args, out, scenes, expected, shots):
     return c, d
 
 
+def t820(out):
+    """P0-P7 unchanged: the results each phase's runner wrote in this CI run
+    (P0 in the results folder itself, P1-P7 in results/p1 ... results/p7)"""
+    c, d = {}, {}
+    root = os.path.dirname(out)
+    paths = [("P0", os.path.join(root, "results.json"))]
+    paths += [("P%d" % n, os.path.join(root, "p%d" % n, "results_p%d.json" % n)) for n in range(1, 8)]
+    for name, path in paths:
+        data = p2.read_json(path)
+        d[name] = data.get("all_ok") if data else "not run in this run"
+        c["%s unchanged (its tests ran and pass)" % name] = bool(data) and bool(data.get("all_ok"))
+    return c, d
+
+
 def t810(args, out, scenes, expected):
     cache = p3.fresh(os.path.join(out, "cache_classic"))
     log, env = mock_env(args, out, "t810_remix", cache)
@@ -764,6 +780,8 @@ def run(args, out):
             c, d = {"the test ran": False}, {"error": traceback.format_exc()}
             print(name, ex)
         tests[name] = {"ok": bool(c) and all(bool(v) for v in c.values()), "checks": c, "detail": d}
+    c, d = t820(out)
+    tests["T8.20 Regression (P0-P7)"] = {"ok": all(c.values()), "checks": c, "detail": d}
     ran = {k: bool(r.get("ran")) for k, r in runs.items()}
     tests["The game ran (every scene)"] = {"ok": all(ran.values()), "checks": ran, "detail": {}}
 
