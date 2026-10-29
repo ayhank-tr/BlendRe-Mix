@@ -2262,9 +2262,12 @@ void GPU_shaderesult_set(GPUShadeInput *shi, GPUShadeResult *shr)
 	 * the first texture (UV, mixed fully into the colour, its alpha the
 	 * material's alpha with "Face Textures Alpha") */
 	if ((ma->mode & MA_FACETEXTURE) && mat->type == GPU_MATERIAL_TYPE_MESH) {
-		GPUNodeLink *uv, *value, *col, *texalpha;
-		GPUNodeLink *on = GPU_dynamic_uniform(&mat->face_image_on, GPU_DYNAMIC_MAT_FACEIMA, mat);
+		GPUNodeLink *uv, *value, *col, *texalpha, *on;
 
+		/* a node's output, so it can feed two nodes (a uniform's link is
+		 * used up by the node it feeds: reusing it read freed memory, the
+		 * crash of mt_features in CI) */
+		GPU_link(mat, "set_value", GPU_dynamic_uniform(&mat->face_image_on, GPU_DYNAMIC_MAT_FACEIMA, mat), &on);
 		mat->use_face_image = true;
 		GPU_link(mat, "texco_uv", GPU_attribute(CD_MTFACE, ""), &uv);
 		GPU_link(mat, "mtex_image", uv,

@@ -950,6 +950,11 @@ RAS_MeshObject* BL_ConvertMesh(Mesh* mesh, Object* blenderobj, KX_Scene* scene, 
 		}
 	}
 
+	/* BGE-Remix P8.5: the mesh's texture space (Generated coordinates: the
+	 * game's shaders, Remix's bakes) made from its vertices now; the one
+	 * kept with the mesh was found unset in the player (CI, P8 run 6) */
+	BKE_mesh_texspace_calc(mesh);
+
 	// Get DerivedMesh data
 	DerivedMesh *dm = CDDM_from_mesh(mesh);
 	DM_ensure_tessface(dm);

@@ -196,8 +196,10 @@ void BL_BlenderShader::Update(const RAS_MeshSlot & ms, RAS_IRasterizer* rasty )
 	}
 	if (trace && !mTraced) {
 		mTraced = true;
-		printf("BGE-Remix trace: material \"%s\": mesh %s, derived %d, orco uniform %d, texture space %.3f %.3f %.3f / %.3f %.3f %.3f\n",
-		       mMat ? mMat->id.name + 2 : "-", me ? me->id.name + 2 : "-", ms.m_pDerivedMesh != NULL,
+		printf("BGE-Remix trace: material \"%s\": mesh %s (%d vertices, auto %d), derived %d, orco uniform %d, "
+		       "texture space %.3f %.3f %.3f / %.3f %.3f %.3f\n",
+		       mMat ? mMat->id.name + 2 : "-", me ? me->id.name + 2 : "-", me ? me->totvert : -1,
+		       me ? (me->texflag & ME_AUTOSPACE) != 0 : -1, ms.m_pDerivedMesh != NULL,
 		       (GPU_get_material_builtins(gpumat) & GPU_ORCO_MATRIX) != 0, loc[0], loc[1], loc[2], size[0], size[1], size[2]);
 		fflush(stdout);
 	}
