@@ -268,15 +268,20 @@ def make_proc_textures(folder, E):
 
 
 ANIMATOR = r'''
-# changes the texture while playing (embedded: Blender's own data); Remix bakes it again
+# changes the texture while playing (embedded: Blender's own data), 1.5 and
+# 4 seconds in (Remix looks for changes a few times a second); Remix bakes
+# it again each time
+import time
 import bge
 import bpy
 g = bge.logic.globalDict
-n = g.get("p8_anim", 0) + 1
-g["p8_anim"] = n
-if n in (40, 120):
+now = time.perf_counter()
+t0 = g.setdefault("p8_anim_t0", now)
+step = g.get("p8_anim_step", 0)
+if step < 2 and now - t0 >= (1.5, 4.0)[step]:
     tex = bpy.data.textures["T_animated"]
-    tex.noise_scale = 0.12 if n == 40 else 0.5
+    tex.noise_scale = (0.12, 0.5)[step]
+    g["p8_anim_step"] = step + 1
 '''
 
 

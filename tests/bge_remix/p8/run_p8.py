@@ -32,6 +32,7 @@ B8.1-B8.5 reported (their targets are for the RTX run at the end of P8)
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 
@@ -247,12 +248,16 @@ def make_scenes(args, out):
 # crash then prints where it happened (module + offset, read with the
 # linker's map, blenderplayer.map)
 CDB = r"C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe"
+GFLAGS = os.path.join(os.path.dirname(CDB), "gflags.exe")
 ON_CRASH = ".echo BGE-Remix crash; .lastevent; r; kn 60; lm; q"
+CRASH_LINE = re.compile(r"^BGE-Remix crash\s*$", re.M)  # the echo, not the command line that holds it
 
 
 def play(build, out, tag, blend, env=None, frames=300, seconds=0, debug=False):
     """blenderplayer at SIZE (960x540); the probe's screenshot at frame 100;
-    debug: under the console debugger (when there is one)"""
+    debug: under the console debugger (when there is one), with Windows'
+    page heap (each allocation followed by a guard page, so a write past its
+    end stops right there) and Blender's own allocator in place of mimalloc"""
     res, stats, shot = (os.path.join(out, tag + x) for x in (".json", "_stats.json", ".png"))
     for p in (res, stats, shot):
         if os.path.isfile(p):
@@ -262,13 +267,24 @@ def play(build, out, tag, blend, env=None, frames=300, seconds=0, debug=False):
               "BGE_REMIX_P2_FRAMES": str(frames), "BGE_REMIX_P2_SECONDS": str(seconds), "BGE_REMIX_RUNTIME_DIR": None})
     e.update(env or {})
     cmd = [p2.exe(build, "blenderplayer"), "-w", str(SIZE[0]), str(SIZE[1]), blend]
+    pageheap = False
     if debug and os.path.isfile(CDB):
         handlers = "; ".join('sxe -c "%s" %s' % (ON_CRASH, ev) for ev in ("av", "c0000374", "c0000409"))
         cmd = [CDB, "-G", "-sins", "-c", handlers + "; g"] + cmd
-    code, text, secs = p2.run(cmd, e, os.path.join(out, tag + ".log"), timeout=1200, cwd=os.path.dirname(blend))
+        e["BGE_REMIX_NO_MIMALLOC"] = "1"
+        if os.path.isfile(GFLAGS):
+            pageheap = p2.run([GFLAGS, "/p", "/enable", "blenderplayer.exe", "/full"], {},
+                              os.path.join(out, tag + "_gflags.log"), timeout=60)[0] == 0
+    try:
+        code, text, secs = p2.run(cmd, e, os.path.join(out, tag + ".log"), timeout=1800,
+                                  cwd=os.path.dirname(blend))
+    finally:
+        if pageheap:
+            p2.run([GFLAGS, "/p", "/disable", "blenderplayer.exe"], {}, os.path.join(out, tag + "_gflags_off.log"),
+                   timeout=60)
     r = {"exit": code, "seconds_total": round(secs, 1), "probe": p2.read_json(res), "stats": p2.read_json(stats),
          "screenshot": shot if os.path.isfile(shot) else None, "traceback_in_output": "Traceback" in text,
-         "text": text, "debugger": cmd[0] == CDB, "crashed": "BGE-Remix crash" in text}
+         "text": text, "debugger": cmd[0] == CDB, "crashed": bool(CRASH_LINE.search(text)), "pageheap": pageheap}
     r["frames"] = r["probe"].get("frames", 0)
     r["ran"] = r["exit"] == 0 and r["frames"] >= frames and not r["traceback_in_output"] and not r["crashed"]
     return r
@@ -588,7 +604,7 @@ def t88(args, out, scenes, expected):
     dump = p3.fresh(os.path.join(out, "bake_dump"))
     log, env = mock_env(args, out, "t88_first", cache, dump=dump)
     env["BGE_REMIX_TRACE"] = "1"  # each step of a bake, to find a crash
-    first = play(args.ours, out, "t88_first", blend, env, frames=300, seconds=15, debug=True)
+    first = play(args.ours, out, "t88_first", blend, env, frames=300, seconds=15)
     mats = p3.material_lines(p2.read_lines(log))
     names = [p["name"] for p in expected["proc_textures"]["panels"]]
     bumps = [p["name"] for p in expected["proc_textures"]["bumps"]]
@@ -790,7 +806,9 @@ def run(args, out):
     # the game's pictures (OpenGL)
     for name in ("proc_textures_gl", "pbr_spheres_gl", "pbr_classic_gl", "classic_remix_gl", "glsl_features",
                  "fallback"):
-        runs[name] = play(args.ours, out, "game_" + name, S(name))
+        # the trace says how each material's first draw was set up (orco)
+        runs[name] = play(args.ours, out, "game_" + name, S(name),
+                          {"BGE_REMIX_TRACE": "1"} if name == "proc_textures_gl" else None)
         shots[name] = runs[name].get("screenshot")
     api_path = os.path.join(out, "t86_api.json")
     runs["api"] = play(args.ours, out, "game_api", S("glsl_features"), {"BGE_REMIX_P8_API": api_path}, frames=60)
@@ -804,7 +822,7 @@ def run(args, out):
             if os.path.isfile(p):
                 os.remove(p)
         r = play(build, out, tag, S("mt_features"), {"BGE_REMIX_P8_SHOT_A": a, "BGE_REMIX_P8_SHOT_B": b,
-                                                      "BGE_REMIX_P8_MT": j}, frames=150, debug=True)
+                                                      "BGE_REMIX_P8_MT": j}, frames=150, debug=(build == args.ours))
         res.update({"ran": r["ran"], "shot_a": a, "shot_b": b, "mt": p2.read_json(j), "screenshot": r["screenshot"],
                     "exit": r["exit"], "crashed": r["crashed"], "debugger": r["debugger"]})
         return res

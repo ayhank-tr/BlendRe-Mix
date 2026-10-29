@@ -63,6 +63,7 @@ private:
 	int				mAlphaBlend;
 	GPUMaterial     *mGPUMat;
 	struct Image	*mFaceImage;	/* BGE-Remix P8: "Face Textures" */
+	bool			mTraced;		/* BGE-Remix P8: BGE_REMIX_TRACE printed once */
 
 	bool			VerifyShader() 
 	{
