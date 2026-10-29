@@ -465,9 +465,28 @@ def t82(expected, mt_ours, mt_stock):
     lit = {k: v for k, v in rects.items() if k.startswith("lit_")}
     # setBlending: stock 2.79's own picture shows no visible effect without a
     # custom shader; ours applies it (P8.2), so it is checked for working
-    feats = {k: v for k, v in rects.items() if k not in lit and k != "setblending"}
+    # the texture mapped to alpha: Multitexture applied its alpha twice (the
+    # ramp shows as alpha squared in stock 2.79's picture); ours blends as F12
+    # does, so it is checked against that blend
+    feats = {k: v for k, v in rects.items() if k not in lit and k not in ("setblending", "alpha_texture")}
     a, b = picture(mt_ours.get("shot_b")), picture(mt_stock.get("shot_b"))
-    c, d = compare_rects(a, b, feats, TOL_MULTITEX)
+    # fixed-function and GLSL drawing: compared as two renderers (text's
+    # one-pixel glyph cells differ in filtering)
+    c, d = compare_rects(a, b, feats, TOL_MULTITEX, aligned=True)
+    if a is not None and "alpha_texture" in rects:
+        left, top, right, bottom = rects["alpha_texture"]
+        row = a[(top + bottom) // 2, left:right]
+        back = [0.1 * 255, 0.4 * 255, 0.8 * 255]   # MT_alpha_back, colours as they are
+        tex = [0.9 * 255, 0.9 * 255, 0.2 * 255]    # MT_gradient's colour; its alpha runs 0 to 1 across
+        n = len(row)
+        errs = []
+        for j in range(n):
+            u = 0.1 + 0.8 * j / max(1, n - 1)    # the rectangle is the plane's inner 80%
+            want = [bk * (1.0 - u) + tx * u for bk, tx in zip(back, tex)]
+            errs.append(sum(abs(float(row[j][k]) - want[k]) for k in range(3)) / 3.0)
+        err = round(sum(errs) / len(errs), 2)
+        c["the texture's alpha blends to the plane behind, as F12 does, within 6"] = err <= 6.0
+        d["alpha_texture"] = {"mean_difference_from_straight_alpha": err}
     blend = None
     if a is not None and "setblending" in rects:
         left, top, right, bottom = rects["setblending"]
@@ -545,8 +564,9 @@ def t85(args, out, scenes, expected, shots):
     mt_rects = {k: v for k, v in stock.get("mt_features", {}).items()
                 if k not in ("setblending", "text") and not k.startswith("lit_")}
     sets = {
+        # (Noise is random: checked for its look in T8.7 only)
         "proc_textures_gl": {p["name"]: p["rect"] for p in expected["proc_textures"]["panels"] +
-                             expected["proc_textures"]["bumps"]},
+                             expected["proc_textures"]["bumps"] if not p.get("noise")},
         "pbr_spheres_gl": {s["name"]: s["rect"] for s in expected["pbr_spheres"]["spheres"] +
                            expected["pbr_spheres"]["extras"]},
         "pbr_classic_gl": {s["name"]: s["rect"] for s in expected["pbr_classic"]["spheres"] +

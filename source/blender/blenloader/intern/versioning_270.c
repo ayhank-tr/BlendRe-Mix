@@ -1687,10 +1687,17 @@ static void do_versions_bge_remix_one_material_mode(Main *main)
 {
 	Scene *sce;
 
+	/* Blender's own start-up file (read from memory: no file name) says
+	 * Multitexture too; its scenes are new ones, so they keep colour
+	 * management (every scene made from it would lose it otherwise) */
+	const bool is_file = main->name[0] != '\0';
+
 	for (sce = main->scene.first; sce; sce = sce->id.next) {
 		if (sce->gm.matmode != GAME_MAT_GLSL) {
 			sce->gm.matmode = GAME_MAT_GLSL;
-			sce->gm.flag |= GAME_GLSL_NO_COLOR_MANAGEMENT;
+			if (is_file) {
+				sce->gm.flag |= GAME_GLSL_NO_COLOR_MANAGEMENT;
+			}
 		}
 	}
 }
