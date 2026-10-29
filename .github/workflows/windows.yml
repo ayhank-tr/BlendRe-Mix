@@ -190,9 +190,9 @@ jobs:
           }
           $t.Stop()
           "build_minutes=$([math]::Round($t.Elapsed.TotalMinutes, 1))" | Tee-Object -FilePath build/bin/Release/BUILD_TIME.txt
-          # BGE-Remix P8: the linker's maps (function addresses), to read crash dumps
-          Get-ChildItem build -Recurse -Include blender.map, blenderplayer.map |
-            ForEach-Object { Copy-Item $_.FullName build/bin/Release/ -Force }
+          # BGE-Remix P8: the linker writes its maps (blender.map,
+          # blenderplayer.map: function addresses, to read crash dumps) next
+          # to the programs in build/bin/Release, so they go with them
 
       - uses: actions/upload-artifact@v4
         if: failure()
