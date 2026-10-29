@@ -243,9 +243,21 @@ typedef struct View3D {
 	 * Runtime-only, set in the rendered viewport toggle operator.
 	 */
 	short prev_drawtype;
-	short pad1;
-	float pad2;
+	/* BGE-Remix P7: the Game View is a 3D View with these set (V3D_GAMEVIEW_*) */
+	short gameview_flag;
+	int gameview_layers;  /* one bit per Game View layer (BL_GameView.h GVLayer) */
 } View3D;
+
+/* View3D->gameview_flag */
+#define V3D_GAMEVIEW            (1 << 0)  /* this 3D View is a Game View */
+#define V3D_GAMEVIEW_REMIX      (1 << 1)  /* background: RTX Remix's picture (else plain) */
+#define V3D_GAMEVIEW_DIM        (1 << 2)  /* dim the scene under the holograms */
+#define V3D_GAMEVIEW_LABELS     (1 << 3)  /* names under the avatars */
+#define V3D_GAMEVIEW_INIT       (1 << 4)  /* gameview_layers was set */
+#define V3D_GAMEVIEW_LAYERS_ALL ((1 << 22) - 1)  /* GV_LAYERS_ALL */
+
+/* the Area.type value of the Game View (not a space type: a 3D View with V3D_GAMEVIEW) */
+#define AREA_TYPE_GAME_VIEW     100
 
 
 /* View3D->stereo_flag (short) */

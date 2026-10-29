@@ -21,8 +21,11 @@ official NVIDIA runtime. OpenGL stays the default renderer, and every stock
 | P4 | Skinning, physics, particles, picking | Done (bge-remix-p4) |
 | P5 | "RTX Remix" render engine for the 3D view and F12 | Done (bge-remix-p5) |
 | P6 | NVIDIA PhysX 5 as a second game physics engine (CPU or GPU) | Done (bge-remix-p6) |
-| P7 | OpenUSD mod export and capture import | Planned |
-| P8 | Hardening and release | Planned |
+| P7 | Game View: see and check | In progress |
+| P8 | Game View: edit and run | Planned |
+| P9 | Simulation features | Planned |
+| P10 | OpenUSD mod export and capture import | Planned |
+| P11 | Hardening and release | Planned |
 
 ## Physics: Bullet or PhysX (P6)
 
@@ -34,6 +37,30 @@ soft bodies need the GPU under PhysX. A Ghost with Triangle Mesh bounds senses
 with its convex hull under PhysX, as does a moving object with them. A file set to PhysX opens in stock
 2.79b with Bullet. PhysX 5.9.1 (Apache 2.0) is built into the program;
 `PhysXGpu_64.dll` next to it is only loaded by GPU scenes.
+
+## Game View (P7)
+
+The Game View is an editor type next to the 3D View (it is a 3D View
+underneath, so it moves around the same way). It runs the game's own converter
+on the scene without starting the game, and shows everything that goes into
+the game as holograms over the scene, layer by layer: an avatar for every
+element, with its ranges, links and outlines. Layers are switched in the
+header by cluster (Entity, Factor, Behaviour, Gate); the background is Blender's
+own drawing (Plain) or RTX Remix's picture (Remix).
+
+Each element has a state colour: Red unavailable, Black available but not set
+up, White ready, Green active. The checks behind the colours are the same ones
+the game prints to the console when it starts (`BGE-Remix check: ...`). The N
+panel lists the selected element, every warning by layer (click one to go to
+its element), and the targets the game is checked against (frame rate,
+objects, lights, sounds, bodies, triangles, texture memory, shadow maps), with
+two ready-made sets. A warning marked as known stays listed but no longer
+warns. Targets and known marks are kept in the .blend file as hidden scene
+properties, so files keep opening in stock 2.79b.
+
+The view rebuilds itself after a change: at once when the last build took
+under a quarter of a second, after two quiet seconds when it took up to five
+seconds, and otherwise only with Refresh (F5 in the view).
 
 ## Platform
 

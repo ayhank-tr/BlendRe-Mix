@@ -4045,6 +4045,11 @@ void view3d_main_region_draw(const bContext *C, ARegion *ar)
 	rcti border_rect;
 	bool render_border, clip_border, engine_fallback;
 
+	/* BGE-Remix P7: a Game View rebuilds its model first, when due */
+	if (v3d->gameview_flag & V3D_GAMEVIEW) {
+		view3d_gameview_update(C, ar);
+	}
+
 	/* if we only redraw render border area, skip opengl draw and also
 	 * don't do scissor because it's already set */
 	render_border = ED_view3d_calc_render_border(scene, v3d, ar, &border_rect);
@@ -4086,6 +4091,11 @@ void view3d_main_region_draw(const bContext *C, ARegion *ar)
 		}
 	}
 	
+	/* BGE-Remix P7: the Game View's holograms */
+	if (v3d->gameview_flag & V3D_GAMEVIEW) {
+		view3d_gameview_draw(C, scene, ar, v3d);
+	}
+
 	view3d_main_region_draw_info(C, scene, ar, v3d, grid_unit, render_border);
 
 	v3d->flag |= V3D_INVALID_BACKBUF;

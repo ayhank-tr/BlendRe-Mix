@@ -37,7 +37,8 @@ set(INC_SYS
 )
 
 set(SRC
-	BL_GameViewStudy.cpp
+	BL_GameView.cpp
+	BL_GameViewLayers.cpp
 	BL_KetsjiEmbedStart.cpp
 	BL_System.cpp
 	KX_BlenderCanvas.cpp
@@ -46,6 +47,8 @@ set(SRC
 	KX_BlenderMouseDevice.cpp
 	KX_BlenderSystem.cpp
 
+	BL_GameView.h
+	BL_GameViewBuild.h
 	BL_System.h
 	KX_BlenderCanvas.h
 	KX_BlenderInputDevice.h
@@ -62,6 +65,15 @@ if(WITH_AUDASPACE)
 	list(APPEND INC_SYS
 		${AUDASPACE_C_INCLUDE_DIRS}
 	)
+endif()
+
+# BGE-Remix P7: the Game View's Remix checks (BRMX_material, the runtime)
+if(WITH_REMIX)
+	list(APPEND INC
+		../../blender/remix
+		../../../intern/remix_bridge
+	)
+	add_definitions(-DWITH_REMIX)
 endif()
 
 if(WITH_CODEC_FFMPEG)

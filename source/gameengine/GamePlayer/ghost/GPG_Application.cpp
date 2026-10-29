@@ -98,6 +98,8 @@ extern "C"
 #include "GHOST_IWindow.h"
 #include "GHOST_Rect.h"
 
+#include "BL_GameView.h"
+
 #ifdef WITH_AUDASPACE
 #  include AUD_DEVICE_H
 #endif
@@ -774,6 +776,8 @@ bool GPG_Application::startEngine(void)
 			m_kxStartScene,
 			m_rasterizer,
 			m_canvas);
+		/* BGE-Remix P7: the Game View's checks, in the console */
+		BL_GameViewReportGame(m_kxStartScene, m_maggie);
 		m_ketsjiengine->AddScene(m_kxStartScene);
 		
 		// Create a timer that is used to kick the engine

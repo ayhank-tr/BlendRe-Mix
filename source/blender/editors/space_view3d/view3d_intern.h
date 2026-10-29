@@ -221,7 +221,22 @@ void VIEW3D_OT_camera_to_view_selected(struct wmOperatorType *ot);
 void VIEW3D_OT_object_as_camera(struct wmOperatorType *ot);
 void VIEW3D_OT_localview(struct wmOperatorType *ot);
 void VIEW3D_OT_game_start(struct wmOperatorType *ot);
-void VIEW3D_OT_gameview_study_convert(struct wmOperatorType *ot);
+
+/* view3d_gameview.c: the Game View (BGE-Remix P7) */
+struct wmKeyConfig;
+struct wmWindowManager;
+void view3d_gameview_tag_dirty(void);
+void view3d_gameview_file_loaded(void);
+void view3d_gameview_update(const struct bContext *C, struct ARegion *ar);
+void view3d_gameview_draw(const struct bContext *C, struct Scene *scene, struct ARegion *ar, struct View3D *v3d);
+void view3d_gameview_region_exit(struct wmWindowManager *wm);
+void view3d_gameview_keymap(struct wmKeyConfig *keyconf);
+#ifdef WITH_GAMEENGINE
+int view3d_gameview_pick(struct bContext *C, struct ARegion *ar, const int mval[2]);
+void VIEW3D_OT_gameview_select(struct wmOperatorType *ot);
+void VIEW3D_OT_gameview_frame(struct wmOperatorType *ot);
+void VIEW3D_OT_gameview_refresh(struct wmOperatorType *ot);
+#endif
 
 
 bool ED_view3d_boundbox_clip_ex(const RegionView3D *rv3d, const struct BoundBox *bb, float obmat[4][4]);

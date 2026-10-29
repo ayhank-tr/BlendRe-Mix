@@ -99,7 +99,11 @@ def main():
         # the 16 x 16 cell: the first rect of that size
         cell = None
         for r in g.iter(SVG + "rect"):
-            if r.get("width") == "16" and r.get("height") == "16":
+            try:
+                square = abs(float(r.get("width")) - 16) < 0.05 and abs(float(r.get("height")) - 16) < 0.05
+            except (TypeError, ValueError):
+                square = False
+            if square:
                 inner = []
                 q = r.getparent()
                 while q is not g:
@@ -120,7 +124,7 @@ def main():
         flatten(gg)
         # drop the invisible cell rects
         for r in list(gg.iter(SVG + "rect")):
-            if "opacity:0;" in (r.get("style") or "") and r.get("width") == "16":
+            if "opacity:0;" in (r.get("style") or "") and abs(float(r.get("width") or 0) - 16) < 0.05:
                 r.getparent().remove(r)
         svg = etree.Element(SVG + "svg", nsmap={None: SVG[1:-1], "xlink": XL[1:XL.index("}")]})
         svg.set("width", "16"); svg.set("height", "16")

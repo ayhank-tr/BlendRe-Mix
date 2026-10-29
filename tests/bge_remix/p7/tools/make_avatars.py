@@ -1,10 +1,11 @@
-"""Study: an icon becomes an avatar mesh: the icon picture on front and back
-(cut out by its alpha) and side walls along its outline, depth 0.12 of its
-size. Writes <name>.obj with front.png texture coordinates."""
+"""An icon becomes an avatar mesh: the icon picture on front and back (cut
+out by its alpha) and side walls along its outline, depth 0.12 of its size.
+Writes <name>.obj (materials "face" and "edge") and <name>_tex.png.
+  make_avatars.py <svg dir> <out dir> [texture size, default 128]"""
 import sys, glob, os
 import cv2, numpy as np, cairosvg
 
-SIZE = 256
+SIZE = int(sys.argv[3]) if len(sys.argv) > 3 else 128
 DEPTH = 0.12
 
 def build(svg, outdir):
@@ -29,7 +30,7 @@ def build(svg, outdir):
     # side walls
     nside = 0
     for c in contours:
-        c = cv2.approxPolyDP(c, 1.0, True).reshape(-1, 2)
+        c = cv2.approxPolyDP(c, max(0.6, SIZE / 256.0), True).reshape(-1, 2)
         if len(c) < 3:
             continue
         for i in range(len(c)):
@@ -40,8 +41,8 @@ def build(svg, outdir):
             f.append(("edge", [base + 1, base + 2, base + 3, base + 4]))
             nside += 1
     with open(os.path.join(outdir, name + ".obj"), "w") as o:
-        o.write("mtllib %s.mtl\n" % name)
-        for p in v: o.write("v %.5f %.5f %.5f\n" % p)
+        o.write("# BGE-Remix Game View avatar: %s\n" % name)
+        for p in v: o.write("v %.4f %.4f %.4f\n" % p)
         for t in vt: o.write("vt %.4f %.4f\n" % t)
         cur = None
         for mat, idx in f:
@@ -51,8 +52,6 @@ def build(svg, outdir):
                 o.write("f " + " ".join("%d/%d" % (i, i) for i in idx) + "\n")
             else:
                 o.write("f " + " ".join(str(i) for i in idx) + "\n")
-    with open(os.path.join(outdir, name + ".mtl"), "w") as o:
-        o.write("newmtl face\nmap_Kd %s\nnewmtl edge\nKd 1 1 1\n" % os.path.basename(png))
     return name, nside
 
 os.makedirs(sys.argv[2], exist_ok=True)

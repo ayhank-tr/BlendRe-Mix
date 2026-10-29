@@ -60,6 +60,7 @@
 #include "NG_LoopBackNetworkDeviceInterface.h"
 
 #include "BL_System.h"
+#include "BL_GameView.h"
 
 #include "GPU_extensions.h"
 #include "EXP_Value.h"
@@ -515,6 +516,8 @@ extern "C" void StartKetsjiShell(struct bContext *C, struct ARegion *ar, rcti *c
 					startscene,
 				    rasterizer,
 					canvas);
+				/* BGE-Remix P7: the Game View's checks, in the console */
+				BL_GameViewReportGame(startscene, blenderdata);
 				ketsjiengine->AddScene(startscene);
 				
 				// init the rasterizer

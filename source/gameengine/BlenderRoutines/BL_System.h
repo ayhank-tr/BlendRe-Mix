@@ -62,10 +62,6 @@ struct rcti;
 extern void StartKetsjiShell(struct bContext *C, struct ARegion *ar,
 	struct rcti *cam_frame, int always_use_expand_framing);
 
-/* BGE-Remix P7.0 study: the game's converter builds the scene without
- * running the game; writes a JSON report (BL_GameViewStudy.cpp) */
-extern int BL_GameViewStudyConvert(struct bContext *C, struct ARegion *ar, const char *report_path, int repeat);
-
 #ifdef __cplusplus
 }
 #endif

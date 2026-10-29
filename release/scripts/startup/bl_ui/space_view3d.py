@@ -25,6 +25,9 @@ from bl_ui.properties_grease_pencil_common import (
         )
 from bl_ui.properties_paint_common import UnifiedPaintPanel
 from bpy.app.translations import contexts as i18n_contexts
+from bl_ui.space_view3d_gameview import gv as _gameview_module, draw_game_view_header
+
+gameview_header = draw_game_view_header if _gameview_module is not None else None
 
 
 class VIEW3D_HT_header(Header):
@@ -37,6 +40,11 @@ class VIEW3D_HT_header(Header):
         # mode_string = context.mode
         obj = context.active_object
         toolsettings = context.tool_settings
+
+        # BGE-Remix P7: the Game View has its own header
+        if view.is_game_view and gameview_header is not None:
+            gameview_header(self, context)
+            return
 
         row = layout.row(align=True)
         row.template_header()

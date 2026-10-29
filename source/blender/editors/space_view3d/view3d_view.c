@@ -62,10 +62,6 @@
 #include "ED_screen.h"
 #include "ED_armature.h"
 
-#include "BLI_path_util.h"
-#include "RNA_access.h"
-#include "RNA_define.h"
-
 
 #ifdef WITH_GAMEENGINE
 #  include "BLI_listbase.h"
@@ -1808,49 +1804,6 @@ void VIEW3D_OT_game_start(wmOperatorType *ot)
 	ot->exec = game_engine_exec;
 	
 	ot->poll = game_engine_poll;
-}
-
-/* BGE-Remix P7.0 study: the game's converter builds the scene without running
- * the game and reports what it made (a test operator, not in any menu) */
-static int gameview_study_convert_exec(bContext *C, wmOperator *op)
-{
-#ifdef WITH_GAMEENGINE
-	ScrArea *prevsa = CTX_wm_area(C);
-	ARegion *prevar = CTX_wm_region(C);
-	wmWindow *prevwin = CTX_wm_window(C);
-	char path[FILE_MAX];
-	int ok;
-
-	if (!ED_view3d_context_activate(C))
-		return OPERATOR_CANCELLED;
-	view3d_operator_needs_opengl(C);
-	RNA_string_get(op->ptr, "report", path);
-
-	SaveState(C, prevwin);
-	ok = BL_GameViewStudyConvert(C, CTX_wm_region(C), path, RNA_int_get(op->ptr, "repeat"));
-	RestoreState(C, prevwin);
-
-	CTX_wm_region_set(C, prevar);
-	CTX_wm_window_set(C, prevwin);
-	CTX_wm_area_set(C, prevsa);
-	return ok ? OPERATOR_FINISHED : OPERATOR_CANCELLED;
-#else
-	BKE_report(op->reports, RPT_ERROR, "Game engine is disabled in this build");
-	return OPERATOR_CANCELLED;
-#endif
-}
-
-void VIEW3D_OT_gameview_study_convert(wmOperatorType *ot)
-{
-	ot->name = "Game View Study: Dry Conversion";
-	ot->description = "Build the scene with the game's converter without running the game, and report what it made";
-	ot->idname = "VIEW3D_OT_gameview_study_convert";
-	ot->exec = gameview_study_convert_exec;
-	ot->poll = game_engine_poll;
-	ot->flag = OPTYPE_INTERNAL;
-
-	RNA_def_string_file_path(ot->srna, "report", NULL, FILE_MAX, "Report", "Where the JSON report goes");
-	RNA_def_int(ot->srna, "repeat", 1, 1, 100, "Repeat", "How many times to build and take down the scene", 1, 100);
 }
 
 /* ************************************** */

@@ -203,7 +203,11 @@ void view3d_operatortypes(void)
 	WM_operatortype_append(VIEW3D_OT_object_as_camera);
 	WM_operatortype_append(VIEW3D_OT_localview);
 	WM_operatortype_append(VIEW3D_OT_game_start);
-	WM_operatortype_append(VIEW3D_OT_gameview_study_convert);
+#ifdef WITH_GAMEENGINE
+	WM_operatortype_append(VIEW3D_OT_gameview_select);
+	WM_operatortype_append(VIEW3D_OT_gameview_frame);
+	WM_operatortype_append(VIEW3D_OT_gameview_refresh);
+#endif
 	WM_operatortype_append(VIEW3D_OT_fly);
 	WM_operatortype_append(VIEW3D_OT_walk);
 	WM_operatortype_append(VIEW3D_OT_navigate);
@@ -233,6 +237,9 @@ void view3d_keymap(wmKeyConfig *keyconf)
 	wmKeyMap *keymap;
 	wmKeyMapItem *kmi;
 	
+	/* BGE-Remix P7: the Game View (before the 3D View: its clicks come first) */
+	view3d_gameview_keymap(keyconf);
+
 	keymap = WM_keymap_find(keyconf, "3D View Generic", SPACE_VIEW3D, 0);
 
 	WM_keymap_add_item(keymap, "VIEW3D_OT_properties", NKEY, KM_PRESS, 0, 0);

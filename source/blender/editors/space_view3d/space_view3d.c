@@ -487,6 +487,10 @@ static void view3d_main_region_init(wmWindowManager *wm, ARegion *ar)
 	ListBase *lb;
 	wmKeyMap *keymap;
 
+	/* BGE-Remix P7: the Game View's clicks first (its operators only run in a Game View) */
+	keymap = WM_keymap_find(wm->defaultconf, "Game View", SPACE_VIEW3D, 0);
+	WM_event_add_keymap_handler(&ar->handlers, keymap);
+
 	/* object ops. */
 	
 	/* important to be before Pose keymap since they can both be enabled at once */
@@ -570,6 +574,8 @@ static void view3d_main_region_init(wmWindowManager *wm, ARegion *ar)
 static void view3d_main_region_exit(wmWindowManager *wm, ARegion *ar)
 {
 	RegionView3D *rv3d = ar->regiondata;
+
+	view3d_gameview_region_exit(wm);  /* BGE-Remix P7 */
 
 	ED_view3d_stop_render_preview(wm, ar);
 
@@ -799,11 +805,58 @@ static void view3d_recalc_used_layers(ARegion *ar, wmNotifier *wmn, Scene *scene
 	}
 }
 
+/* BGE-Remix P7: the notifiers that change the game (not the view, the
+ * selection, the frame or the Game View's own timer) */
+static void view3d_main_region_listener_gameview(ARegion *ar, wmNotifier *wmn)
+{
+	bool dirty = false;
+	switch (wmn->category) {
+		case NC_WM:
+			if (wmn->data == ND_FILEREAD) {
+				view3d_gameview_file_loaded();
+				ED_region_tag_redraw(ar);
+			}
+			return;
+		case NC_OBJECT:
+			dirty = !ELEM(wmn->data, ND_DRAW) && wmn->action != NA_SELECTED;
+			break;
+		case NC_SCENE:
+			dirty = !ELEM(wmn->data, ND_FRAME, ND_FRAME_RANGE, ND_OB_SELECT, ND_OB_ACTIVE, ND_OB_VISIBLE, ND_MODE,
+			              ND_TOOLSETTINGS, ND_RENDER_RESULT, ND_COMPO_RESULT, ND_MARKERS, ND_KEYINGSET);
+			break;
+		case NC_LOGIC:
+		case NC_GEOM:
+		case NC_MATERIAL:
+		case NC_TEXTURE:
+		case NC_LAMP:
+		case NC_WORLD:
+		case NC_CAMERA:
+		case NC_TEXT:
+		case NC_IMAGE:
+		case NC_GROUP:
+		case NC_ID:
+		case NC_ANIMATION:
+			dirty = wmn->action != NA_SELECTED;
+			break;
+		default:
+			break;
+	}
+	if (dirty) {
+		view3d_gameview_tag_dirty();
+		ED_region_tag_redraw(ar);
+	}
+}
+
 static void view3d_main_region_listener(bScreen *sc, ScrArea *sa, ARegion *ar, wmNotifier *wmn)
 {
 	Scene *scene = sc->scene;
 	View3D *v3d = sa->spacedata.first;
 	
+	/* BGE-Remix P7: what the Game View's model is built from changed */
+	if (v3d->gameview_flag & V3D_GAMEVIEW) {
+		view3d_main_region_listener_gameview(ar, wmn);
+	}
+
 	/* context changes */
 	switch (wmn->category) {
 		case NC_ANIMATION:
