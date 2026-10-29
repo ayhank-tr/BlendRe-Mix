@@ -72,6 +72,7 @@ void GPU_end_object_materials(void);
 bool GPU_object_materials_check(void);
 
 int GPU_object_material_bind(int nr, void *attribs);
+void GPU_object_material_face_image(struct Image *ima);  /* BGE-Remix P8 */
 void GPU_object_material_unbind(void);
 int GPU_object_material_visible(int nr, void *attribs);
 

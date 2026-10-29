@@ -46,6 +46,7 @@ struct GVConverted {
 	std::set<std::string> bricks;       /* "object/sensor", "object/controller", "object/actuator" names */
 	std::set<std::string> physics;      /* objects with a physics controller */
 	std::set<std::string> properties;   /* "object/property" */
+	std::set<std::string> glsl_fallback; /* P8: materials drawn without their GLSL shader */
 	double convert_ms;
 	GVConverted() : converted(false), convert_ms(0.0) {}
 };

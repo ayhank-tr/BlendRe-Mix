@@ -289,14 +289,15 @@ remixapi_ErrorCode REMIXAPI_CALL m_CreateMaterial(const remixapi_MaterialInfo *i
 	if (o) {
 		mlog("CreateMaterial hash=%llx type=opaque albedo=%.4f,%.4f,%.4f opacity=%.4f roughness=%.4f metallic=%.4f "
 		     "emissive=%.4f,%.4f,%.4f intensity=%.4f blend=%d alphatest=%d alpharef=%d subsurface=%d "
-		     "sss_radius=%.4f,%.4f,%.4f roughness_tex=%s metallic_tex=%s%s",
+		     "sss_radius=%.4f,%.4f,%.4f roughness_tex=%s metallic_tex=%s%s blendtype=%d",
 		     (unsigned long long)info->hash, o->albedoConstant.x, o->albedoConstant.y, o->albedoConstant.z,
 		     o->opacityConstant, o->roughnessConstant, o->metallicConstant, info->emissiveColorConstant.x,
 		     info->emissiveColorConstant.y, info->emissiveColorConstant.z, info->emissiveIntensity,
 		     o->blendType_hasvalue ? 1 : 0, (!o->useDrawCallAlphaState && o->alphaTestType != 7) ? 1 : 0,
 		     (int)o->alphaReferenceValue, ss ? 1 : 0, ss ? ss->subsurfaceRadius.x : 0.0f,
 		     ss ? ss->subsurfaceRadius.y : 0.0f, ss ? ss->subsurfaceRadius.z : 0.0f,
-		     tex_path(o->roughnessTexture).c_str(), tex_path(o->metallicTexture).c_str(), common.c_str());
+		     tex_path(o->roughnessTexture).c_str(), tex_path(o->metallicTexture).c_str(), common.c_str(),
+		     o->blendType_hasvalue ? o->blendType_value : -1);
 	}
 	else if (t) {
 		mlog("CreateMaterial hash=%llx type=translucent ior=%.4f transmittance=%.4f,%.4f,%.4f distance=%.4f "

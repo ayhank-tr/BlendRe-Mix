@@ -197,6 +197,14 @@ private:
 		bool blend;        /* alpha blended */
 		bool particle;     /* drawn as a particle (Halo, or the panel's Particle) */
 		bool waiting;      /* sent without some textures that are still being encoded */
+		/* P8.6: a material with procedural textures, made for one mesh */
+		RAS_IPolyMaterial *pm;
+		RAS_MeshObject *mesh;
+		float obmat[16];           /* where the mesh was when baked */
+		uint64_t bake_signature;   /* to bake again when the textures change */
+		double bake_checked;
+		MaterialEntry() : hash(0), scene(NULL), blend(false), particle(false), waiting(false), pm(NULL), mesh(NULL),
+		                  bake_signature(0), bake_checked(0.0) {}
 	};
 	struct LightEntry {
 		uint64_t hash;
@@ -226,9 +234,12 @@ private:
 	void UpdatePicking(KX_Scene *scene);
 	bool ObjectAlive(KX_GameObject *obj);
 	void NoteOnce(const std::string &text);
-	uint64_t EnsureMaterial(KX_Scene *scene, RAS_IPolyMaterial *mat);
+	const MaterialEntry &EnsureMaterial(KX_Scene *scene, RAS_IPolyMaterial *mat, RAS_MeshObject *mesh);
 	void SendMaterial(MaterialEntry &e);
 	void UpdateTextures(KX_Scene *scene);
+	/* P8.6: procedural textures baked into images, per mesh */
+	void Bake(MaterialEntry &e);
+	void UpdateBakes(KX_Scene *scene);
 	void ShowRemixWindow(bool show);
 	void ApplyExposure(const Settings &settings);
 	void UpdateLights(KX_Scene *scene, float light_scale);
@@ -249,7 +260,10 @@ private:
 	bool m_shown;          /* window mode: the child window is visible */
 
 	std::map<const void *, MeshEntry> m_meshes;
-	std::map<const void *, MaterialEntry> m_materials;
+	/* by polygon material, and mesh for those with baked procedural textures */
+	std::map<std::pair<const void *, const void *>, MaterialEntry> m_materials;
+	float m_bake_obmat[16];    /* P8.6: the object drawn now, for bakes */
+	double m_bakes_checked;
 	std::map<const void *, LightEntry> m_lights;
 	std::map<uint64_t, const void *> m_hashes;
 	/* by mesh and armature names (BGE gives every armature object its own
@@ -281,6 +295,8 @@ private:
 	int m_materials_waiting;   /* entries with waiting set */
 	int m_materials_swapped;   /* sent again with their textures */
 	int m_material_notes;      /* lines the translator could not represent */
+	int m_bakes, m_rebakes;    /* P8.6: materials baked, and baked again while playing */
+	double m_bake_ms;          /* P8.6: time spent baking */
 	double m_max_swap_ms;      /* slowest frame that swapped materials */
 	double m_frame_ms_max;     /* longest gap between two Remix frames (after the first 10) */
 	double m_last_render;

@@ -84,6 +84,7 @@ extern "C" {
 	#include "BKE_image.h"
 	#include "BKE_main.h"
 	#include "BKE_material.h"
+	#include "BKE_customdata.h"
 	#include "BKE_object.h"
 	#include "BKE_text.h"
 
@@ -104,6 +105,7 @@ extern "C" {
 #endif
 
 #ifdef WITH_REMIX
+#  include "BRMX_bake.h"
 #  include "BRMX_loader.h"
 #  include "BRMX_material.h"
 #endif
@@ -1154,6 +1156,11 @@ void GVBuilder::Rendering()
 					continue;
 				}
 				const int el = Add("material", ma->id.name + 2, ob, ma->use_nodes ? "node material" : "Blender Internal");
+				/* P8: a material whose GLSL shader could not be built */
+				if (m_conv.glsl_fallback.count(ma->id.name + 2)) {
+					Warn(el, "REN_GLSL_FALLBACK", GV_WARN_NOTE,
+					     "its GLSL shader could not be built: drawn without it (fixed-function), looks simpler");
+				}
 				for (int t = 0; t < MAX_MTEX; t++) {
 					MTex *mtex = ma->mtex[t];
 					if (!mtex || !mtex->tex || mtex->tex->type != TEX_IMAGE || !mtex->tex->ima) {
@@ -2378,6 +2385,13 @@ void GVBuilder::Remix()
 			for (const std::string &note : spec.notes) {
 				const bool uv = note.find("not mapped by UV") != std::string::npos;
 				Warn(mel, uv ? "RMX_NO_UV" : "RMX_NOTE", uv ? GV_WARN_BLACK : GV_WARN_NOTE, note.c_str(), true);
+			}
+			/* P8.6: procedural textures are baked on the mesh's UV map */
+			const Mesh *mesh = (const Mesh *)ob->data;
+			if (spec.bake_slots && mesh && !CustomData_has_layer(&mesh->ldata, CD_MLOOPUV)) {
+				Warn(mel, "RMX_BAKE_NO_UV", GV_WARN_BLACK,
+				     "uses procedural textures, which Remix gets baked on the mesh's UV map, and the mesh has none: "
+				     "add a UV map (Remix shows the material's plain colour until then)", true);
 			}
 		}
 #endif

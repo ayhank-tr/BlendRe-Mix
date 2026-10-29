@@ -1302,14 +1302,19 @@ static PyObject *gPySetMaterialType(PyObject *,
 	if (!PyArg_ParseTuple(args,"i:setMaterialType",&type))
 		return NULL;
 
-	if (type == KX_BLENDER_GLSL_MATERIAL)
-		gs->matmode= GAME_MAT_GLSL;
-	else if (type == KX_BLENDER_MULTITEX_MATERIAL)
-		gs->matmode= GAME_MAT_MULTITEX;
-	else {
+	if (type != KX_BLENDER_GLSL_MATERIAL && type != KX_BLENDER_MULTITEX_MATERIAL) {
 		PyErr_SetString(PyExc_ValueError, "Rasterizer.setMaterialType(int): material type is not known");
 		return NULL;
 	}
+	/* BGE-Remix P8: one material mode, GLSL; kept so old scripts run */
+	if (type == KX_BLENDER_MULTITEX_MATERIAL) {
+		static bool told = false;
+		if (!told) {
+			printf("BGE-Remix: setMaterialMode(KX_MULTITEX_MATERIAL) does nothing: there is one material mode, GLSL\n");
+			told = true;
+		}
+	}
+	gs->matmode = GAME_MAT_GLSL;
 
 	Py_RETURN_NONE;
 }
@@ -1319,11 +1324,10 @@ static PyObject *gPyGetMaterialType(PyObject *)
 	GlobalSettings *gs= gp_KetsjiEngine->GetGlobalSettings();
 	int flag;
 
-	if (gs->matmode == GAME_MAT_GLSL)
-		flag = KX_BLENDER_GLSL_MATERIAL;
-	else
-		flag = KX_BLENDER_MULTITEX_MATERIAL;
-	
+	/* BGE-Remix P8: one material mode, GLSL */
+	(void)gs;
+	flag = KX_BLENDER_GLSL_MATERIAL;
+
 	return PyLong_FromLong(flag);
 }
 

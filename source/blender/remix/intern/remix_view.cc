@@ -59,6 +59,7 @@ extern "C" {
 #include "DNA_ID.h"
 #include "DNA_camera_types.h"
 #include "DNA_lamp_types.h"
+#include "DNA_image_types.h"
 #include "DNA_material_types.h"
 #include "DNA_mesh_types.h"
 #include "DNA_meshdata_types.h"
@@ -85,11 +86,13 @@ int BLI_thread_is_main(void);
 #include "BKE_material.h"
 #include "BKE_mesh.h"
 #include "BKE_scene.h"
+#include "BLI_threads.h"
 
 #include "RE_engine.h"
 #include "RE_pipeline.h"
 }
 
+#include "BRMX_bake.h"
 #include "BRMX_light.h"
 #include "BRMX_loader.h"
 #include "BRMX_material.h"
@@ -205,6 +208,7 @@ struct Stats {
 	int gl_differences = 0;    /* BGE_REMIX_GL_CHECK */
 	int resized_frames = 0;    /* frames Remix changed size on */
 	int main_reloads = 0;      /* undo/redo/reload steps the view started over for */
+	int bakes = 0;             /* P8.6: procedural texture bakes */
 	int width = 0, height = 0; /* the last view frame's size */
 	int render_syncs = 0, render_frames = 0, render_reads = 0, render_width = 0, render_height = 0;
 	double render_seconds = 0.0; /* the last F12, from sync to result */
@@ -223,8 +227,12 @@ struct MeshRec {
 	unsigned gen;         /* the update that last used it */
 	bool double_sided, blend, particle, edit;
 	uint64_t materials;   /* the materials it was made with */
+	/* P8.4: its parts, (material slot, face image or NULL), for the
+	 * materials it keeps alive */
+	std::vector<std::pair<int, Image *>> parts;
+	uint64_t bakes;       /* P8.6: bake_signature() of its materials with procedural textures */
 	MeshRec() : known(false), geometry(false), hash(0), gen(0), double_sided(false), blend(false), particle(false),
-	            edit(false), materials(0) {}
+	            edit(false), materials(0), bakes(0) {}
 };
 
 struct MaterialRec {
@@ -235,8 +243,85 @@ struct MaterialRec {
 	std::string name;
 	std::shared_ptr<brmx::MaterialSpec> spec;
 	bool blend, particle, waiting;
-	MaterialRec() : known(false), hash(0), gen(0), sent_gen(0), blend(false), particle(false), waiting(false) {}
+	const brmx::BakeResult *bake; /* P8.6: the bake its spec was made with */
+	uint64_t bake_signature;
+	MaterialRec() : known(false), hash(0), gen(0), sent_gen(0), blend(false), particle(false), waiting(false),
+	                bake(NULL), bake_signature(0) {}
 };
+
+/* The key of an object's mesh record: the object's own mesh, or the mesh
+ * shared by all that draw it as it is */
+const void *mesh_key(Object *ob)
+{
+	Mesh *me = (Mesh *)ob->data;
+	struct BMEditMesh *em = (ob->mode & OB_MODE_EDIT) ? me->edit_btmesh : NULL;
+	bool object_materials = false;
+	for (int i = 0; i < ob->totcol && ob->matbits; i++) {
+		object_materials = object_materials || ob->matbits[i];
+	}
+	const bool own = em || ob->modifiers.first || me->key || ob->partype == PARSKEL || object_materials;
+	return own ? (const void *)ob : (const void *)me;
+}
+
+/* ------------------------------------------------------------------------- */
+/* P8.6: procedural textures baked per (material, mesh), shared by the 3D
+ * views and F12 (which renders on a thread without OpenGL and uses what was
+ * baked before it started, BRMX_render_prepare). Under the lock. */
+
+struct BakeStoreEntry {
+	brmx::BakeResult result;
+	uint64_t geometry; /* the mesh it was baked on */
+	bool ok;
+	bool noted;
+	BakeStoreEntry() : geometry(0), ok(false), noted(false) {}
+};
+std::map<std::pair<const Material *, const void *>, BakeStoreEntry> g_bakes;
+
+/* the mesh's shape and UV map */
+uint64_t geometry_signature(DerivedMesh *dm)
+{
+	uint64_t h = 1469598103934665603ull;
+	const MVert *mv = dm->getVertArray(dm);
+	const int nv = dm->getNumVerts(dm);
+	for (int i = 0; mv && i < nv; i++) {
+		h = hash_bytes(mv[i].co, sizeof(mv[i].co), h);
+	}
+	const MLoopUV *uv = (const MLoopUV *)dm->getLoopDataArray(dm, CD_MLOOPUV);
+	const int nl = dm->getNumLoops(dm);
+	for (int i = 0; uv && i < nl; i++) {
+		h = hash_bytes(uv[i].uv, sizeof(uv[i].uv), h);
+	}
+	return hash_bytes(&nl, sizeof(nl), h);
+}
+
+bool can_bake()
+{
+	return BLI_thread_is_main() && wglGetCurrentContext() != NULL;
+}
+
+/* The bake of material slot `slot` (1-based) on this mesh: baked now when
+ * missing or out of date and this thread can (dm given), else the last one. */
+const brmx::BakeResult *bake_for(Scene *scene, Object *ob, const void *key, Material *ma, int slot, DerivedMesh *dm)
+{
+	BakeStoreEntry &e = g_bakes[std::make_pair((const Material *)ma, key)];
+	const uint64_t sig = brmx::bake_signature(ma);
+	const uint64_t geo = dm ? geometry_signature(dm) : e.geometry;
+	if (e.ok && e.result.signature == sig && e.geometry == geo) {
+		return &e.result;
+	}
+	if (dm && can_bake()) {
+		const std::string name = std::string(ma->id.name + 2) + "_" + (ob->id.name + 2);
+		e.ok = brmx::bake_material(scene, ma, dm, slot, ob->obmat, name, e.result);
+		e.geometry = geo;
+		if (!e.ok && !e.noted) {
+			printf("BGE-Remix: material \"%s\" on \"%s\": %s\n", ma->id.name + 2, ob->id.name + 2,
+			       e.result.error.empty() ? "its procedural textures could not be baked" : e.result.error.c_str());
+			e.noted = true;
+		}
+		g_stats.bakes++;
+	}
+	return e.ok ? &e.result : NULL;
+}
 
 struct LightRec {
 	uint64_t hash;
@@ -300,6 +385,14 @@ public:
 		m_pick_objects.clear();
 		m_dome[0] = m_dome[1] = m_dome[2] = 0.0f;
 		m_frame_lights.clear();
+		/* the images that exist now (a mesh part's face image may be gone) */
+		m_live_images.clear();
+		Main *images_main = bmain ? bmain : G.main;
+		if (images_main) {
+			for (ID *id = (ID *)images_main->image.first; id; id = (ID *)id->next) {
+				m_live_images.insert(id);
+			}
+		}
 		scene_lighting(scene, m_light_scale, m_exposure);
 		const int meshes0 = g_stats.meshes_sent, materials0 = g_stats.materials_sent, lights0 = g_stats.lights_sent;
 
@@ -410,7 +503,7 @@ public:
 			bool still = false;
 			for (int i = 0; i < brmx::TEX_COUNT && !still; i++) {
 				std::wstring path;
-				if (r.spec->textures[i].image &&
+				if (r.spec->textures[i].wanted() &&
 				    m_cache.request(r.spec->textures[i], path) == brmx::TextureCache::WAITING)
 				{
 					still = true;
@@ -550,19 +643,49 @@ private:
 		}
 	}
 
-	MaterialRec &ensure_material(Material *ma)
+	/* face_image: P8.4, the faces' image for a material with Face Textures
+	 * (one Remix material per image, as the game makes) */
+	/* P8.6: a material with procedural textures is made per mesh (mesh_key,
+	 * with the object, its slot and, when this update built the mesh, its
+	 * derived mesh to bake on) */
+	MaterialRec &ensure_material(Material *ma, Image *face_image = NULL, const void *mesh_key = NULL,
+	                             Object *ob = NULL, int slot = 0, DerivedMesh *dm = NULL)
 	{
-		MaterialRec &r = m_materials[ma];
-		const std::string name = ma ? std::string(ma->id.name + 2) : std::string("__default__");
-		const bool tagged = ma && (ma->id.tag & LIB_TAG_ID_RECALC_ALL) && r.sent_gen != m_gen;
-		if (!r.known || r.name != name || tagged || (m_full && r.sent_gen != m_gen)) {
+		if (!brmx::uses_face_image(ma)) {
+			face_image = NULL;
+		}
+		const bool baked = mesh_key && ob && brmx::bake_slots(ma) != 0;
+		MaterialRec &r = m_materials[std::make_pair(std::make_pair((const Material *)ma, (const Image *)face_image),
+		                                            baked ? mesh_key : (const void *)NULL)];
+		std::string name = ma ? std::string(ma->id.name + 2) : std::string("__default__");
+		if (face_image) {
+			name += std::string(" / ") + (face_image->id.name + 2);
+		}
+		if (baked) {
+			name += std::string(" @ ") + (ob->id.name + 2);
+		}
+		const brmx::BakeResult *bake = baked ? bake_for(m_scene, ob, mesh_key, ma, slot, dm) : NULL;
+		const bool tagged = ((ma && (ma->id.tag & LIB_TAG_ID_RECALC_ALL)) ||
+		                     (face_image && (face_image->id.tag & LIB_TAG_ID_RECALC_ALL))) &&
+		                    r.sent_gen != m_gen;
+		/* a new bake (the store keeps one result per material and mesh, so a
+		 * changed one is told by its signature) */
+		const bool rebaked = baked && bake && (bake != r.bake || bake->signature != r.bake_signature);
+		if (!r.known || r.name != name || tagged || rebaked || (m_full && r.sent_gen != m_gen)) {
 			if (!r.known || r.name != name) {
-				r.hash = unique_hash("material", name, ma);
+				r.hash = unique_hash("material", name,
+				                     (face_image || baked) ? (const void *)&r : (const void *)ma);
 			}
 			r.known = true;
 			r.name = name;
 			r.spec.reset(new brmx::MaterialSpec());
 			brmx::translate_material(ma, *r.spec);
+			brmx::apply_face_image(ma, face_image, *r.spec);
+			if (bake) {
+				brmx::apply_bake(*bake, *r.spec);
+			}
+			r.bake = bake;
+			r.bake_signature = bake ? bake->signature : 0;
 			r.spec->desc.hash = r.hash;
 			for (size_t i = 0; i < r.spec->notes.size(); i++) {
 				printf("BGE-Remix: material \"%s\": %s\n", name.c_str(), r.spec->notes[i].c_str());
@@ -584,7 +707,7 @@ private:
 		bool waiting = false;
 		for (int i = 0; i < brmx::TEX_COUNT; i++) {
 			const brmx::TextureRequest &req = r.spec->textures[i];
-			if (!req.image) {
+			if (!req.wanted()) {
 				continue;
 			}
 			const brmx::TextureCache::State st = m_cache.request(req, paths[i]);
@@ -618,6 +741,21 @@ private:
 		return h;
 	}
 
+	/* P8.6: the procedural textures its materials bake */
+	static uint64_t bake_signature(Object *ob)
+	{
+		uint64_t h = 1469598103934665603ull;
+		const int n = std::max<int>(ob->totcol, 1);
+		for (int i = 1; i <= n; i++) {
+			Material *ma = give_current_material(ob, (short)i);
+			if (brmx::bake_slots(ma)) {
+				const uint64_t b = brmx::bake_signature(ma);
+				h = hash_bytes(&b, sizeof(b), h);
+			}
+		}
+		return h;
+	}
+
 	void add_mesh(Object *ob, float mat[4][4], uint32_t pick)
 	{
 		Mesh *me = (Mesh *)ob->data;
@@ -632,11 +770,12 @@ private:
 		}
 		/* the object's own mesh, or the mesh shared by all that draw it as it is */
 		const bool own = em || ob->modifiers.first || me->key || ob->partype == PARSKEL || object_materials;
-		const void *key = own ? (const void *)ob : (const void *)me;
+		const void *key = mesh_key(ob);
 		MeshRec &r = m_meshes[key];
 		const uint64_t materials = material_signature(ob);
+		const uint64_t bakes = bake_signature(ob);
 		const bool dirty = !r.known || (m_full && r.gen != m_gen) || r.edit != (em != NULL) ||
-		                   r.materials != materials ||
+		                   r.materials != materials || r.bakes != bakes ||
 		                   (r.gen != m_gen && (((ob->id.tag & LIB_TAG_ID_RECALC_DATA) && own) ||
 		                                       (me->id.tag & LIB_TAG_ID_RECALC_ALL)));
 		if (dirty && r.gen != m_gen) {
@@ -647,8 +786,9 @@ private:
 			r.known = true;
 			r.edit = em != NULL;
 			r.materials = materials;
+			r.bakes = bakes;
 			const bool had = r.geometry;
-			r.geometry = build_mesh(ob, em, r);
+			r.geometry = build_mesh(ob, em, r, key);
 			if (had && !r.geometry) {
 				m_bridge->mesh_destroy(r.hash);
 			}
@@ -656,11 +796,14 @@ private:
 		else if (r.gen != m_gen) {
 			/* the materials it uses stay alive (and go again when Blender tagged
 			 * them); their blending decides the draw's */
-			const int n = std::max<int>(ob->totcol, 1);
 			r.double_sided = r.blend = r.particle = false;
-			for (int i = 1; i <= n; i++) {
-				Material *ma = give_current_material(ob, (short)i);
-				const MaterialRec &mr = ensure_material(ma);
+			for (size_t p = 0; p < r.parts.size(); p++) {
+				Material *ma = give_current_material(ob, (short)(r.parts[p].first + 1));
+				Image *ima = r.parts[p].second;
+				if (ima && !m_live_images.count((const ID *)ima)) {
+					ima = NULL;
+				}
+				const MaterialRec &mr = ensure_material(ma, ima, key, ob, r.parts[p].first + 1);
 				r.double_sided = r.double_sided || !ma || !(ma->game.flag & GEMAT_BACKCULL);
 				r.blend = r.blend || mr.blend;
 				r.particle = r.particle || mr.particle;
@@ -680,9 +823,16 @@ private:
 
 	/* The mesh as the view shows it (modifiers, edit mode), by material:
 	 * as the game engine reads a deformed mesh (KX_RemixRenderer::CollectDerived). */
-	bool build_mesh(Object *ob, struct BMEditMesh *em, MeshRec &r)
+	bool build_mesh(Object *ob, struct BMEditMesh *em, MeshRec &r, const void *key)
 	{
-		const CustomDataMask mask = CD_MASK_BAREMESH | CD_MASK_MLOOPUV;
+		CustomDataMask mask = CD_MASK_BAREMESH | CD_MASK_MLOOPUV | CD_MASK_MTEXPOLY;
+		/* P8.6: a bake reads the original coordinates and the vertex colours */
+		for (int i = 1; i <= std::max<int>(ob->totcol, 1); i++) {
+			if (brmx::bake_slots(give_current_material(ob, (short)i))) {
+				mask |= CD_MASK_ORCO | CD_MASK_MCOL | CD_MASK_MLOOPCOL;
+				break;
+			}
+		}
 		DerivedMesh *dm = NULL;
 		if (em) {
 			DerivedMesh *final = NULL;
@@ -704,12 +854,20 @@ private:
 		const MVert *mv = dm->getVertArray(dm);
 		const int nv = dm->getNumVerts(dm);
 		const MLoopUV *uv = (const MLoopUV *)dm->getLoopDataArray(dm, CD_MLOOPUV);
+		/* P8.4: the faces' images, for the materials with Face Textures */
+		const MTexPoly *mtpoly = (const MTexPoly *)dm->getPolyDataArray(dm, CD_MTEXPOLY);
 		if (!tris || !loops || !polys || !mv || ntri <= 0) {
 			return false;
 		}
 		const int slots = std::max<int>(ob->totcol, 1);
-		std::vector<std::vector<brb_vertex>> verts(slots);
-		std::vector<std::vector<uint32_t>> indices(slots);
+		std::vector<bool> slot_face_image(slots, false);
+		for (int s = 0; s < slots; s++) {
+			slot_face_image[s] = mtpoly && brmx::uses_face_image(give_current_material(ob, (short)(s + 1)));
+		}
+		/* one part per material slot, split by face image where it matters */
+		typedef std::pair<int, Image *> PartKey;
+		std::map<PartKey, std::vector<brb_vertex>> verts;
+		std::map<PartKey, std::vector<uint32_t>> indices;
 		int last_poly = -1;
 		float pno[3] = {0.0f, 0.0f, 1.0f};
 		for (int t = 0; t < ntri; t++) {
@@ -729,8 +887,9 @@ private:
 				BKE_mesh_calc_poly_normal(&poly, loops + poly.loopstart, mv, pno);
 				last_poly = (int)lt.poly;
 			}
-			std::vector<brb_vertex> &v = verts[slot];
-			std::vector<uint32_t> &idx = indices[slot];
+			const PartKey part(slot, slot_face_image[slot] ? mtpoly[lt.poly].tpage : NULL);
+			std::vector<brb_vertex> &v = verts[part];
+			std::vector<uint32_t> &idx = indices[part];
 			const uint32_t base = (uint32_t)v.size();
 			for (int k = 0; k < 3; k++) {
 				const unsigned int l = lt.tri[k];
@@ -752,26 +911,33 @@ private:
 		}
 		std::vector<brb_surface_desc> surfaces;
 		r.double_sided = r.blend = r.particle = false;
-		for (int s = 0; s < slots; s++) {
-			if (indices[s].empty()) {
+		r.parts.clear();
+		for (std::map<PartKey, std::vector<uint32_t>>::iterator it = indices.begin(); it != indices.end(); ++it) {
+			if (it->second.empty()) {
 				continue;
 			}
-			Material *ma = give_current_material(ob, (short)(s + 1));
+			const PartKey &part = it->first;
+			Material *ma = give_current_material(ob, (short)(part.first + 1));
 			if (ma && ma->game.face_orientation == GEMAT_SHADOW) {
 				continue; /* as the game: Remix casts real shadows */
+			}
+			if (ma && (ma->game.flag & GEMAT_INVISIBLE)) {
+				continue; /* P8.8: Invisible, as the game draws it */
 			}
 			if (!ma || !(ma->game.flag & GEMAT_BACKCULL)) {
 				r.double_sided = true;
 			}
-			MaterialRec &mr = ensure_material(ma);
+			MaterialRec &mr = ensure_material(ma, part.second, key, ob, part.first + 1, dm);
+			r.parts.push_back(part);
 			r.blend = r.blend || mr.blend;
 			r.particle = r.particle || mr.particle;
+			std::vector<brb_vertex> &pv = verts[part];
 			brb_surface_desc sd;
 			memset(&sd, 0, sizeof(sd));
-			sd.vertices = verts[s].data();
-			sd.vertex_count = (uint32_t)verts[s].size();
-			sd.indices = indices[s].data();
-			sd.index_count = (uint32_t)indices[s].size();
+			sd.vertices = pv.data();
+			sd.vertex_count = (uint32_t)pv.size();
+			sd.indices = it->second.data();
+			sd.index_count = (uint32_t)it->second.size();
 			sd.material = mr.hash;
 			surfaces.push_back(sd);
 		}
@@ -838,7 +1004,9 @@ private:
 	bool m_full = false, m_for_render = false;
 	unsigned m_gen;
 	std::map<const void *, MeshRec> m_meshes;
-	std::map<const Material *, MaterialRec> m_materials;
+	/* by material, face image (P8.4) and, for baked procedural textures, mesh (P8.6) */
+	std::map<std::pair<std::pair<const Material *, const Image *>, const void *>, MaterialRec> m_materials;
+	std::set<const ID *> m_live_images;
 	std::map<const void *, LightRec> m_lights;
 	std::map<uint64_t, const void *> m_hashes;
 	std::vector<DrawItem> m_draws;
@@ -1238,6 +1406,40 @@ bool camera_matrices(RenderEngine *engine, Scene *scene, int width, int height, 
 
 extern "C" {
 
+/* P8.6: the procedural textures of the visible meshes (duplicated objects
+ * are baked when their originals are) */
+static void prebake_for_render(Scene *scene)
+{
+	Scene *sce_iter;
+	Base *base;
+	for (SETLOOPER(scene, sce_iter, base)) {
+		Object *ob = base->object;
+		if (ob->type != OB_MESH || !ob->data || !(base->lay & scene->lay) || (ob->restrictflag & OB_RESTRICT_RENDER)) {
+			continue;
+		}
+		const int n = std::max<int>(ob->totcol, 1);
+		bool any = false;
+		for (int i = 1; i <= n && !any; i++) {
+			any = brmx::bake_slots(give_current_material(ob, (short)i)) != 0;
+		}
+		if (!any) {
+			continue;
+		}
+		const CustomDataMask mask = CD_MASK_BAREMESH | CD_MASK_MLOOPUV | CD_MASK_MTEXPOLY | CD_MASK_ORCO |
+		                            CD_MASK_MCOL | CD_MASK_MLOOPCOL;
+		DerivedMesh *dm = mesh_get_derived_final(scene, ob, mask);
+		if (!dm) {
+			continue;
+		}
+		for (int i = 1; i <= n; i++) {
+			Material *ma = give_current_material(ob, (short)i);
+			if (brmx::bake_slots(ma)) {
+				bake_for(scene, ob, mesh_key(ob), ma, i, dm);
+			}
+		}
+	}
+}
+
 int BRMX_render_prepare(Scene *scene, const char **r_message)
 {
 	static std::string message;
@@ -1256,6 +1458,11 @@ int BRMX_render_prepare(Scene *scene, const char **r_message)
 			 * which the render thread must not wait for */
 			g_render_until = now_seconds() + 30.0;
 			BRMX_bridge()->resize(w, h, 0, 0);
+			/* P8.6: the render thread has no OpenGL: procedural textures are
+			 * baked here, for the meshes the render shows */
+			if (gl_current) {
+				prebake_for_render(scene);
+			}
 			return 1;
 		}
 	}
@@ -1486,14 +1693,14 @@ const char *BRMX_view_stats_json(void)
 	         "\"last_draws\": %d, \"highlighted\": %d, \"gl_differences\": %d, \"resized_frames\": %d, "
 	         "\"width\": %d, \"height\": %d, \"render_syncs\": %d, \"render_frames\": %d, \"render_reads\": %d, "
 	         "\"render_width\": %d, \"render_height\": %d, \"render_seconds\": %.3f, \"full_sync_ms\": %.2f, "
-	         "\"owner\": %d, \"main_reloads\": %d, ",
+	         "\"owner\": %d, \"main_reloads\": %d, \"bakes\": %d, ",
 	         g_stats.view_updates, g_stats.view_draws, g_stats.view_frames, g_stats.view_fallbacks,
 	         g_stats.view_full_syncs, g_stats.meshes_sent, g_stats.materials_sent, g_stats.lights_sent,
 	         g_stats.meshes_removed, g_stats.last_meshes, g_stats.last_materials, g_stats.last_lights,
 	         g_stats.last_draws, g_stats.highlighted, g_stats.gl_differences, g_stats.resized_frames, g_stats.width,
 	         g_stats.height, g_stats.render_syncs, g_stats.render_frames, g_stats.render_reads, g_stats.render_width,
 	         g_stats.render_height, g_stats.render_seconds, g_stats.first_frame_ms, BRMX_owner_kind(),
-	         g_stats.main_reloads);
+	         g_stats.main_reloads, g_stats.bakes);
 	json = buf;
 	std::string note;
 	for (char c : g_stats.last_note) {

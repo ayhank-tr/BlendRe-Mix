@@ -230,7 +230,8 @@ struct _object *BL_GameView_initPython(void);
 }
 
 class KX_Scene;
-void BL_GameViewReportGame(KX_Scene *kxscene, struct Main *maggie);
+class KX_BlenderSceneConverter;
+void BL_GameViewReportGame(KX_Scene *kxscene, struct Main *maggie, KX_BlenderSceneConverter *converter = NULL);
 #endif
 
 #endif  /* __BL_GAMEVIEW_H__ */

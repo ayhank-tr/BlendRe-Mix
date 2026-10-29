@@ -30,6 +30,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "BRMX_bake.h"
 #include "BRMX_material.h"
 
 extern "C" {
@@ -45,6 +46,10 @@ extern "C" {
 #include "BKE_node.h"
 
 #include "BLI_listbase.h"
+
+#include "GPU_material.h"
+
+#include "BKE_material_physical.h"
 }
 
 namespace brmx {
@@ -115,6 +120,7 @@ void defaults(MaterialSpec &s)
 	s.notes.clear();
 	s.source = MaterialSpec::DEFAULT;
 	s.particle = false;
+	s.bake_slots = 0;
 }
 
 TextureRequest texture(Image *ima, int kind, int channel = 0, int flags = 0)
@@ -198,63 +204,60 @@ Image *prop_image(const Material *ma, const char *name)
 	return (p && p->type == IDP_STRING) ? image_by_name(IDP_String(p)) : NULL;
 }
 
-enum { PANEL_OPAQUE = 0, PANEL_GLASS = 1, PANEL_SUBSURFACE = 2 };
-enum { PANEL_ALPHA_OPAQUE = 0, PANEL_ALPHA_BLEND = 1, PANEL_ALPHA_CLIP = 2 };
-
-bool from_panel(const Material *ma, MaterialSpec &s)
-{
-	if (!prop_int(ma, "bge_remix_override", 0)) {
-		return false;
-	}
-	brb_material_desc &d = s.desc;
-	s.source = MaterialSpec::PANEL;
-	const int type = prop_int(ma, "bge_remix_type", PANEL_OPAQUE);
-	set3(d.albedo, 0.8f, 0.8f, 0.8f);
-	prop_float3(ma, "bge_remix_albedo", d.albedo);
-	d.opacity = prop_float(ma, "bge_remix_opacity", 1.0f);
-	d.roughness = prop_float(ma, "bge_remix_roughness", 0.5f);
-	d.metallic = prop_float(ma, "bge_remix_metallic", 0.0f);
-	set3(d.emissive, 1.0f, 1.0f, 1.0f);
-	prop_float3(ma, "bge_remix_emissive", d.emissive);
-	d.emissive_intensity = prop_float(ma, "bge_remix_emissive_strength", 0.0f);
-	const int alpha = prop_int(ma, "bge_remix_alpha", PANEL_ALPHA_OPAQUE);
-	d.alpha_blend = alpha == PANEL_ALPHA_BLEND;
-	d.alpha_test = alpha == PANEL_ALPHA_CLIP;
-	d.alpha_cutoff = prop_float(ma, "bge_remix_alpha_cutoff", 0.5f);
-	if (alpha == PANEL_ALPHA_OPAQUE) {
-		d.opacity = 1.0f;
-	}
-	if (type == PANEL_GLASS) {
-		d.type = BRB_MATERIAL_TRANSLUCENT;
-		d.ior = prop_float(ma, "bge_remix_ior", 1.5f);
-		set3(d.transmittance, 1.0f, 1.0f, 1.0f);
-		prop_float3(ma, "bge_remix_transmittance", d.transmittance);
-	}
-	else if (type == PANEL_SUBSURFACE) {
-		d.subsurface = 1;
-		memcpy(d.subsurface_color, d.albedo, sizeof(d.subsurface_color));
-		prop_float3(ma, "bge_remix_subsurface_radius", d.subsurface_radius);
-	}
-	s.textures[TEX_ALBEDO] = texture(prop_image(ma, "bge_remix_albedo_image"), BRB_TEXTURE_COLOR);
-	s.textures[TEX_NORMAL] = texture(prop_image(ma, "bge_remix_normal_image"), BRB_TEXTURE_NORMAL);
-	s.textures[TEX_ROUGHNESS] = texture(prop_image(ma, "bge_remix_roughness_image"), BRB_TEXTURE_SCALAR);
-	s.textures[TEX_METALLIC] = texture(prop_image(ma, "bge_remix_metallic_image"), BRB_TEXTURE_SCALAR);
-	s.textures[TEX_EMISSIVE] = texture(prop_image(ma, "bge_remix_emissive_image"), BRB_TEXTURE_COLOR);
-	for (int i = 0; i < TEX_COUNT; i++) {
-		if (!s.textures[i].image) {
-			s.textures[i] = TextureRequest();
-		}
-	}
-	return true;
-}
-
 /* ------------------------------------------------------------------------- */
 /* 3. Blender Internal */
+
+void image_slots(const Material *ma, MaterialSpec &s, bool physical);
+
+/* P8.8: Classic settings Remix can show: a ray mirror (metal), raytraced
+ * glass, subsurface scattering, Z transparency, Add blending */
+void classic_extras(const Material *ma, MaterialSpec &s)
+{
+	brb_material_desc &d = s.desc;
+	if ((ma->mode & MA_TRANSP) && (ma->mode & MA_ZTRANSP) && ma->alpha < 1.0f && !d.alpha_blend && !d.alpha_test) {
+		/* Z transparency: see-through by the alpha, as F12 */
+		d.alpha_blend = 1;
+		d.opacity = ma->alpha;
+	}
+	if (ma->game.alpha_blend == GEMAT_ADD) {
+		d.additive = 1;
+	}
+	if ((ma->mode & MA_RAYMIRROR) && ma->ray_mirror > 0.0f) {
+		const float rm = std::min(ma->ray_mirror, 1.0f);
+		if (ma->fresnel_mir <= 0.0f) {
+			/* a mirror of the same strength at every angle: metal, in the
+			 * mirror's colour */
+			d.metallic = rm;
+			for (int i = 0; i < 3; i++) {
+				d.albedo[i] = d.albedo[i] * (1.0f - rm) + (&ma->mirr)[i] * rm;
+			}
+		}
+		/* with Fresnel: Remix's own Fresnel reflects; the gloss blurs */
+		d.roughness = std::min(std::max(1.0f - ma->gloss_mir, 0.0f), 1.0f);
+	}
+	if ((ma->mode & MA_TRANSP) && (ma->mode & MA_RAYTRANSP) && ma->alpha < 1.0f) {
+		d.type = BRB_MATERIAL_TRANSLUCENT;
+		d.ior = std::min(std::max(ma->ang, 1.0f), 3.0f);
+		/* Filter tints the light passing through by the diffuse colour */
+		const float f = std::min(std::max(ma->filter, 0.0f), 1.0f);
+		set3(d.transmittance, 1.0f - f + f * ma->r, 1.0f - f + f * ma->g, 1.0f - f + f * ma->b);
+		d.alpha_blend = 0;
+		d.additive = 0;
+	}
+	if ((ma->sss_flag & MA_DIFF_SSS) && d.type != BRB_MATERIAL_TRANSLUCENT) {
+		d.subsurface = 1;
+		memcpy(d.subsurface_color, ma->sss_col, sizeof(d.subsurface_color));
+		for (int i = 0; i < 3; i++) {
+			d.subsurface_radius[i] = ma->sss_radius[i] * ma->sss_scale;
+		}
+	}
+}
 
 void from_blender_internal(const Material *ma, MaterialSpec &s)
 {
 	brb_material_desc &d = s.desc;
 	s.source = MaterialSpec::BLENDER_INTERNAL;
+	s.bake_slots = bake_slots(ma);
 	set3(d.albedo, ma->r * ma->ref, ma->g * ma->ref, ma->b * ma->ref);
 	d.opacity = ma->alpha;
 	d.roughness = hardness_to_roughness(ma);
@@ -276,7 +279,15 @@ void from_blender_internal(const Material *ma, MaterialSpec &s)
 		d.opacity = 1.0f;
 	}
 
-	/* image texture slots */
+	image_slots(ma, s, false);
+	classic_extras(ma, s);
+}
+
+/* The image texture slots (P8.7: a physical material's Hardness slot is
+ * its roughness, its Ray Mirror slot its metallic value) */
+void image_slots(const Material *ma, MaterialSpec &s, bool physical)
+{
+	brb_material_desc &d = s.desc;
 	Image *albedo_image = NULL;
 	for (int i = 0; i < MAX_MTEX; i++) {
 		const MTex *mtex = ma->mtex[i];
@@ -286,8 +297,9 @@ void from_blender_internal(const Material *ma, MaterialSpec &s)
 		const Tex *tex = mtex->tex;
 		const std::string slot = std::string("texture slot ") + (mtex->tex->id.name + 2);
 		if (tex->type != TEX_IMAGE || !tex->ima) {
-			if (mtex->mapto & (MAP_COL | MAP_NORM | MAP_EMIT | MAP_HAR)) {
-				note(s, slot + ": not an image texture, left out");
+			/* P8.6: procedural textures are baked per mesh (BRMX_bake.h) */
+			if ((mtex->mapto & (MAP_COL | MAP_NORM | MAP_EMIT | MAP_HAR)) && !GPU_texture_is_procedural(tex)) {
+				note(s, slot + ": not an image or procedural texture, left out");
 			}
 			continue;
 		}
@@ -321,8 +333,11 @@ void from_blender_internal(const Material *ma, MaterialSpec &s)
 			}
 		}
 		if ((mtex->mapto & MAP_HAR) && !s.textures[TEX_ROUGHNESS].image) {
-			/* bright = hard = smooth */
-			s.textures[TEX_ROUGHNESS] = texture(tex->ima, BRB_TEXTURE_SCALAR, 0, BRB_TEXTURE_INVERT);
+			/* Classic: bright = hard = smooth; physical: the roughness */
+			s.textures[TEX_ROUGHNESS] = texture(tex->ima, BRB_TEXTURE_SCALAR, 0, physical ? 0 : BRB_TEXTURE_INVERT);
+		}
+		if (physical && (mtex->mapto & MAP_RAYMIRR) && !s.textures[TEX_METALLIC].image) {
+			s.textures[TEX_METALLIC] = texture(tex->ima, BRB_TEXTURE_SCALAR);
 		}
 		if ((mtex->mapto & MAP_ALPHA) && tex->ima != albedo_image) {
 			note(s, slot + ": alpha from an image other than the colour texture, left out");
@@ -333,6 +348,67 @@ void from_blender_internal(const Material *ma, MaterialSpec &s)
 			d.opacity = 1.0f;
 		}
 	}
+}
+
+/* ------------------------------------------------------------------------- */
+/* P8.7: the physical material (BKE_material_physical.h), read as the game
+ * and F12 read it */
+
+void game_alpha(const Material *ma, brb_material_desc &d)
+{
+	const int blend = ma->game.alpha_blend;
+	d.alpha_blend = (blend == GEMAT_ALPHA || blend == GEMAT_ALPHA_SORT || blend == GEMAT_ADD) ? 1 : 0;
+	d.alpha_test = (blend == GEMAT_CLIP) ? 1 : 0;
+	if (!d.alpha_blend) {
+		d.opacity = 1.0f;
+	}
+}
+
+bool from_physical(const Material *ma, MaterialSpec &s)
+{
+	if (!BKE_material_is_physical(ma)) {
+		return false;
+	}
+	MaterialPhysical ph;
+	BKE_material_physical_get(ma, &ph);
+	brb_material_desc &d = s.desc;
+	s.source = MaterialSpec::PHYSICAL;
+	s.bake_slots = bake_slots(ma);
+	memcpy(d.albedo, ph.base, sizeof(d.albedo));
+	d.opacity = ph.alpha;
+	d.roughness = ph.roughness;
+	d.metallic = ph.metallic;
+	if (ph.emission_strength > 0.0f) {
+		memcpy(d.emissive, ph.emission, sizeof(d.emissive));
+		d.emissive_intensity = ph.emission_strength;
+	}
+	if (ma->mode & MA_SHLESS) {
+		set3(d.albedo, 0.0f, 0.0f, 0.0f);
+		memcpy(d.emissive, ph.base, sizeof(d.emissive));
+		d.emissive_intensity = 1.0f;
+	}
+	game_alpha(ma, d);
+	if (ma->game.alpha_blend == GEMAT_ADD) {
+		d.additive = 1; /* P8.8 */
+	}
+	if (ph.transmission > 0.0f) {
+		/* Remix's glass is all or nothing */
+		if (ph.transmission < 1.0f) {
+			note(s, "transmission between 0 and 1: Remix draws it as glass from 0.5 up, else opaque");
+		}
+		if (ph.transmission >= 0.5f) {
+			d.type = BRB_MATERIAL_TRANSLUCENT;
+			d.ior = std::min(std::max(ph.ior, 1.0f), 3.0f);
+			memcpy(d.transmittance, ph.base, sizeof(d.transmittance));
+		}
+	}
+	if (ph.subsurface > 0.0f && d.type != BRB_MATERIAL_TRANSLUCENT) {
+		d.subsurface = 1;
+		memcpy(d.subsurface_color, ph.base, sizeof(d.subsurface_color));
+		memcpy(d.subsurface_radius, ph.subsurface_radius, sizeof(d.subsurface_radius));
+	}
+	image_slots(ma, s, true);
+	return true;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -724,13 +800,47 @@ void translate_material(const Material *ma, MaterialSpec &r_spec)
 	/* whatever the material's source: sprites and particles */
 	r_spec.particle = prop_int(ma, "bge_remix_particle", 0) != 0 ||
 	                  (ma->game.face_orientation & GEMAT_HALO) != 0;
-	if (from_panel(ma, r_spec)) {
-		return;
-	}
 	if (from_nodes(ma, r_spec)) {
 		return;
 	}
+	/* P8.7: the RTX Remix panel's values are the physical material's now
+	 * (BKE_material_physical_from_remix_panel) */
+	if (from_physical(ma, r_spec)) {
+		return;
+	}
 	from_blender_internal(ma, r_spec);
+}
+
+bool uses_face_image(const Material *ma)
+{
+	return ma && (ma->mode & MA_FACETEXTURE);
+}
+
+void apply_face_image(const Material *ma, Image *face_image, MaterialSpec &r_spec)
+{
+	if (!uses_face_image(ma) || !face_image) {
+		return;
+	}
+	if (r_spec.source == MaterialSpec::NODES) {
+		/* as Blender Internal and the game: the node tree decides */
+		return;
+	}
+	brb_material_desc &d = r_spec.desc;
+	if (r_spec.textures[TEX_ALBEDO].image) {
+		/* a texture slot (or the panel's image) paints over the face image,
+		 * as the game's shader mixes it on top */
+		note(r_spec, "a texture slot gives the colour; the face image is left out");
+		return;
+	}
+	r_spec.textures[TEX_ALBEDO] = texture(face_image, BRB_TEXTURE_COLOR);
+	if (r_spec.source == MaterialSpec::BLENDER_INTERNAL) {
+		/* the image replaces the material colour */
+		set3(d.albedo, ma->ref, ma->ref, ma->ref);
+	}
+	if ((ma->mode & MA_FACETEXTURE_ALPHA) && (d.alpha_blend || d.alpha_test)) {
+		/* the image's alpha is the opacity */
+		d.opacity = 1.0f;
+	}
 }
 
 }  /* namespace brmx */

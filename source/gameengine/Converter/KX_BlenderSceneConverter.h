@@ -40,6 +40,7 @@
 #include "KX_IpoConvert.h"
 
 #include <map>
+#include <set>
 #include <unordered_set>
 
 using namespace std;
@@ -98,6 +99,10 @@ class KX_BlenderSceneConverter : public KX_ISceneConverter
 	bool					m_usemat;
 	bool					m_useglslmat;
 	bool					m_use_mat_cache;
+
+	/* BGE-Remix P8: which materials' GLSL shaders could be built */
+	std::map<Material *, bool>	m_glslWorks;
+	std::set<Material *>		m_glslFailed;
 
 public:
 	KX_BlenderSceneConverter(
@@ -166,6 +171,13 @@ public:
 	// use blender glsl materials
 	virtual void SetGLSLMaterials(bool val);
 	virtual bool GetGLSLMaterials();
+
+	/* BGE-Remix P8: build the material's GLSL shader now; false (and a
+	 * console line) when it cannot be built, so the material falls back to
+	 * the fixed-function drawing. BGE_REMIX_GLSL_FAIL=<material name> makes
+	 * it fail on purpose (tests). */
+	bool MaterialGLSLWorks(KX_Scene *scene, struct Material *ma);
+	const std::set<struct Material *> &GetGLSLFailures() const { return m_glslFailed; }
 
 	// cache materials during conversion
 	virtual void SetCacheMaterials(bool val);

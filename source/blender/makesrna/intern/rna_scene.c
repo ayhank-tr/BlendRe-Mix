@@ -1957,6 +1957,13 @@ static int rna_GameSettings_physics_engine_get(PointerRNA *ptr)
 	return gm->physicsEngine;
 }
 
+/* BGE-Remix P8: one material mode (GLSL); old scripts may still set it */
+static void rna_GameSettings_material_mode_set(PointerRNA *ptr, int UNUSED(value))
+{
+	GameData *gm = (GameData *)ptr->data;
+	gm->matmode = GAME_MAT_GLSL;
+}
+
 static void rna_GameSettings_physics_engine_set(PointerRNA *ptr, int value)
 {
 	GameData *gm = (GameData *)ptr->data;
@@ -4634,7 +4641,8 @@ static void rna_def_scene_game_data(BlenderRNA *brna)
 	};
 
 	static EnumPropertyItem material_items[] = {
-		{GAME_MAT_MULTITEX, "MULTITEXTURE", 0, "Multitexture", "Multitexture materials"},
+		{GAME_MAT_MULTITEX, "MULTITEXTURE", 0, "Multitexture",
+		 "Kept for old scripts only: BGE-Remix has one material mode, GLSL"},
 		{GAME_MAT_GLSL, "GLSL", 0, "GLSL", "OpenGL shading language shaders"},
 		{0, NULL, 0, NULL, NULL}
 	};
@@ -4982,7 +4990,9 @@ static void rna_def_scene_game_data(BlenderRNA *brna)
 	prop = RNA_def_property(srna, "material_mode", PROP_ENUM, PROP_NONE);
 	RNA_def_property_enum_sdna(prop, NULL, "matmode");
 	RNA_def_property_enum_items(prop, material_items);
-	RNA_def_property_ui_text(prop, "Material Mode", "Material mode to use for rendering");
+	RNA_def_property_enum_funcs(prop, NULL, "rna_GameSettings_material_mode_set", NULL);
+	RNA_def_property_ui_text(prop, "Material Mode",
+	                         "Material mode to use for rendering (BGE-Remix: always GLSL; setting it does nothing)");
 	RNA_def_property_update(prop, NC_SCENE | NA_EDITED, NULL);
 
 	prop = RNA_def_property(srna, "use_glsl_lights", PROP_BOOLEAN, PROP_NONE);

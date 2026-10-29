@@ -84,6 +84,7 @@ extern "C" {
 }
 
 #include "BRMX_loader.h"  /* C linkage inside */
+#include "BRMX_bake.h"
 #include "BRMX_light.h"
 #include "BRMX_material.h"
 #include "BRMX_present.h"
@@ -325,6 +326,12 @@ KX_RemixRenderer::KX_RemixRenderer(RAS_ICanvas *canvas, bool window_mode_allowed
 	m_materials_waiting = 0;
 	m_materials_swapped = 0;
 	m_material_notes = 0;
+	m_bakes = m_rebakes = 0;
+	m_bake_ms = 0.0;
+	m_bakes_checked = 0.0;
+	for (int i = 0; i < 16; i++) {
+		m_bake_obmat[i] = (i % 5 == 0) ? 1.0f : 0.0f;
+	}
 	m_max_swap_ms = 0.0;
 	m_frame_ms_max = 0.0;
 	m_last_render = 0.0;
@@ -724,13 +731,18 @@ uint64_t KX_RemixRenderer::UniqueHash(const std::string &kind, const std::string
 	}
 }
 
-uint64_t KX_RemixRenderer::EnsureMaterial(KX_Scene *scene, RAS_IPolyMaterial *pm)
+const KX_RemixRenderer::MaterialEntry &KX_RemixRenderer::EnsureMaterial(KX_Scene *scene, RAS_IPolyMaterial *pm,
+                                                                         RAS_MeshObject *mesh)
 {
 	const std::string name = pm ? pm->GetMaterialName().ReadPtr() : "__default__";
-	std::map<const void *, MaterialEntry>::iterator it = m_materials.find(pm);
+	Material *ma = pm ? pm->GetBlenderMaterial() : NULL;
+	/* P8.6: procedural textures are baked on each mesh's UV map */
+	const bool baked = mesh && brmx::bake_slots(ma) != 0;
+	const std::pair<const void *, const void *> key(pm, baked ? (const void *)mesh : NULL);
+	std::map<std::pair<const void *, const void *>, MaterialEntry>::iterator it = m_materials.find(key);
 	if (it != m_materials.end()) {
 		if (it->second.name == name) {
-			return it->second.hash;
+			return it->second;
 		}
 		/* a different material at the address of a freed one */
 		m_bridge->material_destroy(it->second.hash);
@@ -745,8 +757,13 @@ uint64_t KX_RemixRenderer::EnsureMaterial(KX_Scene *scene, RAS_IPolyMaterial *pm
 	 * (source/blender/remix/intern/remix_material.cc) */
 	MaterialEntry e;
 	e.spec.reset(new brmx::MaterialSpec());
-	brmx::translate_material(pm ? pm->GetBlenderMaterial() : NULL, *e.spec);
-	e.spec->desc.hash = UniqueHash("material", name, pm);
+	brmx::translate_material(ma, *e.spec);
+	if (pm) {
+		/* P8.4: Face Textures make one polymaterial per face image */
+		brmx::apply_face_image(ma, pm->GetBlenderImage(), *e.spec);
+	}
+	e.spec->desc.hash = baked ? UniqueHash("material", name + "@" + mesh->GetName().ReadPtr(), &m_materials[key])
+	                          : UniqueHash("material", name, pm);
 	for (size_t i = 0; i < e.spec->notes.size(); i++) {
 		printf("BGE-Remix: material \"%s\": %s\n", name.c_str(), e.spec->notes[i].c_str());
 		m_material_notes++;
@@ -758,9 +775,81 @@ uint64_t KX_RemixRenderer::EnsureMaterial(KX_Scene *scene, RAS_IPolyMaterial *pm
 	e.blend = e.spec->desc.alpha_blend != 0;
 	e.particle = e.spec->particle;
 	e.waiting = false;
+	e.pm = pm;
+	if (baked) {
+		e.mesh = mesh;
+		memcpy(e.obmat, m_bake_obmat, sizeof(e.obmat));
+		Bake(e);
+	}
 	SendMaterial(e);
-	m_materials[pm] = e;
-	return e.hash;
+	MaterialEntry &stored = m_materials[key];
+	stored = e;
+	return stored;
+}
+
+/* P8.6: the procedural textures of a material, baked on its mesh (the mesh
+ * as converted, where the first object using it was) */
+void KX_RemixRenderer::Bake(MaterialEntry &e)
+{
+	Material *ma = e.pm ? e.pm->GetBlenderMaterial() : NULL;
+	Mesh *me = e.mesh ? e.mesh->GetMesh() : NULL;
+	brmx::BakeResult r;
+	const double t0 = now_seconds();
+	DerivedMesh *dm = brmx::bake_mesh_from(me);
+	float obmat[4][4];
+	memcpy(obmat, e.obmat, sizeof(obmat));
+	const std::string name = e.name + "_" + e.mesh->GetName().ReadPtr();
+	const bool ok = dm && brmx::bake_material(e.scene->GetBlenderScene(), ma, dm, e.pm->GetMaterialIndex() + 1, obmat,
+	                                         name, r);
+	if (dm) {
+		dm->release(dm);
+	}
+	e.bake_signature = brmx::bake_signature(ma);
+	e.bake_checked = now_seconds();
+	m_bake_ms += (e.bake_checked - t0) * 1000.0;
+	if (ok) {
+		brmx::apply_bake(r, *e.spec);
+		printf("BGE-Remix: material \"%s\" on mesh \"%s\": procedural textures baked (%.0f ms)\n", e.name.c_str(),
+		       e.mesh->GetName().ReadPtr(), (now_seconds() - t0) * 1000.0);
+		m_bakes++;
+	}
+	else {
+		NoteOnce("material \"" + e.name + "\" on mesh \"" + e.mesh->GetName().ReadPtr() + "\": " +
+		         (r.error.empty() ? std::string("its procedural textures could not be baked") : r.error));
+	}
+	fflush(stdout);
+}
+
+/* P8.6: a texture changed while playing (an animation, a script): baked
+ * again, a few times a second at most */
+void KX_RemixRenderer::UpdateBakes(KX_Scene *scene)
+{
+	const double now = now_seconds();
+	if (now - m_bakes_checked < 0.25) {
+		return;
+	}
+	m_bakes_checked = now;
+	for (std::map<std::pair<const void *, const void *>, MaterialEntry>::iterator it = m_materials.begin();
+	     it != m_materials.end(); ++it)
+	{
+		MaterialEntry &e = it->second;
+		if (!e.mesh || e.scene != scene || !e.pm) {
+			continue;
+		}
+		Material *ma = e.pm->GetBlenderMaterial();
+		if (brmx::bake_signature(ma) == e.bake_signature) {
+			continue;
+		}
+		/* the translator again, then the bake, under the same hash */
+		const uint64_t hash = e.hash;
+		e.spec.reset(new brmx::MaterialSpec());
+		brmx::translate_material(ma, *e.spec);
+		brmx::apply_face_image(ma, e.pm->GetBlenderImage(), *e.spec);
+		e.spec->desc.hash = hash;
+		Bake(e);
+		SendMaterial(e);
+		m_rebakes++;
+	}
 }
 
 void KX_RemixRenderer::SendMaterial(MaterialEntry &e)
@@ -772,7 +861,7 @@ void KX_RemixRenderer::SendMaterial(MaterialEntry &e)
 	bool waiting = false;
 	for (int i = 0; i < brmx::TEX_COUNT; i++) {
 		const brmx::TextureRequest &req = e.spec->textures[i];
-		if (!req.image) {
+		if (!req.wanted()) {
 			continue;
 		}
 		const brmx::TextureCache::State st = m_cache->request(req, paths[i]);
@@ -801,7 +890,9 @@ void KX_RemixRenderer::UpdateTextures(KX_Scene *scene)
 	m_cache->poll();
 	const double t0 = now_seconds();
 	bool swapped = false;
-	for (std::map<const void *, MaterialEntry>::iterator it = m_materials.begin(); it != m_materials.end(); ++it) {
+	for (std::map<std::pair<const void *, const void *>, MaterialEntry>::iterator it = m_materials.begin();
+	     it != m_materials.end(); ++it)
+	{
 		MaterialEntry &e = it->second;
 		if (!e.waiting || e.scene != scene) {
 			continue;
@@ -810,7 +901,7 @@ void KX_RemixRenderer::UpdateTextures(KX_Scene *scene)
 		bool still = false;
 		for (int i = 0; i < brmx::TEX_COUNT && !still; i++) {
 			std::wstring path;
-			if (e.spec->textures[i].image &&
+			if (e.spec->textures[i].wanted() &&
 			    m_cache->request(e.spec->textures[i], path) == brmx::TextureCache::WAITING)
 			{
 				still = true;
@@ -920,10 +1011,10 @@ void KX_RemixRenderer::Collect(KX_Scene *scene, RAS_MeshObject *mesh, void *clie
 		if (!ma || !(ma->game.flag & GEMAT_BACKCULL)) {
 			g.double_sided = true;
 		}
-		g.materials.push_back(EnsureMaterial(scene, pm));
 		/* see-through as the translator decided (game settings, Cycles'
 		 * Transparent BSDF, the RTX Remix panel) */
-		const MaterialEntry &me = m_materials[pm];
+		const MaterialEntry &me = EnsureMaterial(scene, pm, mesh);
+		g.materials.push_back(me.hash);
 		g.blend = g.blend || me.blend;
 		g.particle = g.particle || me.particle;
 		if (mode & RAS_IPolyMaterial::BILLBOARD_SCREENALIGNED) {
@@ -1002,6 +1093,10 @@ void KX_RemixRenderer::CollectDerived(KX_Scene *scene, RAS_MeshObject *mesh, Der
 			continue;
 		}
 		const int matnr = pm ? pm->GetMaterialIndex() : 0;
+		Material *bma = pm ? pm->GetBlenderMaterial() : NULL;
+		if (bma && (bma->game.flag & GEMAT_INVISIBLE)) {
+			continue; /* P8.8: Invisible faces are not drawn (the game leaves them out of its arrays) */
+		}
 		std::vector<brb_vertex> v;
 		std::vector<uint32_t> idx;
 		for (int f = 0; f < nf; f++) {
@@ -1057,8 +1152,8 @@ void KX_RemixRenderer::CollectDerived(KX_Scene *scene, RAS_MeshObject *mesh, Der
 		if (!ma || !(ma->game.flag & GEMAT_BACKCULL)) {
 			g.double_sided = true;
 		}
-		g.materials.push_back(EnsureMaterial(scene, pm));
-		const MaterialEntry &me = m_materials[pm];
+		const MaterialEntry &me = EnsureMaterial(scene, pm, mesh);
+		g.materials.push_back(me.hash);
 		g.blend = g.blend || me.blend;
 		g.particle = g.particle || me.particle;
 		g.verts.push_back(v);
@@ -1705,6 +1800,7 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 	ShowRemixWindow(true);
 
 	m_bridge->frame_begin();
+	UpdateBakes(scene);
 	UpdateTextures(scene);
 
 	float v[16], p[16];
@@ -1742,6 +1838,7 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 		}
 		float model[16];
 		object_matrix(obj, model);
+		memcpy(m_bake_obmat, model, sizeof(m_bake_obmat)); /* P8.6 */
 		const uint32_t pick = PickId(obj);
 		int first = 0;
 		/* armatures, shape keys, modifiers, soft bodies (mesh 0) */
@@ -1971,6 +2068,8 @@ void KX_RemixRenderer::WriteStats()
 	        m_first_textured_frame, m_first_textured_seconds);
 	fprintf(f, "  \"materials_swapped\": %d,\n  \"material_notes\": %d,\n  \"swap_ms_max\": %.4f,\n",
 	        m_materials_swapped, m_material_notes, m_max_swap_ms);
+	fprintf(f, "  \"procedural_bakes\": %d,\n  \"procedural_rebakes\": %d,\n  \"procedural_bake_ms\": %.2f,\n",
+	        m_bakes, m_rebakes, m_bake_ms);
 	/* P4 (the counts are the last frame's) */
 	fprintf(f, "  \"skinned_objects\": %d,\n  \"skinned_draws\": %d,\n  \"bones_last_frame\": %d,\n",
 	        m_skinned_objects, st.skinned_draws, st.bones);

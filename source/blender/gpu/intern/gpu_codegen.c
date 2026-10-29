@@ -56,11 +56,15 @@
 #include <stdarg.h>
 
 extern char datatoc_gpu_shader_material_glsl[];
+extern char datatoc_gpu_shader_material_procedural_glsl[];
 extern char datatoc_gpu_shader_vertex_glsl[];
 extern char datatoc_gpu_shader_vertex_world_glsl[];
 extern char datatoc_gpu_shader_geometry_glsl[];
 
 static char *glsl_material_library = NULL;
+/* BGE-Remix P8.5: the library with Blender Internal's procedural textures,
+ * only for the materials that use one (they are large to compile) */
+static char *glsl_material_library_procedural = NULL;
 
 
 /* type definitions and constants */
@@ -267,6 +271,7 @@ static GPUFunction *gpu_lookup_function(const char *name)
 	if (!FUNCTION_HASH) {
 		FUNCTION_HASH = BLI_ghash_str_new("GPU_lookup_function gh");
 		gpu_parse_functions_string(FUNCTION_HASH, glsl_material_library);
+		gpu_parse_functions_string(FUNCTION_HASH, datatoc_gpu_shader_material_procedural_glsl);
 	}
 
 	return BLI_ghash_lookup(FUNCTION_HASH, (const void *)name);
@@ -294,6 +299,10 @@ void gpu_codegen_exit(void)
 	if (glsl_material_library) {
 		MEM_freeN(glsl_material_library);
 		glsl_material_library = NULL;
+	}
+	if (glsl_material_library_procedural) {
+		MEM_freeN(glsl_material_library_procedural);
+		glsl_material_library_procedural = NULL;
 	}
 
 #if 0
@@ -770,6 +779,7 @@ static char *code_generate_vertex(ListBase *nodes, const GPUMatType type)
 
 	switch (type) {
 		case GPU_MATERIAL_TYPE_MESH:
+		case GPU_MATERIAL_TYPE_MESH_BAKE:
 			vertcode = datatoc_gpu_shader_vertex_glsl;
 			break;
 		case GPU_MATERIAL_TYPE_WORLD:
@@ -827,6 +837,22 @@ static char *code_generate_vertex(ListBase *nodes, const GPUMatType type)
 					BLI_dynstr_appendf(ds, "\tgl_FrontColor = gl_Color;\n");
 				}
 			}
+
+	/* BGE-Remix P8.6: a bake draws the surface at its active UV map */
+	if (type == GPU_MATERIAL_TYPE_MESH_BAKE) {
+		bool found = false;
+		for (node = nodes->first; node && !found; node = node->next) {
+			for (input = node->inputs.first; input && !found; input = input->next) {
+				if (input->source == GPU_SOURCE_ATTRIB && input->attribfirst &&
+				    input->attribtype == CD_MTFACE && input->attribname[0] == '\0')
+				{
+					BLI_dynstr_appendf(ds, "\tgl_Position = vec4(att%d.xy * 2.0 - vec2(1.0), 0.0, 1.0);\n",
+					                   input->attribid);
+					found = true;
+				}
+			}
+		}
+	}
 
 	BLI_dynstr_append(ds, "}\n");
 
@@ -917,7 +943,22 @@ void GPU_code_generate_glsl_lib(void)
 
 	glsl_material_library = BLI_dynstr_get_cstring(ds);
 
+	BLI_dynstr_append(ds, datatoc_gpu_shader_material_procedural_glsl);
+	glsl_material_library_procedural = BLI_dynstr_get_cstring(ds);
+
 	BLI_dynstr_free(ds);
+}
+
+/* BGE-Remix P8.5: whether the nodes call the procedural texture library */
+static bool gpu_nodes_use_procedural(ListBase *nodes)
+{
+	GPUNode *node;
+	for (node = nodes->first; node; node = node->next) {
+		if (node->name && STREQLEN(node->name, "proc_", 5)) {
+			return true;
+		}
+	}
+	return false;
 }
 
 
@@ -1657,6 +1698,7 @@ GPUPass *GPU_generate_pass(
 	GPUShader *shader;
 	GPUPass *pass;
 	char *vertexcode, *geometrycode, *fragmentcode;
+	const char *libcode;
 
 #if 0
 	if (!FUNCTION_LIB) {
@@ -1670,6 +1712,8 @@ GPUPass *GPU_generate_pass(
 
 	gpu_nodes_get_vertex_attributes(nodes, attribs);
 	gpu_nodes_get_builtin_flag(nodes, builtins);
+
+	libcode = gpu_nodes_use_procedural(nodes) ? glsl_material_library_procedural : glsl_material_library;
 
 	/* generate code and compile with opengl */
 	fragmentcode = code_generate_fragment(nodes, outlink->output);
@@ -1686,7 +1730,7 @@ GPUPass *GPU_generate_pass(
 	shader = GPU_shader_create_ex(vertexcode,
 	                              fragmentcode,
 	                              geometrycode,
-	                              glsl_material_library,
+	                              libcode,
 	                              NULL,
 	                              0,
 	                              0,
@@ -1713,7 +1757,7 @@ GPUPass *GPU_generate_pass(
 	pass->fragmentcode = fragmentcode;
 	pass->geometrycode = geometrycode;
 	pass->vertexcode = vertexcode;
-	pass->libcode = glsl_material_library;
+	pass->libcode = libcode;
 
 	/* extract dynamic inputs and throw away nodes */
 	gpu_nodes_extract_dynamic_inputs(pass, nodes);

@@ -46,7 +46,8 @@ BL_BlenderShader::BL_BlenderShader(KX_Scene *scene, struct Material *ma, int lig
 :
 	mMat(ma),
 	mLightLayer(lightlayer),
-	mGPUMat(NULL)
+	mGPUMat(NULL),
+	mFaceImage(NULL)
 {
 	mBlenderScene = scene->GetBlenderScene();
 	mAlphaBlend = GPU_BLEND_SOLID;
@@ -77,6 +78,8 @@ void BL_BlenderShader::SetProg(bool enable, double time, RAS_IRasterizer* rasty)
 			view.getValue(&viewmat[0][0]);
 			viewinv.getValue(&viewinvmat[0][0]);
 
+			if (GPU_material_uses_face_image(mGPUMat))
+				GPU_material_set_face_image(mGPUMat, mFaceImage);
 			GPU_material_bind(mGPUMat, mLightLayer, mBlenderScene->lay, time, 1, viewmat, viewinvmat, NULL, false);
 		}
 		else
@@ -182,7 +185,8 @@ int BL_BlenderShader::GetAlphaBlend()
 bool BL_BlenderShader::Equals(BL_BlenderShader *blshader)
 {
 	/* to avoid unneeded state switches */
-	return (blshader && mMat == blshader->mMat && mLightLayer == blshader->mLightLayer);
+	return (blshader && mMat == blshader->mMat && mLightLayer == blshader->mLightLayer &&
+	        mFaceImage == blshader->mFaceImage);
 }
 
 // eof

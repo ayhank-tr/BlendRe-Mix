@@ -77,6 +77,7 @@
 #include "KX_NavMeshObject.h"
 
 #include "BL_Action.h" // For managing action lock.
+#include "GPU_material.h" /* BGE-Remix P8.5 */
 
 #ifdef WITH_REMIX
 #  include "KX_RemixRenderer.h"
@@ -831,6 +832,11 @@ bool KX_KetsjiEngine::NextFrame()
 
 void KX_KetsjiEngine::Render()
 {
+	/* BGE-Remix P8.5: where the texture coordinate objects are */
+	for (KX_SceneList::iterator sit = m_scenes.begin(); sit != m_scenes.end(); ++sit) {
+		(*sit)->UpdateTexcoObjects();
+	}
+
 	if (m_usedome) {
 		RenderDome();
 		return;
@@ -1437,6 +1443,9 @@ void KX_KetsjiEngine::StopEngine()
 			KX_Scene* scene = *sceneit;
 			m_sceneconverter->RemoveScene(scene);
 		}
+
+		/* BGE-Remix P8.5: Blender's objects give the texture coordinates again */
+		GPU_texco_object_matrix_clear();
 #ifdef WITH_REMIX
 		KX_RemixRenderer::Trace("game end: scenes removed");
 #endif

@@ -50,6 +50,7 @@
 
 #include "KX_KetsjiEngine.h"
 #include "KX_BlenderSceneConverter.h"
+#include "KX_Light.h"
 #include "KX_PythonInit.h"
 #include "KX_PyConstraintBinding.h"
 #include "KX_PythonMain.h"
@@ -475,8 +476,9 @@ extern "C" void StartKetsjiShell(struct bContext *C, struct ARegion *ar, rcti *c
 
 			sceneconverter->SetMaterials(true);
 
-			if (gs.matmode == GAME_MAT_GLSL)
-				sceneconverter->SetGLSLMaterials(true);
+			/* BGE-Remix P8: one material mode, GLSL (a material whose shader
+			 * cannot be built falls back to the fixed-function drawing) */
+			sceneconverter->SetGLSLMaterials(true);
 			if (scene->gm.flag & GAME_NO_MATERIAL_CACHING)
 				sceneconverter->SetCacheMaterials(false);
 					
@@ -517,7 +519,7 @@ extern "C" void StartKetsjiShell(struct bContext *C, struct ARegion *ar, rcti *c
 				    rasterizer,
 					canvas);
 				/* BGE-Remix P7: the Game View's checks, in the console */
-				BL_GameViewReportGame(startscene, blenderdata);
+				BL_GameViewReportGame(startscene, blenderdata, static_cast<KX_BlenderSceneConverter *>(sceneconverter));
 				ketsjiengine->AddScene(startscene);
 				
 				// init the rasterizer
@@ -604,6 +606,7 @@ extern "C" void StartKetsjiShell(struct bContext *C, struct ARegion *ar, rcti *c
 				gameLogic_keys_new = NULL;
 #endif
 				ketsjiengine->StopEngine();
+				KX_LightObject_RestoreLampTypes();  /* BGE-Remix P8 */
 #ifdef WITH_PYTHON
 				exitGamePythonScripting();
 #endif

@@ -3385,8 +3385,7 @@ class VIEW3D_PT_view3d_shading(Panel):
 
         col = layout.column()
 
-        if not scene.render.use_shading_nodes:
-            col.prop(gs, "material_mode", text="")
+        # BGE-Remix P8: one material mode (GLSL), so no mode switch here
 
         if view.viewport_shade == 'SOLID':
             col.prop(view, "show_textured_solid")

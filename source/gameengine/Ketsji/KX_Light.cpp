@@ -48,6 +48,26 @@
 #include "DNA_lamp_types.h"
 
 #include "BKE_scene.h"
+
+#include "GPU_material.h"
+#include "KX_PythonInit.h"
+#include "KX_KetsjiEngine.h"
+#include "RAS_BucketManager.h"
+
+#include <map>
+
+/* BGE-Remix P8: a lamp's type changed from Python while playing. In GLSL the
+ * type is built into every material's shader, so the Blender lamp's type is
+ * changed (and given back when the game ends) and the shaders are rebuilt. */
+static std::map<Lamp *, short> g_saved_lamp_types;
+
+void KX_LightObject_RestoreLampTypes()
+{
+	for (std::map<Lamp *, short>::iterator it = g_saved_lamp_types.begin(); it != g_saved_lamp_types.end(); ++it) {
+		it->first->type = it->second;
+	}
+	g_saved_lamp_types.clear();
+}
 #include "MEM_guardedalloc.h"
 
 #include "BLI_math.h"
@@ -481,6 +501,30 @@ int KX_LightObject::pyattr_set_type(void* self_v, const KX_PYATTRIBUTE_DEF *attr
 		case 2:
 			self->m_lightobj->m_type = self->m_lightobj->LIGHT_NORMAL;
 			break;
+	}
+
+	/* BGE-Remix P8: GLSL shaders follow the new type */
+	Object *ob = self->GetBlenderObject();
+	if (self->m_lightobj->m_glsl && ob && ob->type == OB_LAMP && ob->data) {
+		Lamp *la = (Lamp *)ob->data;
+		const short type = (val == 0) ? LA_SPOT : ((val == 1) ? LA_SUN : LA_LOCAL);
+		if (la->type != type) {
+			if (g_saved_lamp_types.find(la) == g_saved_lamp_types.end()) {
+				g_saved_lamp_types[la] = la->type;
+			}
+			la->type = type;
+			GPU_materials_free();
+			KX_KetsjiEngine *engine = KX_GetActiveEngine();
+			if (engine) {
+				KX_SceneList *scenes = engine->CurrentScenes();
+				for (KX_SceneList::iterator it = scenes->begin(); it != scenes->end(); ++it) {
+					if ((*it)->GetBucketManager()) {
+						(*it)->GetBucketManager()->ReleaseDisplayLists();
+						(*it)->GetBucketManager()->ReleaseMaterials();
+					}
+				}
+			}
+		}
 	}
 
 	return PY_SET_ATTR_SUCCESS;

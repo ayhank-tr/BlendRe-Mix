@@ -59,6 +59,10 @@ void voronoi(float x, float y, float z, float *da, float *pa, float me, int dtyp
 float cellNoise(float x, float y, float z);
 void cellNoiseV(float x, float y, float z, float r_ca[3]);
 
+/* BGE-Remix P8.5: the lookup tables, for the GLSL port of this file:
+ * the permutation (256 values, 0..255), hashvectf and hashpntf (768 each) */
+void BLI_noise_tables(const unsigned char **r_perm, const float **r_hashvectf, const float **r_hashpntf);
+
 #ifdef __cplusplus
 }
 #endif

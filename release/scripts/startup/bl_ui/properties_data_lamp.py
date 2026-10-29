@@ -121,6 +121,10 @@ class DATA_PT_lamp(DataButtonsPanel, Panel):
         col.prop(lamp, "use_own_layer", text="This Layer Only")
         col.prop(lamp, "use_specular")
         col.prop(lamp, "use_diffuse")
+        # BGE-Remix P8.8: the light's size, which RTX Remix lights with
+        # (Blender Internal's soft shadows use it too); area lamps have theirs
+        if context.scene.render.engine == 'BLENDER_GAME' and lamp.type in {'POINT', 'SPOT', 'SUN'}:
+            col.prop(lamp, "shadow_soft_size", text="Size")
 
 
 class DATA_PT_sunsky(DataButtonsPanel, Panel):

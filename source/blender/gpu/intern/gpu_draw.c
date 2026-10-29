@@ -1915,6 +1915,16 @@ static void GPU_get_object_info(float oi[3], Material *mat)
 	oi[2] = random * (1.0f / (float)0xFFFFFFFF);
 }
 
+/* BGE-Remix P8: "Face Textures" in the 3D view's GLSL drawing: the face
+ * image of the faces drawn next */
+static Image *gpu_face_image = NULL;
+
+void GPU_object_material_face_image(Image *ima)
+{
+	gpu_face_image = ima;
+	GMS.lastmatnr = -1;  /* bind the material again with this image */
+}
+
 int GPU_object_material_bind(int nr, void *attribs)
 {
 	GPUVertexAttribs *gattribs = attribs;
@@ -1989,6 +1999,9 @@ int GPU_object_material_bind(int nr, void *attribs)
 				GPU_get_object_info(object_info, mat);
 			}
 
+			if (GPU_material_uses_face_image(gpumat)) {
+				GPU_material_set_face_image(gpumat, gpu_face_image);
+			}
 			GPU_material_bind(
 			        gpumat, GMS.gob->lay, GMS.glay, 1.0, !(GMS.gob->mode & OB_MODE_TEXTURE_PAINT),
 			        GMS.gviewmat, GMS.gviewinv, GMS.gviewcamtexcofac, GMS.gscenelock);

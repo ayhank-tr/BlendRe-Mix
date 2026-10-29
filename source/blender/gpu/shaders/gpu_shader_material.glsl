@@ -3833,3 +3833,163 @@ void material_preview_matcap(vec4 color, sampler2D ima, vec4 N, vec4 mask, out v
 	tex.y = 0.5 + 0.49 * normal.y;
 	result = texture2D(ima, tex) * mask;
 }
+
+/* BGE-Remix P8: "Face Textures" (the face's image, mixed in when one is bound) */
+void mtex_face_image(vec4 col, float on, vec4 rgb_in, out vec4 rgb_out, out float alpha)
+{
+	rgb_out = mix(rgb_in, vec4(col.rgb, rgb_in.a), on);
+	alpha = mix(1.0, col.a, on);
+}
+
+void mtex_face_alpha(float texalpha, float on, float alpha_in, out float alpha_out)
+{
+	alpha_out = mix(alpha_in, texalpha, on);
+}
+
+/* BGE-Remix P8.5: an image texture's mapping as a render does it: the X/Y/Z
+ * projection, then Flat, Cube, Tube or Sphere (wrap 0..3). co is -1..1
+ * (uvmode: UV coordinates, 0..1, are brought to that range first); nor
+ * picks the cube side. */
+void mtex_image_mapping(vec3 co, vec3 proj, float wrap, float uvmode, vec3 nor, out vec3 outco)
+{
+	vec3 t;
+	if (uvmode != 0.0)
+		co = vec3(co.xy * 2.0 - vec2(1.0), 0.0);
+	t.x = (proj.x > 0.5) ? co[int(proj.x) - 1] : 0.0;
+	t.y = (proj.y > 0.5) ? co[int(proj.y) - 1] : 0.0;
+	t.z = (proj.z > 0.5) ? co[int(proj.z) - 1] : 0.0;
+
+	if (wrap == 2.0) {
+		point_map_to_tube(t, outco);
+	}
+	else if (wrap == 3.0) {
+		point_map_to_sphere(t, outco);
+	}
+	else if (wrap == 1.0) {
+		vec3 a = abs(nor);
+		if (a.z >= a.x && a.z >= a.y)
+			outco = vec3(t.xy * 0.5 + vec2(0.5), 0.0);
+		else if (a.y >= a.x && a.y >= a.z)
+			outco = vec3(t.xz * 0.5 + vec2(0.5), 0.0);
+		else
+			outco = vec3(t.yz * 0.5 + vec2(0.5), 0.0);
+	}
+	else {
+		outco = vec3(t.xy * 0.5 + vec2(0.5), 0.0);
+	}
+}
+
+/* BGE-Remix P8.6: the values a bake writes (alpha: drawn here) */
+void bake_out_color(vec4 rgb, float refl, float srgb, vec3 uv, out vec4 result)
+{
+	vec4 col = vec4(rgb.rgb * refl, 1.0);
+	if (srgb != 0.0)
+		linearrgb_to_srgb(col, col);
+	result = vec4(clamp(col.rgb, 0.0, 1.0), 1.0);
+}
+
+void bake_out_value(float value, float scale, vec3 uv, out vec4 result)
+{
+	float v = clamp(value * scale, 0.0, 1.0);
+	result = vec4(v, v, v, 1.0);
+}
+
+/* vn: the shading normal (Blender Internal's, pointing inwards); nor: the
+ * surface's; tangent: the UV map's (w: the bitangent's sign) */
+void bake_out_normal(vec3 vn, vec3 nor, vec4 tangent, vec3 uv, out vec4 result)
+{
+	vec3 N = normalize(nor);
+	vec3 n = -normalize(vn);
+	vec3 T = tangent.xyz - N * dot(N, tangent.xyz);
+	T = (dot(T, T) > 0.0) ? normalize(T) : vec3(1.0, 0.0, 0.0);
+	vec3 B = ((tangent.w < 0.0) ? -1.0 : 1.0) * cross(N, T);
+	vec3 ts = vec3(dot(n, T), dot(n, B), dot(n, N));
+	result = vec4(ts * 0.5 + vec3(0.5), 1.0);
+}
+
+/* BGE-Remix P8.7: physically based shading (metal, roughness, Fresnel: the
+ * model RTX Remix shades with). Blender's vectors: vn points into the
+ * surface, lv from the lamp, view from the eye. Light units are Blender
+ * Internal's (Lambert without the 1/pi), so lamps keep their brightness. */
+
+void pbr_prepare(vec3 base, float metallic, float specular, float transmission, out vec3 diffcol, out vec3 f0)
+{
+	float m = clamp(metallic, 0.0, 1.0);
+	diffcol = base * (1.0 - m) * (1.0 - clamp(transmission, 0.0, 1.0));
+	f0 = mix(vec3(0.08 * clamp(specular, 0.0, 1.0)), base, m);
+}
+
+float pbr_ggx(float nh, float a)
+{
+	float a2 = a * a;
+	float d = nh * nh * (a2 - 1.0) + 1.0;
+	return a2 / (M_PI * d * d);
+}
+
+float pbr_smith(float nv, float nl, float a)
+{
+	float k = a * 0.5;
+	return (nv / (nv * (1.0 - k) + k)) * (nl / (nl * (1.0 - k) + k));
+}
+
+vec3 pbr_fresnel(vec3 f0, float vh)
+{
+	return f0 + (vec3(1.0) - f0) * pow(1.0 - clamp(vh, 0.0, 1.0), 5.0);
+}
+
+/* flags: x no diffuse, y no specular, z hemi lamp */
+void shade_pbr_light(
+        vec3 vn, vec3 lv, vec3 view, float inp, float visifac, float shadfac, vec3 lcol, vec3 shadowcol,
+        vec3 diffcol, vec3 f0, float roughness, float subsurface, vec3 flags,
+        vec4 diff_in, vec4 spec_in, out vec4 diff_out, out vec4 spec_out)
+{
+	vec3 N = -normalize(vn);
+	vec3 L = -normalize(lv);
+	vec3 V = -normalize(view);
+	float nl = (flags.z != 0.0) ? 0.5 * inp + 0.5 : inp;
+	/* subsurface: light wraps around the shadowed side */
+	float w = 0.5 * clamp(subsurface, 0.0, 1.0);
+	float dl = max((nl + w) / (1.0 + w), 0.0);
+	vec3 light = lcol * visifac;
+
+	diff_out = diff_in;
+	spec_out = spec_in;
+	if (flags.x == 0.0)
+		diff_out.rgb += diffcol * dl * light * mix(shadowcol, vec3(1.0), shadfac);
+	if (flags.y == 0.0 && flags.z == 0.0 && nl > 0.0) {
+		vec3 H = normalize(L + V);
+		float nv = max(dot(N, V), 1e-4);
+		float nh = max(dot(N, H), 0.0);
+		float a = max(roughness * roughness, 0.002);
+		float nlc = max(nl, 1e-4);
+		vec3 F = pbr_fresnel(f0, dot(V, H));
+		vec3 s = F * (pbr_ggx(nh, a) * pbr_smith(nv, nlc, a) / (4.0 * nv * nlc)) * M_PI * nlc;
+		spec_out.rgb += s * light * shadfac;
+	}
+}
+
+/* the world's light: ambient colour on the diffuse part, the sky's
+ * horizon-to-zenith colours reflected (rougher: more even) */
+void shade_pbr_ambient(
+        vec3 vn, vec3 view, vec3 diffcol, vec3 f0, float roughness, float amb, vec3 ambcol,
+        vec3 horicol, vec3 zencol, mat4 viewinv, vec4 col_in, out vec4 col_out)
+{
+	vec3 N = -normalize(vn);
+	vec3 V = -normalize(view);
+	float nv = max(dot(N, V), 0.0);
+	vec3 R = (viewinv * vec4(reflect(-V, N), 0.0)).xyz;
+	vec3 sky = mix(horicol, zencol, clamp(R.z, 0.0, 1.0));
+	sky = mix(sky, 0.5 * (horicol + zencol), clamp(roughness, 0.0, 1.0));
+	vec3 F = f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - nv, 5.0);
+	col_out = col_in;
+	col_out.rgb += amb * (ambcol * diffcol + F * sky);
+}
+
+/* glass lets light through where it does not reflect it */
+void shade_pbr_alpha(vec3 vn, vec3 view, vec3 f0, float transmission, float alpha, out float outalpha)
+{
+	vec3 N = -normalize(vn);
+	vec3 V = -normalize(view);
+	float f = pbr_fresnel(f0, max(dot(N, V), 0.0)).g;
+	outalpha = alpha * (1.0 - clamp(transmission, 0.0, 1.0) * (1.0 - f));
+}

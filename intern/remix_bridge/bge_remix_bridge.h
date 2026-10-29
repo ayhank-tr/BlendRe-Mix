@@ -53,7 +53,7 @@ extern "C" {
  * 3: P3 (textures, glass, subsurface, alpha test).
  * 4: P4 (skinning, draw categories, picking, particle systems).
  * 5: P4.8 (direct presentation: brb_frame_vk). */
-#define BRB_ABI_VERSION 6
+#define BRB_ABI_VERSION 7
 
 typedef enum brb_status {
 	BRB_STATUS_NOT_LOADED = 0,           /* nothing tried yet */
@@ -171,6 +171,8 @@ typedef struct brb_material_desc {
 	int subsurface;              /* 1: on */
 	float subsurface_color[3];   /* single-scattering albedo, linear */
 	float subsurface_radius[3];  /* mean free path per channel, Blender units */
+	/* interface 7 (P8.8) */
+	int additive;                /* 1: added to what is behind (Blender's Add blending) */
 } brb_material_desc;
 
 /* interface 4 (P4): bone weights of a skinned surface, bones_per_vertex

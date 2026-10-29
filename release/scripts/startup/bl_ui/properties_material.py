@@ -46,6 +46,11 @@ def check_material(mat):
     return False
 
 
+def is_physical(mat):
+    # BGE-Remix P8.7: the material uses physical shading (else Classic)
+    return bool(mat) and getattr(mat, "bge_physical", 'CLASSIC') == 'PHYSICAL'
+
+
 def simple_material(mat):
     if (mat is not None) and (not mat.use_nodes):
         return True
@@ -251,7 +256,8 @@ class MATERIAL_PT_diffuse(MaterialButtonsPanel, Panel):
     def poll(cls, context):
         mat = context.material
         engine = context.scene.render.engine
-        return check_material(mat) and (mat.type in {'SURFACE', 'WIRE'}) and (engine in cls.COMPAT_ENGINES)
+        return (check_material(mat) and (mat.type in {'SURFACE', 'WIRE'}) and (engine in cls.COMPAT_ENGINES) and
+                not is_physical(active_node_mat(mat)))
 
     def draw(self, context):
         layout = self.layout
@@ -308,7 +314,8 @@ class MATERIAL_PT_specular(MaterialButtonsPanel, Panel):
     def poll(cls, context):
         mat = context.material
         engine = context.scene.render.engine
-        return check_material(mat) and (mat.type in {'SURFACE', 'WIRE'}) and (engine in cls.COMPAT_ENGINES)
+        return (check_material(mat) and (mat.type in {'SURFACE', 'WIRE'}) and (engine in cls.COMPAT_ENGINES) and
+                not is_physical(active_node_mat(mat)))
 
     def draw(self, context):
         layout = self.layout
@@ -361,7 +368,8 @@ class MATERIAL_PT_shading(MaterialButtonsPanel, Panel):
     def poll(cls, context):
         mat = context.material
         engine = context.scene.render.engine
-        return check_material(mat) and (mat.type in {'SURFACE', 'WIRE'}) and (engine in cls.COMPAT_ENGINES)
+        return (check_material(mat) and (mat.type in {'SURFACE', 'WIRE'}) and (engine in cls.COMPAT_ENGINES) and
+                not is_physical(active_node_mat(mat)))
 
     def draw(self, context):
         layout = self.layout
@@ -395,7 +403,8 @@ class MATERIAL_PT_transp(MaterialButtonsPanel, Panel):
     def poll(cls, context):
         mat = context.material
         engine = context.scene.render.engine
-        return check_material(mat) and (mat.type in {'SURFACE', 'WIRE'}) and (engine in cls.COMPAT_ENGINES)
+        return (check_material(mat) and (mat.type in {'SURFACE', 'WIRE'}) and (engine in cls.COMPAT_ENGINES) and
+                not is_physical(active_node_mat(mat)))
 
     def draw_header(self, context):
         mat = context.material
@@ -461,7 +470,8 @@ class MATERIAL_PT_mirror(MaterialButtonsPanel, Panel):
     def poll(cls, context):
         mat = context.material
         engine = context.scene.render.engine
-        return check_material(mat) and (mat.type in {'SURFACE', 'WIRE'}) and (engine in cls.COMPAT_ENGINES)
+        return (check_material(mat) and (mat.type in {'SURFACE', 'WIRE'}) and (engine in cls.COMPAT_ENGINES) and
+                not is_physical(active_node_mat(mat)))
 
     def draw_header(self, context):
         raym = active_node_mat(context.material).raytrace_mirror
@@ -519,7 +529,8 @@ class MATERIAL_PT_sss(MaterialButtonsPanel, Panel):
     def poll(cls, context):
         mat = context.material
         engine = context.scene.render.engine
-        return check_material(mat) and (mat.type in {'SURFACE', 'WIRE'}) and (engine in cls.COMPAT_ENGINES)
+        return (check_material(mat) and (mat.type in {'SURFACE', 'WIRE'}) and (engine in cls.COMPAT_ENGINES) and
+                not is_physical(active_node_mat(mat)))
 
     def draw_header(self, context):
         mat = active_node_mat(context.material)
@@ -867,7 +878,7 @@ class MATERIAL_PT_transp_game(MaterialButtonsPanel, Panel):
     def poll(cls, context):
         mat = context.material
         engine = context.scene.render.engine
-        return check_material(mat) and (engine in cls.COMPAT_ENGINES)
+        return check_material(mat) and (engine in cls.COMPAT_ENGINES) and not is_physical(mat)
 
     def draw_header(self, context):
         mat = context.material
@@ -1049,116 +1060,181 @@ class MATERIAL_PT_volume_options(VolumeButtonsPanel, Panel):
         row.prop(mat, "use_light_group_exclusive", text="Exclusive")
 
 
-class MATERIAL_PT_game_remix(MaterialButtonsPanel, Panel):
-    """BGE-Remix: how RTX Remix sees this material, instead of the automatic
-    translation of its Blender Internal settings or Cycles nodes.
+class MATERIAL_PT_physical(MaterialButtonsPanel, Panel):
+    """BGE-Remix P8.7: one physical material read by the game, F12 and RTX
+    Remix. Stored as hidden properties of the material (bge_*), which stock
+    Blender 2.79b keeps and ignores; the C side reads them in
+    source/blender/blenkernel/intern/material_physical.c."""
+    bl_label = "Surface"
+    COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_GAME'}
 
-    Stored as custom properties of the material (bge_remix_*), which stock
-    Blender 2.79b keeps and ignores. The defaults here are the C side's
-    (source/blender/remix/intern/remix_material.cc)."""
+    @classmethod
+    def register(cls):
+        from bpy.props import EnumProperty, FloatProperty, FloatVectorProperty
+        M = bpy.types.Material
+        M.bge_physical = EnumProperty(
+            name="Shading",
+            items=(('CLASSIC', "Classic", "Blender Internal's diffuse and specular shaders, as older files use", 0),
+                   ('PHYSICAL', "Physical", "Metal, roughness and Fresnel, as RTX Remix shades; "
+                    "F12 translates it to Blender Internal's settings", 1)),
+            default='CLASSIC')
+        M.bge_metallic = FloatProperty(
+            name="Metallic", min=0.0, max=1.0, default=0.0,
+            description="Metal: reflects in its own colour, no diffuse light (texture: Ray Mirror)")
+        M.bge_roughness = FloatProperty(
+            name="Roughness", min=0.0, max=1.0, default=0.5,
+            description="How blurred the reflections and highlights are (texture: Hardness)")
+        M.bge_specular = FloatProperty(
+            name="Specular", min=0.0, max=1.0, default=0.5,
+            description="How much a non-metal reflects head-on (0.5: 4%, most materials)")
+        M.bge_transmission = FloatProperty(
+            name="Transmission", min=0.0, max=1.0, default=0.0,
+            description="Glass: light passes through, bent by the IOR")
+        M.bge_ior = FloatProperty(name="IOR", min=1.0, max=3.0, default=1.45,
+                                  description="Index of refraction (water 1.33, glass 1.45-1.5, diamond 2.4)")
+        M.bge_subsurface = FloatProperty(
+            name="Subsurface", min=0.0, max=1.0, default=0.0,
+            description="Light scatters under the surface (skin, wax, marble)")
+        M.bge_subsurface_radius = FloatVectorProperty(
+            name="Radius", subtype='XYZ', size=3, min=0.0, default=(1.0, 0.2, 0.1),
+            description="How far light travels under the surface, per colour channel (Blender units)")
+        M.bge_emission = FloatVectorProperty(
+            name="Emission", subtype='COLOR', size=3, min=0.0, max=1.0, default=(1.0, 1.0, 1.0))
+        M.bge_emission_strength = FloatProperty(
+            name="Strength", min=0.0, soft_max=100.0, default=0.0,
+            description="How bright the surface glows (texture: Emit)")
+
+    @classmethod
+    def unregister(cls):
+        M = bpy.types.Material
+        for name in ("bge_physical", "bge_metallic", "bge_roughness", "bge_specular", "bge_transmission",
+                     "bge_ior", "bge_subsurface", "bge_subsurface_radius", "bge_emission",
+                     "bge_emission_strength"):
+            delattr(M, name)
+
+    @classmethod
+    def poll(cls, context):
+        mat = context.material
+        engine = context.scene.render.engine
+        return check_material(mat) and (mat.type in {'SURFACE', 'WIRE'}) and (engine in cls.COMPAT_ENGINES)
+
+    def draw(self, context):
+        layout = self.layout
+        mat = active_node_mat(context.material)
+        layout.row().prop(mat, "bge_physical", expand=True)
+        if not is_physical(mat):
+            return
+
+        split = layout.split()
+        col = split.column()
+        col.prop(mat, "diffuse_color", text="Base Color")
+        col.prop(mat, "bge_metallic")
+        col.prop(mat, "bge_roughness")
+        col.prop(mat, "bge_specular")
+        col = split.column()
+        col.prop(mat, "use_shadeless")
+        sub = col.column()
+        sub.active = not mat.use_shadeless
+        sub.prop(mat, "ambient")
+        col.prop(mat, "use_object_color")
+
+
+class MATERIAL_PT_physical_glass(MaterialButtonsPanel, Panel):
+    bl_label = "Glass and Transparency"
+    bl_options = {'DEFAULT_CLOSED'}
+    COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_GAME'}
+
+    @classmethod
+    def poll(cls, context):
+        mat = context.material
+        engine = context.scene.render.engine
+        return (check_material(mat) and (mat.type in {'SURFACE', 'WIRE'}) and (engine in cls.COMPAT_ENGINES) and
+                is_physical(active_node_mat(mat)))
+
+    def draw(self, context):
+        layout = self.layout
+        mat = active_node_mat(context.material)
+        split = layout.split()
+        col = split.column()
+        col.prop(mat, "bge_transmission")
+        sub = col.column()
+        sub.active = mat.bge_transmission > 0.0
+        sub.prop(mat, "bge_ior")
+        col = split.column()
+        col.prop(mat, "alpha")
+        col.prop(mat.game_settings, "alpha_blend", text="Blend")
+        if mat.bge_transmission > 0.0 and mat.game_settings.alpha_blend == 'OPAQUE':
+            layout.label("The game draws glass see-through only with Alpha Blend", icon='INFO')
+
+
+class MATERIAL_PT_physical_emission(MaterialButtonsPanel, Panel):
+    bl_label = "Emission"
+    bl_options = {'DEFAULT_CLOSED'}
+    COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_GAME'}
+
+    @classmethod
+    def poll(cls, context):
+        return MATERIAL_PT_physical_glass.poll(context)
+
+    def draw(self, context):
+        layout = self.layout
+        mat = active_node_mat(context.material)
+        row = layout.row()
+        row.prop(mat, "bge_emission", text="")
+        row.prop(mat, "bge_emission_strength")
+
+
+class MATERIAL_PT_physical_subsurface(MaterialButtonsPanel, Panel):
+    bl_label = "Subsurface"
+    bl_options = {'DEFAULT_CLOSED'}
+    COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_GAME'}
+
+    @classmethod
+    def poll(cls, context):
+        return MATERIAL_PT_physical_glass.poll(context)
+
+    def draw(self, context):
+        layout = self.layout
+        mat = active_node_mat(context.material)
+        layout.prop(mat, "bge_subsurface")
+        sub = layout.row()
+        sub.active = mat.bge_subsurface > 0.0
+        sub.prop(mat, "bge_subsurface_radius")
+
+
+class MATERIAL_PT_game_remix(MaterialButtonsPanel, Panel):
+    """BGE-Remix: RTX Remix's own options for this material. Its surface
+    values are the material's (P8.7: the physical material; Classic
+    materials are translated)."""
     bl_label = "RTX Remix"
     bl_options = {'DEFAULT_CLOSED'}
     COMPAT_ENGINES = {'BLENDER_GAME'}
 
-    IMAGES = ("albedo", "normal", "roughness", "metallic", "emissive")
-
     @classmethod
     def register(cls):
-        from bpy.props import BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, StringProperty
+        from bpy.props import BoolProperty, IntProperty
         M = bpy.types.Material
-        M.bge_remix_override = BoolProperty(
-            name="RTX Remix",
-            description="Use these settings under RTX Remix instead of translating the material",
-            default=False)
-        M.bge_remix_type = EnumProperty(
-            name="Type",
-            items=(('OPAQUE', "Opaque", "Remix's opaque PBR surface", 0),
-                   ('GLASS', "Glass", "Refracting glass, tinted by Transmittance", 1),
-                   ('SUBSURFACE', "Subsurface", "Light scatters under the surface (skin, wax, marble)", 2)),
-            default='OPAQUE')
-        M.bge_remix_albedo = FloatVectorProperty(
-            name="Albedo", subtype='COLOR', size=3, min=0.0, max=1.0, default=(0.8, 0.8, 0.8))
-        M.bge_remix_opacity = FloatProperty(name="Opacity", min=0.0, max=1.0, default=1.0)
-        M.bge_remix_roughness = FloatProperty(name="Roughness", min=0.0, max=1.0, default=0.5)
-        M.bge_remix_metallic = FloatProperty(name="Metallic", min=0.0, max=1.0, default=0.0)
-        M.bge_remix_emissive = FloatVectorProperty(
-            name="Emission", subtype='COLOR', size=3, min=0.0, max=1.0, default=(1.0, 1.0, 1.0))
-        M.bge_remix_emissive_strength = FloatProperty(name="Strength", min=0.0, soft_max=100.0, default=0.0)
-        M.bge_remix_alpha = EnumProperty(
-            name="Alpha",
-            items=(('OPAQUE', "Opaque", "No see-through parts", 0),
-                   ('BLEND', "Blend", "See-through by Opacity and the albedo image's alpha", 1),
-                   ('CLIP', "Clip", "Cut out where the albedo image's alpha is below the cutoff", 2)),
-            default='OPAQUE')
-        M.bge_remix_alpha_cutoff = FloatProperty(name="Cutoff", min=0.0, max=1.0, default=0.5)
-        M.bge_remix_ior = FloatProperty(name="IOR", min=1.0, max=3.0, default=1.5)
-        M.bge_remix_transmittance = FloatVectorProperty(
-            name="Transmittance", subtype='COLOR', size=3, min=0.0, max=1.0, default=(1.0, 1.0, 1.0),
-            description="The colour light keeps after half a metre (Blender unit) inside the glass")
-        M.bge_remix_subsurface_radius = FloatVectorProperty(
-            name="Radius", subtype='XYZ', size=3, min=0.0, default=(1.0, 0.2, 0.1),
-            description="How far light travels under the surface, per colour channel (Blender units)")
         M.bge_remix_particle = BoolProperty(
             name="Particle",
             description="RTX Remix treats surfaces with this material as particles or sprites "
                         "(on by itself for Halo face orientation)",
             default=False)
-        for name in cls.IMAGES:
-            setattr(M, "bge_remix_%s_image" % name, StringProperty(
-                name=name.capitalize() + " Image",
-                description="Image used as the %s map (by name)" % name))
+        M.bge_remix_bake_size = IntProperty(
+            name="Bake Size", min=16, max=8192, default=1024,
+            description="The size of the images this material's procedural textures are baked into for Remix")
 
     @classmethod
     def unregister(cls):
         M = bpy.types.Material
-        for name in [n for n in dir(M) if n.startswith("bge_remix_")]:
-            delattr(M, name)
-
-    def draw_header(self, context):
-        self.layout.prop(context.material, "bge_remix_override", text="")
+        del M.bge_remix_particle
+        del M.bge_remix_bake_size
 
     def draw(self, context):
         layout = self.layout
         mat = context.material
-        # applies with or without the override below
-        layout.row().prop(mat, "bge_remix_particle")
-        layout = layout.column()
-        layout.active = mat.bge_remix_override
-        if not mat.bge_remix_override:
-            layout.label("Off: Remix translates the material's own settings or Cycles nodes", icon='INFO')
-        layout.row().prop(mat, "bge_remix_type", expand=True)
-
-        def image(col, name):
-            col.prop_search(mat, "bge_remix_%s_image" % name, bpy.data, "images", text="")
-
-        split = layout.split()
-        col = split.column()
-        if mat.bge_remix_type == 'GLASS':
-            col.prop(mat, "bge_remix_transmittance")
-            col.prop(mat, "bge_remix_ior")
-        else:
-            col.prop(mat, "bge_remix_albedo")
-            image(col, "albedo")
-            col.prop(mat, "bge_remix_roughness")
-            image(col, "roughness")
-            col.prop(mat, "bge_remix_metallic")
-            image(col, "metallic")
-        col = split.column()
-        col.label("Normal Map:")
-        image(col, "normal")
-        col.prop(mat, "bge_remix_emissive")
-        col.prop(mat, "bge_remix_emissive_strength")
-        image(col, "emissive")
-        if mat.bge_remix_type == 'SUBSURFACE':
-            layout.prop(mat, "bge_remix_subsurface_radius")
-        if mat.bge_remix_type != 'GLASS':
-            row = layout.row()
-            row.prop(mat, "bge_remix_alpha", expand=True)
-            sub = row.row()
-            if mat.bge_remix_alpha == 'BLEND':
-                sub.prop(mat, "bge_remix_opacity")
-            elif mat.bge_remix_alpha == 'CLIP':
-                sub.prop(mat, "bge_remix_alpha_cutoff")
+        row = layout.row()
+        row.prop(mat, "bge_remix_particle")
+        row.prop(mat, "bge_remix_bake_size")
 
 
 class MATERIAL_PT_custom_props(MaterialButtonsPanel, PropertyPanel, Panel):
@@ -1173,6 +1249,10 @@ classes = (
     MATERIAL_UL_matslots,
     MATERIAL_PT_context_material,
     MATERIAL_PT_preview,
+    MATERIAL_PT_physical,
+    MATERIAL_PT_physical_glass,
+    MATERIAL_PT_physical_emission,
+    MATERIAL_PT_physical_subsurface,
     MATERIAL_PT_pipeline,
     MATERIAL_PT_diffuse,
     MATERIAL_PT_specular,

@@ -55,6 +55,7 @@
 #include "DNA_actuator_types.h"
 #include "DNA_view3d_types.h"
 #include "DNA_smoke_types.h"
+#include "DNA_material_types.h"
 #include "DNA_rigidbody_types.h"
 
 #include "DNA_genfile.h"
@@ -63,6 +64,8 @@
 #include "BKE_colortools.h"
 #include "BKE_library.h"
 #include "BKE_main.h"
+#include "BKE_material.h"
+#include "BKE_material_physical.h"
 #include "BKE_mask.h"
 #include "BKE_modifier.h"
 #include "BKE_node.h"
@@ -1673,8 +1676,46 @@ void blo_do_versions_270(FileData *fd, Library *UNUSED(lib), Main *main)
 	}
 }
 
+/* BGE-Remix P8: one material mode. A scene saved with Multitexture plays
+ * as GLSL; what made it look the way it did is carried over: Multitexture
+ * coloured every material by its object's colour, GLSL only those with
+ * "Object Color", so that is ticked where an object has a colour. Runs on
+ * every load (files from stock 2.79 and older builds). */
+static void do_versions_bge_remix_one_material_mode(Main *main)
+{
+	Scene *sce;
+	Object *ob;
+	bool multitex = false;
+
+	for (sce = main->scene.first; sce; sce = sce->id.next) {
+		if (sce->gm.matmode != GAME_MAT_GLSL) {
+			sce->gm.matmode = GAME_MAT_GLSL;
+			multitex = true;
+		}
+	}
+	if (!multitex) {
+		return;
+	}
+	for (ob = main->object.first; ob; ob = ob->id.next) {
+		short i;
+		if (ob->col[0] == 1.0f && ob->col[1] == 1.0f && ob->col[2] == 1.0f && ob->col[3] == 1.0f) {
+			continue;
+		}
+		for (i = 1; i <= ob->totcol; i++) {
+			Material *ma = give_current_material(ob, i);
+			if (ma && ma->id.lib == NULL) {
+				ma->mode |= MA_OBCOLOR;
+			}
+		}
+	}
+}
+
 void do_versions_after_linking_270(Main *main)
 {
+	do_versions_bge_remix_one_material_mode(main);
+	/* BGE-Remix P8.7: the RTX Remix panel merged into the physical material */
+	BKE_material_physical_from_remix_panel(main);
+
 	/* To be added to next subversion bump! */
 	if (!MAIN_VERSION_ATLEAST(main, 279, 0)) {
 		FOREACH_NODETREE(main, ntree, id) {

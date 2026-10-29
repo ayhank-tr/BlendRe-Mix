@@ -658,7 +658,8 @@ static bool ConvertMaterial(
 							material->flag[i] |= (mttmp->mapto & MAP_ALPHA) ? TEXALPHA : 0;
 							material->flag[i] |= (mttmp->texflag & MTEX_NEGATIVE) ? TEXNEG : 0;
 
-							if (!glslmat && (material->flag[i] & TEXALPHA)) {
+							/* BGE-Remix P8: in GLSL too (one material mode) */
+							if (material->flag[i] & TEXALPHA) {
 								texalpha = 1;
 							}
 						}
@@ -894,8 +895,10 @@ static RAS_MaterialBucket *material_from_mesh(Material *ma, MFace *mface, MTFace
 	{
 		bl_mat = new BL_Material();
 
+		/* BGE-Remix P8: a material whose GLSL shader cannot be built falls
+		 * back to the fixed-function drawing */
 		ConvertMaterial(bl_mat, ma, tface, tfaceName, mface, mcol,
-			converter->GetGLSLMaterials());
+			converter->GetGLSLMaterials() && converter->MaterialGLSLWorks(scene, ma));
 
 		if (ma && (ma->mode & MA_FACETEXTURE) == 0)
 			converter->CacheBlenderMaterial(scene, ma, bl_mat);

@@ -44,7 +44,9 @@ set(SRC
 	intern/remix_present.c
 	intern/remix_session.c
 	intern/remix_texcache.cc
+	intern/remix_bake.cc
 
+	BRMX_bake.h
 	BRMX_light.h
 	BRMX_loader.h
 	BRMX_material.h

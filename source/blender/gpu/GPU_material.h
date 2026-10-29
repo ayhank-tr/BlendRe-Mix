@@ -45,6 +45,7 @@ struct Image;
 struct ImageUser;
 struct Material;
 struct Object;
+struct Tex;
 struct Image;
 struct Scene;
 struct SceneRenderLayer;
@@ -109,6 +110,7 @@ typedef enum GPUOpenGLBuiltin {
 typedef enum GPUMatType {
 	GPU_MATERIAL_TYPE_MESH  = 1,
 	GPU_MATERIAL_TYPE_WORLD = 2,
+	GPU_MATERIAL_TYPE_MESH_BAKE = 3,  /* BGE-Remix P8.6: drawn in UV space */
 } GPUMatType;
 
 
@@ -154,6 +156,7 @@ typedef enum GPUDynamicType {
 	GPU_DYNAMIC_OBJECT_AUTOBUMPSCALE = 6  | GPU_DYNAMIC_GROUP_OBJECT,
 	GPU_DYNAMIC_OBJECT_LOCTOVIEWMAT  = 7  | GPU_DYNAMIC_GROUP_OBJECT,
 	GPU_DYNAMIC_OBJECT_LOCTOVIEWIMAT = 8  | GPU_DYNAMIC_GROUP_OBJECT,
+	GPU_DYNAMIC_OBJECT_TEXCO_IMAT    = 9  | GPU_DYNAMIC_GROUP_OBJECT,  /* BGE-Remix P8.5: a texture's coordinate object */
 
 	GPU_DYNAMIC_LAMP_DYNVEC          = 1  | GPU_DYNAMIC_GROUP_LAMP,
 	GPU_DYNAMIC_LAMP_DYNCO           = 2  | GPU_DYNAMIC_GROUP_LAMP,
@@ -194,7 +197,8 @@ typedef enum GPUDynamicType {
 	GPU_DYNAMIC_MAT_EMIT             = 6  | GPU_DYNAMIC_GROUP_MAT,
 	GPU_DYNAMIC_MAT_AMB              = 7  | GPU_DYNAMIC_GROUP_MAT,
 	GPU_DYNAMIC_MAT_ALPHA            = 8  | GPU_DYNAMIC_GROUP_MAT,
-	GPU_DYNAMIC_MAT_MIR              = 9  | GPU_DYNAMIC_GROUP_MAT
+	GPU_DYNAMIC_MAT_MIR              = 9  | GPU_DYNAMIC_GROUP_MAT,
+	GPU_DYNAMIC_MAT_FACEIMA          = 10 | GPU_DYNAMIC_GROUP_MAT  /* BGE-Remix P8: a face image is bound */
 } GPUDynamicType;
 
 GPUNodeLink *GPU_attribute(CustomDataType type, const char *name);
@@ -226,6 +230,42 @@ void GPU_material_free(struct ListBase *gpumaterial);
 
 void GPU_materials_free(void);
 
+/* BGE-Remix P8 */
+/* the material's shader was built (a material whose shader failed is kept,
+ * so it is not built again, but cannot draw) */
+bool GPU_material_is_valid(GPUMaterial *material);
+/* "Face Textures": the UV editor's image of the faces drawn next (NULL: none);
+ * set before GPU_material_bind */
+bool GPU_material_uses_face_image(GPUMaterial *material);
+void GPU_material_set_face_image(GPUMaterial *material, struct Image *ima);
+
+/* BGE-Remix P8.5: the texture slots mapped by Object coordinates follow
+ * their object. The game engine gives the objects' places while it runs
+ * (Blender's own objects stay where they are); NULL clears them all. */
+void GPU_texco_object_matrix_set(struct Object *ob, float obmat[4][4]);
+void GPU_texco_object_matrix_clear(void);
+/* whether a texture type is drawn by the procedural texture library */
+bool GPU_texture_is_procedural(const struct Tex *tex);
+/* BGE-Remix P8.6: a Blender Internal material evaluated in UV space (the
+ * mesh is drawn at its UV map), one of its values per pixel, for baking
+ * into images. NULL for node materials or when the shader fails. */
+typedef enum GPUBakeChannel {
+	GPU_BAKE_COLOR = 0,     /* diffuse colour times reflectivity, sRGB when colour managed */
+	GPU_BAKE_ALPHA = 1,     /* alpha */
+	GPU_BAKE_HARDNESS = 2,  /* hardness / 511; a physical material's roughness */
+	GPU_BAKE_EMIT = 3,      /* emit / scale */
+	GPU_BAKE_NORMAL = 4,    /* the bumped normal in tangent space, 0..1 */
+	GPU_BAKE_METALLIC = 5,  /* a physical material's metallic value */
+} GPUBakeChannel;
+GPUMaterial *GPU_material_bake_create(struct Scene *scene, struct Material *ma, int channel, float scale);
+void GPU_material_bake_free(GPUMaterial *material);
+
+/* the Texture node of Blender Internal node materials, for a procedural
+ * (false: not drawn by the library) */
+bool GPU_material_link_procedural_node(GPUMaterial *mat, struct Tex *tex, struct GPUNodeLink *co,
+                                       struct GPUNodeLink **r_value, struct GPUNodeLink **r_color,
+                                       struct GPUNodeLink **r_normal);
+
 bool GPU_lamp_override_visible(GPULamp *lamp, struct SceneRenderLayer *srl, struct Material *ma);
 void GPU_material_bind(
         GPUMaterial *material, int oblay, int viewlay, double time, int mipmap,
@@ -254,6 +294,11 @@ typedef struct GPUShadeInput {
 	GPUNodeLink *rgb, *specrgb, *vn, *view, *vcol, *ref;
 	GPUNodeLink *alpha, *refl, *spec, *emit, *har, *amb;
 	GPUNodeLink *spectra, *mir, *refcol;
+	/* BGE-Remix P8.7: a physical material (spec is then its specular value,
+	 * emit its emission strength, rgb its base colour) */
+	bool physical;
+	GPUNodeLink *metallic, *roughness;
+	GPUNodeLink *pbr_diff, *pbr_f0; /* set before the lamps */
 } GPUShadeInput;
 
 typedef struct GPUShadeResult {

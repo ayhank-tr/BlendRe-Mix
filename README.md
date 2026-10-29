@@ -21,11 +21,12 @@ official NVIDIA runtime. OpenGL stays the default renderer, and every stock
 | P4 | Skinning, physics, particles, picking | Done (bge-remix-p4) |
 | P5 | "RTX Remix" render engine for the 3D view and F12 | Done (bge-remix-p5) |
 | P6 | NVIDIA PhysX 5 as a second game physics engine (CPU or GPU) | Done (bge-remix-p6) |
-| P7 | Game View: see and check | In progress |
-| P8 | Game View: edit and run | Planned |
-| P9 | Simulation features | Planned |
-| P10 | OpenUSD mod export and capture import | Planned |
-| P11 | Hardening and release | Planned |
+| P7 | Game View: see and check | Delivered (built and tested with P8) |
+| P8 | Rendering: one material mode, procedural textures, one physical material, lights, shadows, sky, reflections, volumes, hair | In progress (Part A: materials) |
+| P9 | Game View: edit and run | Planned |
+| P10 | Simulation features | Planned |
+| P11 | OpenUSD mod export and capture import | Planned |
+| P12 | Hardening and release | Planned |
 
 ## Physics: Bullet or PhysX (P6)
 

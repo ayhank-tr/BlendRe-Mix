@@ -650,6 +650,12 @@ void KX_BlenderMaterial::ActivateMeshSlot(const RAS_MeshSlot & ms, RAS_IRasteriz
 			alphablend = mMaterial->alphablend;
 
 		rasty->SetAlphaBlend(alphablend);
+
+		/* BGE-Remix P8: setBlending() works without a custom shader too */
+		if (mUserDefBlend) {
+			glEnable(GL_BLEND);
+			glBlendFunc(mBlendFunc[0], mBlendFunc[1]);
+		}
 	}
 }
 
@@ -858,7 +864,12 @@ void KX_BlenderMaterial::SetBlenderGLSLShader()
 	if (!mBlenderShader->Ok()) {
 		delete mBlenderShader;
 		mBlenderShader = 0;
+		return;
 	}
+
+	/* BGE-Remix P8: "Face Textures": the face image is texture 0 */
+	if (mMaterial->material && (mMaterial->material->mode & MA_FACETEXTURE))
+		mBlenderShader->SetFaceImage(mMaterial->img[0]);
 }
 
 #ifdef USE_MATHUTILS

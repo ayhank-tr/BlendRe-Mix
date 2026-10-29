@@ -44,6 +44,9 @@ class RAS_IRasterizer;
 class RAS_ILightObject;
 class MT_Transform;
 
+/* BGE-Remix P8: lamp types changed from Python are given back when the game ends */
+void KX_LightObject_RestoreLampTypes();
+
 class KX_LightObject : public KX_GameObject
 {
 	Py_Header

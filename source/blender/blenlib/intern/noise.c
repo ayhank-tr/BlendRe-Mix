@@ -261,6 +261,13 @@ const float hashvectf[768] = {
 	0.433289, -0.754944, 0.64801, -0.100586, 0.114716, 0.044525, -0.992371, 0.966003, 0.244873, -0.082764,
 };
 
+void BLI_noise_tables(const unsigned char **r_perm, const float **r_hashvectf, const float **r_hashpntf)
+{
+	*r_perm = hash;
+	*r_hashvectf = hashvectf;
+	*r_hashpntf = hashpntf;
+}
+
 /**************************/
 /*  IMPROVED PERLIN NOISE */
 /**************************/

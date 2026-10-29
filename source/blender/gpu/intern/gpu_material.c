@@ -41,10 +41,14 @@
 #include "DNA_object_types.h"
 #include "DNA_scene_types.h"
 #include "DNA_world_types.h"
+#include "DNA_texture_types.h"
+#include "DNA_color_types.h"
 
 #include "BLI_math.h"
 #include "BLI_blenlib.h"
 #include "BLI_utildefines.h"
+#include "BLI_noise.h"
+#include "BLI_ghash.h"
 
 #include "BKE_anim.h"
 #include "BKE_colortools.h"
@@ -53,12 +57,14 @@
 #include "BKE_main.h"
 #include "BKE_node.h"
 #include "BKE_scene.h"
+#include "BKE_material_physical.h"
 #include "BKE_texture.h"
 #include "BKE_group.h"
 
 #include "IMB_imbuf_types.h"
 
 #include "GPU_extensions.h"
+#include "GPU_glew.h"
 #include "GPU_framebuffer.h"
 #include "GPU_material.h"
 #include "GPU_shader.h"
@@ -128,6 +134,18 @@ struct GPUMaterial {
 	bool bound;
 
 	bool is_opensubdiv;
+
+	/* BGE-Remix P8: "Face Textures" (the face image, set per draw) */
+	bool use_face_image;
+	struct Image *face_image;
+	float face_image_on;
+
+	/* BGE-Remix P8.5: the texture slots that take Object coordinates from
+	 * an object, and the objects' inverse matrices (refreshed on every
+	 * bind; the slot is kept, not the object, which may be deleted) */
+	int tot_texco_ob;
+	MTex *texco_mtex[MAX_MTEX];
+	float texco_obimat[MAX_MTEX][4][4];
 };
 
 struct GPULamp {
@@ -322,6 +340,309 @@ bool GPU_lamp_override_visible(GPULamp *lamp, SceneRenderLayer *srl, Material *m
 		return true;
 }
 
+/* BGE-Remix P8: "Face Textures". The shader samples a dynamic texture
+ * input; it is pointed at the face image's GL texture before binding, or at
+ * a white pixel with the "on" uniform at 0 when the faces have no image. */
+static GPUTexture *gpu_face_image_blank(void)
+{
+	static GPUTexture *blank = NULL;
+	if (!blank) {
+		float white[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+		blank = GPU_texture_create_2D(1, 1, white, GPU_HDR_NONE, NULL);
+	}
+	return blank;
+}
+
+/* ------------------------------------------------------------------------- */
+/* BGE-Remix P8.5: Object coordinates from the slot's object */
+
+/* the game engine's places for Blender objects (Object * -> float[4][4]) */
+static GHash *gpu_texco_ob_matrices = NULL;
+
+void GPU_texco_object_matrix_set(Object *ob, float obmat[4][4])
+{
+	float *m;
+	if (!ob) {
+		return;
+	}
+	if (!gpu_texco_ob_matrices) {
+		gpu_texco_ob_matrices = BLI_ghash_ptr_new("gpu texco objects");
+	}
+	m = BLI_ghash_lookup(gpu_texco_ob_matrices, ob);
+	if (!m) {
+		m = MEM_mallocN(sizeof(float[4][4]), "gpu texco object matrix");
+		BLI_ghash_insert(gpu_texco_ob_matrices, ob, m);
+	}
+	memcpy(m, obmat, sizeof(float[4][4]));
+}
+
+void GPU_texco_object_matrix_clear(void)
+{
+	if (gpu_texco_ob_matrices) {
+		BLI_ghash_free(gpu_texco_ob_matrices, NULL, MEM_freeN);
+		gpu_texco_ob_matrices = NULL;
+	}
+}
+
+static void gpu_texco_object_imat(Object *ob, float r_imat[4][4])
+{
+	float (*m)[4] = (ob && gpu_texco_ob_matrices) ? BLI_ghash_lookup(gpu_texco_ob_matrices, ob) : NULL;
+	if (!ob || !invert_m4_m4(r_imat, m ? m : ob->obmat)) {
+		unit_m4(r_imat);
+	}
+}
+
+/* a link to the inverse matrix of the slot's object (NULL: too many) */
+static GPUNodeLink *gpu_texco_object_link(GPUMaterial *mat, MTex *mtex)
+{
+	int i;
+	for (i = 0; i < mat->tot_texco_ob; i++) {
+		if (mat->texco_mtex[i]->object == mtex->object) {
+			break;
+		}
+	}
+	if (i == mat->tot_texco_ob) {
+		if (mat->tot_texco_ob == MAX_MTEX) {
+			return NULL;
+		}
+		mat->texco_mtex[i] = mtex;
+		gpu_texco_object_imat(mtex->object, mat->texco_obimat[i]);
+		mat->tot_texco_ob++;
+	}
+	return GPU_dynamic_uniform((float *)mat->texco_obimat[i], GPU_DYNAMIC_OBJECT_TEXCO_IMAT, mtex->object);
+}
+
+/* ------------------------------------------------------------------------- */
+/* BGE-Remix P8.5: Blender Internal's procedural textures
+ * (gpu_shader_material_procedural.glsl) */
+
+bool GPU_texture_is_procedural(const Tex *tex)
+{
+	if (!tex || (tex->use_nodes && tex->nodetree)) {
+		return false;
+	}
+	switch (tex->type) {
+		case TEX_CLOUDS:
+		case TEX_WOOD:
+		case TEX_MARBLE:
+		case TEX_MAGIC:
+		case TEX_BLEND:
+		case TEX_STUCCI:
+		case TEX_NOISE:
+		case TEX_MUSGRAVE:
+		case TEX_VORONOI:
+		case TEX_DISTNOISE:
+			return true;
+		default:
+			return false;
+	}
+}
+
+/* drawn in GLSL here (the library needs GLSL 1.30) */
+static bool gpu_tex_procedural(const Tex *tex)
+{
+	return GLEW_VERSION_3_0 && GPU_texture_is_procedural(tex);
+}
+
+/* whether the type gives a colour (before the colour band) */
+static bool gpu_tex_procedural_rgb(const Tex *tex)
+{
+	return (tex->type == TEX_CLOUDS && tex->stype == TEX_COLOR) || tex->type == TEX_MAGIC ||
+	       (tex->type == TEX_VORONOI && tex->vn_coltype != 0);
+}
+
+/* noise.c's tables in one float texture (see the GLSL file) */
+static GPUTexture *gpu_procedural_tables(void)
+{
+	static GPUTexture *tables = NULL;
+	if (!tables) {
+		const unsigned char *perm;
+		const float *hashvect, *hashpnt;
+		float *pixels = MEM_callocN(sizeof(float) * 4 * 768, "procedural tables");
+		BLI_noise_tables(&perm, &hashvect, &hashpnt);
+		for (int i = 0; i < 256; i++) {
+			pixels[4 * i] = (float)perm[i];
+			for (int c = 0; c < 3; c++) {
+				pixels[4 * (256 + i) + c] = hashvect[3 * i + c];
+				pixels[4 * (512 + i) + c] = hashpnt[3 * i + c];
+			}
+		}
+		tables = GPU_texture_create_2D(768, 1, pixels, GPU_HDR_FULL_FLOAT, NULL);
+		MEM_freeN(pixels);
+	}
+	return tables;
+}
+
+static GPUNodeLink *gpu_procedural_tables_link(void)
+{
+	return GPU_dynamic_texture(gpu_procedural_tables(), GPU_DYNAMIC_SAMPLER_2DBUFFER, NULL);
+}
+
+/* the texture's settings, in the GLSL file's order */
+static void gpu_procedural_params(const Tex *tex, float p[8][4])
+{
+	p[0][0] = tex->type;
+	p[0][1] = tex->stype;
+	p[0][2] = tex->noisebasis;
+	p[0][3] = tex->noisebasis2;
+	p[1][0] = tex->noisesize;
+	p[1][1] = tex->noisedepth;
+	p[1][2] = (tex->noisetype != TEX_NOISESOFT) ? 1.0f : 0.0f;
+	p[1][3] = tex->turbul;
+	p[2][0] = tex->bright;
+	p[2][1] = tex->contrast;
+	p[2][2] = tex->saturation;
+	p[2][3] = (tex->flag & TEX_NO_CLAMP) ? 1.0f : 0.0f;
+	p[3][0] = tex->rfac;
+	p[3][1] = tex->gfac;
+	p[3][2] = tex->bfac;
+	p[3][3] = (tex->flag & TEX_FLIPBLEND) ? 1.0f : 0.0f;
+	p[4][0] = tex->mg_H;
+	p[4][1] = tex->mg_lacunarity;
+	p[4][2] = tex->mg_octaves;
+	p[4][3] = tex->mg_offset;
+	p[5][0] = tex->mg_gain;
+	p[5][1] = tex->ns_outscale;
+	p[5][2] = tex->dist_amount;
+	p[5][3] = tex->vn_mexp;
+	p[6][0] = tex->vn_w1;
+	p[6][1] = tex->vn_w2;
+	p[6][2] = tex->vn_w3;
+	p[6][3] = tex->vn_w4;
+	p[7][0] = tex->vn_distm;
+	p[7][1] = tex->vn_coltype;
+	p[7][2] = tex->nabla;
+	p[7][3] = 0.0f;
+}
+
+static GPUNodeLink *gpu_colorband_link(ColorBand *coba)
+{
+	float *array;
+	int size;
+	colorband_table_RGBA(coba, &array, &size);
+	return GPU_texture(size, array);
+}
+
+/* The texture at texvec: its intensity, and its colour when it has one
+ * (returns TEX_INT or TEX_RGB; *r_talpha: the colour's alpha counts) */
+static int gpu_procedural_eval(GPUMaterial *mat, Tex *tex, GPUNodeLink *texvec,
+                               GPUNodeLink **r_tin, GPUNodeLink **r_trgb, int *r_talpha)
+{
+	float p[8][4];
+	gpu_procedural_params(tex, p);
+	if ((tex->flag & TEX_COLORBAND) && tex->coba) {
+		GPU_link(mat, "proc_texture_band", texvec,
+		         GPU_uniform(p[0]), GPU_uniform(p[1]), GPU_uniform(p[2]), GPU_uniform(p[3]),
+		         GPU_uniform(p[4]), GPU_uniform(p[5]), GPU_uniform(p[6]), GPU_uniform(p[7]),
+		         gpu_procedural_tables_link(), gpu_colorband_link(tex->coba), r_tin, r_trgb);
+		*r_talpha = 1;
+		return TEX_RGB;
+	}
+	GPU_link(mat, "proc_texture", texvec,
+	         GPU_uniform(p[0]), GPU_uniform(p[1]), GPU_uniform(p[2]), GPU_uniform(p[3]),
+	         GPU_uniform(p[4]), GPU_uniform(p[5]), GPU_uniform(p[6]), GPU_uniform(p[7]),
+	         gpu_procedural_tables_link(), r_tin, r_trgb);
+	*r_talpha = 0;
+	return gpu_tex_procedural_rgb(tex) ? TEX_RGB : TEX_INT;
+}
+
+bool GPU_material_link_procedural_node(GPUMaterial *mat, Tex *tex, GPUNodeLink *co,
+                                       GPUNodeLink **r_value, GPUNodeLink **r_color, GPUNodeLink **r_normal)
+{
+	float p[8][4];
+	if (!gpu_tex_procedural(tex)) {
+		return false;
+	}
+	gpu_procedural_params(tex, p);
+	if ((tex->flag & TEX_COLORBAND) && tex->coba) {
+		GPU_link(mat, "proc_texture_node_band", co,
+		         GPU_uniform(p[0]), GPU_uniform(p[1]), GPU_uniform(p[2]), GPU_uniform(p[3]),
+		         GPU_uniform(p[4]), GPU_uniform(p[5]), GPU_uniform(p[6]), GPU_uniform(p[7]),
+		         gpu_procedural_tables_link(), gpu_colorband_link(tex->coba), r_value, r_color, r_normal);
+	}
+	else {
+		GPU_link(mat, "proc_texture_node", co,
+		         GPU_uniform(p[0]), GPU_uniform(p[1]), GPU_uniform(p[2]), GPU_uniform(p[3]),
+		         GPU_uniform(p[4]), GPU_uniform(p[5]), GPU_uniform(p[6]), GPU_uniform(p[7]),
+		         gpu_procedural_tables_link(), r_value, r_color, r_normal);
+	}
+	return true;
+}
+
+/* the bump of a procedural: three samples per pixel (the renderer's 3-tap
+ * bump, in 3D) */
+static void gpu_procedural_bump(GPUMaterial *mat, MTex *mtex, Tex *tex, GPUNodeLink *texvec, GPUNodeLink *hscale,
+                                GPUNodeLink **r_dBs, GPUNodeLink **r_dBt)
+{
+	float p[8][4];
+	float uvmode = (mtex->texco == TEXCO_UV) ? 1.0f : 0.0f;
+	gpu_procedural_params(tex, p);
+	if ((tex->flag & TEX_COLORBAND) && tex->coba) {
+		GPU_link(mat, "proc_bump_tap3_band", texvec,
+		         GPU_uniform(p[0]), GPU_uniform(p[1]), GPU_uniform(p[2]), GPU_uniform(p[3]),
+		         GPU_uniform(p[4]), GPU_uniform(p[5]), GPU_uniform(p[6]), GPU_uniform(p[7]),
+		         gpu_procedural_tables_link(), gpu_colorband_link(tex->coba), GPU_uniform(&uvmode), hscale,
+		         r_dBs, r_dBt);
+	}
+	else {
+		GPU_link(mat, "proc_bump_tap3", texvec,
+		         GPU_uniform(p[0]), GPU_uniform(p[1]), GPU_uniform(p[2]), GPU_uniform(p[3]),
+		         GPU_uniform(p[4]), GPU_uniform(p[5]), GPU_uniform(p[6]), GPU_uniform(p[7]),
+		         gpu_procedural_tables_link(), GPU_uniform(&uvmode), hscale, r_dBs, r_dBt);
+	}
+}
+
+/* the renderer's procedural mapping (texco_mapping): UV in -1..1, then the
+ * projection, offset and size */
+static GPUNodeLink *gpu_procedural_mapping(GPUMaterial *mat, MTex *mtex, GPUNodeLink *co)
+{
+	GPUNodeLink *texvec;
+	float proj[3] = {mtex->projx, mtex->projy, mtex->projz};
+	if (mtex->texco == TEXCO_UV) {
+		GPU_link(mat, "proc_texco_uv", co, &co);
+	}
+	GPU_link(mat, "proc_mapping", co, GPU_uniform(proj), GPU_uniform(mtex->size), GPU_uniform(mtex->ofs), &texvec);
+	return texvec;
+}
+
+static void gpu_material_bind_face_image(GPUMaterial *material, double time, int mipmap)
+{
+	GPUTexture *tex = NULL;
+	GPUInput *input;
+
+	if (material->face_image) {
+		tex = GPU_texture_from_blender(material->face_image, NULL, GL_TEXTURE_2D, false, time, mipmap);
+	}
+	material->face_image_on = tex ? 1.0f : 0.0f;
+	if (!tex) {
+		tex = gpu_face_image_blank();
+	}
+	for (input = material->pass->inputs.first; input; input = input->next) {
+		if (input->dynamictex && input->dynamictype == GPU_DYNAMIC_SAMPLER_2DIMAGE &&
+		    input->dynamicdata == material)
+		{
+			input->tex = tex;
+		}
+	}
+}
+
+bool GPU_material_is_valid(GPUMaterial *material)
+{
+	return material && material->pass && GPU_pass_shader(material->pass);
+}
+
+bool GPU_material_uses_face_image(GPUMaterial *material)
+{
+	return material && material->use_face_image;
+}
+
+void GPU_material_set_face_image(GPUMaterial *material, Image *ima)
+{
+	if (material) {
+		material->face_image = ima;
+	}
+}
+
 void GPU_material_bind(
         GPUMaterial *material, int oblay, int viewlay, double time, int mipmap,
         float viewmat[4][4], float viewinv[4][4], float camerafactors[4], bool scenelock)
@@ -375,6 +696,16 @@ void GPU_material_bind(
 			}
 		}
 		
+		/* BGE-Remix P8: the face image of the faces drawn next */
+		if (material->use_face_image) {
+			gpu_material_bind_face_image(material, time, mipmap);
+		}
+
+		/* BGE-Remix P8.5: where the coordinate objects are now */
+		for (int i = 0; i < material->tot_texco_ob; i++) {
+			gpu_texco_object_imat(material->texco_mtex[i]->object, material->texco_obimat[i]);
+		}
+
 		/* note material must be bound before setting uniforms */
 		GPU_pass_bind(material->pass, time, mipmap);
 
@@ -962,6 +1293,23 @@ static void shade_one_light(GPUShadeInput *shi, GPUShadeResult *shr, GPULamp *la
 	else
 		GPU_link(mat, "set_value", GPU_uniform(&one), &shadfac);
 
+	if (shi->physical) {
+		/* BGE-Remix P8.7: metal, roughness and Fresnel */
+		float flags[3] = {
+			(lamp->mode & LA_NO_DIFF) ? 1.0f : 0.0f,
+			(lamp->mode & (LA_NO_SPEC | LA_ONLYSHADOW)) ? 1.0f : 0.0f,
+			(lamp->type == LA_HEMI) ? 1.0f : 0.0f,
+		};
+		MaterialPhysical ph;
+		BKE_material_physical_get(ma, &ph);
+		GPU_link(mat, "shade_pbr_light", vn, lv, view, inp, visifac, shadfac, lcol,
+		         GPU_uniform(lamp->shadow_color), shi->pbr_diff, shi->pbr_f0, shi->roughness,
+		         GPU_uniform(&ph.subsurface), GPU_uniform(flags), shr->diff, shr->spec, &shr->diff, &shr->spec);
+		add_user_list(&mat->lamps, lamp);
+		add_user_list(&lamp->materials, shi->gpumat->ma);
+		return;
+	}
+
 	if (GPU_link_changed(shi->refl) || ma->ref != 0.0f) {
 		if (!(lamp->mode & LA_NO_DIFF)) {
 			GPUNodeLink *rgb;
@@ -1165,6 +1513,61 @@ static void texture_value_blend(
 	}
 }
 
+/* the bump space (object, texture or view), set up again when it changes
+ * from one bump texture to the next */
+static void gpu_bump_space_init(
+        GPUMaterial *mat, GPUShadeInput *shi, int texflag, bool *init_done, int *iBumpSpacePrev,
+        GPUNodeLink **vNorg, GPUNodeLink **vNacc, GPUNodeLink **fPrevMagnitude,
+        GPUNodeLink **vR1, GPUNodeLink **vR2, GPUNodeLink **fDet)
+{
+	int iBumpSpace;
+
+	if (!*init_done) {
+		/* copy shi->vn to vNorg and vNacc, set magnitude to 1 */
+		GPU_link(mat, "mtex_bump_normals_init", shi->vn, vNorg, vNacc, fPrevMagnitude);
+		*iBumpSpacePrev = 0;
+		*init_done = true;
+	}
+
+	/* find current bump space */
+	if (texflag & MTEX_BUMP_OBJECTSPACE)
+		iBumpSpace = 1;
+	else if (texflag & MTEX_BUMP_TEXTURESPACE)
+		iBumpSpace = 2;
+	else
+		iBumpSpace = 4; /* ViewSpace */
+
+	/* re-initialize if bump space changed */
+	if (*iBumpSpacePrev != iBumpSpace) {
+		GPUNodeLink *surf_pos = GPU_builtin(GPU_VIEW_POSITION);
+
+		if (texflag & MTEX_BUMP_OBJECTSPACE)
+			GPU_link(mat, "mtex_bump_init_objspace",
+			         surf_pos, *vNorg,
+			         GPU_builtin(GPU_VIEW_MATRIX),
+			         GPU_builtin(GPU_INVERSE_VIEW_MATRIX),
+			         GPU_builtin(GPU_OBJECT_MATRIX),
+			         GPU_builtin(GPU_INVERSE_OBJECT_MATRIX),
+			         *fPrevMagnitude, *vNacc,
+			         fPrevMagnitude, vNacc,
+			         vR1, vR2, fDet);
+		else if (texflag & MTEX_BUMP_TEXTURESPACE)
+			GPU_link(mat, "mtex_bump_init_texturespace",
+			         surf_pos, *vNorg,
+			         *fPrevMagnitude, *vNacc,
+			         fPrevMagnitude, vNacc,
+			         vR1, vR2, fDet);
+		else
+			GPU_link(mat, "mtex_bump_init_viewspace",
+			         surf_pos, *vNorg,
+			         *fPrevMagnitude, *vNacc,
+			         fPrevMagnitude, vNacc,
+			         vR1, vR2, fDet);
+
+		*iBumpSpacePrev = iBumpSpace;
+	}
+}
+
 static void do_material_tex(GPUShadeInput *shi)
 {
 	Material *ma = shi->mat;
@@ -1180,6 +1583,8 @@ static void do_material_tex(GPUShadeInput *shi)
 	bool init_done = false;
 	int iBumpSpacePrev = 0; /* Not necessary, quieting gcc warning. */
 	GPUNodeLink *vNorg, *vNacc, *fPrevMagnitude;
+	/* kept from one bump texture to the next while the bump space is the same */
+	GPUNodeLink *vR1 = NULL, *vR2 = NULL, *fDet = NULL;
 	int iFirstTimeNMap = 1;
 	bool found_deriv_map = false;
 
@@ -1209,15 +1614,36 @@ static void do_material_tex(GPUShadeInput *shi)
 			tex = mtex->tex;
 			if (tex == NULL) continue;
 
+			/* BGE-Remix P8.5: Blender Internal's procedural textures */
+			const bool procedural = gpu_tex_procedural(tex);
+			GPUNodeLink *texvec = NULL;
+
 			/* which coords */
 			if (mtex->texco == TEXCO_ORCO)
 				texco = texco_orco;
-			else if (mtex->texco == TEXCO_OBJECT)
-				texco = texco_object;
+			else if (mtex->texco == TEXCO_OBJECT) {
+				/* BGE-Remix P8.5: the slot's object, as a render uses it */
+				GPUNodeLink *obimat = mtex->object ? gpu_texco_object_link(mat, mtex) : NULL;
+				if (obimat) {
+					GPU_link(mat, "texco_object", GPU_builtin(GPU_INVERSE_VIEW_MATRIX), obimat,
+					         GPU_builtin(GPU_VIEW_POSITION), &texco);
+				}
+				else {
+					texco = texco_object;
+				}
+			}
 			else if (mtex->texco == TEXCO_NORM)
 				texco = orn;
-			else if (mtex->texco == TEXCO_TANGENT)
-				texco = texco_object;
+			else if (mtex->texco == TEXCO_TANGENT) {
+				if (procedural)
+					GPU_link(mat, "texco_tangent", GPU_attribute(CD_TANGENT, ""), &texco);
+				else
+					texco = texco_object;
+			}
+			else if (procedural && mtex->texco == TEXCO_WINDOW) {
+				GPU_link(mat, "proc_texco_window", GPU_builtin(GPU_VIEW_POSITION),
+				         GPU_builtin(GPU_CAMERA_TEXCO_FACTORS), &texco);
+			}
 			else if (mtex->texco == TEXCO_GLOB)
 				texco = texco_global;
 			else if (mtex->texco == TEXCO_REFL) {
@@ -1234,21 +1660,48 @@ static void do_material_tex(GPUShadeInput *shi)
 			else
 				continue;
 
-			/* in case of uv, this would just undo a multiplication in texco_uv */
-			if (mtex->texco != TEXCO_UV)
-				GPU_link(mat, "mtex_2d_mapping", texco, &texco);
+			if (procedural) {
+				/* the renderer's procedural mapping, in 3D */
+				texvec = gpu_procedural_mapping(mat, mtex, texco);
+			}
+			else {
+				/* BGE-Remix P8.5: an image's projection and Flat/Cube/Tube/Sphere
+				 * mapping, as a render does them (the defaults draw as before) */
+				const bool map_default = (mtex->projx == PROJ_X && mtex->projy == PROJ_Y &&
+				                          mtex->projz == PROJ_Z && mtex->mapping == MTEX_FLAT);
+				if (tex->type == TEX_IMAGE && !map_default) {
+					float proj[3] = {mtex->projx, mtex->projy, mtex->projz};
+					float wrap = mtex->mapping;
+					float uvmode = (mtex->texco == TEXCO_UV) ? 1.0f : 0.0f;
+					GPUNodeLink *cubenor;
+					/* the cube side: by the normal in the coordinates' space */
+					GPU_link(mat, "direction_transform_m4v3", GPU_builtin(GPU_VIEW_NORMAL),
+					         GPU_builtin(GPU_INVERSE_VIEW_MATRIX), &cubenor);
+					if (mtex->texco != TEXCO_GLOB) {
+						GPUNodeLink *obimat = (mtex->texco == TEXCO_OBJECT && mtex->object) ?
+						                      gpu_texco_object_link(mat, mtex) : NULL;
+						GPU_link(mat, "direction_transform_m4v3", cubenor,
+						         obimat ? obimat : GPU_builtin(GPU_INVERSE_OBJECT_MATRIX), &cubenor);
+					}
+					GPU_link(mat, "mtex_image_mapping", texco, GPU_uniform(proj), GPU_uniform(&wrap),
+					         GPU_uniform(&uvmode), cubenor, &texco);
+				}
+				/* in case of uv, this would just undo a multiplication in texco_uv */
+				else if (mtex->texco != TEXCO_UV)
+					GPU_link(mat, "mtex_2d_mapping", texco, &texco);
 
-			if (mtex->size[0] != 1.0f || mtex->size[1] != 1.0f || mtex->size[2] != 1.0f)
-				GPU_link(mat, "mtex_mapping_size", texco, GPU_uniform(mtex->size), &texco);
+				if (mtex->size[0] != 1.0f || mtex->size[1] != 1.0f || mtex->size[2] != 1.0f)
+					GPU_link(mat, "mtex_mapping_size", texco, GPU_uniform(mtex->size), &texco);
 
-			float ofs[3] = {
-				mtex->ofs[0] + 0.5f - 0.5f * mtex->size[0],
-				mtex->ofs[1] + 0.5f - 0.5f * mtex->size[1],
-				0.0f
-			};
+				float ofs[3] = {
+					mtex->ofs[0] + 0.5f - 0.5f * mtex->size[0],
+					mtex->ofs[1] + 0.5f - 0.5f * mtex->size[1],
+					0.0f
+				};
 
-			if (ofs[0] != 0.0f || ofs[1] != 0.0f || ofs[2] != 0.0f)
-				GPU_link(mat, "mtex_mapping_ofs", texco, GPU_uniform(ofs), &texco);
+				if (ofs[0] != 0.0f || ofs[1] != 0.0f || ofs[2] != 0.0f)
+					GPU_link(mat, "mtex_mapping_ofs", texco, GPU_uniform(ofs), &texco);
+			}
 
 			talpha = 0;
 
@@ -1268,6 +1721,9 @@ static void do_material_tex(GPUShadeInput *shi)
 				rgbnor = TEX_RGB;
 
 				talpha = ((tex->imaflag & TEX_USEALPHA) && tex->ima && (tex->ima->flag & IMA_IGNORE_ALPHA) == 0);
+			}
+			else if (procedural) {
+				rgbnor = gpu_procedural_eval(mat, tex, texvec, &tin, &trgb, &talpha);
 			}
 			else {
 				continue;
@@ -1409,14 +1865,12 @@ static void do_material_tex(GPUShadeInput *shi)
 					         (mtex->texflag & (MTEX_3TAP_BUMP | MTEX_5TAP_BUMP | MTEX_BICUBIC_BUMP)))
 					{
 						/* ntap bumpmap image */
-						int iBumpSpace;
 						float ima_x, ima_y;
 
 						float imag_tspace_dimension_x = 1024.0f; /* only used for texture space variant */
 						float aspect = 1.0f;
 						
-						GPUNodeLink *vR1, *vR2;
-						GPUNodeLink *dBs, *dBt, *fDet;
+						GPUNodeLink *dBs, *dBt;
 
 						float hScale = 0.1f; /* compatibility adjustment factor for all bumpspace types */
 						if (mtex->texflag & MTEX_BUMP_TEXTURESPACE)
@@ -1454,52 +1908,8 @@ static void do_material_tex(GPUShadeInput *shi)
 						if (GPU_link_changed(stencil))
 							GPU_link(mat, "math_multiply", tnorfac, stencil, &tnorfac);
 						
-						if (!init_done) {
-							/* copy shi->vn to vNorg and vNacc, set magnitude to 1 */
-							GPU_link(mat, "mtex_bump_normals_init", shi->vn, &vNorg, &vNacc, &fPrevMagnitude);
-							iBumpSpacePrev = 0;
-							init_done = true;
-						}
-						
-						// find current bump space
-						if (mtex->texflag & MTEX_BUMP_OBJECTSPACE)
-							iBumpSpace = 1;
-						else if (mtex->texflag & MTEX_BUMP_TEXTURESPACE)
-							iBumpSpace = 2;
-						else
-							iBumpSpace = 4; /* ViewSpace */
-						
-						/* re-initialize if bump space changed */
-						if (iBumpSpacePrev != iBumpSpace) {
-							GPUNodeLink *surf_pos = GPU_builtin(GPU_VIEW_POSITION);
-
-							if (mtex->texflag & MTEX_BUMP_OBJECTSPACE)
-								GPU_link(mat, "mtex_bump_init_objspace",
-								         surf_pos, vNorg,
-								         GPU_builtin(GPU_VIEW_MATRIX),
-								         GPU_builtin(GPU_INVERSE_VIEW_MATRIX),
-								         GPU_builtin(GPU_OBJECT_MATRIX),
-								         GPU_builtin(GPU_INVERSE_OBJECT_MATRIX),
-								         fPrevMagnitude, vNacc,
-								         &fPrevMagnitude, &vNacc,
-								         &vR1, &vR2, &fDet);
-								
-							else if (mtex->texflag & MTEX_BUMP_TEXTURESPACE)
-								GPU_link(mat, "mtex_bump_init_texturespace",
-								         surf_pos, vNorg,
-								         fPrevMagnitude, vNacc,
-								         &fPrevMagnitude, &vNacc,
-								         &vR1, &vR2, &fDet);
-								
-							else
-								GPU_link(mat, "mtex_bump_init_viewspace",
-								         surf_pos, vNorg,
-								         fPrevMagnitude, vNacc,
-								         &fPrevMagnitude, &vNacc,
-								         &vR1, &vR2, &fDet);
-							
-							iBumpSpacePrev = iBumpSpace;
-						}
+						gpu_bump_space_init(mat, shi, mtex->texflag, &init_done, &iBumpSpacePrev,
+						                    &vNorg, &vNacc, &fPrevMagnitude, &vR1, &vR2, &fDet);
 						
 						
 						if (found_deriv_map) {
@@ -1545,6 +1955,27 @@ static void do_material_tex(GPUShadeInput *shi)
 							         &vNacc, &shi->vn);
 						
 					}
+				}
+				else if (procedural) {
+					/* BGE-Remix P8.5: a procedural bumps the surface with three
+					 * samples per pixel, whatever bump method is chosen; texture
+					 * space is drawn as object space */
+					GPUNodeLink *dBs, *dBt;
+					int texflag = mtex->texflag;
+					/* the renderer's factor: 0.1, and 1 in texture space */
+					float norfac = -mtex->norfac * ((texflag & MTEX_BUMP_TEXTURESPACE) ? 1.0f : 0.1f);
+
+					if (texflag & MTEX_BUMP_TEXTURESPACE) {
+						texflag = (texflag & ~MTEX_BUMP_TEXTURESPACE) | MTEX_BUMP_OBJECTSPACE;
+					}
+					tnorfac = GPU_uniform(&norfac);
+					if (GPU_link_changed(stencil))
+						GPU_link(mat, "math_multiply", tnorfac, stencil, &tnorfac);
+
+					gpu_bump_space_init(mat, shi, texflag, &init_done, &iBumpSpacePrev,
+					                    &vNorg, &vNacc, &fPrevMagnitude, &vR1, &vR2, &fDet);
+					gpu_procedural_bump(mat, mtex, tex, texvec, tnorfac, &dBs, &dBt);
+					GPU_link(mat, "mtex_bump_apply", fDet, dBs, dBt, vR1, vR2, vNacc, &vNacc, &shi->vn);
 				}
 				
 				GPU_link(mat, "vec_math_negate", shi->vn, &orn);
@@ -1597,11 +2028,32 @@ static void do_material_tex(GPUShadeInput *shi)
 					if (mtex->hardfac == 1.0f) hardfac = stencil;
 					else GPU_link(mat, "math_multiply", GPU_uniform(&mtex->hardfac), stencil, &hardfac);
 
-					GPU_link(mat, "mtex_har_divide", shi->har, &shi->har);
+					if (shi->physical) {
+						/* BGE-Remix P8.7: Hardness is the roughness in a physical material */
+						texture_value_blend(
+						        mat, GPU_uniform(&mtex->def_var), shi->roughness, tin, hardfac,
+						        mtex->blendtype, &shi->roughness);
+						GPU_link(mat, "mtex_value_clamp", shi->roughness, &shi->roughness);
+					}
+					else {
+						GPU_link(mat, "mtex_har_divide", shi->har, &shi->har);
+						texture_value_blend(
+						        mat, GPU_uniform(&mtex->def_var), shi->har, tin, hardfac,
+						        mtex->blendtype, &shi->har);
+						GPU_link(mat, "mtex_har_multiply_clamp", shi->har, &shi->har);
+					}
+				}
+				if (shi->physical && (mtex->mapto & MAP_RAYMIRR)) {
+					/* BGE-Remix P8.7: Ray Mirror is the metallic value in a physical material */
+					GPUNodeLink *metalfac;
+
+					if (mtex->raymirrfac == 1.0f) metalfac = stencil;
+					else GPU_link(mat, "math_multiply", GPU_uniform(&mtex->raymirrfac), stencil, &metalfac);
+
 					texture_value_blend(
-					        mat, GPU_uniform(&mtex->def_var), shi->har, tin, hardfac,
-					        mtex->blendtype, &shi->har);
-					GPU_link(mat, "mtex_har_multiply_clamp", shi->har, &shi->har);
+					        mat, GPU_uniform(&mtex->def_var), shi->metallic, tin, metalfac,
+					        mtex->blendtype, &shi->metallic);
+					GPU_link(mat, "mtex_value_clamp", shi->metallic, &shi->metallic);
 				}
 				if (mtex->mapto & MAP_ALPHA) {
 					GPUNodeLink *alphafac;
@@ -1661,6 +2113,18 @@ void GPU_shadeinput_set(GPUMaterial *mat, Material *ma, GPUShadeInput *shi)
 	if (GPU_material_do_color_management(mat))
 		GPU_link(mat, "srgb_to_linearrgb", shi->vcol, &shi->vcol);
 	GPU_link(mat, "texco_refl", shi->vn, shi->view, &shi->ref);
+
+	/* BGE-Remix P8.7: the physical material's values */
+	shi->physical = mat->type != GPU_MATERIAL_TYPE_WORLD && BKE_material_is_physical(ma);
+	if (shi->physical) {
+		MaterialPhysical ph;
+		BKE_material_physical_get(ma, &ph);
+		GPU_link(mat, "set_value", GPU_uniform(&ph.metallic), &shi->metallic);
+		GPU_link(mat, "set_value", GPU_uniform(&ph.roughness), &shi->roughness);
+		GPU_link(mat, "set_value", GPU_uniform(&ph.specular), &shi->spec);
+		GPU_link(mat, "set_value", GPU_uniform(&ph.emission_strength), &shi->emit);
+		GPU_link(mat, "set_value", GPU_uniform(&one), &shi->refl);
+	}
 }
 
 void GPU_mist_update_enable(short enable)
@@ -1694,6 +2158,63 @@ void GPU_zenith_update_color(float color[3])
 	copy_v3_v3(GPUWorld.zencol, color);
 }
 
+/* BGE-Remix P8.7: a physical material's alpha counts when it is glass or
+ * drawn with transparency */
+static bool gpu_material_physical_alpha(Material *ma)
+{
+	MaterialPhysical ph;
+	if (!BKE_material_is_physical(ma)) {
+		return false;
+	}
+	BKE_material_physical_get(ma, &ph);
+	return ph.transmission > 0.0f || ma->game.alpha_blend != GEMAT_SOLID;
+}
+
+/* BGE-Remix P8.7: a physical material lit by the lamps and the world */
+static void gpu_shade_physical(GPUShadeInput *shi, GPUShadeResult *shr)
+{
+	GPUMaterial *mat = shi->gpumat;
+	Material *ma = shi->mat;
+	World *world = mat->scene->world;
+	MaterialPhysical ph;
+	GPUNodeLink *emission;
+
+	BKE_material_physical_get(ma, &ph);
+	GPU_link(mat, "pbr_prepare", shi->rgb, shi->metallic, shi->spec, GPU_uniform(&ph.transmission),
+	         &shi->pbr_diff, &shi->pbr_f0);
+	/* the lamps' Only Shadow darkening uses these */
+	shi->rgb = shi->pbr_diff;
+	shi->specrgb = shi->pbr_f0;
+
+	GPU_link(mat, "set_rgb_zero", &shr->diff);
+	GPU_link(mat, "set_rgb_zero", &shr->spec);
+	if ((mat->scene->gm.flag & GAME_GLSL_NO_LIGHTS) || (ma->mode & MA_SHLESS)) {
+		GPU_link(mat, "set_rgb", shi->pbr_diff, &shr->diff);
+	}
+	else {
+		material_lights(shi, shr);
+		if (world) {
+			GPU_link(mat, "shade_pbr_ambient", shi->vn, shi->view, shi->pbr_diff, shi->pbr_f0, shi->roughness,
+			         shi->amb, GPU_dynamic_uniform(GPUWorld.ambcol, GPU_DYNAMIC_AMBIENT_COLOR, NULL),
+			         GPU_dynamic_uniform(GPUWorld.horicol, GPU_DYNAMIC_HORIZON_COLOR, NULL),
+			         GPU_dynamic_uniform(GPUWorld.zencol, GPU_DYNAMIC_ZENITH_COLOR, NULL),
+			         GPU_builtin(GPU_INVERSE_VIEW_MATRIX), shr->diff, &shr->diff);
+		}
+	}
+	/* emission: its colour times its (textured) strength */
+	GPU_link(mat, "set_rgb", GPU_uniform(ph.emission), &emission);
+	GPU_link(mat, "shade_maddf", shr->diff, shi->emit, emission, &shr->diff);
+
+	GPU_link(mat, "shade_add", shr->diff, shr->spec, &shr->combined);
+	if (ph.transmission > 0.0f) {
+		GPU_link(mat, "shade_pbr_alpha", shi->vn, shi->view, shi->pbr_f0, GPU_uniform(&ph.transmission),
+		         shi->alpha, &shr->alpha);
+	}
+	else {
+		GPU_link(mat, "set_value", shi->alpha, &shr->alpha);
+	}
+}
+
 void GPU_shaderesult_set(GPUShadeInput *shi, GPUShadeResult *shr)
 {
 	GPUMaterial *mat = shi->gpumat;
@@ -1707,9 +2228,33 @@ void GPU_shaderesult_set(GPUShadeInput *shi, GPUShadeResult *shr)
 	if (ma->mode & MA_VERTEXCOLP)
 		shi->rgb = shi->vcol;
 
+	/* BGE-Remix P8: "Face Textures" as in Multitexture: the face's image is
+	 * the first texture (UV, mixed fully into the colour, its alpha the
+	 * material's alpha with "Face Textures Alpha") */
+	if ((ma->mode & MA_FACETEXTURE) && mat->type == GPU_MATERIAL_TYPE_MESH) {
+		GPUNodeLink *uv, *value, *col, *texalpha;
+		GPUNodeLink *on = GPU_dynamic_uniform(&mat->face_image_on, GPU_DYNAMIC_MAT_FACEIMA, mat);
+
+		mat->use_face_image = true;
+		GPU_link(mat, "texco_uv", GPU_attribute(CD_MTFACE, ""), &uv);
+		GPU_link(mat, "mtex_image", uv,
+		         GPU_dynamic_texture(gpu_face_image_blank(), GPU_DYNAMIC_SAMPLER_2DIMAGE, mat), &value, &col);
+		if (GPU_material_do_color_management(mat)) {
+			GPU_link(mat, "srgb_to_linearrgb", col, &col);
+		}
+		GPU_link(mat, "mtex_face_image", col, on, shi->rgb, &shi->rgb, &texalpha);
+		if (ma->mode & MA_FACETEXTURE_ALPHA) {
+			GPU_link(mat, "mtex_face_alpha", texalpha, on, shi->alpha, &shi->alpha);
+		}
+	}
+
 	do_material_tex(shi);
 
-	if ((mat->scene->gm.flag & GAME_GLSL_NO_LIGHTS) || (ma->mode & MA_SHLESS)) {
+	if (shi->physical) {
+		/* BGE-Remix P8.7 */
+		gpu_shade_physical(shi, shr);
+	}
+	else if ((mat->scene->gm.flag & GAME_GLSL_NO_LIGHTS) || (ma->mode & MA_SHLESS)) {
 		GPU_link(mat, "set_rgb", shi->rgb, &shr->diff);
 		GPU_link(mat, "set_rgb_zero", &shr->spec);
 		GPU_link(mat, "set_value", shi->alpha, &shr->alpha);
@@ -2149,6 +2694,106 @@ GPUMaterial *GPU_material_world(struct Scene *scene, struct World *wo)
 }
 
 
+/* BGE-Remix P8: as in Multitexture, a texture mapped to alpha (or the face
+ * image's alpha) makes the material see-through */
+static bool gpu_material_texture_alpha(Material *ma)
+{
+	int a;
+	if (ma->mode & MA_FACETEXTURE_ALPHA) {
+		return true;
+	}
+	for (a = 0; a < MAX_MTEX; a++) {
+		MTex *mtex = ma->mtex[a];
+		if (mtex && mtex->tex && (ma->septex & (1 << a)) == 0 && (mtex->mapto & MAP_ALPHA)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/* BGE-Remix P8.6: the material in UV space, one value per pixel */
+GPUMaterial *GPU_material_bake_create(Scene *scene, Material *ma, int channel, float scale)
+{
+	GPUMaterial *mat;
+	GPUShadeInput shi;
+	GPUNodeLink *uv, *out = NULL, *value;
+	float srgb, one = 1.0f;
+
+	if (!ma || (ma->use_nodes && ma->nodetree)) {
+		return NULL;
+	}
+	mat = GPU_material_construct_begin(ma);
+	mat->scene = scene;
+	mat->type = GPU_MATERIAL_TYPE_MESH_BAKE;
+	mat->is_opensubdiv = false;
+	mat->alpha = 1;  /* the material's alpha, not 1 */
+
+	GPU_shadeinput_set(mat, ma, &shi);
+	if (ma->mode & MA_VERTEXCOLP) {
+		shi.rgb = shi.vcol;
+	}
+	do_material_tex(&shi);
+
+	GPU_link(mat, "texco_uv", GPU_attribute(CD_MTFACE, ""), &uv);
+	switch (channel) {
+		case GPU_BAKE_COLOR:
+			srgb = GPU_material_do_color_management(mat) ? 1.0f : 0.0f;
+			GPU_link(mat, "bake_out_color", shi.rgb, shi.refl, GPU_uniform(&srgb), uv, &out);
+			break;
+		case GPU_BAKE_ALPHA:
+			GPU_link(mat, "bake_out_value", shi.alpha, GPU_uniform(&one), uv, &out);
+			break;
+		case GPU_BAKE_HARDNESS:
+			if (shi.physical) {
+				GPU_link(mat, "bake_out_value", shi.roughness, GPU_uniform(&one), uv, &out);
+			}
+			else {
+				scale = 1.0f / 511.0f;
+				GPU_link(mat, "bake_out_value", shi.har, GPU_uniform(&scale), uv, &out);
+			}
+			break;
+		case GPU_BAKE_METALLIC:
+			if (shi.physical) {
+				GPU_link(mat, "bake_out_value", shi.metallic, GPU_uniform(&one), uv, &out);
+			}
+			else {
+				GPU_link(mat, "set_value_zero", &value);
+				GPU_link(mat, "bake_out_value", value, GPU_uniform(&one), uv, &out);
+			}
+			break;
+		case GPU_BAKE_EMIT:
+			scale = (scale > 0.0f) ? 1.0f / scale : 1.0f;
+			GPU_link(mat, "bake_out_value", shi.emit, GPU_uniform(&scale), uv, &out);
+			break;
+		case GPU_BAKE_NORMAL:
+			GPU_link(mat, "bake_out_normal", shi.vn, GPU_builtin(GPU_VIEW_NORMAL),
+			         GPU_attribute(CD_TANGENT, ""), uv, &out);
+			break;
+		default:
+			GPU_link(mat, "set_value", GPU_uniform(&one), &value);
+			GPU_link(mat, "bake_out_value", value, GPU_uniform(&one), uv, &out);
+			break;
+	}
+	GPU_material_output_link(mat, out);
+
+	if (!gpu_material_construct_end(mat, "bake")) {
+		GPU_material_bake_free(mat);
+		return NULL;
+	}
+	return mat;
+}
+
+void GPU_material_bake_free(GPUMaterial *material)
+{
+	if (material) {
+		if (material->pass) {
+			GPU_pass_free(material->pass);
+		}
+		BLI_freelistN(&material->lamps);
+		MEM_freeN(material);
+	}
+}
+
 GPUMaterial *GPU_material_from_blender(Scene *scene, Material *ma, bool use_opensubdiv)
 {
 	GPUMaterial *mat;
@@ -2172,7 +2817,8 @@ GPUMaterial *GPU_material_from_blender(Scene *scene, Material *ma, bool use_open
 
 	/* render pipeline option */
 	bool new_shading_nodes = BKE_scene_use_new_shading_nodes(scene);
-	if (!new_shading_nodes && (ma->mode & MA_TRANSP))
+	if (!new_shading_nodes && ((ma->mode & MA_TRANSP) || gpu_material_texture_alpha(ma) ||
+	                           gpu_material_physical_alpha(ma)))
 		GPU_material_enable_alpha(mat);
 	else if (new_shading_nodes && ma->alpha < 1.0f)
 		GPU_material_enable_alpha(mat);

@@ -378,7 +378,14 @@ BRB_API int brb_material_create(const brb_material_desc *d)
 		opaque.metallicConstant = clamp01(d->metallic);
 		opaque.roughnessTexture = tex(d->roughness_texture);
 		opaque.metallicTexture = tex(d->metallic_texture);
-		if (d->alpha_blend) {
+		if (d->additive) {
+			/* P8.8: Blender's Add blending is Remix's emissive blending (one,
+			 * one: dxvk-remix BlendType::kEmissive) */
+			opaque.useDrawCallAlphaState = FALSE;
+			opaque.blendType_hasvalue = TRUE;
+			opaque.blendType_value = 8;
+		}
+		else if (d->alpha_blend) {
 			/* blend by opacity (and the albedo texture's alpha), not by the
 			 * (missing) draw call state */
 			opaque.useDrawCallAlphaState = FALSE;

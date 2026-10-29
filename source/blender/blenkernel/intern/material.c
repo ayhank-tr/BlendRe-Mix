@@ -66,6 +66,7 @@
 #include "BKE_library_remap.h"
 #include "BKE_main.h"
 #include "BKE_material.h"
+#include "BKE_material_physical.h"
 #include "BKE_mesh.h"
 #include "BKE_scene.h"
 #include "BKE_node.h"
@@ -215,6 +216,8 @@ Material *BKE_material_add(Main *bmain, const char *name)
 	ma = BKE_libblock_alloc(bmain, ID_MA, name);
 	
 	BKE_material_init(ma);
+	/* BGE-Remix P8.7: new materials use physical shading */
+	BKE_material_physical_init(ma);
 	
 	return ma;
 }
@@ -1018,6 +1021,8 @@ static void init_render_nodetree(bNodeTree *ntree, Material *basemat, int r_mode
 
 void init_render_material(Material *mat, int r_mode, float *amb)
 {
+	/* BGE-Remix P8.7: a physical material as Blender Internal settings */
+	BKE_material_physical_render_begin(mat);
 	
 	do_init_render_material(mat, r_mode, amb);
 	
@@ -1072,6 +1077,11 @@ void init_render_materials(Main *bmain, int r_mode, float *amb, bool do_default_
 /* only needed for nodes now */
 void end_render_material(Material *mat)
 {
+	/* BGE-Remix P8.7 */
+	if (mat) {
+		BKE_material_physical_render_end(mat);
+	}
+
 	if (mat && mat->nodetree && mat->use_nodes) {
 		if (mat->nodetree->execdata)
 			ntreeShaderEndExecTree(mat->nodetree->execdata);

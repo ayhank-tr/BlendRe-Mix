@@ -55,6 +55,7 @@
 #include "BL_GameViewBuild.h"
 
 extern "C" {
+	#include "DNA_material_types.h"
 	#include "DNA_scene_types.h"
 	#include "DNA_screen_types.h"
 	#include "DNA_view3d_types.h"
@@ -520,9 +521,7 @@ static bool dry_convert(bContext *C, ARegion *ar, GVConverted &conv)
 	ketsjiengine->SetSceneConverter(sceneconverter);
 	sceneconverter->SetAlwaysUseExpandFraming(true);
 	sceneconverter->SetMaterials(true);
-	if (gs.matmode == GAME_MAT_GLSL) {
-		sceneconverter->SetGLSLMaterials(true);
-	}
+	sceneconverter->SetGLSLMaterials(true);  /* P8: one material mode */
 	if (startscene->gm.flag & GAME_NO_MATERIAL_CACHING) {
 		sceneconverter->SetCacheMaterials(false);
 	}
@@ -536,6 +535,9 @@ static bool dry_convert(bContext *C, ARegion *ar, GVConverted &conv)
 
 	sceneconverter->ConvertScene(kxscene, rasterizer, canvas);
 	BL_GameViewCollect(kxscene, conv);
+	for (Material *ma : sceneconverter->GetGLSLFailures()) {
+		conv.glsl_fallback.insert(ma->id.name + 2);
+	}
 
 	sceneconverter->RemoveScene(kxscene);
 #ifdef WITH_PYTHON
@@ -597,7 +599,7 @@ extern "C" int BL_GameViewBuild(struct bContext *C, struct ARegion *ar)
 /* ------------------------------------------------------------------------- */
 /* when a game starts: the same checks, in the console */
 
-void BL_GameViewReportGame(KX_Scene *kxscene, Main *maggie)
+void BL_GameViewReportGame(KX_Scene *kxscene, Main *maggie, KX_BlenderSceneConverter *converter)
 {
 	Scene *scene = kxscene ? kxscene->GetBlenderScene() : NULL;
 	if (!scene || !maggie) {
@@ -605,6 +607,11 @@ void BL_GameViewReportGame(KX_Scene *kxscene, Main *maggie)
 	}
 	GVConverted conv;
 	BL_GameViewCollect(kxscene, conv);
+	if (converter) {
+		for (Material *ma : converter->GetGLSLFailures()) {
+			conv.glsl_fallback.insert(ma->id.name + 2);
+		}
+	}
 	GVBuilder b(maggie, scene, conv);
 	b.Build();
 	int shown = 0, known = 0;

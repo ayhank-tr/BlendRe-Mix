@@ -1056,7 +1056,27 @@ class TEXTURE_PT_influence(TextureSlotPanel, Panel):
             return sub  # XXX, temp. use_map_normal needs to override.
 
         if isinstance(idblock, Material):
-            if idblock.type in {'SURFACE', 'WIRE'}:
+            if idblock.type in {'SURFACE', 'WIRE'} and getattr(idblock, "bge_physical", 'CLASSIC') == 'PHYSICAL':
+                # BGE-Remix P8.7: what each influence means in a physical material
+                split = layout.split()
+
+                col = split.column()
+                col.label(text="Surface:")
+                factor_but(col, "use_map_color_diffuse", "diffuse_color_factor", "Base Color")
+                factor_but(col, "use_map_alpha", "alpha_factor", "Alpha")
+                factor_but(col, "use_map_raymir", "raymir_factor", "Metallic")
+                factor_but(col, "use_map_hardness", "hardness_factor", "Roughness")
+                factor_but(col, "use_map_specular", "specular_factor", "Specular")
+
+                col = split.column()
+                col.label(text="Shading:")
+                factor_but(col, "use_map_emit", "emit_factor", "Emission")
+                factor_but(col, "use_map_ambient", "ambient_factor", "Ambient")
+                col.label(text="Geometry:")
+                sub_tmp = factor_but(col, "use_map_normal", "normal_factor", "Normal")
+                sub_tmp.active = (tex.use_map_normal or tex.use_map_displacement)
+                factor_but(col, "use_map_displacement", "displacement_factor", "Displace")
+            elif idblock.type in {'SURFACE', 'WIRE'}:
                 split = layout.split()
 
                 col = split.column()

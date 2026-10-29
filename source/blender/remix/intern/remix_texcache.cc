@@ -43,6 +43,7 @@
 #include <cstring>
 #include <vector>
 
+#include "BRMX_bake.h"
 #include "BRMX_material.h"
 
 extern "C" {
@@ -154,10 +155,10 @@ std::wstring TextureCache::folder()
 
 TextureCache::State TextureCache::request(const TextureRequest &req, std::wstring &r_path)
 {
-	if (!req.image) {
+	if (!req.wanted()) {
 		return MISSING;
 	}
-	const Key key(req.image, key_bits(req));
+	const Key key(req.baked ? (const void *)req.baked.get() : (const void *)req.image, key_bits(req));
 	std::map<Key, Entry>::iterator it = m_entries.find(key);
 	if (it != m_entries.end()) {
 		r_path = it->second.path;
@@ -172,31 +173,50 @@ TextureCache::State TextureCache::request(const TextureRequest &req, std::wstrin
 	}
 
 	void *lock = NULL;
-	ImBuf *ibuf = BKE_image_acquire_ibuf(req.image, NULL, &lock);
-	if (!ibuf || (!ibuf->rect && !ibuf->rect_float) || ibuf->x <= 0 || ibuf->y <= 0) {
-		BKE_image_release_ibuf(req.image, ibuf, lock);
-		printf("BGE-Remix: image \"%s\" has no pixels (missing file?); left out\n", req.image->id.name + 2);
-		e.state = FAILED;
-		failed++;
-		return FAILED;
-	}
-	const int w = ibuf->x, h = ibuf->y;
+	ImBuf *ibuf = NULL;
+	int w, h;
 	std::vector<float> rgbaf;
 	const unsigned char *rgba8 = NULL;
-	if (ibuf->rect) {
-		rgba8 = (const unsigned char *)ibuf->rect;
+	std::string name;
+	if (req.baked) {
+		/* P8.6: a baked procedural texture */
+		w = req.baked->width;
+		h = req.baked->height;
+		if (w <= 0 || h <= 0 || req.baked->rgba.size() < (size_t)w * h * 4) {
+			e.state = FAILED;
+			failed++;
+			return FAILED;
+		}
+		rgba8 = req.baked->rgba.data();
+		name = req.baked->name;
 	}
 	else {
-		/* float images may have 1, 3 or 4 channels */
-		const int ch = ibuf->channels;
-		rgbaf.resize((size_t)w * h * 4);
-		for (size_t i = 0; i < (size_t)w * h; i++) {
-			const float *src = ibuf->rect_float + i * ch;
-			float *dst = &rgbaf[i * 4];
-			dst[0] = src[0];
-			dst[1] = ch >= 3 ? src[1] : src[0];
-			dst[2] = ch >= 3 ? src[2] : src[0];
-			dst[3] = ch == 4 ? src[3] : 1.0f;
+		ibuf = BKE_image_acquire_ibuf(req.image, NULL, &lock);
+		if (!ibuf || (!ibuf->rect && !ibuf->rect_float) || ibuf->x <= 0 || ibuf->y <= 0) {
+			BKE_image_release_ibuf(req.image, ibuf, lock);
+			printf("BGE-Remix: image \"%s\" has no pixels (missing file?); left out\n", req.image->id.name + 2);
+			e.state = FAILED;
+			failed++;
+			return FAILED;
+		}
+		w = ibuf->x;
+		h = ibuf->y;
+		name = req.image->id.name + 2;
+		if (ibuf->rect) {
+			rgba8 = (const unsigned char *)ibuf->rect;
+		}
+		else {
+			/* float images may have 1, 3 or 4 channels */
+			const int ch = ibuf->channels;
+			rgbaf.resize((size_t)w * h * 4);
+			for (size_t i = 0; i < (size_t)w * h; i++) {
+				const float *src = ibuf->rect_float + i * ch;
+				float *dst = &rgbaf[i * 4];
+				dst[0] = src[0];
+				dst[1] = ch >= 3 ? src[1] : src[0];
+				dst[2] = ch >= 3 ? src[2] : src[0];
+				dst[3] = ch == 4 ? src[3] : 1.0f;
+			}
 		}
 	}
 	BLI_HashMurmur2A mm;
@@ -214,10 +234,12 @@ TextureCache::State TextureCache::request(const TextureRequest &req, std::wstrin
 	const std::wstring dir = folder();
 	wchar_t hex[16];
 	swprintf(hex, 16, L"%08x", hash);
-	e.path = dir + L"\\" + safe_name(req.image->id.name + 2) + L"_" + kind_tag(req) + L"_" + hex + L".dds";
+	e.path = dir + L"\\" + safe_name(name.c_str()) + L"_" + kind_tag(req) + L"_" + hex + L".dds";
 	r_path = e.path;
 	if (exists(e.path)) {
-		BKE_image_release_ibuf(req.image, ibuf, lock);
+		if (ibuf) {
+			BKE_image_release_ibuf(req.image, ibuf, lock);
+		}
 		e.state = READY;
 		reused++;
 		return READY;
@@ -239,7 +261,9 @@ TextureCache::State TextureCache::request(const TextureRequest &req, std::wstrin
 	}
 	/* the bridge copies the pixels */
 	e.ticket = B->texture_submit(&d);
-	BKE_image_release_ibuf(req.image, ibuf, lock);
+	if (ibuf) {
+		BKE_image_release_ibuf(req.image, ibuf, lock);
+	}
 	if (e.ticket <= 0) {
 		e.state = FAILED;
 		failed++;

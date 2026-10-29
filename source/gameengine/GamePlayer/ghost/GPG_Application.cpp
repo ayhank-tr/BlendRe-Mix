@@ -739,7 +739,9 @@ bool GPG_Application::startEngine(void)
 		//		sceneconverter->SetAlwaysUseExpandFraming(true);
 		if (m_blendermat)
 			m_sceneconverter->SetMaterials(true);
-		if (m_blenderglslmat && (m_globalSettings->matmode == GAME_MAT_GLSL))
+		/* BGE-Remix P8: one material mode, GLSL; "-g blender_glsl_material = 0"
+		 * still forces the fixed-function fallback for every material */
+		if (m_blenderglslmat)
 			m_sceneconverter->SetGLSLMaterials(true);
 		if (m_startScene->gm.flag & GAME_NO_MATERIAL_CACHING)
 			m_sceneconverter->SetCacheMaterials(false);
@@ -777,7 +779,7 @@ bool GPG_Application::startEngine(void)
 			m_rasterizer,
 			m_canvas);
 		/* BGE-Remix P7: the Game View's checks, in the console */
-		BL_GameViewReportGame(m_kxStartScene, m_maggie);
+		BL_GameViewReportGame(m_kxStartScene, m_maggie, static_cast<KX_BlenderSceneConverter *>(m_sceneconverter));
 		m_ketsjiengine->AddScene(m_kxStartScene);
 		
 		// Create a timer that is used to kick the engine

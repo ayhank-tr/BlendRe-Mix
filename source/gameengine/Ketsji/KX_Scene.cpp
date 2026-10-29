@@ -108,6 +108,14 @@
 
 #include "BLI_task.h"
 
+/* BGE-Remix P8.5 */
+#include "DNA_material_types.h"
+#include "DNA_texture_types.h"
+#include "DNA_object_types.h"
+#include "BKE_material.h"
+#include "BKE_scene.h"
+#include "GPU_material.h"
+
 static void *KX_SceneReplicationFunc(SG_IObject* node,void* gameobj,void* scene)
 {
 	KX_GameObject* replica = ((KX_Scene*)scene)->AddNodeReplicaObject(node,(KX_GameObject*)gameobj);
@@ -163,7 +171,8 @@ KX_Scene::KX_Scene(class SCA_IInputDevice* keyboarddevice,
 	m_ueberExecutionPriority(0),
 	m_blenderScene(scene),
 	m_isActivedHysteresis(false),
-	m_lodHysteresisValue(0)
+	m_lodHysteresisValue(0),
+	m_texcoObjectsKnown(false)
 {
 	m_suspendedtime = 0.0;
 	m_suspendeddelta = 0.0;
@@ -1820,6 +1829,43 @@ void KX_Scene::UpdateObjectLods(void)
 		gameobj = (KX_GameObject*) GetObjectList()->GetValue(i);
 		if (!gameobj->GetCulled()) {
 			gameobj->UpdateLod(cam_pos);
+		}
+	}
+}
+
+void KX_Scene::UpdateTexcoObjects(void)
+{
+	if (!m_texcoObjectsKnown) {
+		/* the objects named by the texture slots of the scene's materials */
+		Scene *sce_iter;
+		Base *base;
+		m_texcoObjectsKnown = true;
+		for (SETLOOPER(m_blenderScene, sce_iter, base)) {
+			Object *ob = base->object;
+			for (int a = 1; a <= ob->totcol; a++) {
+				Material *ma = give_current_material(ob, a);
+				for (int i = 0; ma && i < MAX_MTEX; i++) {
+					const MTex *mtex = ma->mtex[i];
+					if (mtex && mtex->tex && mtex->texco == TEXCO_OBJECT && mtex->object) {
+						m_texcoObjects.insert(mtex->object);
+					}
+				}
+			}
+		}
+	}
+	if (m_texcoObjects.empty()) {
+		return;
+	}
+	for (int i = 0; i < GetObjectList()->GetCount(); i++) {
+		KX_GameObject *gameobj = (KX_GameObject *)GetObjectList()->GetValue(i);
+		Object *ob = gameobj->GetBlenderObject();
+		if (ob && m_texcoObjects.count(ob)) {
+			MT_Transform trans(gameobj->NodeGetWorldPosition(), gameobj->NodeGetWorldOrientation());
+			const MT_Vector3 &scaling = gameobj->NodeGetWorldScaling();
+			float obmat[4][4];
+			trans.scale(scaling[0], scaling[1], scaling[2]);
+			trans.getValue(&obmat[0][0]);
+			GPU_texco_object_matrix_set(ob, obmat);
 		}
 	}
 }

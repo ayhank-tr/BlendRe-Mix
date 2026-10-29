@@ -93,6 +93,8 @@ extern "C"
 #include "BKE_animsys.h"
 #include "BKE_library.h"
 #include "BKE_material.h" // BKE_material_copy
+#include "GPU_glew.h"  /* BGE-Remix P8: GLEW_ARB_shader_objects */
+#include "GPU_material.h"
 #include "BKE_mesh.h" // BKE_mesh_copy
 #include "DNA_space_types.h"
 #include "DNA_anim_types.h"
@@ -411,6 +413,32 @@ void KX_BlenderSceneConverter::SetGLSLMaterials(bool val)
 {
 	m_usemat = val;
 	m_useglslmat = val;
+}
+
+bool KX_BlenderSceneConverter::MaterialGLSLWorks(KX_Scene *scene, Material *ma)
+{
+	if (!ma || !scene) {
+		return true;
+	}
+	std::map<Material *, bool>::iterator it = m_glslWorks.find(ma);
+	if (it != m_glslWorks.end()) {
+		return it->second;
+	}
+	bool ok = GLEW_ARB_shader_objects && GLEW_ARB_fragment_shader;
+	const char *forced = getenv("BGE_REMIX_GLSL_FAIL");
+	if (ok && forced && STREQ(forced, ma->id.name + 2)) {
+		ok = false;
+	}
+	else if (ok) {
+		ok = GPU_material_is_valid(GPU_material_from_blender(scene->GetBlenderScene(), ma, false));
+	}
+	if (!ok) {
+		printf("BGE-Remix: material \"%s\": its GLSL shader could not be built, it is drawn with the "
+		       "fixed-function path\n", ma->id.name + 2);
+		m_glslFailed.insert(ma);
+	}
+	m_glslWorks[ma] = ok;
+	return ok;
 }
 
 void KX_BlenderSceneConverter::SetCacheMaterials(bool val)

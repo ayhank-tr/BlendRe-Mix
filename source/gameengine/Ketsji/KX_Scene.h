@@ -307,6 +307,10 @@ protected:
 	bool m_isActivedHysteresis;
 	int m_lodHysteresisValue;
 
+	/* BGE-Remix P8.5: the Blender objects that give texture coordinates */
+	std::set<struct Object *> m_texcoObjects;
+	bool m_texcoObjectsKnown;
+
 public:
 	KX_Scene(class SCA_IInputDevice* keyboarddevice,
 		class SCA_IInputDevice* mousedevice,
@@ -562,6 +566,10 @@ public:
 
 	// Update the mesh for objects based on level of detail settings
 	void UpdateObjectLods(void);
+
+	/* BGE-Remix P8.5: texture slots mapped by Object coordinates follow
+	 * their object's game object (gives the places to the GPU materials) */
+	void UpdateTexcoObjects(void);
 
 	// LoD Hysteresis functions
 	void SetLodHysteresis(bool active);

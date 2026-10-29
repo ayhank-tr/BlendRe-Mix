@@ -325,9 +325,11 @@ print("P3-STOCK " + json.dumps({"keys": keys}))
 STOCK_READ = r'''
 import bpy, json
 ma = bpy.data.materials["PanelGold"]
-print("P3-OURS " + json.dumps({"override": int(ma.get("bge_remix_override", 0)),
-                               "albedo": [round(float(x), 4) for x in ma.get("bge_remix_albedo", [])],
-                               "metallic": float(ma.get("bge_remix_metallic", -1))}))
+# P8.7: the panel's values open as the physical material's
+print("P3-OURS " + json.dumps({"physical": int(ma.get("bge_physical", 0)),
+                               "albedo": [round(float(x), 4) for x in ma.diffuse_color],
+                               "metallic": float(ma.get("bge_metallic", -1)),
+                               "panel_left": sorted(k for k in ma.keys() if k.startswith("bge_remix_"))}))
 '''
 
 
@@ -368,8 +370,9 @@ def check_stock(args, out, scenes):
     code, text, _ = p2.run([p2.exe(args.ours, "blender"), "--background", copy, "--python", script],
                            p2.base_env(out, "ours_read"), os.path.join(out, "ours_read.log"))
     got = tagged_json(text, "P3-OURS") or {}
-    c["reopened in ours: the panel's values are kept"] = got.get("override") == 1 and \
-        p2.close(got.get("albedo", []), [1.0, 0.766, 0.336]) and got.get("metallic") == 1.0
+    c["reopened in ours: the panel's values become the physical material's (P8.7)"] = \
+        got.get("physical") == 1 and p2.close(got.get("albedo", []), [1.0, 0.766, 0.336]) and \
+        got.get("metallic") == 1.0 and not got.get("panel_left")
     d["keys"] = keys
     d["ours"] = got
     return dict(p2.test(c), detail=d)
@@ -433,7 +436,8 @@ def has_cycles_output(ma):
 for ma in bpy.data.materials:
     if has_cycles_output(ma):
         continue
-    panel = ma.get("bge_remix_override", 0)
+    # P8.7: the RTX Remix panel's values are the physical material's now
+    panel = ma.get("bge_physical", 0)
     images = [s.texture.image for s in ma.texture_slots if s and s.texture and s.texture.type == 'IMAGE']
     color_img = next((s.texture.image for s in ma.texture_slots
                       if s and s.texture and s.texture.type == 'IMAGE' and s.use_map_color_diffuse), None)
@@ -445,9 +449,9 @@ for ma in bpy.data.materials:
     outn = nt.nodes.new("ShaderNodeOutputMaterial")
     p = nt.nodes.new("ShaderNodeBsdfPrincipled")
     if panel:
-        p.inputs["Base Color"].default_value = list(ma["bge_remix_albedo"]) + [1.0]
-        p.inputs["Metallic"].default_value = float(ma.get("bge_remix_metallic", 0.0))
-        p.inputs["Roughness"].default_value = float(ma.get("bge_remix_roughness", 0.5))
+        p.inputs["Base Color"].default_value = list(ma.diffuse_color) + [1.0]
+        p.inputs["Metallic"].default_value = float(ma.get("bge_metallic", 0.0))
+        p.inputs["Roughness"].default_value = float(ma.get("bge_roughness", 0.5))
     else:
         p.inputs["Base Color"].default_value = [c * ma.diffuse_intensity for c in ma.diffuse_color] + [1.0]
         p.inputs["Roughness"].default_value = (2.0 / (ma.specular_hardness + 2.0)) ** 0.25
