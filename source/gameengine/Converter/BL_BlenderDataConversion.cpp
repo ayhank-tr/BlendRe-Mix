@@ -942,6 +942,9 @@ static RAS_MaterialBucket *material_from_mesh(Material *ma, MFace *mface, MTFace
 		kx_blmat = new KX_BlenderMaterial();
 
 		kx_blmat->Initialize(scene, bl_mat, (ma?&ma->game:NULL), lightlayer);
+		/* BGE-Remix P8.9: and its own bucket */
+		if (layer_lamps)
+			kx_blmat->SetBucketLayer(lightlayer);
 		polymat = static_cast<RAS_IPolyMaterial*>(kx_blmat);
 		if (cache && ma && (ma->mode & MA_FACETEXTURE) == 0)
 			converter->CachePolyMaterial(scene, ma, polymat);

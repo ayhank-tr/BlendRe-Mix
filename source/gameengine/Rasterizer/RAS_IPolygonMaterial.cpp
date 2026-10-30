@@ -62,6 +62,7 @@ void  RAS_IPolyMaterial::Initialize(
 	m_polymatid = m_newpolymatid++;
 	m_flag = 0;
 	m_multimode = 0;
+	m_bucketlayer = 0;
 	m_shininess = 35.0f;
 	m_specular.setValue(0.5f,0.5f,0.5f);
 	m_specularity = 1.0f;
@@ -83,7 +84,8 @@ RAS_IPolyMaterial::RAS_IPolyMaterial()
 		m_materialindex(0),
 		m_polymatid(0),
 		m_flag(0),
-		m_multimode(0)
+		m_multimode(0),
+		m_bucketlayer(0)
 {
 	m_shininess = 35.0f;
 	m_specular = MT_Vector3(0.5f,0.5f,0.5f);
@@ -111,7 +113,8 @@ RAS_IPolyMaterial::RAS_IPolyMaterial(const STR_String& texname,
 		m_materialindex(materialindex),
 		m_polymatid(m_newpolymatid++),
 		m_flag(0),
-		m_multimode(0)
+		m_multimode(0),
+		m_bucketlayer(0)
 {
 	m_shininess = 35.0f;
 	m_specular = MT_Vector3(0.5f,0.5f,0.5f);
@@ -130,7 +133,8 @@ bool RAS_IPolyMaterial::Equals(const RAS_IPolyMaterial& lhs) const
 			this->m_drawingmode			==		lhs.m_drawingmode &&
 			this->m_alphablend			==		lhs.m_alphablend &&
 			this->m_texturename.hash()		==		lhs.m_texturename.hash() &&
-			this->m_materialname.hash() 		==		lhs.m_materialname.hash()
+			this->m_materialname.hash() 		==		lhs.m_materialname.hash() &&
+			this->m_bucketlayer			==		lhs.m_bucketlayer
 		);
 
 		return test;

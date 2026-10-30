@@ -90,7 +90,12 @@ protected:
 	// will move...
 	unsigned int			m_flag;//MaterialProps
 	int						m_multimode; // sum of values
+	/* BGE-Remix P8.9: the light layer a material was made for, where it
+	 * matters (scenes with "This Layer Only" lamps; 0 elsewhere): materials
+	 * of different light layers do not share a bucket */
+	int						m_bucketlayer;
 public:
+	void SetBucketLayer(int layer) { m_bucketlayer = layer; }
 	MT_Vector3			m_diffuse;
 	float				m_shininess;
 	MT_Vector3			m_specular;

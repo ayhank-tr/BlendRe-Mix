@@ -226,7 +226,7 @@ struct GPULamp {
 	bool has_cam;
 	float cam_viewinv[4][4], cam_winmat[4][4];
 	GPUFrameBuffer *depthfb;                           /* Variance: the depth pass */
-	bool dumped;                                       /* BGE_REMIX_SHADOW_DUMP */
+	bool dumped, bind_dumped;                          /* BGE_REMIX_SHADOW_DUMP */
 
 	int falloff_type;
 	struct CurveMapping *curfalloff;
@@ -697,6 +697,38 @@ void GPU_material_set_face_image(GPUMaterial *material, Image *ima)
 	}
 }
 
+/* BGE-Remix P8.10: with BGE_REMIX_SHADOW_DUMP, what a material's shader gets
+ * for a lamp's shadow, once, after the lamp's buffer was written
+ * (<lamp>.bind: the material's name (64 chars), then floats: viewmat,
+ * viewinv, the cube's or cascades' matrices (5 x 16), cascade scale and
+ * range, shadow params and clip, dynvec, dynco) */
+static void gpu_lamp_shadow_dump_bind(GPULamp *lamp, GPUMaterial *material, float viewmat[4][4], float viewinv[4][4])
+{
+	const char *dir = getenv("BGE_REMIX_SHADOW_DUMP");
+	if (!dir || !dir[0] || !lamp->dumped || lamp->bind_dumped) {
+		return;
+	}
+	lamp->bind_dumped = true;
+	char path[1024], name[64] = {0};
+	BLI_snprintf(path, sizeof(path), "%s/%s.bind", dir, lamp->ob->id.name + 2);
+	BLI_strncpy(name, material->ma ? material->ma->id.name + 2 : "", sizeof(name));
+	FILE *f = fopen(path, "wb");
+	if (f) {
+		fwrite(name, 1, sizeof(name), f);
+		fwrite(viewmat, sizeof(float), 16, f);
+		fwrite(viewinv, sizeof(float), 16, f);
+		fwrite(lamp->dyncube, sizeof(float), 16, f);
+		fwrite(lamp->dyncascade, sizeof(float), 64, f);
+		fwrite(lamp->cascade_scale, sizeof(float), 4, f);
+		fwrite(lamp->cascade_range, sizeof(float), 4, f);
+		fwrite(lamp->shadow_params, sizeof(float), 4, f);
+		fwrite(lamp->shadow_clip, sizeof(float), 4, f);
+		fwrite(lamp->dynvec, sizeof(float), 3, f);
+		fwrite(lamp->dynco, sizeof(float), 3, f);
+		fclose(f);
+	}
+}
+
 void GPU_material_bind(
         GPUMaterial *material, int oblay, int viewlay, double time, int mipmap,
         float viewmat[4][4], float viewinv[4][4], float camerafactors[4], bool scenelock)
@@ -767,6 +799,7 @@ void GPU_material_bind(
 							mul_m4_m4m4(lamp->dyncascade[c], lamp->cascade_persmat[c], viewinv);
 						}
 					}
+					gpu_lamp_shadow_dump_bind(lamp, material, viewmat, viewinv);
 				}
 			}
 		}
