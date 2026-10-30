@@ -1054,8 +1054,10 @@ def t812(args, out, scenes, expected, shots, runs):
     near[max(st - reach - t, 0):sb + reach - t, max(sl - reach - l, 0):sr + reach - l] = True
     count = int(mask.sum())
     inside = int((mask & near).sum())
-    d["contact"] = {"darker_pixels": count, "near_the_slab": inside}
-    c["contact shadows appear where objects touch"] = count >= 30 and inside >= 0.9 * count
+    d["contact"] = {"darker_pixels": count, "near_the_slab": inside, "cell_pixels": int(mask.size)}
+    # a band along the slab, not the whole tile
+    c["contact shadows appear where objects touch"] = count >= 30 and inside >= 0.9 * count and \
+        count <= 0.3 * mask.size
 
     # the far sun shadow (and the near one)
     fon, foff = picture(shots.get("shadows_far")), picture(shots.get("shadows_far_noshadow"))

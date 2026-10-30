@@ -2389,8 +2389,10 @@ float shadow_soft(
 	float blockers = 0.0, nblock = 0.0;
 	for (float i = 0.0; i < N; i += 1.0) {
 		vec2 o = shadow_disk(i, N, rot) * search;
-		float zb = shadow_linear(texture2D(map, tile.xy + clamp(uv + o, lo, hi) * tile.zw).r, clip);
-		if (zb < zr - bias - slope * length(o) / uvw) {
+		float d = texture2D(map, tile.xy + clamp(uv + o, lo, hi) * tile.zw).r;
+		float zb = shadow_linear(d, clip);
+		/* nothing drawn there (beyond the lamp's Clip End): no blocker */
+		if (d < 0.99999 && zb < zr - bias - slope * length(o) / uvw) {
 			blockers += zb;
 			nblock += 1.0;
 		}
@@ -2405,14 +2407,16 @@ float shadow_soft(
 	float lit = 0.0;
 	for (float i = 0.0; i < N; i += 1.0) {
 		vec2 o = shadow_disk(i, N, rot + 1.7) * radius;
-		float z = shadow_linear(texture2D(map, tile.xy + clamp(uv + o, lo, hi) * tile.zw).r, clip);
-		if (z >= zr - bias - slope * length(o) / uvw)
+		float d = texture2D(map, tile.xy + clamp(uv + o, lo, hi) * tile.zw).r;
+		if (d >= 0.99999 || shadow_linear(d, clip) >= zr - bias - slope * length(o) / uvw)
 			lit += 1.0;
 	}
 	return lit / N;
 }
 
-/* the receiver's offset along its normal, and its slope, against acne */
+/* the receiver's offset along its normal, and its slope, against acne (the
+ * shaders' normals point into the surface, Blender Internal's convention, so
+ * the offset goes against them) */
 void shadow_receiver(float inp, float bias, out float ndl, out float sinl, out float offset)
 {
 	ndl = clamp(inp, 0.05, 1.0);
@@ -2434,7 +2438,7 @@ void shadow_spot_soft(
 	shadow_receiver(inp, params.y, ndl, sinl, offset);
 	vec4 co = persmat * vec4(rco, 1.0);
 	float texw = 2.0 * max(co.w, 1e-4) * clip.z * params.w;  /* one texel in world units here */
-	co = persmat * vec4(rco + vn * texw * offset, 1.0);
+	co = persmat * vec4(rco - vn * texw * offset, 1.0);
 	if (co.w <= 0.0) {
 		result = 1.0;
 		return;
@@ -2464,7 +2468,7 @@ void shadow_cube_soft(
 	vec3 l = (lampmat * vec4(rco, 1.0)).xyz;
 	vec3 al = abs(l);
 	float texw = 2.0 * max(max(max(al.x, al.y), al.z), 1e-4) * clip.z * params.w;
-	l = (lampmat * vec4(rco + vn * texw * offset, 1.0)).xyz;
+	l = (lampmat * vec4(rco - vn * texw * offset, 1.0)).xyz;
 	al = abs(l);
 
 	/* the face looks along the largest axis, its up is the next axis */
@@ -2532,7 +2536,7 @@ void shadow_sun_soft(
 	float ndl, sinl, offset;
 	shadow_receiver(inp, params.y, ndl, sinl, offset);
 	float texw = params.w / sc;
-	vec3 co = (m * vec4(rco + vn * texw * offset, 1.0)).xyz;
+	vec3 co = (m * vec4(rco - vn * texw * offset, 1.0)).xyz;
 	vec4 tile = vec4(mod(k, 2.0) * 0.5, floor(k / 2.0) * 0.5, 0.5, 0.5);
 	result = shadow_soft(map, tile, clamp(co.xy, 0.0, 1.0), co.z * rg, texw * params.y, sinl / ndl * params.y,
 	                     vec3(0.0, rg, 1.0), sc, params.x, params.w);
@@ -2548,7 +2552,8 @@ float shadow_view_z(float d)
 }
 
 /* contact shadows: a few steps toward the light through the scene's depth.
- * contact: distance (0: off), thickness, 0, bias; on: the depth is there */
+ * contact: distance (0: off), thickness, 0, bias; on: the depth is there.
+ * lv points from the light to the surface (Blender Internal's convention) */
 void shadow_contact(vec3 rco, vec3 lv, sampler2D depthmap, vec4 contact, float on, float shadfac, out float result)
 {
 	result = shadfac;
@@ -2557,7 +2562,7 @@ void shadow_contact(vec3 rco, vec3 lv, sampler2D depthmap, vec4 contact, float o
 	const float N = 8.0;
 	float jitter = fract(shadow_noise() * 0.1591549);
 	for (float i = 0.0; i < N; i += 1.0) {
-		vec3 p = rco + lv * (contact.x * (i + jitter) / N);
+		vec3 p = rco - lv * (contact.x * (i + jitter) / N);
 		vec4 c = gl_ProjectionMatrix * vec4(p, 1.0);
 		if (c.w <= 0.0)
 			break;

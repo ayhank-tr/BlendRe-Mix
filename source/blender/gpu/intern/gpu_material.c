@@ -1325,6 +1325,10 @@ static void shade_light_textures(GPUMaterial *mat, GPULamp *lamp, GPUNodeLink **
 			         GPU_image(mtex->tex->ima, &mtex->tex->iuser, false),
 			         GPU_dynamic_uniform((float *)lamp->dynpersmat, GPU_DYNAMIC_LAMP_DYNPERSMAT, lamp->ob),
 			         &tex_rgb);
+			/* BGE-Remix P8.9: the image's colours as F12 lights with them */
+			if (GPU_material_do_color_management(mat)) {
+				GPU_link(mat, "srgb_to_linearrgb", tex_rgb, &tex_rgb);
+			}
 			texture_rgb_blend(mat, tex_rgb, *rgb, GPU_uniform(&one), GPU_uniform(&mtex->colfac), mtex->blendtype, rgb);
 		}
 	}
