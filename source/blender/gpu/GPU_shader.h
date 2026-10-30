@@ -47,7 +47,22 @@ enum {
 	GPU_SHADER_FLAGS_NONE = 0,
 	GPU_SHADER_FLAGS_SPECIAL_OPENSUBDIV = (1 << 0),
 	GPU_SHADER_FLAGS_NEW_SHADING        = (1 << 1),
+	/* BGE-Remix P8.3: GLSL 4.50 (compatibility, or core with GPU_SHADER_FLAGS_CORE) */
+	GPU_SHADER_FLAGS_GLSL450            = (1 << 2),
+	GPU_SHADER_FLAGS_CORE               = (1 << 3),
+	/* BGE-Remix P8.3: the material front end: bge_pos, bge_mv, bge_proj...,
+	 * fed by the old built-ins (compatibility) or by the drawing layer (core) */
+	GPU_SHADER_FLAGS_FRONTEND           = (1 << 4),
+	/* BGE-Remix P8.3: the shared lamp and world buffers (GLSL 4.50 only) */
+	GPU_SHADER_FLAGS_SHARED             = (1 << 5),
 };
+
+/* BGE-Remix P8.3: the program's OpenGL name (the drawing layer binds it) */
+unsigned int GPU_shader_program(GPUShader *shader);
+/* BGE-Remix P8.3: the shader cache's counts since start, and its folder */
+void GPU_shader_cache_stats(int *r_loaded, int *r_built, int *r_saved);
+void GPU_shader_cache_init(void);
+void GPU_shader_cache_exit(void);
 
 GPUShader *GPU_shader_create(
         const char *vertexcode,

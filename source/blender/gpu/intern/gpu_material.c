@@ -48,6 +48,7 @@
 #include "DNA_color_types.h"
 
 #include "BLI_math.h"
+#include "BLI_dynstr.h"
 #include "BLI_blenlib.h"
 #include "BLI_utildefines.h"
 #include "BLI_noise.h"
@@ -243,12 +244,188 @@ struct GPULamp {
 	GPUTexture *blurtex;
 
 	ListBase materials;
+
+	/* BGE-Remix P8.3: the lamp's place in the shared lamp buffer */
+	int slot;
 };
 
 /* Forward declaration so shade_light_textures() can use this, while still keeping the code somewhat organized */
 static void texture_rgb_blend(
         GPUMaterial *mat, GPUNodeLink *tex, GPUNodeLink *out, GPUNodeLink *fact, GPUNodeLink *facg,
         int blendtype, GPUNodeLink **in);
+
+/* BGE-Remix P8.3: the shared lamp and world buffers. Every lamp has a slot;
+ * the lamp buffer holds each slot's GPULamp as words, so a material's lamp
+ * values are read at their place in the struct (gpu_codegen.c writes the
+ * reads, GPU_shared_uniform_expr). A material bind sends the slots of its
+ * lamps that changed, and the world when it changed. */
+#define GPU_SHARED_LAMP_BINDING 6
+#define GPU_SHARED_WORLD_BINDING 7
+#define GPU_LAMP_WORDS ((int)((sizeof(GPULamp) + 3) / 4))
+#define GPU_WORLD_WORDS ((int)((sizeof(GPUWorld) + 3) / 4))
+
+static struct {
+	GPULamp **slots;           /* the lamp in each slot, or NULL */
+	int len, cap;
+	unsigned int lampbuf, worldbuf;
+	int lampbuf_slots;         /* slots the lamp buffer holds */
+	unsigned int *lamp_sent;   /* what the lamp buffer holds, per slot */
+	unsigned char *lamp_valid; /* per slot: lamp_sent is right */
+	unsigned int world_sent[GPU_WORLD_WORDS];
+	bool world_valid;
+} gpu_shared = {NULL};
+
+static void gpu_shared_slot_add(GPULamp *lamp)
+{
+	int i;
+	for (i = 0; i < gpu_shared.len; i++) {
+		if (!gpu_shared.slots[i]) {
+			break;
+		}
+	}
+	if (i == gpu_shared.len) {
+		if (gpu_shared.len == gpu_shared.cap) {
+			gpu_shared.cap = max_ii(16, gpu_shared.cap * 2);
+			gpu_shared.slots = MEM_recallocN(gpu_shared.slots, sizeof(GPULamp *) * gpu_shared.cap);
+		}
+		gpu_shared.len++;
+	}
+	gpu_shared.slots[i] = lamp;
+	lamp->slot = i;
+	if (gpu_shared.lamp_valid && i < gpu_shared.lampbuf_slots) {
+		gpu_shared.lamp_valid[i] = 0;
+	}
+}
+
+static void gpu_shared_slot_remove(GPULamp *lamp)
+{
+	if (lamp->slot >= 0 && lamp->slot < gpu_shared.len && gpu_shared.slots[lamp->slot] == lamp) {
+		gpu_shared.slots[lamp->slot] = NULL;
+		if (gpu_shared.lamp_valid && lamp->slot < gpu_shared.lampbuf_slots) {
+			gpu_shared.lamp_valid[lamp->slot] = 0;
+		}
+	}
+	lamp->slot = -1;
+}
+
+bool GPU_shared_uniform_expr(const float *ptr, int type, char *r_expr, size_t maxlen)
+{
+	const char *p = (const char *)ptr;
+	const int count = type;  /* GPU_FLOAT 1, VEC2 2, VEC3 3, VEC4 4, MAT3 9, MAT4 16 */
+	const char *array = NULL;
+	int start = 0;
+
+	if (!(count == 1 || count == 2 || count == 3 || count == 4 || count == 9 || count == 16) ||
+	    !GLEW_VERSION_4_3)
+	{
+		return false;
+	}
+	for (int i = 0; i < gpu_shared.len && !array; i++) {
+		const char *base = (const char *)gpu_shared.slots[i];
+		if (base && p >= base && p + count * sizeof(float) <= base + sizeof(GPULamp)) {
+			array = "bge_lw";
+			start = i * GPU_LAMP_WORDS + (int)((p - base) / 4);
+		}
+	}
+	if (!array) {
+		const char *base = (const char *)&GPUWorld;
+		if (p >= base && p + count * sizeof(float) <= base + sizeof(GPUWorld)) {
+			array = "bge_ww";
+			start = (int)((p - base) / 4);
+		}
+	}
+	if (!array) {
+		return false;
+	}
+
+	if (count == 1) {
+		BLI_snprintf(r_expr, maxlen, "%s[%d]", array, start);
+		return true;
+	}
+	DynStr *ds = BLI_dynstr_new();
+	BLI_dynstr_appendf(ds, "%s(", (count == 9) ? "mat3" : (count == 16) ? "mat4" : (count == 2) ? "vec2" :
+	                   (count == 3) ? "vec3" : "vec4");
+	for (int k = 0; k < count; k++) {
+		BLI_dynstr_appendf(ds, "%s%s[%d]", k ? ", " : "", array, start + k);
+	}
+	BLI_dynstr_append(ds, ")");
+	char *str = BLI_dynstr_get_cstring(ds);
+	BLI_dynstr_free(ds);
+	const bool fits = strlen(str) < maxlen;
+	if (fits) {
+		BLI_strncpy(r_expr, str, maxlen);
+	}
+	MEM_freeN(str);
+	return fits;
+}
+
+/* sends the lamps of this material that changed, and the world */
+static void gpu_shared_buffers_bind(GPUMaterial *material)
+{
+	if (!GLEW_VERSION_4_3) {
+		return;
+	}
+	const size_t lamp_bytes = sizeof(unsigned int) * GPU_LAMP_WORDS;
+
+	if (!gpu_shared.worldbuf) {
+		glGenBuffers(1, &gpu_shared.worldbuf);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, gpu_shared.worldbuf);
+		glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(gpu_shared.world_sent), NULL, GL_DYNAMIC_DRAW);
+		gpu_shared.world_valid = false;
+	}
+	if (!gpu_shared.lampbuf || gpu_shared.lampbuf_slots < gpu_shared.len) {
+		const int slots = max_ii(16, max_ii(gpu_shared.len, gpu_shared.lampbuf_slots * 2));
+		if (!gpu_shared.lampbuf) {
+			glGenBuffers(1, &gpu_shared.lampbuf);
+		}
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, gpu_shared.lampbuf);
+		glBufferData(GL_SHADER_STORAGE_BUFFER, lamp_bytes * slots, NULL, GL_DYNAMIC_DRAW);
+		gpu_shared.lampbuf_slots = slots;
+		gpu_shared.lamp_sent = MEM_reallocN_id(gpu_shared.lamp_sent, lamp_bytes * slots, "lamp words");
+		if (gpu_shared.lamp_valid) {
+			MEM_freeN(gpu_shared.lamp_valid);
+		}
+		gpu_shared.lamp_valid = MEM_callocN(slots, "lamp words valid");
+	}
+
+	for (LinkData *nlink = material->lamps.first; nlink; nlink = nlink->next) {
+		GPULamp *lamp = nlink->data;
+		const int slot = lamp->slot;
+		if (slot < 0 || slot >= gpu_shared.lampbuf_slots) {
+			continue;
+		}
+		unsigned int *sent = gpu_shared.lamp_sent + (size_t)slot * GPU_LAMP_WORDS;
+		if (!gpu_shared.lamp_valid[slot] || memcmp(sent, lamp, sizeof(GPULamp)) != 0) {
+			memcpy(sent, lamp, sizeof(GPULamp));
+			glBindBuffer(GL_SHADER_STORAGE_BUFFER, gpu_shared.lampbuf);
+			glBufferSubData(GL_SHADER_STORAGE_BUFFER, (GLintptr)(lamp_bytes * slot), sizeof(GPULamp), lamp);
+			gpu_shared.lamp_valid[slot] = 1;
+		}
+	}
+	if (!gpu_shared.world_valid || memcmp(gpu_shared.world_sent, &GPUWorld, sizeof(GPUWorld)) != 0) {
+		memcpy(gpu_shared.world_sent, &GPUWorld, sizeof(GPUWorld));
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, gpu_shared.worldbuf);
+		glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(GPUWorld), &GPUWorld);
+		gpu_shared.world_valid = true;
+	}
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, GPU_SHARED_LAMP_BINDING, gpu_shared.lampbuf);
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, GPU_SHARED_WORLD_BINDING, gpu_shared.worldbuf);
+}
+
+void GPU_shared_buffers_free(void)
+{
+	if (gpu_shared.lampbuf) {
+		glDeleteBuffers(1, &gpu_shared.lampbuf);
+	}
+	if (gpu_shared.worldbuf) {
+		glDeleteBuffers(1, &gpu_shared.worldbuf);
+	}
+	MEM_SAFE_FREE(gpu_shared.lamp_sent);
+	MEM_SAFE_FREE(gpu_shared.lamp_valid);
+	MEM_SAFE_FREE(gpu_shared.slots);
+	memset(&gpu_shared, 0, sizeof(gpu_shared));
+}
 
 /* Functions */
 
@@ -813,6 +990,9 @@ void GPU_material_bind(
 		for (int i = 0; i < material->tot_texco_ob; i++) {
 			gpu_texco_object_imat(material->texco_mtex[i]->object, material->texco_obimat[i]);
 		}
+
+		/* BGE-Remix P8.3: the lamp and world values the shader reads */
+		gpu_shared_buffers_bind(material);
 
 		/* note material must be bound before setting uniforms */
 		GPU_pass_bind(material->pass, time, mipmap);
@@ -3500,6 +3680,7 @@ GPULamp *GPU_lamp_from_blender(Scene *scene, Object *ob, Object *par)
 	}
 
 	lamp = MEM_callocN(sizeof(GPULamp), "GPULamp");
+	gpu_shared_slot_add(lamp);
 
 	link = MEM_callocN(sizeof(LinkData), "GPULampLink");
 	link->data = lamp;
@@ -3544,6 +3725,7 @@ void GPU_lamp_free(Object *ob)
 
 		gpu_lamp_shadow_free(lamp);
 
+		gpu_shared_slot_remove(lamp);
 		MEM_freeN(lamp);
 	}
 

@@ -138,6 +138,9 @@ private:
 	static bool				m_doRender;  /* whether or not the scene should be rendered after the logic frame */
 
 	int					m_exitcode;
+
+	/* BGE-Remix P8.1: the OpenGL state at the last frame's start (BGE_REMIX_GL_CHECK=1) */
+	struct GPUStateSnapshot *m_gl_check;  /* NULL until the first frame */
 	STR_String			m_exitstring;
 
 	float			m_cameraZoom;

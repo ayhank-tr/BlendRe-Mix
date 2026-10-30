@@ -1,6 +1,7 @@
 
-varying vec3 varposition;
-varying vec3 varnormal;
+/* BGE-Remix P8.3: GLSL 4.50 (front end inputs) */
+out vec3 varposition;
+out vec3 varnormal;
 
 
 /* Color, keep in sync with: gpu_shader_vertex.glsl */
@@ -73,9 +74,9 @@ void set_var_from_attr(vec4 attr, int info, out vec4 var)
 void main()
 {
 	/* position does not need to be transformed, we already have it */
-	gl_Position = gl_Vertex;
+	gl_Position = bge_pos;
 
-	varposition = gl_Vertex.xyz;
+	varposition = bge_pos.xyz;
 
 	varnormal = normalize(-varposition);
 

@@ -51,6 +51,7 @@
 #include "BLI_sys_types.h" /* for intptr_t support */
 
 #include "gpu_codegen.h"
+#include "gpu_private.h"
 
 #include <string.h>
 #include <stdarg.h>
@@ -62,6 +63,10 @@ extern char datatoc_gpu_shader_vertex_world_glsl[];
 extern char datatoc_gpu_shader_geometry_glsl[];
 
 static char *glsl_material_library = NULL;
+
+/* BGE-Remix P8.3: lamp and world values from the shared buffers (not with
+ * OpenSubdiv's GLSL 1.50 shaders) */
+static bool codegen_use_shared = true;
 /* BGE-Remix P8.5: the library with Blender Internal's procedural textures,
  * only for the materials that use one (they are large to compile) */
 static char *glsl_material_library_procedural = NULL;
@@ -548,7 +553,14 @@ static int codegen_print_uniforms_functions(DynStr *ds, ListBase *nodes)
 				}
 			}
 			else if (input->source == GPU_SOURCE_VEC_UNIFORM) {
-				if (input->dynamicvec) {
+				char expr[512];
+				if (input->dynamicvec && codegen_use_shared &&
+				    GPU_shared_uniform_expr(input->dynamicvec, input->type, expr, sizeof(expr)))
+				{
+					/* BGE-Remix P8.3: a lamp or world value, read from the shared buffers */
+					BLI_dynstr_appendf(ds, "#define unf%d %s\n", input->id, expr);
+				}
+				else if (input->dynamicvec) {
 					/* only create uniforms for dynamic vectors */
 					BLI_dynstr_appendf(ds, "uniform %s unf%d;\n",
 						GPU_DATATYPE_STR[input->type], input->id);
@@ -596,8 +608,8 @@ static void codegen_declare_tmps(DynStr *ds, ListBase *nodes)
 		for (input = node->inputs.first; input; input = input->next) {
 			if (input->source == GPU_SOURCE_TEX_PIXEL) {
 				if (codegen_input_has_texture(input) && input->definetex) {
-					BLI_dynstr_appendf(ds, "\tvec4 tex%d = texture2D(", input->texid);
-					BLI_dynstr_appendf(ds, "samp%d, gl_TexCoord[%d].st);\n",
+					BLI_dynstr_appendf(ds, "\tvec4 tex%d = texture(", input->texid);
+					BLI_dynstr_appendf(ds, "samp%d, BGE_TEXCOORD(%d).st);\n",
 					                   input->texid, input->texid);
 				}
 			}
@@ -626,7 +638,7 @@ static void codegen_call_functions(DynStr *ds, ListBase *nodes, GPUOutput *final
 			if (input->source == GPU_SOURCE_TEX) {
 				BLI_dynstr_appendf(ds, "samp%d", input->texid);
 				if (input->link)
-					BLI_dynstr_appendf(ds, ", gl_TexCoord[%d].st", input->texid);
+					BLI_dynstr_appendf(ds, ", BGE_TEXCOORD(%d).st", input->texid);
 			}
 			else if (input->source == GPU_SOURCE_TEX_PIXEL) {
 				codegen_convert_datatype(ds, input->link->output->type, input->type,
@@ -649,9 +661,9 @@ static void codegen_call_functions(DynStr *ds, ListBase *nodes, GPUOutput *final
 			}
 			else if (input->source == GPU_SOURCE_OPENGL_BUILTIN) {
 				if (input->oglbuiltin == GPU_MATCAP_NORMAL)
-					BLI_dynstr_append(ds, "gl_SecondaryColor");
+					BLI_dynstr_append(ds, "BGE_VCOL2");
 				else if (input->oglbuiltin == GPU_COLOR)
-					BLI_dynstr_append(ds, "gl_Color");
+					BLI_dynstr_append(ds, "BGE_VCOL");
 			}
 
 			BLI_dynstr_append(ds, ", ");
@@ -666,7 +678,7 @@ static void codegen_call_functions(DynStr *ds, ListBase *nodes, GPUOutput *final
 		BLI_dynstr_append(ds, ");\n");
 	}
 
-	BLI_dynstr_append(ds, "\n\tgl_FragColor = ");
+	BLI_dynstr_append(ds, "\n\tbge_fragcolor = ");
 	codegen_convert_datatype(ds, finaloutput->type, GPU_VEC4, "tmp", finaloutput->id);
 	BLI_dynstr_append(ds, ";\n");
 }
@@ -802,7 +814,7 @@ static char *code_generate_vertex(ListBase *nodes, const GPUMatType type)
 					BLI_dynstr_appendf(ds, "#ifndef USE_OPENSUBDIV\n");
 #endif
 					BLI_dynstr_appendf(
-					        ds, "\tvar%d.xyz = normalize(gl_NormalMatrix * att%d.xyz);\n",
+					        ds, "\tvar%d.xyz = normalize(bge_normalmat * att%d.xyz);\n",
 					        input->attribid, input->attribid);
 					BLI_dynstr_appendf(
 					        ds, "\tvar%d.w = att%d.w;\n",
@@ -833,10 +845,10 @@ static char *code_generate_vertex(ListBase *nodes, const GPUMatType type)
 					/* remap to 0.0 - 1.0 range. This is done because OpenGL 2.0 clamps colors
 					 * between shader stages and we want the full range of the normal */
 					BLI_dynstr_appendf(ds, "\tvec3 matcapcol = vec3(0.5) * varnormal + vec3(0.5);\n");
-					BLI_dynstr_appendf(ds, "\tgl_FrontSecondaryColor = vec4(matcapcol, 1.0);\n");
+					BLI_dynstr_appendf(ds, "\tBGE_VCOL2_OUT = vec4(matcapcol, 1.0);\n");
 				}
 				else if (input->oglbuiltin == GPU_COLOR) {
-					BLI_dynstr_appendf(ds, "\tgl_FrontColor = gl_Color;\n");
+					BLI_dynstr_appendf(ds, "\tBGE_VCOL_OUT = bge_col;\n");
 				}
 			}
 
@@ -949,6 +961,38 @@ void GPU_code_generate_glsl_lib(void)
 	glsl_material_library_procedural = BLI_dynstr_get_cstring(ds);
 
 	BLI_dynstr_free(ds);
+}
+
+/* BGE-Remix P8.3: the material library and vertex template built with the
+ * core front end (as the drawing layer's batches will use them): true when
+ * they compile and link */
+bool GPU_codegen_selftest_core(void)
+{
+	GPU_code_generate_glsl_lib();
+	DynStr *ds = BLI_dynstr_new();
+	BLI_dynstr_append(ds, datatoc_gpu_shader_vertex_glsl);
+	BLI_dynstr_append(ds, "\tBGE_VCOL_OUT = bge_col;\n}\n");
+	char *vert = BLI_dynstr_get_cstring(ds);
+	BLI_dynstr_free(ds);
+	const char *frag =
+	        "in vec3 varposition;\n"
+	        "in vec3 varnormal;\n"
+	        "#define unf1 vec3(bge_lw[0], bge_lw[1], bge_lw[2])\n"
+	        "#define unf2 bge_ww[0]\n"
+	        "void main()\n"
+	        "{\n"
+	        "	vec3 facingnormal = gl_FrontFacing ? varnormal : -varnormal;\n"
+	        "	bge_fragcolor = vec4(unf1 * unf2 * facingnormal + BGE_VCOL.rgb, 1.0);\n"
+	        "}\n";
+	GPUShader *sh = GPU_shader_create_ex(vert, frag, NULL, glsl_material_library_procedural, NULL, 0, 0, 0,
+	                                     GPU_SHADER_FLAGS_GLSL450 | GPU_SHADER_FLAGS_CORE |
+	                                     GPU_SHADER_FLAGS_FRONTEND | GPU_SHADER_FLAGS_SHARED);
+	MEM_freeN(vert);
+	if (!sh) {
+		return false;
+	}
+	GPU_shader_free(sh);
+	return true;
 }
 
 /* BGE-Remix P8.5: whether the nodes call the procedural texture library */
@@ -1719,11 +1763,13 @@ GPUPass *GPU_generate_pass(
 	libcode = gpu_nodes_use_procedural(nodes) ? glsl_material_library_procedural : glsl_material_library;
 
 	/* generate code and compile with opengl */
+	codegen_use_shared = !use_opensubdiv;
 	fragmentcode = code_generate_fragment(nodes, outlink->output);
 	vertexcode = code_generate_vertex(nodes, type);
 	geometrycode = code_generate_geometry(nodes, use_opensubdiv);
 
-	int flags = GPU_SHADER_FLAGS_NONE;
+	/* BGE-Remix P8.3: GLSL 4.50 with the material front end */
+	int flags = GPU_SHADER_FLAGS_GLSL450 | GPU_SHADER_FLAGS_FRONTEND | GPU_SHADER_FLAGS_SHARED;
 	if (use_opensubdiv) {
 		flags |= GPU_SHADER_FLAGS_SPECIAL_OPENSUBDIV;
 	}

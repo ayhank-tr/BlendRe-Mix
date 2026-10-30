@@ -7,11 +7,13 @@ out block {
 } outpt;
 #endif
 
-varying vec3 varposition;
-varying vec3 varnormal;
+/* BGE-Remix P8.3: GLSL 4.50; the inputs and matrices come from the front end
+ * (bge_pos, bge_nor, bge_mv, bge_proj, bge_normalmat) */
+out vec3 varposition;
+out vec3 varnormal;
 
-#ifdef CLIP_WORKAROUND
-varying float gl_ClipDistance[6];
+#if defined(CLIP_WORKAROUND) && defined(BGE_COMPAT)
+out float gl_ClipDistance[6];
 #endif
 
 
@@ -85,16 +87,17 @@ void set_var_from_attr(vec4 attr, int info, out vec4 var)
 void main()
 {
 #ifndef USE_OPENSUBDIV
-	vec4 position = gl_Vertex;
-	vec3 normal = gl_Normal;
+	vec4 position = bge_pos;
+	vec3 normal = bge_nor;
 #endif
 
-	vec4 co = gl_ModelViewMatrix * position;
+	vec4 co = bge_mv * position;
 
 	varposition = co.xyz;
-	varnormal = normalize(gl_NormalMatrix * normal);
-	gl_Position = gl_ProjectionMatrix * co;
+	varnormal = normalize(bge_normalmat * normal);
+	gl_Position = bge_proj * co;
 
+#ifdef BGE_COMPAT
 #ifdef CLIP_WORKAROUND
 	int i;
 	for (i = 0; i < 6; i++)
@@ -104,6 +107,7 @@ void main()
 	// graphic cards, while on ATI it can cause a software fallback.
 	gl_ClipVertex = co; 
 #endif 
+#endif
 
 #ifdef USE_OPENSUBDIV
 	outpt.v.position = co;

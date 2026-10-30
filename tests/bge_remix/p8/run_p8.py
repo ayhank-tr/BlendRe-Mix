@@ -1,38 +1,26 @@
-"""BGE-Remix P8 tests, Parts A (materials) and B (lamps and shadows).
+"""BGE-Remix P8 tests (P8 plan v2: one rendering system on OpenGL 4.5).
 
-T8.1  one mode: no mode switch in the UI; new and old files play as GLSL;
-      saved files open in stock 2.79 as GLSL
-T8.2  Multitexture's features: mt_features in P8 looks like mt_features in
-      stock 2.79 Multitexture, feature by feature (lighting excepted), and
-      each scripted feature works
-T8.3  GLSL unchanged: glsl_features in P8 matches stock 2.79 GLSL; Classic
-      materials (pbr_classic) look as before
-T8.4  fallback: the failing material draws with the fixed-function path, is
-      reported in the console and the Game View; its neighbour is unaffected
-T8.5  3D view: Textured mode of each test scene matches the game's picture
-T8.6  Python: the old calls run, every lamp setting can be changed
-T8.7  procedurals in GLSL: each panel of proc_textures in the game matches
-      F12 (stock 2.79), the bumped row too; Noise only for its look
-T8.8  procedurals baked: each baked image matches Blender's own bake; a
-      second start reuses the files; blenderplayer and Blender's 3D view
-      bake; the animated texture is baked again; the panel without a UV
-      map is reported
-T8.9  one physical material: pbr_spheres against its reference pictures;
-      every value reaches Remix exactly (the fake runtime's log); F12 shows
-      the translated values; the file opens in stock 2.79
-T8.10 Classic into Remix: each classic_remix material reaches Remix as the
-      right kind; the invisible material is hidden
-T8.11 lights: each lamp of the lamps scene against F12 (our build), area
-      lamps included; the light group, the spot halo, a lamp a script
-      changes; Remix gets each lamp's size, shape and power (the fake
-      runtime's log); Only Shadow lamps are not sent
-T8.12 shadows: every lamp type casts; edges soften with the light's size;
-      no acne under grazing light; a cut-out fence's holes show in its
-      shadow (Simple and Variance); the far sun shadow is there; static
-      lamps stop drawing their shadow; contact shadows where objects touch
-T8.20 regression: P0-P7 unchanged (their results from the same CI run;
-      P7's own tests are the Game View's, built and tested with P8)
-B8.1-B8.5, B8.7 reported (their targets are for the RTX run at the end of P8)
+Part A, build A1 (the OpenGL 4.5 foundation):
+T8.1  OpenGL 4.5: Blender and the player run in 4.5 (the log says which
+      profile); a card below 4.5 gets the message (a test switch stands in
+      for one); the drawing layer's self-test passes; no driver error in
+      any run (debug contexts, BGE_REMIX_GL_DEBUG=1)
+T8.2  cache and recovery: a second start loads the shaders the first saved;
+      a driver reset (simulated) stops the game with a message, no crash
+T8.3  old shaders: custom_shaders (old-style GLSL) and every 2D filter match
+      stock 2.79; each translation also builds for core; the broken shader
+      is reported
+T8.35 tiers: the pictures are the same with Tier 1 forced
+
+The first build's tests, renumbered (P8 plan v2):
+T8.4  one mode (was T8.1)            T8.5  Multitexture's features (T8.2)
+T8.6  GLSL unchanged (T8.3)          T8.7  fallback (T8.4)
+T8.8  3D view (T8.5)                 T8.9  Python (T8.6)
+T8.10 procedurals in GLSL (T8.7)     T8.11 procedurals baked (T8.8)
+T8.12 one physical material (T8.9)   T8.13 Classic into Remix (T8.10)
+T8.19 lights (T8.11)                 T8.21 shadows (T8.12)
+T8.34 regression: P0-P7 unchanged (T8.20)
+B8.1-B8.5, B8.10 (shadows) reported; their targets are for the RTX run
 
   python run_p8.py --ours <build> --official <stock 2.79b> --mock <fake runtime> --out <dir>   (CI)
 """
@@ -263,8 +251,28 @@ GFLAGS = os.path.join(os.path.dirname(CDB), "gflags.exe")
 ON_CRASH = ".echo BGE-Remix crash; .lastevent; r; kn 60; lm; q"
 CRASH_LINE = re.compile(r"^BGE-Remix crash\s*$", re.M)  # the echo, not the command line that holds it
 
+# P8 v2 (T8.1): every run of our build in a debug context, driver messages
+# logged; no Windows message boxes in CI
+GL_ENV = {"BGE_REMIX_GL_DEBUG": "1", "BGE_REMIX_NO_DIALOGS": "1"}
+GL_ERROR = re.compile(r"^BGE-Remix GL error: .*$", re.M)
+GL_VERSION = re.compile(r"^BGE-Remix GL: (\d+)\.(\d+) (compatibility|core)( \(debug\))?, tier (\d)(.*)$", re.M)
+GL_LOG = {}
+OURS = {"build": None}
 
-def play(build, out, tag, blend, env=None, frames=300, seconds=0, debug=False):
+
+def note_gl(build, tag, text):
+    """what a run of our build says about OpenGL: its version line, errors"""
+    if not OURS["build"] or os.path.abspath(build) != OURS["build"]:
+        return
+    errors = GL_ERROR.findall(text or "")
+    m = GL_VERSION.search(text or "")
+    GL_LOG[tag] = {"errors": len(errors), "first": errors[:5],
+                   "version": [int(m.group(1)), int(m.group(2))] if m else None,
+                   "profile": m.group(3) if m else None, "debug": bool(m and m.group(4)),
+                   "tier": int(m.group(5)) if m else None, "line": m.group(0) if m else None}
+
+
+def play(build, out, tag, blend, env=None, frames=300, seconds=0, debug=False, gl_debug=True):
     """blenderplayer at SIZE (960x540); the probe's screenshot at frame 100;
     debug: under the console debugger (when there is one), with Windows'
     page heap (each allocation followed by a guard page, so a write past its
@@ -276,6 +284,7 @@ def play(build, out, tag, blend, env=None, frames=300, seconds=0, debug=False):
     e = p2.base_env(out, tag)
     e.update({"BGE_REMIX_P2_OUT": res, "BGE_REMIX_STATS": stats, "BGE_REMIX_P2_SHOT": shot,
               "BGE_REMIX_P2_FRAMES": str(frames), "BGE_REMIX_P2_SECONDS": str(seconds), "BGE_REMIX_RUNTIME_DIR": None})
+    e.update(GL_ENV if gl_debug else {"BGE_REMIX_NO_DIALOGS": "1"})
     e.update(env or {})
     cmd = [p2.exe(build, "blenderplayer"), "-w", str(SIZE[0]), str(SIZE[1]), blend]
     pageheap = False
@@ -293,6 +302,7 @@ def play(build, out, tag, blend, env=None, frames=300, seconds=0, debug=False):
         if pageheap:
             p2.run([GFLAGS, "/p", "/disable", "blenderplayer.exe"], {}, os.path.join(out, tag + "_gflags_off.log"),
                    timeout=60)
+    note_gl(build, tag, text)
     r = {"exit": code, "seconds_total": round(secs, 1), "probe": p2.read_json(res), "stats": p2.read_json(stats),
          "screenshot": shot if os.path.isfile(shot) else None, "traceback_in_output": "Traceback" in text,
          "text": text, "debugger": cmd[0] == CDB, "crashed": bool(CRASH_LINE.search(text)), "pageheap": pageheap}
@@ -325,11 +335,13 @@ def ui_probe(build, out, tag, blend, env, timeout=900):
         os.remove(done)
     e = p2.base_env(out, tag)
     e.update({"BGE_REMIX_P8_DONE": done})
+    e.update(GL_ENV)
     e.update(env)
     # without Blender's crash handler, so a crash leaves a dump (CI)
     code, text, secs = p2.run([p2.exe(build, "blender"), "--disable-crash-handler"] + WINDOW +
                               [blend, "--python", UI_PROBE], e,
                               os.path.join(out, tag + ".log"), timeout=timeout, cwd=out)
+    note_gl(build, "ui_" + tag, text)
     r = p2.read_json(done)
     r.update({"exit": code, "seconds": round(secs, 1), "text": text})
     return r
@@ -1082,6 +1094,131 @@ def t812(args, out, scenes, expected, shots, runs):
 
 
 # ---------------------------------------------------------------------------
+# P8 v2 Part A, build A1: the OpenGL 4.5 foundation
+
+def t81_gl(gl):
+    """OpenGL 4.5 in Blender and the player, the message below 4.5, the
+    layer's self-test, no driver error in any run"""
+    c, d = {}, {}
+    text = gl["selftest"].get("text", "")
+    m = re.search(r"BGE-Remix layer self-test: (\d+) failed", text)
+    c["the drawing layer's self-test ran"] = m is not None
+    c["the drawing layer's self-test passes"] = m is not None and int(m.group(1)) == 0
+    d["self_test"] = [l for l in text.splitlines() if "layer self-test:" in l]
+
+    player = {t: v for t, v in GL_LOG.items() if not t.startswith("ui_") and t != "t81_fake_old_card"}
+    ui = {t: v for t, v in GL_LOG.items() if t.startswith("ui_")}
+    ok45 = lambda v: v["version"] is not None and tuple(v["version"]) >= (4, 5)  # noqa: E731
+    c["the player runs in OpenGL 4.5 or later (every run)"] = bool(player) and all(ok45(v) for v in player.values())
+    c["Blender runs in OpenGL 4.5 or later"] = bool(ui) and all(ok45(v) for v in ui.values())
+    c["the runs had debug contexts (driver messages on)"] = bool(player) and all(v["debug"] for v in player.values())
+    d["versions"] = sorted({v["line"] for v in GL_LOG.values() if v["line"]})
+    d["runs_without_a_version_line"] = sorted(t for t, v in GL_LOG.items() if not v["line"])[:20]
+
+    fake = gl["fake"]
+    c["an older card gets the message and the program stops"] = \
+        fake.get("exit") == 3 and "BGE-Remix needs OpenGL 4.5" in fake.get("text", "")
+    d["fake_old_card"] = {"exit": fake.get("exit"),
+                          "message": [l for l in fake.get("text", "").splitlines() if "needs OpenGL" in l][:2]}
+
+    errors = {t: v["first"] for t, v in GL_LOG.items() if v["errors"]}
+    c["no driver error in any run"] = not errors
+    d["driver_errors"] = errors
+    d["driver_error_counts"] = {t: v["errors"] for t, v in GL_LOG.items() if v["errors"]}
+    return c, d
+
+
+def t82_cache(gl):
+    """the shader cache, and a driver reset"""
+    c, d = {}, {}
+    rx = re.compile(r"BGE-Remix shader cache: (\d+) loaded, (\d+) built, (\d+) saved")
+
+    def counts(r):
+        m = rx.findall(r.get("text", ""))
+        return [int(x) for x in m[-1]] if m else None
+
+    first, second = counts(gl["cache_first"]), counts(gl["cache_second"])
+    d["first_start"] = {"loaded_built_saved": first, "seconds": gl["cache_first"].get("seconds_total")}
+    d["second_start"] = {"loaded_built_saved": second, "seconds": gl["cache_second"].get("seconds_total")}
+    c["the first start saves its shaders"] = bool(first) and first[2] > 0
+    c["a second start loads them and builds none"] = bool(first) and bool(second) and \
+        second[0] >= first[2] and second[1] == 0
+    c["both starts ran"] = bool(gl["cache_first"].get("ran")) and bool(gl["cache_second"].get("ran"))
+
+    r = gl["reset"]
+    text = r.get("text", "")
+    c["a driver reset (simulated) is reported"] = "the graphics driver was reset (simulated)" in text
+    c["the game stops with a message"] = "the game has stopped" in text
+    c["no crash"] = r.get("exit") == 0 and not r.get("crashed")
+    d["reset"] = {"exit": r.get("exit"), "frames": r.get("frames"),
+                  "lines": [l for l in text.splitlines() if "reset" in l or "stopped" in l][:4]}
+    return c, d
+
+
+def whole_diff(a, b):
+    if a is None or b is None or a.shape != b.shape:
+        return None
+    return round(float(abs(a - b).mean()), 2)
+
+
+def t83_shaders(expected, runs, shots, cf_dirs):
+    """old-style custom shaders and 2D filters: translated, built for core
+    too, and drawn as stock 2.79 draws them"""
+    c, d = {}, {}
+    E = expected.get("custom_shaders")
+    F = expected.get("custom_filters")
+    if not E or not F:
+        return {"the custom shader scenes were made": False}, {}
+    text = runs.get("custom_shaders", {}).get("text", "")
+    built = len(re.findall(r"GLSL translate custom shader: built,", text))
+    not_built = len(re.findall(r"GLSL translate custom shader: not built", text))
+    core_ok = len(re.findall(r"GLSL translate custom shader: built, \d+ not translated, core ok", text))
+    d["custom_shaders"] = {"built": built, "not_built": not_built, "core_ok": core_ok}
+    good = len(E["order"]) - 1
+    c["each working shader is translated and built"] = built == good
+    c["each translation also builds for core"] = core_ok == good
+    c["the broken shader is reported with its line"] = not_built == 1 and "does not build" in text and \
+        re.search(r"\d+:\d+\(\d+\): error|ERROR: \d+:\d+", text) is not None
+    a, b = picture(shots.get("custom_shaders")), picture(shots.get("stock_custom_shaders"))
+    rects = {k: v for k, v in E["rects"].items() if k != E["broken"]}
+    cc, dd = compare_rects(a, b, rects, TOL_SAME_CODE, prefix="custom shader ")
+    c.update(cc)
+    d["custom_shader_differences"] = dd
+    c["the custom shader pictures were made (ours, stock)"] = a is not None and b is not None
+
+    ftext = runs.get("custom_filters", {}).get("text", "")
+    fbuilt = len(re.findall(r"GLSL translate 2D filter: built,", ftext))
+    fcore = len(re.findall(r"GLSL translate 2D filter: built, \d+ not translated, core ok", ftext))
+    glsl_filters = [m for m in F["modes"] if m != "motionblur"]
+    d["filters"] = {"built": fbuilt, "core_ok": fcore}
+    c["each 2D filter is translated and built"] = fbuilt >= len(glsl_filters)
+    c["each 2D filter's translation builds for core"] = fcore >= len(glsl_filters)
+    diffs = {}
+    for mode in F["modes"]:
+        pa = picture(os.path.join(cf_dirs[0], "filter_%s.png" % mode))
+        pb = picture(os.path.join(cf_dirs[1], "filter_%s.png" % mode))
+        diffs[mode] = whole_diff(pa, pb)
+        c["2D filter %s matches stock 2.79" % mode] = diffs[mode] is not None and diffs[mode] <= TOL_SAME_CODE
+    d["filter_differences"] = diffs
+    return c, d
+
+
+def t835_tiers(gl, shots):
+    c, d = {}, {}
+    for key, name in (("tier1_glsl", "glsl_features"), ("tier1_cs", "custom_shaders")):
+        r = gl[key]
+        c["%s: Tier 1 forced (log)" % name] = "(forced)" in (GL_LOG.get(key_tag(key), {}).get("line") or "")
+        md = whole_diff(picture(r.get("screenshot")), picture(shots.get(name)))
+        d[name] = md
+        c["%s: the same picture at Tier 1" % name] = md is not None and md <= 1.0
+    return c, d
+
+
+def key_tag(key):
+    return {"tier1_glsl": "t835_tier1_glsl", "tier1_cs": "t835_tier1_custom_shaders"}[key]
+
+
+# ---------------------------------------------------------------------------
 
 def run(args, out):
     scenes, expected = make_scenes(args, out)
@@ -1111,6 +1248,39 @@ def run(args, out):
             shots[name] = runs[name].get("screenshot")
     api = p2.read_json(api_path)
 
+    # P8 v2 Part A1: OpenGL 4.5, the layer, the shader cache, resets, old shaders, tiers
+    gl = {}
+    gl["selftest"] = play(args.ours, out, "t81_selftest", S("glsl_features"),
+                          {"BGE_REMIX_GL_SELFTEST": os.path.join(out, "layer_selftest")}, frames=60)
+    gl["fake"] = play(args.ours, out, "t81_fake_old_card", S("glsl_features"), {"BGE_REMIX_GL_FAKE_VERSION": "3.3"},
+                      frames=60)
+    cache_dir = os.path.join(out, "shader_cache_t82")
+    shutil.rmtree(cache_dir, ignore_errors=True)
+    gl["cache_first"] = play(args.ours, out, "t82_cache_first", S("glsl_features"),
+                             {"BGE_REMIX_SHADER_CACHE": cache_dir}, frames=60)
+    gl["cache_second"] = play(args.ours, out, "t82_cache_second", S("glsl_features"),
+                              {"BGE_REMIX_SHADER_CACHE": cache_dir}, frames=60)
+    gl["reset"] = play(args.ours, out, "t82_reset", S("glsl_features"), {"BGE_REMIX_GL_SIMULATE_RESET": "30"})
+    cf_dirs = (os.path.join(out, "filters_ours"), os.path.join(out, "filters_stock"))
+    for dpath in cf_dirs:
+        shutil.rmtree(dpath, ignore_errors=True)
+        os.makedirs(dpath, exist_ok=True)
+    if os.path.isfile(S("custom_shaders")):
+        runs["custom_shaders"] = play(args.ours, out, "game_custom_shaders", S("custom_shaders"))
+        shots["custom_shaders"] = runs["custom_shaders"].get("screenshot")
+        runs["custom_filters"] = play(args.ours, out, "game_custom_filters", S("custom_filters"),
+                                      {"BGE_REMIX_P8_FILTER_DIR": cf_dirs[0]}, frames=180)
+        if args.official:
+            r = play(args.official, out, "stock_custom_shaders", S("custom_shaders"))
+            shots["stock_custom_shaders"] = r.get("screenshot")
+            play(args.official, out, "stock_custom_filters", S("custom_filters"),
+                 {"BGE_REMIX_P8_FILTER_DIR": cf_dirs[1]}, frames=180)
+        gl["tier1_cs"] = play(args.ours, out, "t835_tier1_custom_shaders", S("custom_shaders"),
+                              {"BGE_REMIX_GL_TIER": "1"})
+    else:
+        gl["tier1_cs"] = {}
+    gl["tier1_glsl"] = play(args.ours, out, "t835_tier1_glsl", S("glsl_features"), {"BGE_REMIX_GL_TIER": "1"})
+
     def mt_run(build, tag):
         res = {}
         # not tag + ".json": that is the probe's own result file
@@ -1134,19 +1304,22 @@ def run(args, out):
             shots["stock_" + name.replace("_gl", "")] = r.get("screenshot")
 
     tests = {}
-    plan = [("T8.1 One mode", lambda: t81(args, out, scenes, mt_ours, api)),
-            ("T8.2 Multitexture's features", lambda: t82(expected, mt_ours, mt_stock)),
-            ("T8.3 GLSL unchanged", lambda: t83(expected, shots)),
-            ("T8.4 Fallback", lambda: t84(args, out, scenes, expected, runs["fallback"])),
-            ("T8.5 3D view", lambda: t85(args, out, scenes, expected, shots)),
-            ("T8.6 Python", lambda: t86(api)),
-            ("T8.7 Procedurals in GLSL", lambda: t87(args, out, scenes, expected, shots)),
-            ("T8.8 Procedurals baked", lambda: t88(args, out, scenes, expected)),
-            ("T8.9 One physical material", lambda: t89(args, out, scenes, expected, shots)),
-            ("T8.10 Classic into Remix", lambda: t810(args, out, scenes, expected)),
-            ("T8.11 Lights", lambda: t811(args, out, scenes, expected, shots)),
-            ("T8.12 Shadows", lambda: t812(args, out, scenes, expected, shots, runs))]
-    needs_official = ("T8.1", "T8.2", "T8.3")
+    plan = [("T8.4 One mode", lambda: t81(args, out, scenes, mt_ours, api)),
+            ("T8.5 Multitexture's features", lambda: t82(expected, mt_ours, mt_stock)),
+            ("T8.6 GLSL unchanged", lambda: t83(expected, shots)),
+            ("T8.7 Fallback", lambda: t84(args, out, scenes, expected, runs["fallback"])),
+            ("T8.8 3D view", lambda: t85(args, out, scenes, expected, shots)),
+            ("T8.9 Python", lambda: t86(api)),
+            ("T8.10 Procedurals in GLSL", lambda: t87(args, out, scenes, expected, shots)),
+            ("T8.11 Procedurals baked", lambda: t88(args, out, scenes, expected)),
+            ("T8.12 One physical material", lambda: t89(args, out, scenes, expected, shots)),
+            ("T8.13 Classic into Remix", lambda: t810(args, out, scenes, expected)),
+            ("T8.19 Lights", lambda: t811(args, out, scenes, expected, shots)),
+            ("T8.21 Shadows", lambda: t812(args, out, scenes, expected, shots, runs)),
+            ("T8.2 Cache and recovery", lambda: t82_cache(gl)),
+            ("T8.3 Old shaders", lambda: t83_shaders(expected, runs, shots, cf_dirs)),
+            ("T8.35 Tiers", lambda: t835_tiers(gl, shots))]
+    needs_official = ("T8.4", "T8.5", "T8.6", "T8.3")
     for name, fn in plan:
         if not args.official and name.split()[0] in needs_official:
             tests[name] = {"ok": False, "checks": {"official 2.79b given (--official)": False}, "detail": {}}
@@ -1159,12 +1332,27 @@ def run(args, out):
             print(name, ex)
         tests[name] = {"ok": bool(c) and all(bool(v) for v in c.values()), "checks": c, "detail": d}
     c, d = t820(out)
-    tests["T8.20 Regression (P0-P7)"] = {"ok": all(c.values()), "checks": c, "detail": d}
+    tests["T8.34 Regression (P0-P7)"] = {"ok": all(c.values()), "checks": c, "detail": d}
+    # T8.1 last: it reads every run's log
+    try:
+        c, d = t81_gl(gl)
+    except Exception:
+        import traceback
+        c, d = {"the test ran": False}, {"error": traceback.format_exc()}
+    tests["T8.1 OpenGL 4.5"] = {"ok": bool(c) and all(bool(v) for v in c.values()), "checks": c, "detail": d}
     ran = {k: bool(r.get("ran")) for k, r in runs.items()}
     tests["The game ran (every scene)"] = {"ok": all(ran.values()), "checks": ran, "detail": {}}
 
     bench = benchmarks(args, out, scenes, runs)
     res = {"tests": tests, "bench": bench, "all_ok": all(t["ok"] for t in tests.values())}
+    # the self-test picture as PNG for the sheet
+    try:
+        from PIL import Image
+        ppm = os.path.join(out, "layer_selftest", "layer_selftest.ppm")
+        if os.path.isfile(ppm):
+            Image.open(ppm).save(os.path.join(out, "layer_selftest", "layer_selftest.png"))
+    except Exception:
+        pass
     sheet = [("proc_textures: game", shots.get("proc_textures_gl")),
              ("proc_textures: F12 (stock 2.79)", os.path.join(out, "t87_f12_proc_textures.png")),
              ("pbr_spheres: game", shots.get("pbr_spheres_gl")),
@@ -1179,10 +1367,13 @@ def run(args, out):
              ("lamps: F12", os.path.join(out, "t811_f12_lamps.png")),
              ("shadows: game", shots.get("shadows")),
              ("shadows: without shadows", shots.get("shadows_noshadow")),
-             ("shadows_far: game", shots.get("shadows_far"))]
+             ("shadows_far: game", shots.get("shadows_far")),
+             ("custom_shaders: ours (translated)", shots.get("custom_shaders")),
+             ("custom_shaders: stock 2.79", shots.get("stock_custom_shaders")),
+             ("layer self-test", os.path.join(out, "layer_selftest", "layer_selftest.png"))]
     res["sheet"] = p2.contact_sheet(sheet, os.path.join(out, "sheet_p8a.png"))
 
-    lines = ["BGE-Remix P8 tests, Parts A and B (CI)", "=" * 38, ""]
+    lines = ["BGE-Remix P8 tests, plan v2: Part A1 and the first build's tests (CI)", "=" * 70, ""]
     for name, t in tests.items():
         lines.append("%-34s %s" % (name, p2.mark(t["ok"])))
         for check, ok in t["checks"].items():
@@ -1207,12 +1398,12 @@ def benchmarks(args, out, scenes, runs):
         p = r.get("probe", {})
         return round(r["seconds_total"] - p["seconds"], 2) if p.get("seconds") is not None else None
 
-    ours = play(args.ours, out, "b81_ours", S("mt_bench"), frames=600)
-    stock = play(args.official, out, "b81_stock", S("mt_bench"), frames=600) if args.official else {}
+    ours = play(args.ours, out, "b81_ours", S("mt_bench"), frames=600, gl_debug=False)
+    stock = play(args.official, out, "b81_stock", S("mt_bench"), frames=600, gl_debug=False) if args.official else {}
     b["B8.1 frame time (ms)"] = {"ours": ms(ours), "stock_multitexture": ms(stock) if stock else None}
     b["B8.2 start time (s)"] = {"ours": start(ours), "stock_multitexture": start(stock) if stock else None}
-    full = play(args.ours, out, "b83_bump", S("proc_textures_gl"), frames=600)
-    flat = play(args.ours, out, "b83_nobump", S("proc_textures_gl_nobump"), frames=600)
+    full = play(args.ours, out, "b83_bump", S("proc_textures_gl"), frames=600, gl_debug=False)
+    flat = play(args.ours, out, "b83_nobump", S("proc_textures_gl_nobump"), frames=600, gl_debug=False)
     b["B8.3 procedural cost (ms)"] = {"with_bump": ms(full), "without_bump": ms(flat)}
     bake = {}
     for size in (1024, 2048):
@@ -1220,20 +1411,20 @@ def benchmarks(args, out, scenes, runs):
         for when in ("first", "cached"):
             tag = "b84_%d_%s" % (size, when)
             log, env = mock_env(args, out, tag, cache, size=size)
-            r = play(args.ours, out, tag, S("proc_textures"), env, frames=300, seconds=30)
+            r = play(args.ours, out, tag, S("proc_textures"), env, frames=300, seconds=30, gl_debug=False)
             st = r["stats"]
             bake["%d %s" % (size, when)] = {"bake_ms": st.get("procedural_bake_ms"),
                                             "encoded": st.get("textures_encoded"), "reused": st.get("textures_reused"),
                                             "start_s": start(r)}
     b["B8.4 baking"] = bake
-    phys = play(args.ours, out, "b85_physical", S("mt_bench_physical"), frames=600)
+    phys = play(args.ours, out, "b85_physical", S("mt_bench_physical"), frames=600, gl_debug=False)
     b["B8.5 physical vs Classic (ms)"] = {"physical": ms(phys), "classic": ms(ours)}
     shadows = {}
     for name in ("0", "1", "4", "8", "sun", "hard"):
         path = S("shadows_bench_" + name)
         if os.path.isfile(path):
-            shadows[name] = ms(play(args.ours, out, "b87_" + name, path, frames=600))
-    b["B8.7 shadows (ms): casting point lamps 0/1/4/8, the sun only, 8 hard"] = shadows
+            shadows[name] = ms(play(args.ours, out, "b87_" + name, path, frames=600, gl_debug=False))
+    b["B8.10 shadows (ms): casting point lamps 0/1/4/8, the sun only, 8 hard"] = shadows
     return b
 
 
@@ -1245,6 +1436,7 @@ def main():
     ap.add_argument("--mock", required=True)
     args = ap.parse_args()
     args.ours = os.path.abspath(args.ours)
+    OURS["build"] = args.ours
     if args.official:
         args.official = os.path.abspath(args.official)
     out = os.path.abspath(args.out)

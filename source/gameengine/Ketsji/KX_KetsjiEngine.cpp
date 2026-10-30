@@ -85,6 +85,8 @@
 #include "BL_Action.h" // For managing action lock.
 #include "GPU_material.h" /* BGE-Remix P8.5 */
 #include "GPU_glew.h"
+#include "GPU_glcheck.h" /* BGE-Remix P8.1 */
+#include "GPU_layer.h"   /* BGE-Remix P8.2 */
 
 #ifdef WITH_REMIX
 #  include "KX_RemixRenderer.h"
@@ -148,6 +150,7 @@ KX_KetsjiEngine::KX_KetsjiEngine(KX_ISystem* system)
 
 
 	m_exitcode(KX_EXIT_REQUEST_NO_REQUEST),
+	m_gl_check(NULL),
 	m_exitstring(""),
 
 	m_cameraZoom(1.0f),
@@ -219,6 +222,7 @@ KX_KetsjiEngine::~KX_KetsjiEngine()
 	delete m_logger;
 	if (m_usedome)
 		delete m_dome;
+	delete m_gl_check;  /* BGE-Remix P8.1 */
 
 #ifdef WITH_PYTHON
 	Py_CLEAR(m_pyprofiledict);
@@ -588,6 +592,9 @@ void KX_KetsjiEngine::EndFrame()
 	m_logger->StartLog(tc_rasterizer, m_kxsystem->GetTimeInSeconds(), true);
 	
 	m_canvas->EndDraw();
+
+	/* BGE-Remix P8.2: the streaming buffer's frame */
+	GPU_stream_frame_end();
 }
 
 //#include "PIL_time.h"
@@ -839,6 +846,25 @@ bool KX_KetsjiEngine::NextFrame()
 
 void KX_KetsjiEngine::Render()
 {
+	/* BGE-Remix P8.1: a driver reset stops the game, with a message */
+	if (GPU_reset_check()) {
+		printf("BGE-Remix: the graphics driver was reset; the game has stopped\n");
+		RequestExit(KX_EXIT_REQUEST_QUIT_GAME);
+		return;
+	}
+	/* BGE-Remix P8.1: what a frame leaves changed (BGE_REMIX_GL_CHECK=1) */
+	if (GPU_state_check_enabled()) {
+		GPUStateSnapshot now;
+		GPU_state_snapshot(&now);
+		if (m_gl_check) {
+			GPU_state_compare(m_gl_check, &now, "game frame", 0);
+		}
+		else {
+			m_gl_check = new GPUStateSnapshot;
+		}
+		*m_gl_check = now;
+	}
+
 	/* BGE-Remix P8.5: where the texture coordinate objects are */
 	for (KX_SceneList::iterator sit = m_scenes.begin(); sit != m_scenes.end(); ++sit) {
 		(*sit)->UpdateTexcoObjects();

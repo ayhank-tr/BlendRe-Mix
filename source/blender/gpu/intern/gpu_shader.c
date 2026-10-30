@@ -41,6 +41,8 @@
 #include "GPU_texture.h"
 #include "GPU_material.h"
 
+#include "gpu_private.h"
+
 /* TODO(sergey): Find better default values for this constants. */
 #define MAX_DEFINE_LENGTH 1024
 #define MAX_EXT_DEFINE_LENGTH 1024
@@ -259,6 +261,103 @@ GPUShader *GPU_shader_create(const char *vertexcode,
 	                            GPU_SHADER_FLAGS_NONE);
 }
 
+/* BGE-Remix P8.3: the material front end. The material library and the
+ * generated code use bge_pos, bge_nor, bge_col (vertex inputs), bge_mv,
+ * bge_mvinv, bge_proj, bge_projinv, bge_normalmat (matrices),
+ * bge_lightsource (the 3D view's default lights), BGE_VCOL and BGE_VCOL2
+ * (the vertex colour and MatCap varyings), BGE_TEXCOORD (old texture
+ * coordinates) and bge_fragcolor (the output). The compatibility front end
+ * maps them to the old built-ins, for meshes the old code still draws; the
+ * core front end declares them, for the drawing layer's batches. */
+static const char *gpu_frontend_vert_compat =
+        "#define BGE_COMPAT\n"
+        "#define bge_pos gl_Vertex\n"
+        "#define bge_nor gl_Normal\n"
+        "#define bge_col gl_Color\n"
+        "#define bge_mv gl_ModelViewMatrix\n"
+        "#define bge_mvinv gl_ModelViewMatrixInverse\n"
+        "#define bge_proj gl_ProjectionMatrix\n"
+        "#define bge_projinv gl_ProjectionMatrixInverse\n"
+        "#define bge_normalmat gl_NormalMatrix\n"
+        "#define BGE_VCOL_OUT gl_FrontColor\n"
+        "#define BGE_VCOL2_OUT gl_FrontSecondaryColor\n";
+
+static const char *gpu_frontend_frag_compat =
+        "#define BGE_COMPAT\n"
+        "#define bge_mv gl_ModelViewMatrix\n"
+        "#define bge_mvinv gl_ModelViewMatrixInverse\n"
+        "#define bge_proj gl_ProjectionMatrix\n"
+        "#define bge_projinv gl_ProjectionMatrixInverse\n"
+        "#define bge_normalmat gl_NormalMatrix\n"
+        "#define bge_lightsource gl_LightSource\n"
+        "#define BGE_VCOL gl_Color\n"
+        "#define BGE_VCOL2 gl_SecondaryColor\n"
+        "#define BGE_TEXCOORD(n) gl_TexCoord[n]\n"
+        "out vec4 bge_fragcolor;\n";
+
+static const char *gpu_frontend_vert_core =
+        "#define BGE_CORE\n"
+        "in vec4 bge_pos;\n"
+        "in vec3 bge_nor;\n"
+        "in vec4 bge_col;\n"
+        "uniform mat4 bge_mv;\n"
+        "uniform mat4 bge_mvinv;\n"
+        "uniform mat4 bge_proj;\n"
+        "uniform mat4 bge_projinv;\n"
+        "uniform mat3 bge_normalmat;\n"
+        "out vec4 bge_vcol_v;\n"
+        "out vec4 bge_vcol2_v;\n"
+        "#define BGE_VCOL_OUT bge_vcol_v\n"
+        "#define BGE_VCOL2_OUT bge_vcol2_v\n";
+
+static const char *gpu_frontend_frag_core =
+        "#define BGE_CORE\n"
+        "uniform mat4 bge_mv;\n"
+        "uniform mat4 bge_mvinv;\n"
+        "uniform mat4 bge_proj;\n"
+        "uniform mat4 bge_projinv;\n"
+        "uniform mat3 bge_normalmat;\n"
+        "struct BgeLightSource { vec4 position; vec4 diffuse; vec4 specular; vec4 halfVector; };\n"
+        "uniform BgeLightSource bge_lightsource[8];\n"
+        "in vec4 bge_vcol_v;\n"
+        "in vec4 bge_vcol2_v;\n"
+        "#define BGE_VCOL bge_vcol_v\n"
+        "#define BGE_VCOL2 bge_vcol2_v\n"
+        "#define BGE_TEXCOORD(n) vec4(0.0)\n"
+        "out vec4 bge_fragcolor;\n";
+
+/* BGE-Remix P8.3: lamp and world values, read from shared storage buffers
+ * (gpu_material.c fills them; the generated code indexes them) */
+static const char *gpu_frontend_shared =
+        "layout(std430, binding = 6) readonly buffer BgeLampWords { float bge_lw[]; };\n"
+        "layout(std430, binding = 7) readonly buffer BgeWorldWords { float bge_ww[]; };\n";
+
+static const char *gpu_shader_version_ex(int flags, bool use_opensubdiv)
+{
+	if ((flags & GPU_SHADER_FLAGS_GLSL450) && !use_opensubdiv) {
+		return (flags & GPU_SHADER_FLAGS_CORE) ? "#version 450 core\n" : "#version 450 compatibility\n";
+	}
+	return gpu_shader_version();
+}
+
+/* compiles one stage from its pieces; false (and the log printed) on failure */
+static bool gpu_shader_compile_stage(GLuint stage, const char **source, int num_source)
+{
+	GLint status;
+	GLchar log[5000];
+	GLsizei length = 0;
+
+	glShaderSource(stage, num_source, source, NULL);
+	glCompileShader(stage);
+	glGetShaderiv(stage, GL_COMPILE_STATUS, &status);
+	if (!status) {
+		glGetShaderInfoLog(stage, sizeof(log), &length, log);
+		shader_print_errors("compile", log, source, num_source);
+		return false;
+	}
+	return true;
+}
+
 GPUShader *GPU_shader_create_ex(const char *vertexcode,
                                 const char *fragcode,
                                 const char *geocode,
@@ -276,7 +375,6 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 	 */
 	bool use_opensubdiv = (flags & GPU_SHADER_FLAGS_SPECIAL_OPENSUBDIV) != 0;
 #else
-	UNUSED_VARS(flags);
 	bool use_opensubdiv = false;
 #endif
 	GLint status;
@@ -285,6 +383,13 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 	GPUShader *shader;
 	char standard_defines[MAX_DEFINE_LENGTH] = "";
 	char standard_extensions[MAX_EXT_DEFINE_LENGTH] = "";
+	const bool glsl450 = (flags & GPU_SHADER_FLAGS_GLSL450) && !use_opensubdiv;
+	const bool core = glsl450 && (flags & GPU_SHADER_FLAGS_CORE);
+	const bool frontend = (flags & GPU_SHADER_FLAGS_FRONTEND) != 0;
+	const char *version = gpu_shader_version_ex(flags, use_opensubdiv);
+	const char *vert_front = frontend ? (core ? gpu_frontend_vert_core : gpu_frontend_vert_compat) : NULL;
+	const char *frag_front = frontend ? (core ? gpu_frontend_frag_core : gpu_frontend_frag_compat) : NULL;
+	const char *shared = (glsl450 && (flags & GPU_SHADER_FLAGS_SHARED)) ? gpu_frontend_shared : NULL;
 
 	if (geocode && !GPU_geometry_shader_support())
 		return NULL;
@@ -313,47 +418,29 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 	gpu_shader_standard_defines(standard_defines,
 	                            use_opensubdiv,
 	                            (flags & GPU_SHADER_FLAGS_NEW_SHADING) != 0);
-	gpu_shader_standard_extensions(standard_extensions, geocode != NULL);
-
-	if (vertexcode) {
-		const char *source[5];
-		/* custom limit, may be too small, beware */
-		int num_source = 0;
-
-		source[num_source++] = gpu_shader_version();
-		source[num_source++] = standard_extensions;
-		source[num_source++] = standard_defines;
-
-		if (defines) source[num_source++] = defines;
-		source[num_source++] = vertexcode;
-
-		glAttachShader(shader->program, shader->vertex);
-		glShaderSource(shader->vertex, num_source, source, NULL);
-
-		glCompileShader(shader->vertex);
-		glGetShaderiv(shader->vertex, GL_COMPILE_STATUS, &status);
-
-		if (!status) {
-			glGetShaderInfoLog(shader->vertex, sizeof(log), &length, log);
-			shader_print_errors("compile", log, source, num_source);
-
-			GPU_shader_free(shader);
-			return NULL;
-		}
+	if (!glsl450) {
+		gpu_shader_standard_extensions(standard_extensions, geocode != NULL);
 	}
 
+	/* the pieces of each stage, in order */
+	const char *vsrc[8], *fsrc[10], *gsrc[6];
+	int nv = 0, nf = 0, ng = 0;
+	if (vertexcode) {
+		vsrc[nv++] = version;
+		vsrc[nv++] = standard_extensions;
+		vsrc[nv++] = standard_defines;
+		if (vert_front) vsrc[nv++] = vert_front;
+		if (defines) vsrc[nv++] = defines;
+		vsrc[nv++] = vertexcode;
+	}
 	if (fragcode) {
-		const char *source[7];
-		int num_source = 0;
-
-		source[num_source++] = gpu_shader_version();
-		source[num_source++] = standard_extensions;
-		source[num_source++] = standard_defines;
-
+		fsrc[nf++] = version;
+		fsrc[nf++] = standard_extensions;
+		fsrc[nf++] = standard_defines;
 #ifdef WITH_OPENSUBDIV
 		/* TODO(sergey): Move to fragment shader source code generation. */
 		if (use_opensubdiv) {
-			source[num_source++] =
+			fsrc[nf++] =
 			        "#ifdef USE_OPENSUBDIV\n"
 			        "in block {\n"
 			        "	VertexData v;\n"
@@ -361,52 +448,54 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 			        "#endif\n";
 		}
 #endif
+		if (frag_front) fsrc[nf++] = frag_front;
+		if (shared) fsrc[nf++] = shared;
+		if (defines) fsrc[nf++] = defines;
+		if (libcode) fsrc[nf++] = libcode;
+		fsrc[nf++] = fragcode;
+	}
+	if (geocode) {
+		gsrc[ng++] = version;
+		gsrc[ng++] = standard_extensions;
+		gsrc[ng++] = standard_defines;
+		if (defines) gsrc[ng++] = defines;
+		gsrc[ng++] = geocode;
+	}
 
-		if (defines) source[num_source++] = defines;
-		if (libcode) source[num_source++] = libcode;
-		source[num_source++] = fragcode;
+	if (vertexcode) glAttachShader(shader->program, shader->vertex);
+	if (fragcode) glAttachShader(shader->program, shader->fragment);
+	if (geocode) glAttachShader(shader->program, shader->geometry);
 
-		glAttachShader(shader->program, shader->fragment);
-		glShaderSource(shader->fragment, num_source, source, NULL);
-
-		glCompileShader(shader->fragment);
-		glGetShaderiv(shader->fragment, GL_COMPILE_STATUS, &status);
-
-		if (!status) {
-			glGetShaderInfoLog(shader->fragment, sizeof(log), &length, log);
-			shader_print_errors("compile", log, source, num_source);
-
-			GPU_shader_free(shader);
-			return NULL;
+	/* BGE-Remix P8.3: a program compiled before, from the shader cache */
+	const bool cacheable = glsl450 && !geocode;
+	unsigned long long cache_key = 0;
+	if (cacheable) {
+		const char *all[24];
+		int na = 0;
+		for (int i = 0; i < nv; i++) all[na++] = vsrc[i];
+		all[na++] = "\x01";
+		for (int i = 0; i < nf; i++) all[na++] = fsrc[i];
+		cache_key = gpu_shader_cache_key(all, na);
+		if (gpu_shader_cache_load(shader->program, cache_key)) {
+			return shader;
 		}
 	}
 
+	if (vertexcode && !gpu_shader_compile_stage(shader->vertex, vsrc, nv)) {
+		GPU_shader_free(shader);
+		return NULL;
+	}
+	if (fragcode && !gpu_shader_compile_stage(shader->fragment, fsrc, nf)) {
+		GPU_shader_free(shader);
+		return NULL;
+	}
 	if (geocode) {
-		const char *source[6];
-		int num_source = 0;
-
-		source[num_source++] = gpu_shader_version();
-		source[num_source++] = standard_extensions;
-		source[num_source++] = standard_defines;
-
-		if (defines) source[num_source++] = defines;
-		source[num_source++] = geocode;
-
-		glAttachShader(shader->program, shader->geometry);
-		glShaderSource(shader->geometry, num_source, source, NULL);
-
-		glCompileShader(shader->geometry);
-		glGetShaderiv(shader->geometry, GL_COMPILE_STATUS, &status);
-
-		if (!status) {
-			glGetShaderInfoLog(shader->geometry, sizeof(log), &length, log);
-			shader_print_errors("compile", log, source, num_source);
-
+		if (!gpu_shader_compile_stage(shader->geometry, gsrc, ng)) {
 			GPU_shader_free(shader);
 			return NULL;
 		}
-		
-		if (!use_opensubdiv) {
+		/* GLSL 4.50 shaders say it with layouts */
+		if (!use_opensubdiv && !glsl450) {
 			GPU_shader_geometry_stage_primitive_io(shader, input, output, number);
 		}
 	}
@@ -422,6 +511,10 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 	}
 #endif
 
+	if (cacheable && gpu_shader_cache_enabled()) {
+		glProgramParameteri(shader->program, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
+	}
+
 	glLinkProgram(shader->program);
 	glGetProgramiv(shader->program, GL_LINK_STATUS, &status);
 	if (!status) {
@@ -434,6 +527,10 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 
 		GPU_shader_free(shader);
 		return NULL;
+	}
+
+	if (cacheable) {
+		gpu_shader_cache_save(shader->program, cache_key);
 	}
 
 #ifdef WITH_OPENSUBDIV
@@ -450,6 +547,11 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 #endif
 
 	return shader;
+}
+
+unsigned int GPU_shader_program(GPUShader *shader)
+{
+	return shader ? shader->program : 0;
 }
 
 void GPU_shader_bind(GPUShader *shader)

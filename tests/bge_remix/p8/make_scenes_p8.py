@@ -1159,6 +1159,228 @@ def make_shadows_bench(folder):
 
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# custom_shaders and custom_filters (P8 v2 Part A: users' old GLSL, T8.3)
+
+CS_SOURCES = {
+    "Matrices": (
+        """uniform vec4 color;
+varying vec3 n;
+void main()
+{
+	n = normalize(gl_NormalMatrix * gl_Normal);
+	gl_Position = gl_ProjectionMatrix * gl_ModelViewMatrix * gl_Vertex;
+}
+""",
+        """uniform vec4 color;
+varying vec3 n;
+void main()
+{
+	gl_FragColor = color * (0.4 + 0.6 * abs(n.z));
+}
+"""),
+    "Lighting": (
+        """#version 120
+varying vec3 normal, eye;
+void main()
+{
+	normal = gl_NormalMatrix * gl_Normal;
+	eye = vec3(gl_ModelViewMatrix * gl_Vertex);
+	gl_Position = ftransform();
+}
+""",
+        """#version 120
+varying vec3 normal, eye;
+void main()
+{
+	vec3 L = normalize(gl_LightSource[0].position.xyz - eye * gl_LightSource[0].position.w);
+	float d = max(dot(normalize(normal), L), 0.0);
+	gl_FragColor = vec4(gl_FrontMaterial.diffuse.rgb * gl_LightSource[0].diffuse.rgb * d + vec3(0.1), 1.0);
+}
+"""),
+    "Textured": (
+        """void main()
+{
+	gl_TexCoord[0] = gl_MultiTexCoord0;
+	gl_FrontColor = gl_Color;
+	gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex;
+}
+""",
+        """uniform sampler2D tex;
+void main()
+{
+	gl_FragColor = texture2D(tex, gl_TexCoord[0].st);
+}
+"""),
+    "Tangent": (
+        """attribute vec4 Tangent;
+varying vec4 t;
+void main()
+{
+	t = Tangent;
+	gl_Position = ftransform();
+}
+""",
+        """varying vec4 t;
+void main()
+{
+	gl_FragColor = vec4(abs(t.xyz), 1.0);
+}
+"""),
+    "Timed": (
+        """void main()
+{
+	gl_TexCoord[0] = gl_MultiTexCoord0;
+	gl_Position = ftransform();
+}
+""",
+        """uniform sampler2D texture;
+uniform float time;
+void main()
+{
+	vec4 sample = texture2D(texture, gl_TexCoord[0].st);
+	gl_FragColor = vec4(sample.rgb * (0.5 + 0.5 * sin(time)), 1.0);
+}
+"""),
+    "Broken": (
+        """void main()
+{
+	gl_Position = ftransform();
+}
+""",
+        """void main()
+{
+	gl_FragColor = vec4(1.0) * not_declared_anywhere;
+}
+"""),
+}
+
+CS_ORDER = ("Matrices", "Lighting", "Textured", "Tangent", "Timed", "Broken")
+
+CS_SCRIPT = r"""
+# BGE-Remix P8 v2 (T8.3): old-style custom shaders, set once, the time each frame
+import bge
+SOURCES = %s
+g = bge.logic.globalDict
+cont = bge.logic.getCurrentController()
+own = cont.owner
+key = "p8_cs_" + own.name
+n = g.get(key, 0) + 1
+g[key] = n
+mat = own.meshes[0].materials[0]
+sh = mat.getShader()
+if sh is not None:
+    if n == 1 and not sh.isValid():
+        vs, fs = SOURCES[own.name]
+        sh.setSource(vs, fs, True)
+        if own.name == "Matrices":
+            sh.setUniform4f("color", 0.9, 0.5, 0.2, 1.0)
+        if own.name in ("Textured", "Timed"):
+            sh.setSampler("tex" if own.name == "Textured" else "texture", 0)
+        if own.name == "Tangent":
+            sh.setAttrib(1)
+    if own.name == "Timed" and sh.isValid():
+        sh.setUniform1f("time", n * 0.05)
+"""
+
+
+def cs_row(scene, img):
+    """six cubes in a row, turned to show three faces; a sun lamp"""
+    rects = {}
+    for i, name in enumerate(CS_ORDER):
+        ma = classic("CS_" + name, (0.8, 0.8, 0.8))
+        if name in ("Textured", "Timed"):
+            p3.bi_slot(ma, img, color=True)
+        x = -5.0 + 2.0 * i
+        ob = p3.textured_cube(scene, name, 1.2, (x, 0.0, 0.0), ma)
+        ob.rotation_euler = (math.radians(25.0), math.radians(10.0), math.radians(35.0))
+        rects[name] = layout_rect(x, 0.0, 0.45)
+    la = bpy.data.lamps.new("Sun", 'SUN')
+    sun = bpy.data.objects.new("Sun", la)
+    sun.location = (0.0, -10.0, 5.0)
+    sun.rotation_euler = (math.radians(60.0), 0.0, math.radians(20.0))
+    scene.objects.link(sun)
+    return rects
+
+
+def make_custom_shaders(folder, E):
+    scene = base("CustomShaders")
+    img = p3.image("CS_checker", p3.checker)
+    rects = cs_row(scene, img)
+    body = CS_SCRIPT % repr({k: CS_SOURCES[k] for k in CS_ORDER})
+    for name in CS_ORDER:
+        logic(scene, bpy.data.objects[name], "cs_%s.py" % name, body)
+    save(scene, os.path.join(folder, "custom_shaders.blend"), physical=False)
+    E["custom_shaders"] = {"rects": rects, "order": list(CS_ORDER), "broken": "Broken"}
+
+
+CF_MODES = ("BLUR", "SHARPEN", "DILATION", "EROSION", "LAPLACIAN", "SOBEL", "PREWITT", "GRAYSCALE", "SEPIA",
+            "INVERT", "CUSTOMFILTER", "MOTIONBLUR")
+
+CF_CUSTOM = """uniform sampler2D bgl_RenderedTexture;
+uniform sampler2D bgl_DepthTexture;
+void main()
+{
+	vec4 c = texture2D(bgl_RenderedTexture, gl_TexCoord[0].st);
+	float d = texture2D(bgl_DepthTexture, gl_TexCoord[0].st).r;
+	gl_FragColor = vec4(c.rgb * 0.5 + vec3(d) * 0.5, 1.0);
+}
+"""
+
+CF_SCRIPT = r"""
+# BGE-Remix P8 v2 (T8.3): each 2D filter in turn, a screenshot of each
+import os
+import bge
+MODES = %s
+g = bge.logic.globalDict
+cont = bge.logic.getCurrentController()
+n = g.get("p8_cf", 0) + 1
+g["p8_cf"] = n
+k, step = divmod(n - 10, 10)
+if n >= 10 and k < len(MODES):
+    if step == 0:
+        cont.activate(cont.actuators["F_" + MODES[k]])
+    elif step == 6:
+        out = os.environ.get("BGE_REMIX_P8_FILTER_DIR")
+        if out:
+            bge.render.makeScreenshot(os.path.join(out, "filter_%%s.png" %% MODES[k].lower()))
+"""
+
+
+def make_custom_filters(folder, E):
+    scene = base("CustomFilters")
+    img = p3.image("CF_checker", p3.checker)
+    for i, name in enumerate(CS_ORDER):
+        ma = classic("CF_" + name, (0.2 + 0.13 * i, 0.9 - 0.12 * i, 0.4))
+        p3.bi_slot(ma, img, color=True)
+        x = -5.0 + 2.0 * i
+        ob = p3.textured_cube(scene, "F" + name, 1.2, (x, 0.0, 0.0), ma)
+        ob.rotation_euler = (math.radians(25.0), math.radians(10.0), math.radians(35.0))
+    la = bpy.data.lamps.new("Sun", 'SUN')
+    sun = bpy.data.objects.new("Sun", la)
+    sun.location = (0.0, -10.0, 5.0)
+    sun.rotation_euler = (math.radians(60.0), 0.0, math.radians(20.0))
+    scene.objects.link(sun)
+    driver = bpy.data.objects.new("FilterDriver", None)
+    scene.objects.link(driver)
+    logic(scene, driver, "cf_driver.py", CF_SCRIPT % repr(CF_MODES))
+    controller = driver.game.controllers[-1]
+    text = bpy.data.texts.new("cf_custom.glsl")
+    text.write(CF_CUSTOM)
+    for mode in CF_MODES:
+        bpy.ops.logic.actuator_add(type='FILTER_2D', name="F_" + mode, object=driver.name)
+        act = driver.game.actuators[-1]
+        act.mode = mode
+        act.filter_pass = 0
+        if mode == "CUSTOMFILTER":
+            act.glsl_shader = text
+        if mode == "MOTIONBLUR":
+            act.motion_blur_factor = 0.5
+        controller.link(actuator=act)
+    save(scene, os.path.join(folder, "custom_filters.blend"), physical=False)
+    E["custom_filters"] = {"modes": [m.lower() for m in CF_MODES]}
+
+
 def main():
     folder = out_dir()
     E = {"width": WIDTH, "height": HEIGHT, "failed": {}}
@@ -1177,7 +1399,10 @@ def main():
                   ("lamps", lambda: make_lamps(folder, E)),
                   ("shadows", lambda: make_shadows(folder, E)),
                   ("shadows_far", lambda: make_shadows_far(folder, E)),
-                  ("shadows_bench", lambda: make_shadows_bench(folder))]
+                  ("shadows_bench", lambda: make_shadows_bench(folder)),
+                  # P8 v2 Part A: users' old GLSL
+                  ("custom_shaders", lambda: make_custom_shaders(folder, E)),
+                  ("custom_filters", lambda: make_custom_filters(folder, E))]
         target = os.path.join(folder, "p8_expected.json")
     for name, make in makers:
         try:

@@ -22,6 +22,7 @@
  *  \ingroup ketsji
  */
 
+#include "GPU_translate.h"
 #include "GPU_glew.h"
 
 #include <iostream>
@@ -324,6 +325,19 @@ bool BL_Shader::LinkProgram()
 		return false;
 	}
 
+	/* BGE-Remix P8.3: the shader translated to GLSL 4.50; the original is
+	 * built below when the translation does not build */
+	{
+		const unsigned int translated = GPU_glsl_translate_program(
+		        vertProg[0] ? vertProg : NULL, fragProg[0] ? fragProg : NULL, "custom shader");
+		if (translated) {
+			mShader = translated;
+			mOk = 1;
+			mError = 0;
+			return true;
+		}
+	}
+
 	if (vertProg[0] != 0) {
 		// -- vertex shader ------------------
 		tmpVert = glCreateShaderObjectARB(GL_VERTEX_SHADER_ARB);
@@ -618,7 +632,7 @@ void BL_Shader::Update(const RAS_MeshSlot &ms, RAS_IRasterizer *rasty)
 int BL_Shader::GetAttribLocation(const char *name)
 {
 	if (GLEW_ARB_fragment_shader && GLEW_ARB_vertex_shader && GLEW_ARB_shader_objects) {
-		return glGetAttribLocationARB(mShader, name);
+		return GPU_glsl_attrib_location(mShader, name);  /* BGE-Remix P8.3 */
 	}
 
 	return -1;
@@ -627,7 +641,8 @@ int BL_Shader::GetAttribLocation(const char *name)
 void BL_Shader::BindAttribute(const char *attr, int loc)
 {
 	if (GLEW_ARB_fragment_shader && GLEW_ARB_vertex_shader && GLEW_ARB_shader_objects) {
-		glBindAttribLocationARB(mShader, loc, attr);
+		char buf[256];  /* BGE-Remix P8.3: the translated name */
+		glBindAttribLocationARB(mShader, loc, GPU_glsl_translated_name(attr, buf, sizeof(buf)));
 	}
 }
 
@@ -635,7 +650,7 @@ int BL_Shader::GetUniformLocation(const char *name)
 {
 	if (GLEW_ARB_fragment_shader && GLEW_ARB_vertex_shader && GLEW_ARB_shader_objects) {
 		MT_assert(mShader != 0);
-		int location = glGetUniformLocationARB(mShader, name);
+		int location = GPU_glsl_uniform_location(mShader, name);  /* BGE-Remix P8.3 */
 
 		if (location == -1) {
 			spit("Invalid uniform value: " << name << ".");

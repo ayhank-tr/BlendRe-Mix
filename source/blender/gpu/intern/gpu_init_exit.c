@@ -32,7 +32,12 @@
 #include "BLI_sys_types.h"
 #include "GPU_init_exit.h"  /* interface */
 
+#include <stdlib.h>
+
 #include "BKE_global.h"
+
+#include "GPU_material.h"
+#include "GPU_shader.h"
 
 #include "intern/gpu_codegen.h"
 #include "intern/gpu_private.h"
@@ -52,6 +57,9 @@ void GPU_init(void)
 
 	initialized = true;
 
+	/* BGE-Remix P8.1: OpenGL 4.5 or a clear message; the tiers; driver messages */
+	gpu_glcheck_init();
+
 	gpu_extensions_init(); /* must come first */
 
 	gpu_codegen_init();
@@ -59,6 +67,17 @@ void GPU_init(void)
 	if (G.debug & G_DEBUG_GPU)
 		gpu_debug_init();
 
+	/* BGE-Remix P8.2, P8.3: the drawing layer and the shader cache */
+	gpu_layer_init();
+	GPU_shader_cache_init();
+
+	/* BGE-Remix P8.2: the layer's self-test (T8.1) */
+	{
+		const char *dir = getenv("BGE_REMIX_GL_SELFTEST");
+		if (dir && dir[0]) {
+			GPU_layer_selftest(dir);
+		}
+	}
 }
 
 
@@ -67,6 +86,13 @@ void GPU_exit(void)
 {
 	if (G.debug & G_DEBUG_GPU)
 		gpu_debug_exit();
+
+	/* BGE-Remix P8.1-P8.3 */
+	GPU_shader_cache_exit();
+	gpu_layer_exit();
+	GPU_shared_buffers_free();
+	gpu_glcheck_exit();
+
 	gpu_codegen_exit();
 
 	gpu_extensions_exit(); /* must come last */

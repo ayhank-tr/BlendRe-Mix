@@ -244,6 +244,8 @@ GPUMaterial *GPU_material_matcap(struct Scene *scene, struct Material *ma, bool 
 void GPU_material_free(struct ListBase *gpumaterial);
 
 void GPU_materials_free(void);
+/* BGE-Remix P8.3: the shared lamp and world buffers (at exit) */
+void GPU_shared_buffers_free(void);
 
 /* BGE-Remix P8 */
 /* the material's shader was built (a material whose shader failed is kept,

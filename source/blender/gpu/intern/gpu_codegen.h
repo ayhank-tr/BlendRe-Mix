@@ -178,6 +178,10 @@ GPUPass *GPU_generate_pass(ListBase *nodes, struct GPUNodeLink *outlink,
 
 struct GPUShader *GPU_pass_shader(GPUPass *pass);
 
+/* BGE-Remix P8.3 (gpu_material.c): a lamp's or the world's dynamic value as
+ * an expression reading the shared buffers; false for any other value */
+bool GPU_shared_uniform_expr(const float *ptr, int type, char *r_expr, size_t maxlen);
+
 void GPU_pass_bind(GPUPass *pass, double time, int mipmap);
 void GPU_pass_update_uniforms(GPUPass *pass);
 void GPU_pass_unbind(GPUPass *pass);

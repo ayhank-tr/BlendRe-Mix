@@ -47,6 +47,7 @@ set(INC_SYS
 
 set(SRC
 	intern/gpu_basic_shader.c
+	intern/gpu_builtin.c
 	intern/gpu_buffers.c
 	intern/gpu_codegen.c
 	intern/gpu_compositing.c
@@ -54,13 +55,18 @@ set(SRC
 	intern/gpu_draw.c
 	intern/gpu_extensions.c
 	intern/gpu_framebuffer.c
+	intern/gpu_glcheck.c
 	intern/gpu_init_exit.c
+	intern/gpu_layer.c
 	intern/gpu_material.c
 	intern/gpu_select.c
 	intern/gpu_select_pick.c
 	intern/gpu_select_sample_query.c
+	intern/gpu_selftest.c
 	intern/gpu_shader.c
+	intern/gpu_shader_cache.c
 	intern/gpu_texture.c
+	intern/gpu_translate.c
 
 	shaders/gpu_shader_fx_lib.glsl
 	shaders/gpu_shader_fx_ssao_frag.glsl
@@ -93,11 +99,14 @@ set(SRC
 	GPU_extensions.h
 	GPU_framebuffer.h
 	GPU_glew.h
+	GPU_glcheck.h
 	GPU_init_exit.h
+	GPU_layer.h
 	GPU_material.h
 	GPU_select.h
 	GPU_shader.h
 	GPU_texture.h
+	GPU_translate.h
 	intern/gpu_codegen.h
 	intern/gpu_private.h
 	intern/gpu_select_private.h

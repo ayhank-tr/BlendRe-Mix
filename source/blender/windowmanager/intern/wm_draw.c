@@ -56,6 +56,8 @@
 #include "ED_screen.h"
 
 #include "GPU_draw.h"
+#include "GPU_glcheck.h"
+#include "GPU_layer.h"
 #include "GPU_extensions.h"
 #include "GPU_glew.h"
 #include "GPU_basic_shader.h"
@@ -911,6 +913,11 @@ void wm_draw_update(bContext *C)
 #endif
 
 	GPU_free_unused_buffers();
+
+	/* BGE-Remix P8.1: a driver reset is reported once */
+	if (GPU_reset_check()) {
+		GPU_reset_dialog("The graphics driver was reset. Save your work and restart Blender.");
+	}
 	
 	for (win = wm->windows.first; win; win = win->next) {
 #ifdef WIN32
@@ -969,6 +976,9 @@ void wm_draw_update(bContext *C)
 			CTX_wm_window_set(C, NULL);
 		}
 	}
+
+	/* BGE-Remix P8.2: the streaming buffer's frame */
+	GPU_stream_frame_end();
 }
 
 void wm_draw_data_free(wmWindow *win)

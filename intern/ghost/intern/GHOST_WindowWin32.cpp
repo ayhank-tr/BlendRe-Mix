@@ -32,6 +32,7 @@
 #define _USE_MATH_DEFINES
 
 #include "GHOST_WindowWin32.h"
+#include <cstdlib>
 #include "GHOST_SystemWin32.h"
 #include "GHOST_DropTargetWin32.h"
 #include "GHOST_ContextNone.h"
@@ -636,21 +637,37 @@ GHOST_Context *GHOST_WindowWin32::newDrawingContext(GHOST_TDrawingContextType ty
 		        GHOST_OPENGL_WGL_CONTEXT_FLAGS,
 		        GHOST_OPENGL_WGL_RESET_NOTIFICATION_STRATEGY);
 #elif defined(WITH_GL_PROFILE_COMPAT)
+		/* BGE-Remix P8.1: OpenGL 4.5 (compatibility profile while the old
+		 * drawing code remains), a debug context in test runs
+		 * (BGE_REMIX_GL_DEBUG=1), driver resets reported. Without 4.5 the old
+		 * request is made, so Blender can say which version the card has. */
+		const char *gl_debug_env = getenv("BGE_REMIX_GL_DEBUG");
+		const bool gl_debug = m_debug_context || (gl_debug_env && gl_debug_env[0] == '1');
+		{
+			GHOST_Context *context45 = new GHOST_ContextWGL(
+			        m_wantStereoVisual,
+			        m_wantAlphaBackground,
+			        m_wantNumOfAASamples,
+			        m_hWnd,
+			        m_hDC,
+			        WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB,
+			        4, 5,
+			        (gl_debug ? WGL_CONTEXT_DEBUG_BIT_ARB : 0),
+			        WGL_LOSE_CONTEXT_ON_RESET_ARB);
+			if (context45->initializeDrawingContext())
+				return context45;
+			delete context45;
+			fprintf(stderr, "BGE-Remix: no OpenGL 4.5 context; asking for the driver's default\n");
+		}
 		GHOST_Context *context = new GHOST_ContextWGL(
 		        m_wantStereoVisual,
 		        m_wantAlphaBackground,
 		        m_wantNumOfAASamples,
 		        m_hWnd,
 		        m_hDC,
-#if 1
 		        0, // profile bit
 		        2, 1, // GL version requested
-#else
-		        // switch to this for Blender 2.8 development
-		        WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB,
-		        3, 2,
-#endif
-		        (m_debug_context ? WGL_CONTEXT_DEBUG_BIT_ARB : 0),
+		        (gl_debug ? WGL_CONTEXT_DEBUG_BIT_ARB : 0),
 		        GHOST_OPENGL_WGL_RESET_NOTIFICATION_STRATEGY);
 #else
 #  error

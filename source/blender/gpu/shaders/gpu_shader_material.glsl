@@ -177,7 +177,7 @@ void geom(
         out vec3 normal, out vec4 vcol, out float vcol_alpha, out float frontback)
 {
 	local = co;
-	view = (gl_ProjectionMatrix[3][3] == 0.0) ? normalize(local) : vec3(0.0, 0.0, -1.0);
+	view = (bge_proj[3][3] == 0.0) ? normalize(local) : vec3(0.0, 0.0, -1.0);
 	global = (viewinvmat * vec4(local, 1.0)).xyz;
 	orco = attorco;
 	uv_attribute(attuv, uv);
@@ -483,9 +483,9 @@ void normal_new_shading(vec3 dir, vec3 nor, out vec3 outnor, out float outdot)
 
 void curves_vec(float fac, vec3 vec, sampler2D curvemap, out vec3 outvec)
 {
-	outvec.x = texture2D(curvemap, vec2((vec.x + 1.0) * 0.5, 0.0)).x;
-	outvec.y = texture2D(curvemap, vec2((vec.y + 1.0) * 0.5, 0.0)).y;
-	outvec.z = texture2D(curvemap, vec2((vec.z + 1.0) * 0.5, 0.0)).z;
+	outvec.x = texture(curvemap, vec2((vec.x + 1.0) * 0.5, 0.0)).x;
+	outvec.y = texture(curvemap, vec2((vec.y + 1.0) * 0.5, 0.0)).y;
+	outvec.z = texture(curvemap, vec2((vec.z + 1.0) * 0.5, 0.0)).z;
 
 	if (fac != 1.0)
 		outvec = (outvec * fac) + (vec * (1.0 - fac));
@@ -494,9 +494,9 @@ void curves_vec(float fac, vec3 vec, sampler2D curvemap, out vec3 outvec)
 
 void curves_rgb(float fac, vec4 col, sampler2D curvemap, out vec4 outcol)
 {
-	outcol.r = texture2D(curvemap, vec2(texture2D(curvemap, vec2(col.r, 0.0)).a, 0.0)).r;
-	outcol.g = texture2D(curvemap, vec2(texture2D(curvemap, vec2(col.g, 0.0)).a, 0.0)).g;
-	outcol.b = texture2D(curvemap, vec2(texture2D(curvemap, vec2(col.b, 0.0)).a, 0.0)).b;
+	outcol.r = texture(curvemap, vec2(texture(curvemap, vec2(col.r, 0.0)).a, 0.0)).r;
+	outcol.g = texture(curvemap, vec2(texture(curvemap, vec2(col.g, 0.0)).a, 0.0)).g;
+	outcol.b = texture(curvemap, vec2(texture(curvemap, vec2(col.b, 0.0)).a, 0.0)).b;
 
 	if (fac != 1.0)
 		outcol = (outcol * fac) + (col * (1.0 - fac));
@@ -816,7 +816,7 @@ void mix_linear(float fac, vec4 col1, vec4 col2, out vec4 outcol)
 
 void valtorgb(float fac, sampler2D colormap, out vec4 outcol, out float outalpha)
 {
-	outcol = texture2D(colormap, vec2(fac, 0.0));
+	outcol = texture(colormap, vec2(fac, 0.0));
 	outalpha = outcol.a;
 }
 
@@ -937,7 +937,7 @@ void texture_wood_sin(vec3 vec, out float value, out vec4 color, out vec3 normal
 
 void texture_image(vec3 vec, sampler2D ima, out float value, out vec4 color, out vec3 normal)
 {
-	color = texture2D(ima, (vec.xy + vec2(1.0, 1.0)) * 0.5);
+	color = texture(ima, (vec.xy + vec2(1.0, 1.0)) * 0.5);
 	value = color.a;
 
 	normal.x = 2.0 * (color.r - 0.5);
@@ -1357,14 +1357,14 @@ vec3 mtex_2d_mapping(vec3 vec)
 
 void mtex_cube_map(vec3 co, samplerCube ima, out float value, out vec4 color)
 {
-	color = textureCube(ima, co);
+	color = texture(ima, co);
 	value = 1.0;
 }
 
 void mtex_cube_map_refl_from_refldir(
         samplerCube ima, vec3 reflecteddirection, out float value, out vec4 color)
 {
-        color = textureCube(ima, reflecteddirection);
+        color = texture(ima, reflecteddirection);
         value = color.a;
 }
 
@@ -1375,13 +1375,13 @@ void mtex_cube_map_refl(
 	vec3 viewdirection = vec3(viewmatrixinverse * vec4(vp, 0.0));
 	vec3 normaldirection = normalize(vec3(vec4(vn, 0.0) * viewmatrix));
 	vec3 reflecteddirection = reflect(viewdirection, normaldirection);
-	color = textureCube(ima, reflecteddirection);
+	color = texture(ima, reflecteddirection);
 	value = 1.0;
 }
 
 void mtex_image(vec3 texco, sampler2D ima, out float value, out vec4 color)
 {
-	color = texture2D(ima, texco.xy);
+	color = texture(ima, texco.xy);
 	value = 1.0;
 }
 
@@ -1392,7 +1392,7 @@ void mtex_normal(vec3 texco, sampler2D ima, out vec3 normal)
 	// It needs to be done because in Blender
 	// the normal used points inward.
 	// Should this ever change this negate must be removed.
-	vec4 color = texture2D(ima, texco.xy);
+	vec4 color = texture(ima, texco.xy);
 	normal = 2.0 * (vec3(-color.r, color.g, color.b) - vec3(-0.5, 0.5, 0.5));
 }
 
@@ -1420,8 +1420,8 @@ void mtex_bump_init_objspace(
         out float fPrevMagnitude_out, out vec3 vNacc_out,
         out vec3 vR1, out vec3 vR2, out float fDet)
 {
-	mat3 obj2view = to_mat3(gl_ModelViewMatrix);
-	mat3 view2obj = to_mat3(gl_ModelViewMatrixInverse);
+	mat3 obj2view = to_mat3(bge_mv);
+	mat3 view2obj = to_mat3(bge_mvinv);
 
 	vec3 vSigmaS = view2obj * dFdx(surf_pos);
 	vec3 vSigmaT = view2obj * dFdy(surf_pos);
@@ -1488,9 +1488,9 @@ void mtex_bump_tap3(
 	vec2 STul = texco.xy + dFdy(texco.xy);
 
 	float Hll, Hlr, Hul;
-	rgbtobw(texture2D(ima, STll), Hll);
-	rgbtobw(texture2D(ima, STlr), Hlr);
-	rgbtobw(texture2D(ima, STul), Hul);
+	rgbtobw(texture(ima, STll), Hll);
+	rgbtobw(texture(ima, STlr), Hlr);
+	rgbtobw(texture(ima, STul), Hul);
 
 	dBs = hScale * (Hlr - Hll);
 	dBt = hScale * (Hul - Hll);
@@ -1515,10 +1515,10 @@ void mtex_bump_bicubic(
 	vec2 STd = texco.xy - 0.5 * TexDy;
 	vec2 STu = texco.xy + 0.5 * TexDy;
 
-	rgbtobw(texture2D(ima, STl), Hl);
-	rgbtobw(texture2D(ima, STr), Hr);
-	rgbtobw(texture2D(ima, STd), Hd);
-	rgbtobw(texture2D(ima, STu), Hu);
+	rgbtobw(texture(ima, STl), Hl);
+	rgbtobw(texture(ima, STr), Hr);
+	rgbtobw(texture(ima, STd), Hd);
+	rgbtobw(texture(ima, STu), Hu);
 
 	vec2 dHdxy = vec2(Hr - Hl, Hu - Hd);
 	float fBlend = clamp(1.0 - textureQueryLOD(ima, texco.xy).x, 0.0, 1.0);
@@ -1604,11 +1604,11 @@ void mtex_bump_tap5(
 	vec2 STu = texco.xy + 0.5 * TexDy;
 
 	float Hc, Hl, Hr, Hd, Hu;
-	rgbtobw(texture2D(ima, STc), Hc);
-	rgbtobw(texture2D(ima, STl), Hl);
-	rgbtobw(texture2D(ima, STr), Hr);
-	rgbtobw(texture2D(ima, STd), Hd);
-	rgbtobw(texture2D(ima, STu), Hu);
+	rgbtobw(texture(ima, STc), Hc);
+	rgbtobw(texture(ima, STl), Hl);
+	rgbtobw(texture(ima, STr), Hr);
+	rgbtobw(texture(ima, STd), Hd);
+	rgbtobw(texture(ima, STu), Hu);
 
 	dBs = hScale * (Hr - Hl);
 	dBt = hScale * (Hu - Hd);
@@ -1625,7 +1625,7 @@ void mtex_bump_deriv(
 	// this variant using a derivative map is described here
 	// http://mmikkelsen3d.blogspot.com/2011/07/derivative-maps.html
 	vec2 dim = vec2(ima_x, ima_y);
-	vec2 dBduv = hScale * dim * (2.0 * texture2D(ima, texco.xy).xy - 1.0);
+	vec2 dBduv = hScale * dim * (2.0 * texture(ima, texco.xy).xy - 1.0);
 
 	dBs = dBduv.x * TexDx.x + s * dBduv.y * TexDx.y;
 	dBt = dBduv.x * TexDy.x + s * dBduv.y * TexDy.y;
@@ -1677,7 +1677,7 @@ void mtex_nspace_world(mat4 viewmat, vec3 texnormal, out vec3 outnormal)
 
 void mtex_nspace_object(vec3 texnormal, out vec3 outnormal)
 {
-	outnormal = normalize(gl_NormalMatrix * texnormal);
+	outnormal = normalize(bge_normalmat * texnormal);
 }
 
 void mtex_blend_normal(float norfac, vec3 normal, vec3 newnormal, out vec3 outnormal)
@@ -1734,7 +1734,7 @@ void lamp_falloff_invcoefficients(float coeff_const, float coeff_lin, float coef
 
 void lamp_falloff_curve(float lampdist, sampler2D curvemap, float dist, out float visifac)
 {
-	visifac = texture2D(curvemap, vec2(dist / lampdist, 0.0)).x;
+	visifac = texture(curvemap, vec2(dist / lampdist, 0.0)).x;
 }
 
 void lamp_visibility_sphere(float lampdist, float dist, float visifac, out float outvisifac)
@@ -1801,7 +1801,7 @@ void lamp_visibility_clamp(float visifac, out float outvisifac)
 void world_paper_view(vec3 vec, out vec3 outvec)
 {
 	vec3 nvec = normalize(vec);
-	outvec = (gl_ProjectionMatrix[3][3] == 0.0) ? vec3(nvec.x, 0.0, nvec.y) : vec3(0.0, 0.0, -1.0);
+	outvec = (bge_proj[3][3] == 0.0) ? vec3(nvec.x, 0.0, nvec.y) : vec3(0.0, 0.0, -1.0);
 }
 
 void world_zen_mapping(vec3 view, float zenup, float zendown, out float zenfac)
@@ -1835,7 +1835,7 @@ void world_blend(vec3 vec, out float blend)
 void shade_view(vec3 co, out vec3 view)
 {
 	/* handle perspective/orthographic */
-	view = (gl_ProjectionMatrix[3][3] == 0.0) ? normalize(co) : vec3(0.0, 0.0, -1.0);
+	view = (bge_proj[3][3] == 0.0) ? normalize(co) : vec3(0.0, 0.0, -1.0);
 }
 
 void shade_tangent_v(vec3 lv, vec3 tang, out vec3 vn)
@@ -2263,7 +2263,7 @@ void test_shadowbuf(
 		co.z -= shadowbias * co.w;
 
 		if (co.w > 0.0 && co.x > 0.0 && co.x / co.w < 1.0 && co.y > 0.0 && co.y / co.w < 1.0)
-			result = shadow2DProj(shadowmap, co).x;
+			result = textureProj(shadowmap, co);
 		else
 			result = 1.0;
 	}
@@ -2279,7 +2279,7 @@ void test_shadowbuf_vsm(
 	else {
 		vec4 co = shadowpersmat * vec4(rco, 1.0);
 		if (co.w > 0.0 && co.x > 0.0 && co.x / co.w < 1.0 && co.y > 0.0 && co.y / co.w < 1.0) {
-			vec2 moments = texture2DProj(shadowmap, co).rg;
+			vec2 moments = textureProj(shadowmap, co).rg;
 			float dist = co.z / co.w;
 			float p = 0.0;
 
@@ -2389,7 +2389,7 @@ float shadow_soft(
 	float blockers = 0.0, nblock = 0.0;
 	for (float i = 0.0; i < N; i += 1.0) {
 		vec2 o = shadow_disk(i, N, rot) * search;
-		float d = texture2D(map, tile.xy + clamp(uv + o, lo, hi) * tile.zw).r;
+		float d = texture(map, tile.xy + clamp(uv + o, lo, hi) * tile.zw).r;
 		float zb = shadow_linear(d, clip);
 		/* nothing drawn there (beyond the lamp's Clip End): no blocker */
 		if (d < 0.99999 && zb < zr - bias - slope * length(o) / uvw) {
@@ -2407,7 +2407,7 @@ float shadow_soft(
 	float lit = 0.0;
 	for (float i = 0.0; i < N; i += 1.0) {
 		vec2 o = shadow_disk(i, N, rot + 1.7) * radius;
-		float d = texture2D(map, tile.xy + clamp(uv + o, lo, hi) * tile.zw).r;
+		float d = texture(map, tile.xy + clamp(uv + o, lo, hi) * tile.zw).r;
 		if (d >= 0.99999 || shadow_linear(d, clip) >= zr - bias - slope * length(o) / uvw)
 			lit += 1.0;
 	}
@@ -2546,9 +2546,9 @@ void shadow_sun_soft(
 float shadow_view_z(float d)
 {
 	float ndc = d * 2.0 - 1.0;
-	if (gl_ProjectionMatrix[2][3] == 0.0)
-		return (ndc - gl_ProjectionMatrix[3][2]) / gl_ProjectionMatrix[2][2];
-	return -gl_ProjectionMatrix[3][2] / (ndc + gl_ProjectionMatrix[2][2]);
+	if (bge_proj[2][3] == 0.0)
+		return (ndc - bge_proj[3][2]) / bge_proj[2][2];
+	return -bge_proj[3][2] / (ndc + bge_proj[2][2]);
 }
 
 /* contact shadows: a few steps toward the light through the scene's depth.
@@ -2563,13 +2563,13 @@ void shadow_contact(vec3 rco, vec3 lv, sampler2D depthmap, vec4 contact, float o
 	float jitter = fract(shadow_noise() * 0.1591549);
 	for (float i = 0.0; i < N; i += 1.0) {
 		vec3 p = rco - lv * (contact.x * (i + jitter) / N);
-		vec4 c = gl_ProjectionMatrix * vec4(p, 1.0);
+		vec4 c = bge_proj * vec4(p, 1.0);
 		if (c.w <= 0.0)
 			break;
 		vec2 ndc = c.xy / c.w;
 		if (abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0)
 			break;
-		float dz = shadow_view_z(texture2D(depthmap, ndc * 0.5 + 0.5).r) - p.z;
+		float dz = shadow_view_z(texture(depthmap, ndc * 0.5 + 0.5).r) - p.z;
 		if (dz > contact.w && dz < contact.y) {
 			result = 0.0;
 			return;
@@ -2588,7 +2588,7 @@ void shade_light_texture(vec3 rco, sampler2D cookie, mat4 shadowpersmat, out vec
 
 	vec4 co = shadowpersmat * vec4(rco, 1.0);
 
-	result = texture2DProj(cookie, co);
+	result = textureProj(cookie, co);
 }
 
 /* BGE-Remix P8.9: a lamp texture's coordinates: View across the spot's cone
@@ -2616,7 +2616,7 @@ void shade_mist_factor(
 	if (enable == 1.0) {
 		float fac, zcor;
 
-		zcor = (gl_ProjectionMatrix[3][3] == 0.0) ? length(co) : -co[2];
+		zcor = (bge_proj[3][3] == 0.0) ? length(co) : -co[2];
 
 		fac = clamp((zcor - miststa) / mistdist, 0.0, 1.0);
 		if (misttype == 0.0) fac *= fac;
@@ -2845,8 +2845,8 @@ void node_bsdf_diffuse(vec4 color, float roughness, vec3 N, out vec4 result)
 
 	/* directional lights */
 	for (int i = 0; i < NUM_LIGHTS; i++) {
-		vec3 light_position = gl_LightSource[i].position.xyz;
-		vec3 light_diffuse = gl_LightSource[i].diffuse.rgb;
+		vec3 light_position = bge_lightsource[i].position.xyz;
+		vec3 light_diffuse = bge_lightsource[i].diffuse.rgb;
 
 		float bsdf = max(dot(N, light_position), 0.0);
 		L += light_diffuse * bsdf;
@@ -2862,10 +2862,10 @@ void node_bsdf_glossy(vec4 color, float roughness, vec3 N, out vec4 result)
 
 	/* directional lights */
 	for (int i = 0; i < NUM_LIGHTS; i++) {
-		vec3 light_position = gl_LightSource[i].position.xyz;
-		vec3 H = gl_LightSource[i].halfVector.xyz;
-		vec3 light_diffuse = gl_LightSource[i].diffuse.rgb;
-		vec3 light_specular = gl_LightSource[i].specular.rgb;
+		vec3 light_position = bge_lightsource[i].position.xyz;
+		vec3 H = bge_lightsource[i].halfVector.xyz;
+		vec3 light_diffuse = bge_lightsource[i].diffuse.rgb;
+		vec3 light_specular = bge_lightsource[i].specular.rgb;
 
 		/* we mix in some diffuse so low roughness still shows up */
 		float bsdf = 0.5 * pow(max(dot(N, H), 0.0), 1.0 / roughness);
@@ -2904,7 +2904,7 @@ void node_bsdf_principled(vec4 base_color, float subsurface, vec3 subsurface_rad
 	float eta = (2.0 / (1.0 - sqrt(0.08 * specular))) - 1.0;
 
 	/* set the viewing vector */
-	vec3 V = (gl_ProjectionMatrix[3][3] == 0.0) ? -normalize(I) : vec3(0.0, 0.0, 1.0);
+	vec3 V = (bge_proj[3][3] == 0.0) ? -normalize(I) : vec3(0.0, 0.0, 1.0);
 
 	/* get the tangent */
 	vec3 Tangent = T;
@@ -2933,13 +2933,13 @@ void node_bsdf_principled(vec4 base_color, float subsurface, vec3 subsurface_rad
 
 	/* directional lights */
 	for (int i = 0; i < NUM_LIGHTS; i++) {
-		vec3 light_position_world = gl_LightSource[i].position.xyz;
+		vec3 light_position_world = bge_lightsource[i].position.xyz;
 		vec3 light_position = normalize(light_position_world);
 
 		vec3 H = normalize(light_position + V);
 
-		vec3 light_diffuse = gl_LightSource[i].diffuse.rgb;
-		vec3 light_specular = gl_LightSource[i].specular.rgb;
+		vec3 light_diffuse = bge_lightsource[i].diffuse.rgb;
+		vec3 light_specular = bge_lightsource[i].specular.rgb;
 
 		float NdotL = dot(N, light_position);
 		float NdotV = dot(N, V);
@@ -3064,11 +3064,11 @@ void node_emission(vec4 color, float strength, vec3 N, out vec4 result)
 
 void background_transform_to_world(vec3 viewvec, out vec3 worldvec)
 {
-	vec4 v = (gl_ProjectionMatrix[3][3] == 0.0) ? vec4(viewvec, 1.0) : vec4(0.0, 0.0, 1.0, 1.0);
-	vec4 co_homogenous = (gl_ProjectionMatrixInverse * v);
+	vec4 v = (bge_proj[3][3] == 0.0) ? vec4(viewvec, 1.0) : vec4(0.0, 0.0, 1.0, 1.0);
+	vec4 co_homogenous = (bge_projinv * v);
 
 	vec4 co = vec4(co_homogenous.xyz / co_homogenous.w, 0.0);
-	worldvec = (gl_ModelViewMatrixInverse * co).xyz;
+	worldvec = (bge_mvinv * co).xyz;
 }
 
 void node_background(vec4 color, float strength, vec3 N, out vec4 result)
@@ -3093,7 +3093,7 @@ void node_add_shader(vec4 shader1, vec4 shader2, out vec4 shader)
 void node_fresnel(float ior, vec3 N, vec3 I, out float result)
 {
 	/* handle perspective/orthographic */
-	vec3 I_view = (gl_ProjectionMatrix[3][3] == 0.0) ? normalize(I) : vec3(0.0, 0.0, -1.0);
+	vec3 I_view = (bge_proj[3][3] == 0.0) ? normalize(I) : vec3(0.0, 0.0, -1.0);
 
 	float eta = max(ior, 0.00001);
 	result = fresnel_dielectric(I_view, N, (gl_FrontFacing) ? eta : 1.0 / eta);
@@ -3105,7 +3105,7 @@ void node_layer_weight(float blend, vec3 N, vec3 I, out float fresnel, out float
 {
 	/* fresnel */
 	float eta = max(1.0 - blend, 0.00001);
-	vec3 I_view = (gl_ProjectionMatrix[3][3] == 0.0) ? normalize(I) : vec3(0.0, 0.0, -1.0);
+	vec3 I_view = (bge_proj[3][3] == 0.0) ? normalize(I) : vec3(0.0, 0.0, -1.0);
 
 	fresnel = fresnel_dielectric(I_view, N, (gl_FrontFacing) ? 1.0 / eta : eta);
 
@@ -3159,7 +3159,7 @@ void node_geometry(
 	true_normal = normal;
 
 	/* handle perspective/orthographic */
-	vec3 I_view = (gl_ProjectionMatrix[3][3] == 0.0) ? normalize(I) : vec3(0.0, 0.0, -1.0);
+	vec3 I_view = (bge_proj[3][3] == 0.0) ? normalize(I) : vec3(0.0, 0.0, -1.0);
 	incoming = -(toworld * vec4(I_view, 0.0)).xyz;
 
 	parametric = vec3(0.0);
@@ -3178,7 +3178,7 @@ void node_tex_coord(
 	uv = attr_uv;
 	object = (obinvmat * (viewinvmat * vec4(I, 1.0))).xyz;
 	camera = vec3(I.xy, -I.z);
-	vec4 projvec = gl_ProjectionMatrix * vec4(I, 1.0);
+	vec4 projvec = bge_proj * vec4(I, 1.0);
 	window = vec3(mtex_2d_mapping(projvec.xyz / projvec.w).xy * camerafac.xy + camerafac.zw, 0.0);
 
 	vec3 shade_I;
@@ -3193,13 +3193,13 @@ void node_tex_coord_background(
         out vec3 generated, out vec3 normal, out vec3 uv, out vec3 object,
         out vec3 camera, out vec3 window, out vec3 reflection)
 {
-	vec4 v = (gl_ProjectionMatrix[3][3] == 0.0) ? vec4(I, 1.0) : vec4(0.0, 0.0, 1.0, 1.0);
-	vec4 co_homogenous = (gl_ProjectionMatrixInverse * v);
+	vec4 v = (bge_proj[3][3] == 0.0) ? vec4(I, 1.0) : vec4(0.0, 0.0, 1.0, 1.0);
+	vec4 co_homogenous = (bge_projinv * v);
 
 	vec4 co = vec4(co_homogenous.xyz / co_homogenous.w, 0.0);
 
 	co = normalize(co);
-	vec3 coords = (gl_ModelViewMatrixInverse * co).xyz;
+	vec3 coords = (bge_mvinv * co).xyz;
 
 	generated = coords;
 	normal = -coords;
@@ -3207,7 +3207,7 @@ void node_tex_coord_background(
 	object = coords;
 
 	camera = vec3(co.xy, -co.z);
-	window = (gl_ProjectionMatrix[3][3] == 0.0) ?
+	window = (bge_proj[3][3] == 0.0) ?
 	         vec3(mtex_2d_mapping(I).xy * camerafac.xy + camerafac.zw, 0.0) :
 	         vec3(vec2(0.5) * camerafac.xy + camerafac.zw, 0.0);
 
@@ -3362,7 +3362,7 @@ void node_tex_environment_equirectangular(vec3 co, sampler2D ima, out vec4 color
 	float u = -atan(nco.y, nco.x) / (2.0 * M_PI) + 0.5;
 	float v = atan(nco.z, hypot(nco.x, nco.y)) / M_PI + 0.5;
 
-	color = texture2D(ima, vec2(u, v));
+	color = texture(ima, vec2(u, v));
 }
 
 void node_tex_environment_mirror_ball(vec3 co, sampler2D ima, out vec4 color)
@@ -3378,7 +3378,7 @@ void node_tex_environment_mirror_ball(vec3 co, sampler2D ima, out vec4 color)
 	float u = 0.5 * (nco.x + 1.0);
 	float v = 0.5 * (nco.z + 1.0);
 
-	color = texture2D(ima, vec2(u, v));
+	color = texture(ima, vec2(u, v));
 }
 
 void node_tex_environment_empty(vec3 co, out vec4 color)
@@ -3388,7 +3388,7 @@ void node_tex_environment_empty(vec3 co, out vec4 color)
 
 void node_tex_image(vec3 co, sampler2D ima, out vec4 color, out float alpha)
 {
-	color = texture2D(ima, co.xy);
+	color = texture(ima, co.xy);
 	alpha = color.a;
 }
 
@@ -3456,13 +3456,13 @@ void node_tex_image_box(vec3 texco,
 	}
 	color = vec4(0);
 	if (weight.x > 0.0) {
-		color += weight.x * texture2D(ima, texco.yz);
+		color += weight.x * texture(ima, texco.yz);
 	}
 	if (weight.y > 0.0) {
-		color += weight.y * texture2D(ima, texco.xz);
+		color += weight.y * texture(ima, texco.xz);
 	}
 	if (weight.z > 0.0) {
-		color += weight.z * texture2D(ima, texco.yx);
+		color += weight.z * texture(ima, texco.yx);
 	}
 
 	alpha = color.a;
@@ -4101,7 +4101,7 @@ void material_preview_matcap(vec4 color, sampler2D ima, vec4 N, vec4 mask, out v
 
 	tex.x = 0.5 + 0.49 * normal.x;
 	tex.y = 0.5 + 0.49 * normal.y;
-	result = texture2D(ima, tex) * mask;
+	result = texture(ima, tex) * mask;
 }
 
 /* BGE-Remix P8: "Face Textures" (the face's image, mixed in when one is bound) */

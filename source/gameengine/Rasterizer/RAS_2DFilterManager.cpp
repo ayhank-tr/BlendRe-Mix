@@ -41,6 +41,7 @@
 #include "RAS_ICanvas.h"
 #include "RAS_Rect.h"
 #include "RAS_2DFilterManager.h"
+#include "GPU_translate.h"
 #include <iostream>
 
 #include "GPU_glew.h"
@@ -116,8 +117,16 @@ void RAS_2DFilterManager::PrintShaderErrors(unsigned int shader, const char *tas
 unsigned int RAS_2DFilterManager::CreateShaderProgram(const char* shadersource)
 {
 	GLuint program = 0;
-	GLuint fShader = glCreateShaderObjectARB(GL_FRAGMENT_SHADER);
 	GLint success;
+
+	/* BGE-Remix P8.3: the filter translated to GLSL 4.50; the original is
+	 * built below when the translation does not build */
+	program = GPU_glsl_translate_program(NULL, shadersource, "2D filter");
+	if (program) {
+		return program;
+	}
+
+	GLuint fShader = glCreateShaderObjectARB(GL_FRAGMENT_SHADER);
 
 	glShaderSourceARB(fShader, 1, (const char**)&shadersource, NULL);
 
@@ -214,7 +223,7 @@ void RAS_2DFilterManager::AnalyseShader(int passindex, vector<STR_String>& propN
 		int objProperties = propNames.size();
 		int i;
 		for (i=0; i<objProperties; i++)
-			if (glGetUniformLocationARB(m_filters[passindex], propNames[i]) != -1)
+			if (GPU_glsl_uniform_location(m_filters[passindex], propNames[i]) != -1)  /* BGE-Remix P8.3 */
 				m_properties[passindex].push_back(propNames[i]);
 	}
 }
@@ -275,7 +284,7 @@ void RAS_2DFilterManager::StartShaderProgram(int passindex)
 	int i, objProperties = m_properties[passindex].size();
 	for (i=0; i<objProperties; i++)
 	{
-		uniformLoc = glGetUniformLocationARB(m_filters[passindex], m_properties[passindex][i]);
+		uniformLoc = GPU_glsl_uniform_location(m_filters[passindex], m_properties[passindex][i]);  /* BGE-Remix P8.3 */
 
 		if (uniformLoc == -1)
 			continue;

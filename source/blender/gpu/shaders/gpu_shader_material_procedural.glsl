@@ -877,7 +877,7 @@ float bi_texture_node(sampler2D tab, vec3 t, vec4 p0, vec4 p1, vec4 p2, vec4 p3,
 /* the colour band (a 257-texel table), sampled at texel centres */
 vec4 bi_colorband(sampler2D band, float fac)
 {
-	return texture2D(band, vec2((clamp(fac, 0.0, 1.0) * 256.0 + 0.5) / 257.0, 0.5));
+	return texture(band, vec2((clamp(fac, 0.0, 1.0) * 256.0 + 0.5) / 257.0, 0.5));
 }
 
 float bi_band_sum(sampler2D band, float fac)
@@ -915,7 +915,7 @@ void proc_mapping(vec3 co, vec3 proj, vec3 size, vec3 ofs, out vec3 texvec)
  * (camerafac: the camera border, as the Texture Coordinate node uses it) */
 void proc_texco_window(vec3 co, vec4 camerafac, out vec3 window)
 {
-	vec4 projvec = gl_ProjectionMatrix * vec4(co, 1.0);
+	vec4 projvec = bge_proj * vec4(co, 1.0);
 	vec2 win = (projvec.xy / projvec.w) * 0.5 + vec2(0.5);
 	win = win * camerafac.xy + camerafac.zw;
 	window = vec3(win * 2.0 - vec2(1.0), 0.0);
