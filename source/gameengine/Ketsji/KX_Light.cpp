@@ -54,6 +54,7 @@
 #include "KX_KetsjiEngine.h"
 #include "RAS_BucketManager.h"
 
+#include <algorithm>
 #include <map>
 
 /* BGE-Remix P8: a lamp's type changed from Python while playing. In GLSL the
@@ -181,11 +182,16 @@ PyAttributeDef KX_LightObject::Attributes[] = {
 	KX_PYATTRIBUTE_RO_FUNCTION("shadowClipStart", KX_LightObject, pyattr_get_shadow_clip_start),
 	KX_PYATTRIBUTE_RO_FUNCTION("shadowClipEnd", KX_LightObject, pyattr_get_shadow_clip_end),
 	KX_PYATTRIBUTE_RO_FUNCTION("shadowFrustumSize", KX_LightObject, pyattr_get_shadow_frustum_size),
-	KX_PYATTRIBUTE_RO_FUNCTION("shadowBias", KX_LightObject, pyattr_get_shadow_bias),
-	KX_PYATTRIBUTE_RO_FUNCTION("shadowBleedBias", KX_LightObject, pyattr_get_shadow_bleed_bias),
+	KX_PYATTRIBUTE_RW_FUNCTION("shadowBias", KX_LightObject, pyattr_get_shadow_bias, pyattr_set_shadow_bias),
+	KX_PYATTRIBUTE_RW_FUNCTION("shadowBleedBias", KX_LightObject, pyattr_get_shadow_bleed_bias, pyattr_set_shadow_bleed_bias),
 	KX_PYATTRIBUTE_RO_FUNCTION("shadowBindId", KX_LightObject, pyattr_get_shadow_bind_code),
 	KX_PYATTRIBUTE_RO_FUNCTION("shadowMapType", KX_LightObject, pyattr_get_shadow_map_type),
-	KX_PYATTRIBUTE_RO_FUNCTION("shadowColor", KX_LightObject, pyattr_get_shadow_color),
+	KX_PYATTRIBUTE_RW_FUNCTION("shadowColor", KX_LightObject, pyattr_get_shadow_color, pyattr_set_shadow_color),
+	/* BGE-Remix P8.9: the light's size */
+	KX_PYATTRIBUTE_RW_FUNCTION("size", KX_LightObject, pyattr_get_size, pyattr_set_size),
+	KX_PYATTRIBUTE_RW_FUNCTION("areaSize", KX_LightObject, pyattr_get_area_size, pyattr_set_area_size),
+	KX_PYATTRIBUTE_RW_FUNCTION("sunAngle", KX_LightObject, pyattr_get_sun_angle, pyattr_set_sun_angle),
+	KX_PYATTRIBUTE_RW_FUNCTION("contactShadow", KX_LightObject, pyattr_get_contact_shadow, pyattr_set_contact_shadow),
 	KX_PYATTRIBUTE_RO_FUNCTION("useShadow", KX_LightObject, pyattr_get_shadow_active),
 	KX_PYATTRIBUTE_RO_FUNCTION("shadowMatrix", KX_LightObject, pyattr_get_shadow_matrix),
 	KX_PYATTRIBUTE_RO_FUNCTION("SPOT", KX_LightObject, pyattr_get_typeconst),
@@ -301,6 +307,109 @@ PyObject *KX_LightObject::pyattr_get_shadow_color(void *self_v, const KX_PYATTRI
 {
 	KX_LightObject *self = static_cast<KX_LightObject *>(self_v);
 	return PyColorFromVector(MT_Vector3(self->m_lightobj->m_shadowcolor));
+}
+
+/* BGE-Remix P8.9: shadow settings and the light's size, changed while
+ * playing (the shaders read them as they change) */
+static int set_float(PyObject *value, const KX_PYATTRIBUTE_DEF *attrdef, float lo, float hi, float *r)
+{
+	const double val = PyFloat_AsDouble(value);
+	if (val == -1.0 && PyErr_Occurred()) {
+		PyErr_Format(PyExc_TypeError, "expected a number for attribute \"%s\"", attrdef->m_name);
+		return PY_SET_ATTR_FAIL;
+	}
+	*r = (float)std::min(std::max(val, (double)lo), (double)hi);
+	return PY_SET_ATTR_SUCCESS;
+}
+
+int KX_LightObject::pyattr_set_shadow_bias(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef, PyObject *value)
+{
+	KX_LightObject *self = static_cast<KX_LightObject *>(self_v);
+	return set_float(value, attrdef, 0.0f, 100.0f, &self->m_lightobj->m_shadowbias);
+}
+
+int KX_LightObject::pyattr_set_shadow_bleed_bias(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef, PyObject *value)
+{
+	KX_LightObject *self = static_cast<KX_LightObject *>(self_v);
+	return set_float(value, attrdef, 0.0f, 1.0f, &self->m_lightobj->m_shadowbleedbias);
+}
+
+int KX_LightObject::pyattr_set_shadow_color(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef, PyObject *value)
+{
+	KX_LightObject *self = static_cast<KX_LightObject *>(self_v);
+	MT_Vector3 color;
+	if (PyVecTo(value, color)) {
+		self->m_lightobj->m_shadowcolor[0] = color[0];
+		self->m_lightobj->m_shadowcolor[1] = color[1];
+		self->m_lightobj->m_shadowcolor[2] = color[2];
+		return PY_SET_ATTR_SUCCESS;
+	}
+	return PY_SET_ATTR_FAIL;
+}
+
+PyObject *KX_LightObject::pyattr_get_size(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef)
+{
+	KX_LightObject *self = static_cast<KX_LightObject *>(self_v);
+	return PyFloat_FromDouble(self->m_lightobj->m_size);
+}
+
+int KX_LightObject::pyattr_set_size(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef, PyObject *value)
+{
+	KX_LightObject *self = static_cast<KX_LightObject *>(self_v);
+	return set_float(value, attrdef, 0.0f, 1000.0f, &self->m_lightobj->m_size);
+}
+
+PyObject *KX_LightObject::pyattr_get_area_size(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef)
+{
+	KX_LightObject *self = static_cast<KX_LightObject *>(self_v);
+	return Py_BuildValue("[ff]", self->m_lightobj->m_areasize[0], self->m_lightobj->m_areasize[1]);
+}
+
+int KX_LightObject::pyattr_set_area_size(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef, PyObject *value)
+{
+	KX_LightObject *self = static_cast<KX_LightObject *>(self_v);
+	float xy[2];
+	bool ok = PySequence_Check(value) && PySequence_Size(value) == 2;
+	for (int i = 0; ok && i < 2; i++) {
+		PyObject *item = PySequence_GetItem(value, i);
+		xy[i] = item ? (float)PyFloat_AsDouble(item) : 0.0f;
+		Py_XDECREF(item);
+		ok = item && !PyErr_Occurred();
+	}
+	if (!ok) {
+		PyErr_Clear();
+		PyErr_Format(PyExc_TypeError, "expected two numbers (width, height) for attribute \"%s\"", attrdef->m_name);
+		return PY_SET_ATTR_FAIL;
+	}
+	const float x = xy[0], y = xy[1];
+	self->m_lightobj->m_areasize[0] = std::max(x, 0.0001f);
+	self->m_lightobj->m_areasize[1] = std::max(y, 0.0001f);
+	return PY_SET_ATTR_SUCCESS;
+}
+
+PyObject *KX_LightObject::pyattr_get_sun_angle(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef)
+{
+	KX_LightObject *self = static_cast<KX_LightObject *>(self_v);
+	return PyFloat_FromDouble(self->m_lightobj->m_sunangle);
+}
+
+int KX_LightObject::pyattr_set_sun_angle(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef, PyObject *value)
+{
+	KX_LightObject *self = static_cast<KX_LightObject *>(self_v);
+	return set_float(value, attrdef, 0.01f, 90.0f, &self->m_lightobj->m_sunangle);
+}
+
+/* BGE-Remix P8.10: how far contact shadows reach (0: none) */
+PyObject *KX_LightObject::pyattr_get_contact_shadow(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef)
+{
+	KX_LightObject *self = static_cast<KX_LightObject *>(self_v);
+	return PyFloat_FromDouble(self->m_lightobj->m_contact);
+}
+
+int KX_LightObject::pyattr_set_contact_shadow(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef, PyObject *value)
+{
+	KX_LightObject *self = static_cast<KX_LightObject *>(self_v);
+	return set_float(value, attrdef, 0.0f, 100.0f, &self->m_lightobj->m_contact);
 }
 
 PyObject *KX_LightObject::pyattr_get_shadow_active(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef)

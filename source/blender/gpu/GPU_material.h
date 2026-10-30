@@ -177,6 +177,17 @@ typedef enum GPUDynamicType {
 	GPU_DYNAMIC_LAMP_COEFFCONST      = 13 | GPU_DYNAMIC_GROUP_LAMP,
 	GPU_DYNAMIC_LAMP_COEFFLIN        = 14 | GPU_DYNAMIC_GROUP_LAMP,
 	GPU_DYNAMIC_LAMP_COEFFQUAD       = 15 | GPU_DYNAMIC_GROUP_LAMP,
+	/* BGE-Remix P8.9: area lamps' corners and size, shadow settings */
+	GPU_DYNAMIC_LAMP_AREA            = 16 | GPU_DYNAMIC_GROUP_LAMP,
+	GPU_DYNAMIC_LAMP_AREASIZE        = 17 | GPU_DYNAMIC_GROUP_LAMP,
+	GPU_DYNAMIC_LAMP_SHADOWCOLOR     = 18 | GPU_DYNAMIC_GROUP_LAMP,
+	GPU_DYNAMIC_LAMP_SHADOWBIAS      = 19 | GPU_DYNAMIC_GROUP_LAMP,
+	GPU_DYNAMIC_LAMP_BLEEDBIAS       = 20 | GPU_DYNAMIC_GROUP_LAMP,
+	/* BGE-Remix P8.10: shadows of every lamp type, contact shadows */
+	GPU_DYNAMIC_LAMP_SHADOWMAT       = 21 | GPU_DYNAMIC_GROUP_LAMP,
+	GPU_DYNAMIC_LAMP_SHADOWPARAMS    = 22 | GPU_DYNAMIC_GROUP_LAMP,
+	GPU_DYNAMIC_LAMP_SHADOWCLIP      = 23 | GPU_DYNAMIC_GROUP_LAMP,
+	GPU_DYNAMIC_LAMP_CONTACT         = 24 | GPU_DYNAMIC_GROUP_LAMP,
 
 	GPU_DYNAMIC_SAMPLER_2DBUFFER     = 1  | GPU_DYNAMIC_GROUP_SAMPLER,
 	GPU_DYNAMIC_SAMPLER_2DIMAGE      = 2  | GPU_DYNAMIC_GROUP_SAMPLER,
@@ -381,6 +392,28 @@ void GPU_lamp_update_colors(GPULamp *lamp, float r, float g, float b, float ener
 void GPU_lamp_update_distance(GPULamp *lamp, float distance, float att1, float att2,
                               float coeff_const, float coeff_lin, float coeff_quad);
 void GPU_lamp_update_spot(GPULamp *lamp, float spotsize, float spotblend);
+/* BGE-Remix P8.9: the light's size (point/spot radius; area lamps: width and
+ * height) and its shadow settings, changed while playing without rebuilding
+ * shaders (bias as Lamp.bias) */
+void GPU_lamp_update_size(GPULamp *lamp, float size, float area_x, float area_y, float sun_angle);
+void GPU_lamp_update_shadow(GPULamp *lamp, float bias, float bleedbias, const float color[3], float contact);
+
+/* BGE-Remix P8.10: a shadow buffer holds one view (spot), six (point and
+ * area: a cube's faces side by side) or four (sun: cascades that follow the
+ * camera given here; without one they sit around the lamp). Binding the
+ * buffer clears it and sets view 0; each other view is set before drawing
+ * it. The signature changes whenever the lamp's views or shadow settings do. */
+int GPU_lamp_shadow_view_count(GPULamp *lamp);
+void GPU_lamp_shadow_buffer_view(GPULamp *lamp, int view, float viewmat[4][4], float winmat[4][4], int r_rect[4]);
+void GPU_lamp_shadow_camera(GPULamp *lamp, float camtoworld[4][4], float winmat[4][4]);
+unsigned int GPU_lamp_shadow_signature(GPULamp *lamp);
+
+/* BGE-Remix P8.10: the scene's depth seen from the camera (for contact
+ * shadows): drawn between begin and end, used by the materials drawn after;
+ * any other drawing (the 3D view, a viewport without the pass) gets none */
+void GPU_scene_depth_begin(int width, int height);
+void GPU_scene_depth_end(void);
+void GPU_scene_depth_disable(void);
 int GPU_lamp_shadow_layer(GPULamp *lamp);
 GPUNodeLink *GPU_lamp_get_data(
         GPUMaterial *mat, GPULamp *lamp,

@@ -127,6 +127,7 @@ set(SRC
 	intern/mask_evaluate.c
 	intern/mask_rasterize.c
 	intern/material.c
+	intern/lamp_physical.c
 	intern/material_physical.c
 	intern/mball.c
 	intern/mball_tessellate.c
@@ -253,6 +254,7 @@ set(SRC
 	BKE_main.h
 	BKE_mask.h
 	BKE_material.h
+	BKE_lamp_physical.h
 	BKE_material_physical.h
 	BKE_mball.h
 	BKE_mball_tessellate.h

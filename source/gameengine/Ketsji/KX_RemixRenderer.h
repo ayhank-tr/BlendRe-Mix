@@ -210,7 +210,10 @@ private:
 		uint64_t hash;
 		KX_Scene *scene;
 		std::vector<unsigned char> desc; /* last description sent */
+		int frame;                       /* BGE-Remix P8.9: the last frame it was sent in */
+		LightEntry() : hash(0), scene(NULL), frame(0) {}
 	};
+	int m_light_frame;                   /* BGE-Remix P8.9: counts UpdateLights calls */
 
 	bool Start(KX_Scene *scene, int width, int height, const Settings &settings);
 	KX_Scene *PickSceneImpl(const std::vector<KX_Scene *> &scenes, bool stereo, bool dome,

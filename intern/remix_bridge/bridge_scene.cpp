@@ -615,14 +615,18 @@ BRB_API int brb_light_create(const brb_light_desc *d)
 
 	remixapi_LightInfoSphereEXT sphere = default_sphere();
 	remixapi_LightInfoRectEXT rect = {};
+	remixapi_LightInfoDiskEXT disk = {};
 	remixapi_LightInfoDistantEXT distant = {};
 	remixapi_LightInfoDomeEXT dome = {};
+	/* interface 8: 0 means Remix's own 1 (the field was new; callers left it zero) */
+	const float volumetric = d->volumetric > 0.0f ? d->volumetric : 1.0f;
 	switch (d->type) {
 		case BRB_LIGHT_SPHERE:
 			sphere.position = f3(d->position);
 			sphere.radius = std::max(d->radius, 0.001f);
 			sphere.shaping_hasvalue = d->shaped ? TRUE : FALSE;
 			sphere.shaping_value = shaping;
+			sphere.volumetricRadianceScale = volumetric;
 			info.pNext = &sphere;
 			break;
 		case BRB_LIGHT_RECT:
@@ -635,14 +639,27 @@ BRB_API int brb_light_create(const brb_light_desc *d)
 			rect.direction = f3(d->direction);
 			rect.shaping_hasvalue = d->shaped ? TRUE : FALSE;
 			rect.shaping_value = shaping;
-			rect.volumetricRadianceScale = 1.0f;
+			rect.volumetricRadianceScale = volumetric;
 			info.pNext = &rect;
+			break;
+		case BRB_LIGHT_DISK:
+			disk.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISK_EXT;
+			disk.position = f3(d->position);
+			disk.xAxis = f3(d->x_axis);
+			disk.xRadius = std::max(d->size[0], 0.001f);
+			disk.yAxis = f3(d->y_axis);
+			disk.yRadius = std::max(d->size[1], 0.001f);
+			disk.direction = f3(d->direction);
+			disk.shaping_hasvalue = d->shaped ? TRUE : FALSE;
+			disk.shaping_value = shaping;
+			disk.volumetricRadianceScale = volumetric;
+			info.pNext = &disk;
 			break;
 		case BRB_LIGHT_DISTANT:
 			distant.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISTANT_EXT;
 			distant.direction = f3(d->direction);
 			distant.angularDiameterDegrees = std::max(d->angular_diameter_deg, 0.01f);
-			distant.volumetricRadianceScale = 1.0f;
+			distant.volumetricRadianceScale = volumetric;
 			info.pNext = &distant;
 			break;
 		case BRB_LIGHT_DOME:

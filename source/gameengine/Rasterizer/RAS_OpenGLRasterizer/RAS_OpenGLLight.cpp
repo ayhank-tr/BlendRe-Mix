@@ -28,6 +28,7 @@
 #include "GPU_glew.h"
 
 #include <stdio.h>
+#include <string.h>
 
 
 #include "RAS_OpenGLLight.h"
@@ -45,9 +46,23 @@
 
 #include "GPU_material.h"
 
+extern "C" {
+#include "BKE_lamp_physical.h"
+}
+
 RAS_OpenGLLight::RAS_OpenGLLight(RAS_OpenGLRasterizer *ras)
     :m_rasterizer(ras)
 {
+	/* BGE-Remix P8.9: the converter sets these from the lamp */
+	m_physical = false;
+	m_size = 0.1f;
+	m_areasize[0] = m_areasize[1] = 0.1f;
+	m_sunangle = 0.53f;
+	m_onlyshadow = false;
+	/* BGE-Remix P8.10 */
+	m_contact = 0.0f;
+	m_shadowsig = 0;
+	m_shadowvalid = false;
 }
 
 RAS_OpenGLLight::~RAS_OpenGLLight()
@@ -207,21 +222,12 @@ int RAS_OpenGLLight::GetShadowLayer()
 		return 0;
 }
 
-void RAS_OpenGLLight::BindShadowBuffer(RAS_ICanvas *canvas, KX_Camera *cam, MT_Transform& camtrans)
+void RAS_OpenGLLight::SetupShadowCamera(RAS_ICanvas *canvas, KX_Camera *cam, MT_Transform& camtrans,
+                                        float viewmat[4][4], float winmat[4][4], const int rect[4])
 {
-	GPULamp *lamp;
-	float viewmat[4][4], winmat[4][4];
-	int winsize;
-
-	/* bind framebuffer */
-	lamp = GetGPULamp();
-	GPU_lamp_shadow_buffer_bind(lamp, viewmat, &winsize, winmat);
-
-	if (GPU_lamp_shadow_buffer_type(lamp) == LA_SHADMAP_VARIANCE)
-		m_rasterizer->SetUsingOverrideShader(true);
-
-	/* GPU_lamp_shadow_buffer_bind() changes the viewport, so update the canvas */
-	canvas->UpdateViewPort(0, 0, winsize, winsize);
+	/* the view's place in the buffer (GPU_lamp_shadow_buffer_view set the
+	 * viewport), so update the canvas */
+	canvas->UpdateViewPort(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]);
 
 	/* setup camera transformation */
 	MT_Matrix4x4 modelviewmat((float*)viewmat);
@@ -246,13 +252,65 @@ void RAS_OpenGLLight::BindShadowBuffer(RAS_ICanvas *canvas, KX_Camera *cam, MT_T
 	m_rasterizer->SetStereoMode(stereomode);
 }
 
+void RAS_OpenGLLight::BindShadowBuffer(RAS_ICanvas *canvas, KX_Camera *cam, MT_Transform& camtrans)
+{
+	GPULamp *lamp;
+	float viewmat[4][4], winmat[4][4];
+	int winsize;
+
+	/* bind framebuffer (BGE-Remix P8.10: Variance maps are drawn as depth
+	 * too, then turned into moments: no override shader, cut-outs cast) */
+	lamp = GetGPULamp();
+	GPU_lamp_shadow_buffer_bind(lamp, viewmat, &winsize, winmat);
+
+	const int rect[4] = {0, 0, winsize, winsize};
+	SetupShadowCamera(canvas, cam, camtrans, viewmat, winmat, rect);
+}
+
+void RAS_OpenGLLight::SetShadowView(RAS_ICanvas *canvas, KX_Camera *cam, MT_Transform& camtrans, int view)
+{
+	GPULamp *lamp = GetGPULamp();
+	float viewmat[4][4], winmat[4][4];
+	int rect[4];
+
+	if (!lamp)
+		return;
+	GPU_lamp_shadow_buffer_view(lamp, view, viewmat, winmat, rect);
+	SetupShadowCamera(canvas, cam, camtrans, viewmat, winmat, rect);
+}
+
 void RAS_OpenGLLight::UnbindShadowBuffer()
 {
 	GPULamp *lamp = GetGPULamp();
 	GPU_lamp_shadow_buffer_unbind(lamp);
+}
 
-	if (GPU_lamp_shadow_buffer_type(lamp) == LA_SHADMAP_VARIANCE)
-		m_rasterizer->SetUsingOverrideShader(false);
+int RAS_OpenGLLight::ShadowViewCount()
+{
+	GPULamp *lamp = GetGPULamp();
+	return lamp ? GPU_lamp_shadow_view_count(lamp) : 0;
+}
+
+void RAS_OpenGLLight::SetShadowCamera(const float camtoworld[16], const float winmat[16])
+{
+	GPULamp *lamp = GetGPULamp();
+	if (!lamp)
+		return;
+	if (camtoworld && winmat) {
+		float c[4][4], w[4][4];
+		memcpy(c, camtoworld, sizeof(c));
+		memcpy(w, winmat, sizeof(w));
+		GPU_lamp_shadow_camera(lamp, c, w);
+	}
+	else {
+		GPU_lamp_shadow_camera(lamp, NULL, NULL);
+	}
+}
+
+unsigned int RAS_OpenGLLight::ShadowSignature()
+{
+	GPULamp *lamp = GetGPULamp();
+	return lamp ? GPU_lamp_shadow_signature(lamp) : 0;
 }
 
 Image *RAS_OpenGLLight::GetTextureImage(short texslot)
@@ -291,8 +349,15 @@ void RAS_OpenGLLight::Update()
 		GPU_lamp_update(lamp, m_layer, hide, obmat);
 		GPU_lamp_update_colors(lamp, m_color[0], m_color[1],
 			m_color[2], m_energy);
+		/* BGE-Remix P8.9: physical falloff follows the distance and the size;
+		 * the size and the shadow settings change without new shaders */
+		if (m_physical) {
+			BKE_lamp_physical_coefficients(m_distance, m_size, &m_coeff_const, &m_coeff_lin, &m_coeff_quad);
+		}
 		GPU_lamp_update_distance(lamp, m_distance, m_att1, m_att2, m_coeff_const, m_coeff_lin, m_coeff_quad);
 		GPU_lamp_update_spot(lamp, m_spotsize, m_spotblend);
+		GPU_lamp_update_size(lamp, m_size, m_areasize[0], m_areasize[1], m_sunangle);
+		GPU_lamp_update_shadow(lamp, m_shadowbias, m_shadowbleedbias, m_shadowcolor, m_contact);
 	}
 }
 

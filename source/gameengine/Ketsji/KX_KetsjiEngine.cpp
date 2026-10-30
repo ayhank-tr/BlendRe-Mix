@@ -40,6 +40,9 @@
 #include "BLI_task.h"
 
 #include "KX_KetsjiEngine.h"
+
+#include <algorithm>
+#include <cmath>
 #include "KX_FramePacing.h"
 
 #include "EXP_ListValue.h"
@@ -53,6 +56,7 @@
 #include "RAS_IRasterizer.h"
 #include "RAS_ICanvas.h"
 #include "RAS_ILightObject.h"
+#include "RAS_Deformer.h"
 #include "MT_Vector3.h"
 #include "MT_Transform.h"
 #include "SCA_IInputDevice.h"
@@ -72,12 +76,15 @@
 
 #include "RAS_FramingManager.h"
 #include "DNA_world_types.h"
+#include "DNA_lamp_types.h"
+#include "DNA_object_types.h"
 #include "DNA_scene_types.h"
 
 #include "KX_NavMeshObject.h"
 
 #include "BL_Action.h" // For managing action lock.
 #include "GPU_material.h" /* BGE-Remix P8.5 */
+#include "GPU_glew.h"
 
 #ifdef WITH_REMIX
 #  include "KX_RemixRenderer.h"
@@ -1152,12 +1159,65 @@ void KX_KetsjiEngine::UpdateAnimations(KX_Scene *scene)
 		scene->UpdateAnimations(m_frameTime);
 }
 
+/* BGE-Remix P8.10: what a lamp's shadow depends on besides its own views:
+ * the casters that can reach it (where they are, whether they are shown, a
+ * deformer that moves them), so a lamp whose shadow would come out the same
+ * is not drawn again */
+static unsigned int shadow_casters_signature(
+        KX_Scene *scene, KX_LightObject *light, RAS_ILightObject *raslight, int layer, unsigned int frame)
+{
+	unsigned int h = 2166136261u;
+#define HASH_BYTES(p, n) \
+	{ const unsigned char *b_ = (const unsigned char *)(p); \
+	  for (size_t i_ = 0; i_ < (size_t)(n); i_++) { h ^= b_[i_]; h *= 16777619u; } } (void)0
+
+	const bool sun = raslight->m_type == RAS_ILightObject::LIGHT_SUN;
+	const MT_Vector3 lamppos = light->NodeGetWorldPosition();
+	const MT_Scalar reach = raslight->m_shadowclipend;
+	CListValue *objects = scene->GetObjectList();
+
+	for (int i = 0; i < objects->GetCount(); i++) {
+		KX_GameObject *ob = (KX_GameObject *)objects->GetValue(i);
+		if (ob->GetMeshCount() == 0 || !ob->GetVisible() || !ob->GetSGNode())
+			continue;
+		if (layer != 0 && !(ob->GetLayer() & layer))
+			continue;
+		if (!sun) {
+			MT_Point3 box[2];
+			ob->GetSGNode()->getAABBox(box);
+			const MT_Vector3 center = (box[0] + box[1]) * 0.5;
+			if ((center - lamppos).length() - (box[1] - box[0]).length() * 0.5 > reach)
+				continue;
+		}
+		HASH_BYTES(&ob, sizeof(ob));
+		HASH_BYTES(ob->GetOpenGLMatrix(), sizeof(float) * 16);
+		RAS_Deformer *deformer = ob->GetDeformer();
+		if (deformer && deformer->IsDynamic())
+			HASH_BYTES(&frame, sizeof(frame));
+	}
+#undef HASH_BYTES
+	return h;
+}
+
 void KX_KetsjiEngine::RenderShadowBuffers(KX_Scene *scene)
 {
 	CListValue *lightlist = scene->GetLightList();
 	int i, drawmode;
+	static unsigned int frame = 0;
+	static const bool trace = getenv("BGE_REMIX_TRACE_SHADOWS") != NULL;
 
+	frame++;
 	m_rasterizer->SetAuxilaryClientInfo(scene);
+
+	/* BGE-Remix P8.10: the camera the sun's cascades follow */
+	KX_Camera *viewcam = scene->GetActiveCamera();
+	float camtoworld[16], camwinmat[16];
+	bool have_cam = false;
+	if (viewcam && viewcam->hasValidProjectionMatrix()) {
+		viewcam->GetCameraToWorld().getValue(camtoworld);
+		viewcam->GetProjectionMatrix().getValue(camwinmat);
+		have_cam = true;
+	}
 
 	for (i=0; i<lightlist->GetCount(); i++) {
 		KX_GameObject *gameobj = (KX_GameObject*)lightlist->GetValue(i);
@@ -1170,6 +1230,21 @@ void KX_KetsjiEngine::RenderShadowBuffers(KX_Scene *scene)
 		if (light->GetVisible() && m_rasterizer->GetDrawingMode() == RAS_IRasterizer::KX_TEXTURED &&
 			raslight->HasShadowBuffer())
 		{
+			/* BGE-Remix P8.10: a lamp whose views and casters did not change
+			 * keeps its shadow */
+			raslight->SetShadowCamera(have_cam ? camtoworld : NULL, have_cam ? camwinmat : NULL);
+			const int layer = raslight->GetShadowLayer();
+			const unsigned int sig = raslight->ShadowSignature() ^
+			                         (shadow_casters_signature(scene, light, raslight, layer, frame) * 31u);
+			if (raslight->m_shadowvalid && raslight->m_shadowsig == sig)
+				continue;
+			raslight->m_shadowsig = sig;
+			raslight->m_shadowvalid = true;
+
+			const int views = raslight->ShadowViewCount();
+			if (trace)
+				printf("BGE-Remix shadow: %s drawn (%d views)\n", light->GetName().ReadPtr(), views);
+
 			/* make temporary camera */
 			RAS_CameraData camdata = RAS_CameraData();
 			KX_Camera *cam = new KX_Camera(scene, scene->m_callbacks, camdata, true, true);
@@ -1184,30 +1259,55 @@ void KX_KetsjiEngine::RenderShadowBuffers(KX_Scene *scene)
 			/* binds framebuffer object, sets up camera .. */
 			raslight->BindShadowBuffer(m_canvas, cam, camtrans);
 
-			/* update scene */
-			scene->CalculateVisibleMeshes(m_rasterizer, cam, raslight->GetShadowLayer());
+			/* BGE-Remix P8.10: each view: a cube's faces, the sun's cascades */
+			for (int view = 0; view < views; view++) {
+				if (view > 0)
+					raslight->SetShadowView(m_canvas, cam, camtrans, view);
 
-			m_logger->StartLog(tc_animations, m_kxsystem->GetTimeInSeconds(), true);
-			SG_SetActiveStage(SG_STAGE_ANIMATION_UPDATE);
-			UpdateAnimations(scene);
-			m_logger->StartLog(tc_rasterizer, m_kxsystem->GetTimeInSeconds(), true);
-			SG_SetActiveStage(SG_STAGE_RENDER);
+				/* update scene */
+				scene->CalculateVisibleMeshes(m_rasterizer, cam, layer);
 
-			/* render */
-			m_rasterizer->ClearDepthBuffer();
-			m_rasterizer->ClearColorBuffer();
-			scene->RenderBuckets(camtrans, m_rasterizer);
+				if (view == 0) {
+					m_logger->StartLog(tc_animations, m_kxsystem->GetTimeInSeconds(), true);
+					SG_SetActiveStage(SG_STAGE_ANIMATION_UPDATE);
+					UpdateAnimations(scene);
+					m_logger->StartLog(tc_rasterizer, m_kxsystem->GetTimeInSeconds(), true);
+					SG_SetActiveStage(SG_STAGE_RENDER);
+				}
+
+				/* render */
+				m_rasterizer->ClearDepthBuffer();
+				m_rasterizer->ClearColorBuffer();
+				scene->RenderBuckets(camtrans, m_rasterizer);
+			}
 
 			/* unbind framebuffer object, restore drawmode, free camera */
 			raslight->UnbindShadowBuffer();
 			m_rasterizer->SetDrawingMode(drawmode);
 			cam->Release();
 		}
+		else {
+			raslight->m_shadowvalid = false;
+		}
 	}
 	/* remember that we have a valid shadow buffer for that scene */
 	scene->SetShadowDone(true);
 }
-	
+
+/* BGE-Remix P8.10: whether a lamp of the scene has contact shadows (they read
+ * the scene's depth, drawn first) */
+static bool scene_needs_depth(KX_Scene *scene)
+{
+	CListValue *lights = scene->GetLightList();
+	for (int i = 0; i < lights->GetCount(); i++) {
+		KX_LightObject *light = (KX_LightObject *)lights->GetValue(i);
+		RAS_ILightObject *data = light->GetLightData();
+		if (data && light->GetVisible() && data->m_contact > 0.0f && data->HasShadowBuffer())
+			return true;
+	}
+	return false;
+}
+
 // update graphics
 void KX_KetsjiEngine::RenderFrame(KX_Scene* scene, KX_Camera* cam)
 {
@@ -1376,14 +1476,94 @@ void KX_KetsjiEngine::RenderFrame(KX_Scene* scene, KX_Camera* cam)
 	else
 #endif
 	{
+		/* BGE-Remix P8.10: the scene's depth first, for contact shadows */
+		const bool depth = m_rasterizer->GetDrawingMode() == RAS_IRasterizer::KX_TEXTURED && scene_needs_depth(scene);
+		if (depth) {
+			const int drawmode = m_rasterizer->GetDrawingMode();
+			GPU_scene_depth_begin(viewport.GetWidth() + 1, viewport.GetHeight() + 1);
+			m_rasterizer->SetDrawingMode(RAS_IRasterizer::KX_SHADOW);
+			scene->RenderBuckets(camtrans, m_rasterizer);
+			m_rasterizer->SetDrawingMode(drawmode);
+			GPU_scene_depth_end();
+		}
+
 		scene->RenderBuckets(camtrans, m_rasterizer);
+
+		/* BGE-Remix P8.10: nothing else reads it (other cameras, the 3D view) */
+		if (depth)
+			GPU_scene_depth_disable();
 
 		// render all the font objects for this scene
 		scene->RenderFonts();
+
+		/* BGE-Remix P8.9: spot halos as a light cone */
+		RenderSpotHalos(scene);
 	}
 
 	if (scene->GetPhysicsEnvironment())
 		scene->GetPhysicsEnvironment()->DebugDrawWorld();
+}
+
+/* BGE-Remix P8.9: a spot lamp with Halo shows its cone in the game, as F12
+ * shows the lit fog: a cone from the lamp to its distance, added to the
+ * picture, brightest at the lamp and fading to nothing at the cone's end
+ * (Blender Internal's halo is volumetric; this is its look, not its maths) */
+void KX_KetsjiEngine::RenderSpotHalos(KX_Scene *scene)
+{
+	CListValue *lights = scene->GetLightList();
+	bool started = false;
+	const int segments = 32;
+
+	for (int i = 0; i < lights->GetCount(); i++) {
+		KX_LightObject *light = (KX_LightObject *)lights->GetValue(i);
+		Object *ob = light->GetBlenderObject();
+		Lamp *la = (ob && ob->type == OB_LAMP) ? (Lamp *)ob->data : NULL;
+		RAS_ILightObject *data = light->GetLightData();
+		if (!la || !data || la->type != LA_SPOT || !(la->mode & LA_HALO) || !light->GetVisible() ||
+		    la->haint <= 0.0f || data->m_energy <= 0.0f)
+		{
+			continue;
+		}
+		if (!started) {
+			started = true;
+			glPushAttrib(GL_ENABLE_BIT | GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_CURRENT_BIT);
+			glUseProgram(0);
+			glDisable(GL_LIGHTING);
+			glDisable(GL_TEXTURE_2D);
+			glDisable(GL_CULL_FACE);
+			glEnable(GL_BLEND);
+			glBlendFunc(GL_ONE, GL_ONE);
+			glEnable(GL_DEPTH_TEST);
+			glDepthMask(GL_FALSE);
+			glShadeModel(GL_SMOOTH);
+			glMatrixMode(GL_MODELVIEW);
+		}
+		const MT_Point3 &pos = light->NodeGetWorldPosition();
+		const MT_Matrix3x3 &ori = light->NodeGetWorldOrientation();
+		const MT_Vector3 x = ori.getColumn(0).safe_normalized(), y = ori.getColumn(1).safe_normalized();
+		const MT_Vector3 dir = -ori.getColumn(2).safe_normalized();
+		const float length = std::max(data->m_distance, 0.01f);
+		/* the cone's half angle (m_spotsize is the full angle, in radians) */
+		const float half = std::min(data->m_spotsize, 3.12f) * 0.5f;
+		const float radius = length * tanf(half);
+		const float k = 0.25f * la->haint * data->m_energy;
+		const float col[3] = {data->m_color[0] * k, data->m_color[1] * k, data->m_color[2] * k};
+
+		glBegin(GL_TRIANGLE_FAN);
+		glColor3fv(col);
+		glVertex3d(pos[0], pos[1], pos[2]);
+		glColor3f(0.0f, 0.0f, 0.0f);
+		for (int s = 0; s <= segments; s++) {
+			const double a = 6.283185307179586 * s / segments;
+			const MT_Point3 p = pos + dir * length + (x * cos(a) + y * sin(a)) * radius;
+			glVertex3d(p[0], p[1], p[2]);
+		}
+		glEnd();
+	}
+	if (started) {
+		glDepthMask(GL_TRUE);
+		glPopAttrib();
+	}
 }
 
 /*

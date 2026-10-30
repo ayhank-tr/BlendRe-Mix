@@ -328,6 +328,7 @@ KX_RemixRenderer::KX_RemixRenderer(RAS_ICanvas *canvas, bool window_mode_allowed
 	m_material_notes = 0;
 	m_bakes = m_rebakes = 0;
 	m_bake_ms = 0.0;
+	m_light_frame = 0;
 	m_bakes_checked = 0.0;
 	for (int i = 0; i < 16; i++) {
 		m_bake_obmat[i] = (i % 5 == 0) ? 1.0f : 0.0f;
@@ -1701,9 +1702,15 @@ void KX_RemixRenderer::SendLight(KX_Scene *scene, const void *key, const brb_lig
 {
 	LightEntry &e = m_lights[key];
 	const unsigned char *bytes = (const unsigned char *)&desc;
+	e.frame = m_light_frame;
 	if (e.hash != desc.hash || e.desc.size() != sizeof(desc) || memcmp(e.desc.data(), bytes, sizeof(desc)) != 0) {
 		/* new or changed (moved, recoloured...): creating with the same hash
-		 * replaces the light */
+		 * replaces the light; BGE-Remix P8.9: one under another hash (a
+		 * renamed or replaced object) goes first, so none is left alive */
+		if (e.hash && e.hash != desc.hash) {
+			m_bridge->light_destroy(e.hash);
+			m_hashes.erase(e.hash);
+		}
 		m_bridge->light_create(&desc);
 		e.hash = desc.hash;
 		e.scene = scene;
@@ -1716,6 +1723,7 @@ void KX_RemixRenderer::UpdateLights(KX_Scene *scene, float light_scale)
 {
 	/* the formulas are shared with the 3D view and F12 (source/blender/remix/intern/remix_light.cc) */
 	float dome[3] = {0.0f, 0.0f, 0.0f};
+	m_light_frame++;
 
 	CListValue *lights = scene->GetLightList();
 	for (int i = 0; i < lights->GetCount(); i++) {
@@ -1723,7 +1731,9 @@ void KX_RemixRenderer::UpdateLights(KX_Scene *scene, float light_scale)
 		RAS_ILightObject *data = light->GetLightData();
 		Object *ob = light->GetBlenderObject();
 		Lamp *la = (ob && ob->type == OB_LAMP) ? (Lamp *)ob->data : NULL;
-		if (!data || !light->GetVisible() || (la && (la->mode & LA_NEG))) {
+		/* BGE-Remix P8.9: Only Shadow lamps darken, they do not light: Remix
+		 * has no such light, so they are left out */
+		if (!data || !light->GetVisible() || (la && (la->mode & LA_NEG)) || data->m_onlyshadow) {
 			continue;
 		}
 		brmx::LampInput in;
@@ -1737,9 +1747,13 @@ void KX_RemixRenderer::UpdateLights(KX_Scene *scene, float light_scale)
 		in.spotsize = data->m_spotsize;
 		in.spotblend = data->m_spotblend;
 		in.have_lamp = la != NULL;
-		in.area_size = la ? la->area_size : 0.1f;
-		in.area_sizey = la ? la->area_sizey : 0.1f;
-		in.area_square = la ? la->area_shape == LA_AREA_SQUARE : true;
+		/* BGE-Remix P8.9: the size as the game has it now (Python can change it) */
+		in.area_size = (in.type == LA_AREA) ? data->m_areasize[0] : data->m_size;
+		in.area_sizey = data->m_areasize[1];
+		in.area_square = false;
+		in.physical = data->m_physical;
+		in.sun_angle = data->m_sunangle;
+		in.halo = (la && in.type == LA_SPOT && (la->mode & LA_HALO)) ? la->haint : 0.0f;
 		const MT_Vector3 &sc = light->NodeGetWorldScaling();
 		in.scale[0] = (float)sc[0];
 		in.scale[1] = (float)sc[1];
@@ -1773,6 +1787,21 @@ void KX_RemixRenderer::UpdateLights(KX_Scene *scene, float light_scale)
 	d.hash = UniqueHash("dome", scene->GetName().ReadPtr(), world);
 	if (brmx::dome_light(dome, d)) {
 		SendLight(scene, world, d);
+	}
+
+	/* BGE-Remix P8.9: lights of this scene not sent this frame (lamp objects
+	 * removed, turned Only Shadow...) are destroyed, not kept alive */
+	for (auto it = m_lights.begin(); it != m_lights.end();) {
+		if (it->second.scene == scene && it->second.frame != m_light_frame) {
+			if (m_running && it->second.hash) {
+				m_bridge->light_destroy(it->second.hash);
+			}
+			m_hashes.erase(it->second.hash);
+			it = m_lights.erase(it);
+		}
+		else {
+			++it;
+		}
 	}
 }
 

@@ -229,6 +229,9 @@ def save(path):
     # shading (Blender Internal's), so they keep it
     for ma in bpy.data.materials:
         ma["bge_physical"] = 0
+    # P8.9: new lamps are physical too; these scenes keep their own falloff
+    for la in bpy.data.lamps:
+        la["bge_physical"] = 0
     bpy.ops.wm.save_as_mainfile(filepath=path, check_existing=False, compress=False)
     print("BGE-Remix: wrote", path)
 

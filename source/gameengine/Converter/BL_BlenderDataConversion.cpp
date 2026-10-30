@@ -137,6 +137,7 @@
 
 #include "BKE_key.h"
 #include "BKE_mesh.h"
+#include "BKE_lamp_physical.h"
 
 #include "BLI_math.h"
 
@@ -1457,6 +1458,20 @@ static KX_LightObject *gamelight_from_blamp(Object *ob, Lamp *la, unsigned int l
 	lightobj->m_layer = layerflag;
 	lightobj->m_spotblend = la->spotblend;
 	lightobj->m_spotsize = la->spotsize;
+
+	/* BGE-Remix P8.9: the shared light description */
+	lightobj->m_physical = BKE_lamp_is_physical(la);
+	lightobj->m_size = BKE_lamp_size(la);
+	lightobj->m_areasize[0] = la->area_size;
+	lightobj->m_areasize[1] = (la->area_shape == LA_AREA_RECT) ? la->area_sizey : la->area_size;
+	lightobj->m_sunangle = BKE_lamp_sun_angle(la);
+	lightobj->m_onlyshadow = (la->mode & LA_ONLYSHADOW) != 0;
+	/* BGE-Remix P8.10 */
+	lightobj->m_contact = BKE_lamp_contact_distance(la);
+	if (lightobj->m_physical) {
+		BKE_lamp_physical_coefficients(la->dist, lightobj->m_size, &lightobj->m_coeff_const,
+		                               &lightobj->m_coeff_lin, &lightobj->m_coeff_quad);
+	}
 	
 	lightobj->m_nodiffuse = (la->mode & LA_NO_DIFF) != 0;
 	lightobj->m_nospecular = (la->mode & LA_NO_SPEC) != 0;

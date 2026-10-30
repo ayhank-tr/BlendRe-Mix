@@ -2333,12 +2333,270 @@ void shadows_only_vsm(
 	}
 }
 
+/* ---- BGE-Remix P8.10: shadows of every lamp type ---- */
+
+/* a rotation per pixel, so a few samples blend into a smooth edge */
+float shadow_noise()
+{
+	return 6.2831853 * fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+}
+
+/* sample i of n, spread evenly over the unit disk (golden angle spiral) */
+vec2 shadow_disk(float i, float n, float rot)
+{
+	float r = sqrt((i + 0.5) / n);
+	float a = i * 2.3999632 + rot;
+	return r * vec2(cos(a), sin(a));
+}
+
+/* a shadow map's depth (0..1) in world units; clip: near, far, orthographic */
+float shadow_linear(float d, vec3 clip)
+{
+	if (clip.z > 0.5)
+		return clip.x + d * (clip.y - clip.x);
+	return clip.x * clip.y / max(clip.y - d * (clip.y - clip.x), 1e-8);
+}
+
+bool shadow_inside(vec3 co)
+{
+	return all(greaterThan(co, vec3(0.0))) && all(lessThan(co, vec3(1.0)));
+}
+
+/* A soft shadow from one view of a shadow atlas (percentage-closer soft
+ * shadows): the blockers near the receiver give the penumbra's width, from
+ * the light's size and how far the receiver is behind them; the map is then
+ * filtered over that width.
+ *   tile   the view's place in the atlas: offset (xy) and size (zw)
+ *   uv     the receiver in the view (0..1), zr its depth (world units)
+ *   bias   world units; slope: the receiver's depth change per unit sideways
+ *   uvw    the view's uv per world unit at the receiver
+ *   light  perspective views: the light's width; orthographic: its spread
+ *          (width per unit of distance)
+ *   texel  one texel in the view's uv */
+float shadow_soft(
+        sampler2D map, vec4 tile, vec2 uv, float zr, float bias, float slope, vec3 clip,
+        float uvw, float light, float texel)
+{
+	const float N = 16.0;
+	const float MAXR = 24.0;
+	bool persp = clip.z < 0.5;
+	float rot = shadow_noise();
+	float lo = 0.5 * texel, hi = 1.0 - 0.5 * texel;
+
+	/* where blockers of the light's area can be */
+	float reach = persp ? light * 0.5 * (zr - clip.x) / max(clip.x, 1e-4) : light * 0.5 * (zr - clip.x);
+	float search = clamp(reach * uvw, 2.0 * texel, MAXR * texel);
+	float blockers = 0.0, nblock = 0.0;
+	for (float i = 0.0; i < N; i += 1.0) {
+		vec2 o = shadow_disk(i, N, rot) * search;
+		float zb = shadow_linear(texture2D(map, tile.xy + clamp(uv + o, lo, hi) * tile.zw).r, clip);
+		if (zb < zr - bias - slope * length(o) / uvw) {
+			blockers += zb;
+			nblock += 1.0;
+		}
+	}
+	if (nblock < 0.5)
+		return 1.0;
+	float zb = blockers / nblock;
+
+	/* the penumbra on the receiver */
+	float pen = persp ? light * (zr - zb) / max(zb, 1e-4) : light * (zr - zb);
+	float radius = clamp(0.5 * pen * uvw, texel, MAXR * texel);
+	float lit = 0.0;
+	for (float i = 0.0; i < N; i += 1.0) {
+		vec2 o = shadow_disk(i, N, rot + 1.7) * radius;
+		float z = shadow_linear(texture2D(map, tile.xy + clamp(uv + o, lo, hi) * tile.zw).r, clip);
+		if (z >= zr - bias - slope * length(o) / uvw)
+			lit += 1.0;
+	}
+	return lit / N;
+}
+
+/* the receiver's offset along its normal, and its slope, against acne */
+void shadow_receiver(float inp, float bias, out float ndl, out float sinl, out float offset)
+{
+	ndl = clamp(inp, 0.05, 1.0);
+	sinl = sqrt(1.0 - ndl * ndl);
+	offset = (0.5 + 1.5 * sinl) * bias;
+}
+
+/* spot lamps. params: the light's width, bias, 0, one texel; clip: near, far,
+ * the tangent of half the view, 0 */
+void shadow_spot_soft(
+        vec3 rco, vec3 vn, float inp, sampler2D map, mat4 persmat, vec4 params, vec4 clip,
+        out float result)
+{
+	if (inp <= 0.0) {
+		result = 0.0;
+		return;
+	}
+	float ndl, sinl, offset;
+	shadow_receiver(inp, params.y, ndl, sinl, offset);
+	vec4 co = persmat * vec4(rco, 1.0);
+	float texw = 2.0 * max(co.w, 1e-4) * clip.z * params.w;  /* one texel in world units here */
+	co = persmat * vec4(rco + vn * texw * offset, 1.0);
+	if (co.w <= 0.0) {
+		result = 1.0;
+		return;
+	}
+	vec2 uv = co.xy / co.w;
+	if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+		result = 1.0;
+		return;
+	}
+	result = shadow_soft(map, vec4(0.0, 0.0, 1.0, 1.0), uv, co.w, texw * params.y, sinl / ndl * params.y,
+	                     vec3(clip.xy, 0.0), 0.5 / (co.w * clip.z), params.x, params.w);
+}
+
+/* point and area lamps: a cube's six faces side by side (three by two).
+ * lampmat: the camera's view to the lamp's own axes; clip: near, far, the
+ * tangent of half a face's view (a little over 1: the faces overlap), 0 */
+void shadow_cube_soft(
+        vec3 rco, vec3 vn, float inp, sampler2D map, mat4 lampmat, vec4 params, vec4 clip,
+        out float result)
+{
+	if (inp <= 0.0) {
+		result = 0.0;
+		return;
+	}
+	float ndl, sinl, offset;
+	shadow_receiver(inp, params.y, ndl, sinl, offset);
+	vec3 l = (lampmat * vec4(rco, 1.0)).xyz;
+	vec3 al = abs(l);
+	float texw = 2.0 * max(max(max(al.x, al.y), al.z), 1e-4) * clip.z * params.w;
+	l = (lampmat * vec4(rco + vn * texw * offset, 1.0)).xyz;
+	al = abs(l);
+
+	/* the face looks along the largest axis, its up is the next axis */
+	vec3 f, u;
+	float face;
+	if (al.x >= al.y && al.x >= al.z) {
+		face = (l.x >= 0.0) ? 0.0 : 1.0;
+		f = vec3((l.x >= 0.0) ? 1.0 : -1.0, 0.0, 0.0);
+		u = vec3(0.0, 1.0, 0.0);
+	}
+	else if (al.y >= al.z) {
+		face = (l.y >= 0.0) ? 2.0 : 3.0;
+		f = vec3(0.0, (l.y >= 0.0) ? 1.0 : -1.0, 0.0);
+		u = vec3(0.0, 0.0, 1.0);
+	}
+	else {
+		face = (l.z >= 0.0) ? 4.0 : 5.0;
+		f = vec3(0.0, 0.0, (l.z >= 0.0) ? 1.0 : -1.0);
+		u = vec3(1.0, 0.0, 0.0);
+	}
+	float zr = dot(l, f);
+	if (zr <= clip.x) {
+		result = 1.0;
+		return;
+	}
+	vec2 uv = vec2(dot(l, cross(f, u)), dot(l, u)) / (zr * clip.z) * 0.5 + 0.5;
+	vec4 tile = vec4(mod(face, 3.0) / 3.0, floor(face / 3.0) * 0.5, 1.0 / 3.0, 0.5);
+	result = shadow_soft(map, tile, uv, zr, texw * params.y, sinl / ndl * params.y,
+	                     vec3(clip.xy, 0.0), 0.5 / (zr * clip.z), params.x, params.w);
+}
+
+/* the sun: four cascades (two by two) that follow the camera, the finest that
+ * holds the point is used. c0..c3: the camera's view to each cascade (uv and
+ * depth, 0..1); scale: each one's uv per world unit; range: each one's depth
+ * in world units; params: the sun's spread, bias, 0, one texel */
+void shadow_sun_soft(
+        vec3 rco, vec3 vn, float inp, sampler2D map, mat4 c0, mat4 c1, mat4 c2, mat4 c3,
+        vec4 scale, vec4 range, vec4 params, out float result)
+{
+	if (inp <= 0.0) {
+		result = 0.0;
+		return;
+	}
+	vec4 p = vec4(rco, 1.0);
+	mat4 m = c0;
+	float k = 0.0;
+	if (!shadow_inside((c0 * p).xyz)) {
+		m = c1;
+		k = 1.0;
+		if (!shadow_inside((c1 * p).xyz)) {
+			m = c2;
+			k = 2.0;
+			if (!shadow_inside((c2 * p).xyz)) {
+				m = c3;
+				k = 3.0;
+				if (!shadow_inside((c3 * p).xyz)) {
+					result = 1.0;
+					return;
+				}
+			}
+		}
+	}
+	float sc = (k < 0.5) ? scale.x : (k < 1.5) ? scale.y : (k < 2.5) ? scale.z : scale.w;
+	float rg = (k < 0.5) ? range.x : (k < 1.5) ? range.y : (k < 2.5) ? range.z : range.w;
+	float ndl, sinl, offset;
+	shadow_receiver(inp, params.y, ndl, sinl, offset);
+	float texw = params.w / sc;
+	vec3 co = (m * vec4(rco + vn * texw * offset, 1.0)).xyz;
+	vec4 tile = vec4(mod(k, 2.0) * 0.5, floor(k / 2.0) * 0.5, 0.5, 0.5);
+	result = shadow_soft(map, tile, clamp(co.xy, 0.0, 1.0), co.z * rg, texw * params.y, sinl / ndl * params.y,
+	                     vec3(0.0, rg, 1.0), sc, params.x, params.w);
+}
+
+/* the camera's view depth of a depth buffer value */
+float shadow_view_z(float d)
+{
+	float ndc = d * 2.0 - 1.0;
+	if (gl_ProjectionMatrix[2][3] == 0.0)
+		return (ndc - gl_ProjectionMatrix[3][2]) / gl_ProjectionMatrix[2][2];
+	return -gl_ProjectionMatrix[3][2] / (ndc + gl_ProjectionMatrix[2][2]);
+}
+
+/* contact shadows: a few steps toward the light through the scene's depth.
+ * contact: distance (0: off), thickness, 0, bias; on: the depth is there */
+void shadow_contact(vec3 rco, vec3 lv, sampler2D depthmap, vec4 contact, float on, float shadfac, out float result)
+{
+	result = shadfac;
+	if (contact.x <= 0.0 || on < 0.5 || shadfac <= 0.0)
+		return;
+	const float N = 8.0;
+	float jitter = fract(shadow_noise() * 0.1591549);
+	for (float i = 0.0; i < N; i += 1.0) {
+		vec3 p = rco + lv * (contact.x * (i + jitter) / N);
+		vec4 c = gl_ProjectionMatrix * vec4(p, 1.0);
+		if (c.w <= 0.0)
+			break;
+		vec2 ndc = c.xy / c.w;
+		if (abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0)
+			break;
+		float dz = shadow_view_z(texture2D(depthmap, ndc * 0.5 + 0.5).r) - p.z;
+		if (dz > contact.w && dz < contact.y) {
+			result = 0.0;
+			return;
+		}
+	}
+}
+
+/* a shadow factor as the lamp's shadow colour (Lamp Data node) */
+void shadow_color_mix(float inp, float shadfac, vec3 shadowcolor, out vec3 result)
+{
+	result = (inp > 0.0) ? vec3(1.0) - (1.0 - shadfac) * (vec3(1.0) - shadowcolor) : vec3(1.0);
+}
+
 void shade_light_texture(vec3 rco, sampler2D cookie, mat4 shadowpersmat, out vec4 result)
 {
 
 	vec4 co = shadowpersmat * vec4(rco, 1.0);
 
 	result = texture2DProj(cookie, co);
+}
+
+/* BGE-Remix P8.9: a lamp texture's coordinates: View across the spot's cone
+ * (-1..1, as Blender Internal), Global the world */
+void lamp_texco_view(vec3 rco, mat4 shadowpersmat, out vec3 co)
+{
+	vec4 p = shadowpersmat * vec4(rco, 1.0);
+	co = vec3(p.xy / max(abs(p.w), 1e-6) * 2.0 - vec2(1.0), 0.0);
+}
+
+void lamp_texco_global(vec3 rco, mat4 viewinvmat, out vec3 co)
+{
+	co = (viewinvmat * vec4(rco, 1.0)).xyz;
 }
 
 void shade_exposure_correct(vec3 col, float linfac, float logfac, out vec3 outcol)

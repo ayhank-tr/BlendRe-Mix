@@ -2601,7 +2601,7 @@ static void gpu_render_lamp_update(Scene *scene, View3D *v3d,
 	}
 }
 
-static void gpu_update_lamps_shadows_world(Scene *scene, View3D *v3d)
+static void gpu_update_lamps_shadows_world(Scene *scene, View3D *v3d, RegionView3D *view_rv3d)
 {
 	ListBase shadows;
 	View3DShadow *shadow;
@@ -2649,22 +2649,32 @@ static void gpu_update_lamps_shadows_world(Scene *scene, View3D *v3d)
 		v3d->flag2 &= ~(V3D_SOLID_TEX | V3D_SHOW_SOLID_MATCAP);
 		v3d->flag2 |= V3D_RENDER_OVERRIDE | V3D_RENDER_SHADOW;
 		
+		/* BGE-Remix P8.10: the sun's cascades follow this view */
+		GPU_lamp_shadow_camera(shadow->lamp, view_rv3d ? view_rv3d->viewinv : NULL,
+		                       view_rv3d ? view_rv3d->winmat : NULL);
 		GPU_lamp_shadow_buffer_bind(shadow->lamp, viewmat, &winsize, winmat);
 
-		ar.regiondata = &rv3d;
-		ar.regiontype = RGN_TYPE_WINDOW;
-		rv3d.persp = RV3D_CAMOB;
-		copy_m4_m4(rv3d.winmat, winmat);
-		copy_m4_m4(rv3d.viewmat, viewmat);
-		invert_m4_m4(rv3d.viewinv, rv3d.viewmat);
-		mul_m4_m4m4(rv3d.persmat, rv3d.winmat, rv3d.viewmat);
-		invert_m4_m4(rv3d.persinv, rv3d.viewinv);
+		/* BGE-Remix P8.10: each view of the buffer (a cube's faces, the sun's cascades) */
+		for (int view = 0; view < GPU_lamp_shadow_view_count(shadow->lamp); view++) {
+			if (view > 0) {
+				GPU_lamp_shadow_buffer_view(shadow->lamp, view, viewmat, winmat, NULL);
+			}
 
-		/* no need to call ED_view3d_draw_offscreen_init since shadow buffers were already updated */
-		ED_view3d_draw_offscreen(
-		            scene, v3d, &ar, winsize, winsize, viewmat, winmat,
-		            false, false, true,
-		            NULL, NULL, NULL, NULL);
+			ar.regiondata = &rv3d;
+			ar.regiontype = RGN_TYPE_WINDOW;
+			rv3d.persp = RV3D_CAMOB;
+			copy_m4_m4(rv3d.winmat, winmat);
+			copy_m4_m4(rv3d.viewmat, viewmat);
+			invert_m4_m4(rv3d.viewinv, rv3d.viewmat);
+			mul_m4_m4m4(rv3d.persmat, rv3d.winmat, rv3d.viewmat);
+			invert_m4_m4(rv3d.persinv, rv3d.viewinv);
+
+			/* no need to call ED_view3d_draw_offscreen_init since shadow buffers were already updated */
+			ED_view3d_draw_offscreen(
+			            scene, v3d, &ar, winsize, winsize, viewmat, winmat,
+			            false, false, true,
+			            NULL, NULL, NULL, NULL);
+		}
 		GPU_lamp_shadow_buffer_unbind(shadow->lamp);
 		
 		v3d->drawtype = drawtype;
@@ -3069,7 +3079,7 @@ void ED_view3d_draw_offscreen_init(Scene *scene, View3D *v3d)
 {
 	/* shadow buffers, before we setup matrices */
 	if (draw_glsl_material(scene, NULL, v3d, v3d->drawtype))
-		gpu_update_lamps_shadows_world(scene, v3d);
+		gpu_update_lamps_shadows_world(scene, v3d, NULL);
 }
 
 /*
@@ -3853,7 +3863,7 @@ static void view3d_main_region_draw_objects(const bContext *C, Scene *scene, Vie
 	
 	/* shadow buffers, before we setup matrices */
 	if (draw_glsl_material(scene, NULL, v3d, v3d->drawtype))
-		gpu_update_lamps_shadows_world(scene, v3d);
+		gpu_update_lamps_shadows_world(scene, v3d, rv3d);
 
 	/* reset default OpenGL lights if needed (i.e. after preferences have been altered) */
 	if (rv3d->rflag & RV3D_GPULIGHT_UPDATE) {

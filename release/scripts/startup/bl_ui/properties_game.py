@@ -876,7 +876,9 @@ class DATA_PT_shadow_game(DataButtonsPanel, Panel):
 
     @classmethod
     def poll(cls, context):
-        COMPAT_LIGHTS = {'SPOT', 'SUN'}
+        # BGE-Remix P8.10: every lamp casts (point and area lamps from a cube
+        # map, the sun from cascades that follow the camera)
+        COMPAT_LIGHTS = {'SPOT', 'SUN', 'POINT', 'AREA'}
         lamp = context.lamp
         engine = context.scene.render.engine
         return (lamp and lamp.type in COMPAT_LIGHTS) and (engine in cls.COMPAT_ENGINES)
@@ -897,31 +899,37 @@ class DATA_PT_shadow_game(DataButtonsPanel, Panel):
 
         col = split.column()
         col.prop(lamp, "shadow_color", text="")
-        if lamp.type == 'SUN':
-            col.prop(lamp, "show_shadow_box")
 
         col = split.column()
         col.prop(lamp, "use_shadow_layer", text="This Layer Only")
         col.prop(lamp, "use_only_shadow")
 
+        # the softness comes from the light's size (Lamp panel: Size, Angle)
+        if lamp.type == 'SPOT':
+            col = layout.column()
+            col.label("Buffer Type:")
+            col.prop(lamp, "ge_shadow_buffer_type", text="", toggle=True)
+        variance = lamp.type == 'SPOT' and lamp.ge_shadow_buffer_type == 'VARIANCE'
         col = layout.column()
-        col.label("Buffer Type:")
-        col.prop(lamp, "ge_shadow_buffer_type", text="", toggle=True)
         col.label("Quality:")
         col = layout.column(align=True)
         col.prop(lamp, "shadow_buffer_size", text="Size")
         col.prop(lamp, "shadow_buffer_bias", text="Bias")
-        col.prop(lamp, "shadow_buffer_bleed_bias", text="Bleed Bias")
-
-        row = layout.row()
-        row.label("Clipping:")
-        row = layout.row(align=True)
-        row.prop(lamp, "shadow_buffer_clip_start", text="Clip Start")
-        row.prop(lamp, "shadow_buffer_clip_end", text="Clip End")
+        if variance:
+            col.prop(lamp, "shadow_buffer_bleed_bias", text="Bleed Bias")
 
         if lamp.type == 'SUN':
+            # the cascades cover the camera's view up to this distance
+            layout.prop(lamp, "shadow_buffer_clip_end", text="Distance")
+        else:
             row = layout.row()
-            row.prop(lamp, "shadow_frustum_size", text="Frustum Size")
+            row.label("Clipping:")
+            row = layout.row(align=True)
+            row.prop(lamp, "shadow_buffer_clip_start", text="Clip Start")
+            row.prop(lamp, "shadow_buffer_clip_end", text="Clip End")
+
+        if hasattr(bpy.types.Lamp, "bge_contact_shadow"):
+            layout.prop(lamp, "bge_contact_shadow")
 
 
 class ObjectButtonsPanel:

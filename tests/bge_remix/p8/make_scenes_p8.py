@@ -110,12 +110,23 @@ def facing_plane(scene, name, x, z, size, ma, uv=True):
     return p2.plane(scene, name, size, (x, 0.0, z), rot, ma)
 
 
-def save(scene, path, physical=None):
+def classic_lamps():
+    """P8.9: new lamps are physical; the Part A scenes were made (and checked)
+    with each lamp's own falloff, so they keep it"""
+    if not STOCK:
+        for la in bpy.data.lamps:
+            la["bge_physical"] = 0
+
+
+def save(scene, path, physical=None, lamps_physical=False):
     """physical: None keeps each material's own shading (new materials are
-    physical), False makes all Classic"""
+    physical), False makes all Classic; lamps_physical: False makes every lamp
+    use its own falloff, True keeps each lamp's model"""
     if physical is False:
         for ma in bpy.data.materials:
             ma["bge_physical"] = 0
+    if not lamps_physical:
+        classic_lamps()
     p2.add_probe(scene)
     scene.update()
     bpy.ops.wm.save_as_mainfile(filepath=path, check_existing=False, compress=False)
@@ -681,6 +692,7 @@ def make_mt_features(folder, E):
     scene.objects.link(driver)
     logic(scene, driver, "p8_mt.py", MT_SCRIPT)
     scene.game_settings.material_mode = 'MULTITEXTURE'
+    classic_lamps()
     p2.add_probe(scene)
     scene.update()
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, "mt_features.blend"), check_existing=False,
@@ -711,10 +723,434 @@ def make_mt_bench(folder):
         p2.lamp(scene, "L%d" % k, 'POINT', (5.0 * math.cos(a), -3.0, 3.0 * math.sin(a)), energy=0.4,
                 distance=12.0)
     scene.game_settings.material_mode = 'MULTITEXTURE'
+    classic_lamps()
     p2.add_probe(scene)
     scene.update()
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, "mt_bench.blend"), check_existing=False,
                                 compress=False)
+
+
+# ---------------------------------------------------------------------------
+# Part B: lamps and shadows. The cells of lamps and shadows are tiles facing
+# the camera (the "floor"; "up" is toward the camera, -Y), each on its own
+# layer with its own lamps ("This Layer Only"), so each lamp lights and
+# shadows its tile only.
+
+CELL_X = (-5.0, -3.0, -1.0, 1.0, 3.0, 5.0)
+CELL_Z = (2.1, 0.0, -2.1)
+TILE = 1.9
+LIGHT_SCALE = 0.125  # Remix's bge_remix_light_scale when the scene has none
+
+
+def cell_center(i):
+    return CELL_X[i % 6], CELL_Z[i // 6]
+
+
+def screen(x, z):
+    """a point of the tiles' plane on screen (pixels, top-left origin)"""
+    return [(x / ORTHO + 0.5) * WIDTH, (0.5 - z / VIEW_H) * HEIGHT]
+
+
+def on_layer(ob, k):
+    ob.layers = [i == k for i in range(20)]
+
+
+def tile(scene, name, i, ma):
+    x, z = cell_center(i)
+    ob = facing_plane(scene, name, x, z, TILE, ma, uv=False)
+    on_layer(ob, i)
+    return ob
+
+
+def cell_lamp(scene, name, kind, i, offset, target=None, energy=1.0, distance=1.5, size=0.1, physical=True,
+              shadow=False, color=(1.0, 1.0, 1.0)):
+    """a lamp of cell i at offset (x, up, z) from the tile's centre, aimed at
+    the tile (or target, an offset too), lighting that cell only"""
+    x, z = cell_center(i)
+    ob = p2.lamp(scene, name, kind, (x + offset[0], -offset[1], z + offset[2]), energy=energy, color=color,
+                 distance=distance, soft=size)
+    t = target or (0.0, 0.0, 0.0)
+    p2.look_at(ob, (x + t[0], -t[1], z + t[2]))
+    la = ob.data
+    la.use_own_layer = True
+    if hasattr(la, "use_shadow"):  # not on hemi lamps
+        la.use_shadow = shadow
+    if not STOCK:
+        la["bge_physical"] = 1 if physical else 0
+    on_layer(ob, i)
+    return ob
+
+
+def remix_expect(ob):
+    """what the fake runtime's log should show for a lamp (remix_light.cc)"""
+    la = ob.data
+    E, D, s = la.energy, la.distance, LIGHT_SCALE
+    c = list(la.color)
+    phys = bool(la.get("bge_physical", 0)) and la.type in ('POINT', 'SPOT')
+    e = {"name": ob.name}
+    if la.type == 'SUN':
+        e.update(type="distant", angle=float(la.get("bge_sun_angle", 0.53)), k=math.pi * E * s)
+    elif la.type == 'AREA':
+        sx, sy = la.size, (la.size_y if la.shape == 'RECTANGLE' else la.size)
+        e.update(type="rect", size=[sx, sy], k=math.pi * E * s * D / (sx * sy))
+    elif la.type == 'HEMI':
+        e.update(type="dome")
+    else:
+        r = max(la.shadow_soft_size, 0.02)
+        k = E * s * D * D / (r * r) if phys else E * s * D / (r * r)
+        if phys and la.type == 'SPOT':
+            e.update(type="disk", radii=[r, r], k=k, cone=math.degrees(la.spot_size) / 2.0)
+        else:
+            e.update(type="sphere", radius=r, k=k)
+            if la.type == 'SPOT':
+                e["cone"] = math.degrees(la.spot_size) / 2.0
+    if la.type == 'SPOT' and la.use_halo:
+        e["volumetric"] = 1.0 + la.halo_intensity
+    if "k" in e:
+        e["radiance"] = [round(v * e["k"], 5) for v in c]
+    return e
+
+
+CHANGE_SCRIPT = r'''
+import bge
+own = bge.logic.getCurrentController().owner
+own["f"] = own.get("f", 0) + 1
+if own["f"] == 3:
+    sc = bge.logic.getCurrentScene()
+    lamp, like = sc.objects["Changing"], sc.objects["L_point_phys_small"]
+    lamp.energy = like.energy
+    lamp.color = like.color
+    lamp.size = like.size
+    lamp.distance = like.distance
+    print("P8-LAMP-CHANGED")
+'''
+
+
+def make_lamps(folder, E):
+    scene = base("Lamps")
+    scene.layers = [True] * 20
+    floor = classic("L_floor", (0.8, 0.8, 0.8))
+    floor.diffuse_intensity = 0.8
+    cells = {}
+    lamps = []
+
+    def cell(i, name, *lamp_args, **lamp_kw):
+        tile(scene, "T_" + name, i, floor)
+        x, z = cell_center(i)
+        cells[name] = {"cell": i, "rect": layout_rect(x, z, TILE / 2.0)}
+        ob = cell_lamp(scene, *lamp_args, **lamp_kw)
+        lamps.append(ob)
+        return ob
+
+    up = (0.0, 1.0, 0.0)
+    la = cell(0, "point_classic_square", "L_point_classic_sq", 'POINT', 0, up, energy=0.8, physical=False,
+              size=0.2).data
+    la.falloff_type = 'INVERSE_SQUARE'
+    la = cell(1, "point_classic_linear", "L_point_classic_lin", 'POINT', 1, up, energy=0.8, physical=False,
+              size=0.2).data
+    la.falloff_type = 'INVERSE_LINEAR'
+    cell(2, "point_physical_small", "L_point_phys_small", 'POINT', 2, up, energy=0.8, distance=1.0, size=0.1)
+    cell(3, "point_physical_large", "L_point_phys_large", 'POINT', 3, up, energy=0.8, distance=1.0, size=0.6)
+    for i, name, phys in ((4, "spot_classic", False), (5, "spot_physical", True)):
+        la = cell(i, name, "L_" + name, 'SPOT', i, (0.0, 1.5, 0.0), energy=1.5, distance=2.0, physical=phys,
+                  size=0.3).data
+        la.spot_size = math.radians(70.0)
+        la.spot_blend = 0.3
+    la = cell(6, "sun", "L_sun", 'SUN', 6, (0.8, 1.4, 0.0), energy=0.7).data
+    if not STOCK:
+        la["bge_sun_angle"] = 2.0
+    cell(7, "hemi", "L_hemi", 'HEMI', 7, up, energy=0.6)
+    la = cell(8, "area_square", "L_area_square", 'AREA', 8, (0.0, 1.0, 0.0), energy=0.8, distance=1.5).data
+    la.shape = 'SQUARE'
+    la.size = 0.8
+    la = cell(9, "area_rectangle", "L_area_rect", 'AREA', 9, (0.0, 1.0, 0.0), energy=0.8, distance=1.5).data
+    la.shape = 'RECTANGLE'
+    la.size = 1.2
+    la.size_y = 0.4
+    la = cell(10, "spot_halo", "L_spot_halo", 'SPOT', 10, (0.0, 1.5, 0.0), energy=1.5, distance=2.0,
+              physical=False, size=0.3).data
+    la.spot_size = math.radians(40.0)
+    la.spot_blend = 0.3
+    la.use_halo = True
+    la.halo_intensity = 1.0
+    # the halo's twin without it (the game draws the halo over the light)
+    la = cell(15, "spot_no_halo", "L_spot_no_halo", 'SPOT', 15, (0.0, 1.5, 0.0), energy=1.5, distance=2.0,
+              physical=False, size=0.3).data
+    la.spot_size = math.radians(40.0)
+    la.spot_blend = 0.3
+    la = cell(11, "spot_texture", "L_spot_texture", 'SPOT', 11, (0.0, 1.5, 0.0), energy=2.0, distance=2.0,
+              physical=False, size=0.3).data
+    la.spot_size = math.radians(80.0)
+    la.spot_blend = 0.1
+    tex = bpy.data.textures.new("LampChecker", 'IMAGE')
+    tex.image = p3.image("LampCheckerImage", lambda u, v: p3.checker(u, v, n=4, a=(1.0, 1.0, 1.0),
+                                                                      b=(0.2, 0.2, 0.2)))
+    slot = la.texture_slots.add()
+    slot.texture = tex
+    slot.texture_coords = 'VIEW'
+
+    # a light group: the tile is lit by its group's lamp only
+    group = bpy.data.groups.new("LightGroup")
+    lg_mat = classic("L_floor_group", (0.8, 0.8, 0.8))
+    lg_mat.diffuse_intensity = 0.8
+    lg_mat.light_group = group
+    tile(scene, "T_light_group", 12, lg_mat)
+    x, z = cell_center(12)
+    cells["light_group"] = {"cell": 12, "rect": layout_rect(x, z, TILE / 2.0)}
+    a = cell_lamp(scene, "LG_in_group", 'POINT', 12, (-0.5, 0.8, 0.0), energy=0.6, physical=False, size=0.2)
+    b = cell_lamp(scene, "LG_not_in_group", 'POINT', 12, (0.5, 0.8, 0.0), energy=0.6, physical=False, size=0.2)
+    group.objects.link(a)
+    lamps += [a, b]
+
+    # an Only Shadow lamp (left out of Remix) next to an ordinary one
+    cell(13, "only_shadow", "L_fill", 'POINT', 13, up, energy=0.8, distance=1.0, size=0.1)
+    o = cell_lamp(scene, "L_only_shadow", 'SPOT', 13, (0.0, 1.5, 0.0), energy=1.0, distance=2.0, shadow=True)
+    o.data.use_only_shadow = True
+    lamps.append(o)
+
+    # a lamp a script changes into the point_physical_small one's twin
+    ch = cell(14, "changed_by_script", "Changing", 'POINT', 14, up, energy=0.2, distance=3.0, size=0.5,
+              color=(0.2, 0.3, 1.0))
+    driver = bpy.data.objects.new("LampScript", None)
+    scene.objects.link(driver)
+    logic(scene, driver, "p8_lamp_change.py", CHANGE_SCRIPT)
+
+    E["lamps"] = {"cells": cells, "remix": [remix_expect(ob) for ob in lamps],
+                  "only_shadow": "L_only_shadow", "changing": "Changing", "like": "L_point_phys_small",
+                  "f12_skip": ["spot_halo"]}
+    save(scene, os.path.join(folder, "lamps.blend"), physical=False, lamps_physical=True)
+
+
+MOVE_SCRIPT = r'''
+import bge, math
+own = bge.logic.getCurrentController().owner
+own["f"] = own.get("f", 0) + 1
+f = own["f"]
+sc = bge.logic.getCurrentScene()
+start = bge.logic.globalDict.setdefault("p8_start", {})
+for name in ("S_moving", "Mover", "Spinner"):
+    ob = sc.objects.get(name)
+    if ob is None:
+        continue
+    p = start.setdefault(name, list(ob.worldPosition))
+    if name == "S_moving":
+        ob.worldPosition = [p[0] + 0.3 * math.cos(f * 0.2), p[1], p[2] + 0.3 * math.sin(f * 0.2)]
+    elif name == "Mover":
+        ob.worldPosition = [p[0] + 0.3 * math.sin(f * 0.2), p[1], p[2]]
+    else:
+        ob.applyRotation([0.0, 0.0, 0.05], False)
+'''
+
+
+def post(scene, name, i, ma, offset=(0.0, 0.0), size=0.25, height=0.8):
+    """a box standing on tile i (toward the camera)"""
+    x, z = cell_center(i)
+    ob = p2.cube(scene, name, size, (x + offset[0], -height / 2.0, z + offset[1]), ma)
+    ob.scale = (1.0, height / size, 1.0)
+    on_layer(ob, i)
+    return ob
+
+
+def fence(scene, name, i, ma, z_off=0.2, width=1.2, height=0.6):
+    """a cut-out fence standing on tile i along X"""
+    x, z = cell_center(i)
+    ob = p3.uv_plane(scene, name, width, (x, -height / 2.0, z + z_off), (0.0, 0.0, 0.0), ma)
+    ob.scale = (1.0, height / width, 1.0)
+    on_layer(ob, i)
+    return ob
+
+
+def make_shadows(folder, E):
+    scene = base("Shadows")
+    scene.layers = [True] * 20
+    floor = classic("S_floor", (0.8, 0.8, 0.8))
+    solid = classic("S_post", (0.6, 0.55, 0.5))
+    holes = classic("S_fence", (0.5, 0.35, 0.2))
+    holes.use_transparency = True
+    holes.alpha = 0.0
+    holes.game_settings.alpha_blend = 'CLIP'
+    img = p3.image("FenceHoles", lambda u, v: (0.6, 0.4, 0.2, 1.0 if (int(u * 4) + int(v * 4)) % 2 == 0 else 0.0))
+    slot = p3.bi_slot(holes, img, color=True)
+    slot.use_map_alpha = True
+    cells = {}
+    lamp_at = (0.5, 1.4, 0.5)
+
+    def cell(i, name, **extra):
+        tile(scene, "T_" + name, i, floor)
+        x, z = cell_center(i)
+        cells[name] = dict(cell=i, rect=layout_rect(x, z, TILE / 2.0), center=screen(x, z), **extra)
+
+    def lamp_screen(i, offset):
+        x, z = cell_center(i)
+        return screen(x + offset[0], z + offset[2])
+
+    # every lamp type casts: a post under a point, spot, sun and area lamp
+    for i, name, kind, size in ((0, "point_hard", 'POINT', 0.05), (1, "point_soft", 'POINT', 0.4),
+                                (2, "spot", 'SPOT', 0.1), (3, "sun", 'SUN', 0.0), (4, "area", 'AREA', 0.0)):
+        cell(i, name, lamp=lamp_screen(i, lamp_at), kind=kind)
+        post(scene, "P_" + name, i, solid)
+        ob = cell_lamp(scene, "S_" + name, kind, i, lamp_at, energy=1.0, distance=2.0, size=max(size, 0.02),
+                       shadow=True)
+        la = ob.data
+        if kind == 'SPOT':
+            la.spot_size = math.radians(100.0)
+            la.spot_blend = 0.2
+            la.shadow_buffer_size = 1024
+        if kind == 'SUN':
+            la.energy = 0.8
+            if not STOCK:
+                la["bge_sun_angle"] = 1.0
+        if kind == 'AREA':
+            la.size = 0.3
+
+    # a cut-out fence (Simple map, point lamp) and the same under a Variance spot
+    fence_lamp = (0.0, 1.2, 0.8)
+    for i, name, kind in ((5, "fence", 'POINT'), (13, "fence_variance", 'SPOT')):
+        cell(i, name, lamp=lamp_screen(i, fence_lamp), fence_z=0.2)
+        fence(scene, "F_" + name, i, holes)
+        ob = cell_lamp(scene, "S_" + name, kind, i, fence_lamp, target=(0.0, 0.0, -0.2), energy=1.0, distance=2.0,
+                       size=0.02, shadow=True)
+        if kind == 'SPOT':
+            ob.data.spot_size = math.radians(110.0)
+            ob.data.shadow_buffer_size = 1024
+            ob.data.ge_shadow_buffer_type = 'VARIANCE'
+
+    # slopes: grazing light on an empty tile (no acne: nothing may darken it)
+    cell(6, "graze_sun")
+    cell_lamp(scene, "S_graze_sun", 'SUN', 6, (-1.0, 0.27, 0.0), energy=1.5, shadow=True)
+    cell(7, "graze_point")
+    cell_lamp(scene, "S_graze_point", 'POINT', 7, (-1.2, 0.25, 0.0), energy=2.0, distance=2.0, size=0.05,
+              shadow=True)
+
+    # contact shadows: a low slab touching the tile; the lamp's large bias
+    # leaves a gap at the contact in its map, which contact shadows close
+    cell(8, "contact", slab=layout_rect(cell_center(8)[0], cell_center(8)[1], 0.3 / 0.8))
+    x, z = cell_center(8)
+    slab = p2.cube(scene, "Slab", 0.6, (x, -0.075, z), solid)
+    slab.scale = (1.0, 0.25, 1.0)
+    on_layer(slab, 8)
+    ob = cell_lamp(scene, "S_contact", 'SPOT', 8, (1.4, 0.8, 0.0), energy=1.5, distance=2.0, size=0.05,
+                   shadow=True)
+    ob.data.spot_size = math.radians(90.0)
+    ob.data.shadow_buffer_bias = 5.0
+    if not STOCK:
+        ob.data["bge_contact_shadow"] = 0.4
+
+    # static and moving lamps (the shadow is drawn again only when needed)
+    for i, name in ((9, "static"), (10, "moving"), (11, "static_mover")):
+        cell(i, name)
+        post(scene, ("Mover" if name == "static_mover" else "P_" + name), i, solid)
+        ob = cell_lamp(scene, "S_" + name, 'POINT', i, lamp_at, energy=1.0, distance=2.0, size=0.1, shadow=True)
+        ob.data.shadow_buffer_clip_end = 1.6
+
+    driver = bpy.data.objects.new("ShadowScript", None)
+    scene.objects.link(driver)
+    logic(scene, driver, "p8_shadow_move.py", MOVE_SCRIPT)
+
+    E["shadows"] = {"cells": cells, "px_per_unit": WIDTH / ORTHO}
+    path = os.path.join(folder, "shadows.blend")
+    save(scene, path, physical=False, lamps_physical=True)
+    # the same without contact shadows, and without any shadow
+    for la in bpy.data.lamps:
+        la["bge_contact_shadow"] = 0.0
+    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, "shadows_nocontact.blend"), copy=True)
+    for la in bpy.data.lamps:
+        la.use_shadow = False
+    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, "shadows_noshadow.blend"), copy=True)
+
+
+def make_shadows_far(folder, E):
+    """a long floor seen from a person's height, a sun from behind: a post
+    near the camera and one far away, each with its shadow toward the camera"""
+    from bpy_extras.object_utils import world_to_camera_view
+    scene = p2.empty_scene()
+    scene.name = "ShadowsFar"
+    scene.game_settings.resolution_x = WIDTH
+    scene.game_settings.resolution_y = HEIGHT
+    scene.render.resolution_x = WIDTH
+    scene.render.resolution_y = HEIGHT
+    scene.render.resolution_percentage = 100
+    p2.world(scene, (0.05, 0.05, 0.08))
+    floor = classic("SF_floor", (0.8, 0.8, 0.8))
+    solid = classic("SF_post", (0.6, 0.55, 0.5))
+    p2.plane(scene, "SF_floor", 1.0, (0.0, 25.0, 0.0), (0.0, 0.0, 0.0), floor).scale = (10.0, 70.0, 1.0)
+    cam = p2.camera(scene, (0.0, -2.0, 6.0), (0.0, 18.0, 0.0), lens=35.0)
+    sun = p2.lamp(scene, "SF_sun", 'SUN', (0.0, 60.0, 20.0), energy=1.0)
+    elev = math.radians(30.0)
+    p2.look_at(sun, (0.0, 60.0 - math.cos(elev), 20.0 - math.sin(elev)))
+    sun.data.use_shadow = True
+    sun.data.shadow_buffer_clip_end = 50.0
+    if not STOCK:
+        sun.data["bge_physical"] = 0
+    height, width = 2.5, 1.0
+    length = height / math.tan(elev)
+    scene.update()
+    probes = {}
+    for name, y in (("near", 16.0), ("far", 34.0)):
+        ob = p2.cube(scene, "SF_" + name, width, (0.0, y, height / 2.0), solid)
+        ob.scale = (1.0, 1.0, height / width)
+        # the shadow's middle on the floor, toward the camera
+        from mathutils import Vector
+        pts = []
+        for t in (0.45, 0.55, 0.65):
+            p = world_to_camera_view(scene, cam, Vector((0.0, y - width / 2.0 - t * length, 0.0)))
+            pts.append([p.x * WIDTH, (1.0 - p.y) * HEIGHT])
+        probes[name] = pts
+    E["shadows_far"] = {"points": probes}
+    save(scene, os.path.join(folder, "shadows_far.blend"), physical=False, lamps_physical=True)
+    for la in bpy.data.lamps:
+        la.use_shadow = False
+    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, "shadows_far_noshadow.blend"), copy=True)
+
+
+def make_shadows_bench(folder):
+    """B8.7: 36 posts and a spinning box on a floor, 8 point lamps and a sun;
+    variants cast from 0, 1, 4 or 8 point lamps, the sun only, or 8 with hard
+    shadows (the box keeps every shadow being drawn)"""
+    scene = p2.empty_scene()
+    scene.name = "ShadowBench"
+    scene.game_settings.resolution_x = WIDTH
+    scene.game_settings.resolution_y = HEIGHT
+    p2.world(scene, (0.05, 0.05, 0.08))
+    floor = classic("SB_floor", (0.8, 0.8, 0.8))
+    solid = classic("SB_post", (0.6, 0.55, 0.5))
+    p2.plane(scene, "SB_floor", 20.0, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), floor)
+    mesh = None
+    for i in range(6):
+        for j in range(6):
+            ob = p2.cube(scene, "SB_post%d%d" % (i, j), 0.4, (-5.0 + 2.0 * i, -5.0 + 2.0 * j, 0.6), solid, mesh=mesh)
+            ob.scale = (1.0, 1.0, 3.0)
+            mesh = ob.data
+    spinner = p2.cube(scene, "Spinner", 1.0, (0.0, 0.0, 1.5), solid)
+    p2.camera(scene, (0.0, -14.0, 9.0), (0.0, 0.0, 0.0), lens=30.0)
+    points = []
+    for k in range(8):
+        a = 2.0 * math.pi * k / 8.0
+        ob = p2.lamp(scene, "SB_point%d" % k, 'POINT', (6.0 * math.cos(a), 6.0 * math.sin(a), 3.0), energy=0.3,
+                     distance=6.0, soft=0.3)
+        ob.data.shadow_buffer_clip_end = 30.0
+        points.append(ob.data)
+    sun = p2.lamp(scene, "SB_sun", 'SUN', (0.0, 0.0, 10.0), (math.radians(40.0), 0.0, math.radians(30.0)),
+                  energy=0.5)
+    driver = bpy.data.objects.new("BenchScript", None)
+    scene.objects.link(driver)
+    logic(scene, driver, "p8_shadow_move.py", MOVE_SCRIPT)
+    p2.add_probe(scene)
+    scene.update()
+
+    def variant(name, casting, sun_casts=False, size=0.3):
+        for k, la in enumerate(points):
+            la.use_shadow = k < casting
+            la.shadow_soft_size = size
+            la["bge_physical"] = 0
+        sun.data.use_shadow = sun_casts
+        sun.data["bge_physical"] = 0
+        bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, "shadows_bench_%s.blend" % name), copy=True)
+
+    for n in (0, 1, 4, 8):
+        variant(str(n), n)
+    variant("sun", 0, sun_casts=True)
+    variant("hard", 8, size=0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -732,7 +1168,12 @@ def main():
                   ("pbr_classic", lambda: pbr_scene(folder, "pbr_classic", False, E)),
                   ("classic_remix", lambda: make_classic_remix(folder, E)),
                   ("glsl_features", lambda: make_glsl_features(folder, E)),
-                  ("fallback", lambda: make_fallback(folder, E))]
+                  ("fallback", lambda: make_fallback(folder, E)),
+                  # Part B
+                  ("lamps", lambda: make_lamps(folder, E)),
+                  ("shadows", lambda: make_shadows(folder, E)),
+                  ("shadows_far", lambda: make_shadows_far(folder, E)),
+                  ("shadows_bench", lambda: make_shadows_bench(folder))]
         target = os.path.join(folder, "p8_expected.json")
     for name, make in makers:
         try:

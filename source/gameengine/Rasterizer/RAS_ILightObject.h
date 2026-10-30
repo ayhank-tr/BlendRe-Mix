@@ -73,6 +73,20 @@ public:
 	float	m_spotsize;
 	float	m_spotblend;
 
+	/* BGE-Remix P8.9: the shared light description (BKE_lamp_physical.h) */
+	bool	m_physical;      /* physical falloff (point, spot) */
+	float	m_size;          /* point/spot: the light's radius */
+	float	m_areasize[2];   /* area lamps: width and height */
+	float	m_sunangle;      /* sun: angular diameter, degrees */
+	bool	m_onlyshadow;
+
+	/* BGE-Remix P8.10: contact shadows' reach (0: none); the shadow drawn last
+	 * (its signature: the lamp's views and the casters near it), so a lamp
+	 * whose shadow would come out the same is not drawn again */
+	float	m_contact;
+	unsigned int	m_shadowsig;
+	bool	m_shadowvalid;
+
 	LightType	m_type;
 	
 	bool	m_nodiffuse;
@@ -88,6 +102,13 @@ public:
 	virtual int GetShadowLayer() = 0;
 	virtual void BindShadowBuffer(RAS_ICanvas *canvas, KX_Camera *cam, MT_Transform& camtrans) = 0;
 	virtual void UnbindShadowBuffer() = 0;
+	/* BGE-Remix P8.10: the buffer's views (spot 1, cube 6, sun cascades 4),
+	 * set one after BindShadowBuffer (which sets view 0); the camera the
+	 * sun's cascades follow (column-major 4x4s); the views' signature */
+	virtual int ShadowViewCount() = 0;
+	virtual void SetShadowView(RAS_ICanvas *canvas, KX_Camera *cam, MT_Transform& camtrans, int view) = 0;
+	virtual void SetShadowCamera(const float camtoworld[16], const float winmat[16]) = 0;
+	virtual unsigned int ShadowSignature() = 0;
 	virtual Image *GetTextureImage(short texslot) = 0;
 	virtual void Update() = 0;
 };

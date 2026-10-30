@@ -37,6 +37,8 @@ class RAS_OpenGLLight : public RAS_ILightObject
 	RAS_OpenGLRasterizer *m_rasterizer;
 
 	GPULamp *GetGPULamp();
+	void SetupShadowCamera(RAS_ICanvas *canvas, KX_Camera *cam, MT_Transform& camtrans,
+	                       float viewmat[4][4], float winmat[4][4], const int rect[4]);
 public:
 	RAS_OpenGLLight(RAS_OpenGLRasterizer *ras);
 	~RAS_OpenGLLight();
@@ -51,6 +53,10 @@ public:
 	int GetShadowLayer();
 	void BindShadowBuffer(RAS_ICanvas *canvas, KX_Camera *cam, MT_Transform& camtrans);
 	void UnbindShadowBuffer();
+	int ShadowViewCount();
+	void SetShadowView(RAS_ICanvas *canvas, KX_Camera *cam, MT_Transform& camtrans, int view);
+	void SetShadowCamera(const float camtoworld[16], const float winmat[16]);
+	unsigned int ShadowSignature();
 	Image *GetTextureImage(short texslot);
 	void Update();
 };

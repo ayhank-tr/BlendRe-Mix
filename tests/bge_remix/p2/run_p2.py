@@ -250,9 +250,9 @@ def check_lamps(lines, expected):
         checks["%s -> %s as in the scene" % (name, want)] = ok
     hemi = [e for e in expected["lamps"] if e["type"] == 'HEMI']
     want_dome = list(expected["world_horizon"])
-    scale = expected.get("light_scale", 0.125)  # lamps are scaled, the world is not
+    # P8.9: hemi lamps light at the sky's scale (the world is not scaled)
     for h in hemi:
-        want_dome = [w + c * h["energy"] * scale for w, c in zip(want_dome, h["color"])]
+        want_dome = [w + c * h["energy"] for w, c in zip(want_dome, h["color"])]
     checks["world + hemi -> one dome light"] = len(dome) == 1 and dome[0].get("texture") == 1 and \
         close(dome[0]["radiance"], want_dome)
     detail["dome"] = dome

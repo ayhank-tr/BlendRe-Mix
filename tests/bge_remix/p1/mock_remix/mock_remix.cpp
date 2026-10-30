@@ -581,22 +581,33 @@ remixapi_ErrorCode REMIXAPI_CALL m_CreateLight(const remixapi_LightInfo *info, r
 	const remixapi_Float3D &rad = info->radiance;
 	if (auto *l = find_ext<remixapi_LightInfoSphereEXT>(info->pNext, REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT)) {
 		mlog("CreateLight hash=%llx type=sphere pos=%.4f,%.4f,%.4f radius=%.4f shaped=%d dir=%.4f,%.4f,%.4f "
-		     "cone=%.4f softness=%.4f radiance=%.4f,%.4f,%.4f",
+		     "cone=%.4f softness=%.4f radiance=%.4f,%.4f,%.4f volumetric=%.4f",
 		     hash, l->position.x, l->position.y, l->position.z, l->radius, l->shaping_hasvalue ? 1 : 0,
 		     l->shaping_value.direction.x, l->shaping_value.direction.y, l->shaping_value.direction.z,
-		     l->shaping_value.coneAngleDegrees, l->shaping_value.coneSoftness, rad.x, rad.y, rad.z);
+		     l->shaping_value.coneAngleDegrees, l->shaping_value.coneSoftness, rad.x, rad.y, rad.z,
+		     l->volumetricRadianceScale);
 	}
 	else if (auto *l = find_ext<remixapi_LightInfoRectEXT>(info->pNext, REMIXAPI_STRUCT_TYPE_LIGHT_INFO_RECT_EXT)) {
 		mlog("CreateLight hash=%llx type=rect pos=%.4f,%.4f,%.4f size=%.4f,%.4f dir=%.4f,%.4f,%.4f "
-		     "radiance=%.4f,%.4f,%.4f",
+		     "radiance=%.4f,%.4f,%.4f volumetric=%.4f",
 		     hash, l->position.x, l->position.y, l->position.z, l->xSize, l->ySize, l->direction.x,
-		     l->direction.y, l->direction.z, rad.x, rad.y, rad.z);
+		     l->direction.y, l->direction.z, rad.x, rad.y, rad.z, l->volumetricRadianceScale);
+	}
+	else if (auto *l = find_ext<remixapi_LightInfoDiskEXT>(info->pNext, REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISK_EXT)) {
+		/* interface 8 */
+		mlog("CreateLight hash=%llx type=disk pos=%.4f,%.4f,%.4f radii=%.4f,%.4f shaped=%d dir=%.4f,%.4f,%.4f "
+		     "cone=%.4f softness=%.4f radiance=%.4f,%.4f,%.4f volumetric=%.4f",
+		     hash, l->position.x, l->position.y, l->position.z, l->xRadius, l->yRadius, l->shaping_hasvalue ? 1 : 0,
+		     l->direction.x, l->direction.y, l->direction.z, l->shaping_value.coneAngleDegrees,
+		     l->shaping_value.coneSoftness, rad.x, rad.y, rad.z, l->volumetricRadianceScale);
 	}
 	else if (auto *l = find_ext<remixapi_LightInfoDistantEXT>(info->pNext,
 	                                                         REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISTANT_EXT))
 	{
-		mlog("CreateLight hash=%llx type=distant dir=%.4f,%.4f,%.4f angle=%.4f radiance=%.4f,%.4f,%.4f",
-		     hash, l->direction.x, l->direction.y, l->direction.z, l->angularDiameterDegrees, rad.x, rad.y, rad.z);
+		mlog("CreateLight hash=%llx type=distant dir=%.4f,%.4f,%.4f angle=%.4f radiance=%.4f,%.4f,%.4f "
+		     "volumetric=%.4f",
+		     hash, l->direction.x, l->direction.y, l->direction.z, l->angularDiameterDegrees, rad.x, rad.y, rad.z,
+		     l->volumetricRadianceScale);
 	}
 	else if (auto *l = find_ext<remixapi_LightInfoDomeEXT>(info->pNext, REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DOME_EXT)) {
 		const bool tex = l->colorTexture && GetFileAttributesW(l->colorTexture) != INVALID_FILE_ATTRIBUTES;

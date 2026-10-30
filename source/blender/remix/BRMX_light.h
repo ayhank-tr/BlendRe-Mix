@@ -65,12 +65,24 @@ struct LampInput {
 	float area_sizey;
 	bool area_square;
 	float scale[2];      /* the object's world scale on X and Y (area lamps) */
+	/* BGE-Remix P8.9 (BKE_lamp_physical.h) */
+	bool physical;       /* physical falloff: energy * D^2 / (r^2 + d^2) */
+	float sun_angle;     /* the sun's angular diameter, degrees */
+	float halo;          /* a spot halo's intensity (0: none): the light in fog */
+	LampInput()
+	    : type(0), energy(0.0f), dist(25.0f), spotsize(0.0f), spotblend(0.0f), have_lamp(false), area_size(0.1f),
+	      area_sizey(0.1f), area_square(true), physical(false), sun_angle(0.53f), halo(0.0f)
+	{
+		color[0] = color[1] = color[2] = 0.0f;
+		scale[0] = scale[1] = 1.0f;
+	}
 };
 
 /* The lamp at pos, with its world axes (lamps shine along -axis_z), as a
  * Remix light: returns 1 and fills r_desc (all but the hash), or 2 for a
  * hemi lamp (Remix has none: its colour times energy goes into r_dome, to be
- * added to the sky), or 0 for no light (no energy). */
+ * added to the sky, at the sky's own scale: no light scale), or 0 for no
+ * light (no energy). Only Shadow lamps are the callers' to leave out. */
 int lamp_light(const LampInput &lamp, const float pos[3], const float axis_x[3], const float axis_y[3],
                const float axis_z[3], float light_scale, brb_light_desc &r_desc, float r_dome[3]);
 

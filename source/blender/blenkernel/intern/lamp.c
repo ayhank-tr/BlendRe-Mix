@@ -49,6 +49,7 @@
 #include "BKE_icons.h"
 #include "BKE_global.h"
 #include "BKE_lamp.h"
+#include "BKE_lamp_physical.h"
 #include "BKE_library.h"
 #include "BKE_library_query.h"
 #include "BKE_library_remap.h"
@@ -112,6 +113,8 @@ Lamp *BKE_lamp_add(Main *bmain, const char *name)
 	la =  BKE_libblock_alloc(bmain, ID_LA, name);
 
 	BKE_lamp_init(la);
+	/* BGE-Remix P8.9: new lamps fall off physically (old files keep theirs) */
+	BKE_lamp_physical_init(la);
 
 	return la;
 }

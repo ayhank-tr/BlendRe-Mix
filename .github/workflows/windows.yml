@@ -342,7 +342,7 @@ jobs:
         run: |
           python blender/tests/bge_remix/p7/run_p7.py --ours ours --official blender-2.79b-windows64 --mock mock --out results/p7
 
-      - name: Phase 8 tests, Part A (materials)
+      - name: Phase 8 tests, Parts A and B (materials, lamps and shadows)
         if: always()
         shell: pwsh
         env:

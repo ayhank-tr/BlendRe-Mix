@@ -82,6 +82,7 @@ int BLI_thread_is_main(void);
 #include "BKE_DerivedMesh.h"
 #include "BKE_global.h"
 #include "BKE_idprop.h"
+#include "BKE_lamp_physical.h"
 #include "BKE_main.h"
 #include "BKE_material.h"
 #include "BKE_mesh.h"
@@ -416,6 +417,13 @@ public:
 						if (o->type == OB_MESH) {
 							add_mesh(o, dob->mat, pick);
 						}
+						/* BGE-Remix P8.9: lamps in group instances light too */
+						else if (o->type == OB_LAMP) {
+							char name[256];
+							snprintf(name, sizeof(name), "%s/%s/%d", ob->id.name + 2, o->id.name + 2,
+							         dob->persistent_id[0]);
+							add_lamp(o, dob->mat, name);
+						}
 					}
 					free_object_duplilist(lb);
 				}
@@ -427,7 +435,7 @@ public:
 				add_mesh(ob, ob->obmat, pick);
 			}
 			else if (ob->type == OB_LAMP) {
-				add_lamp(ob, ob->obmat);
+				add_lamp(ob, ob->obmat, NULL);
 			}
 		}
 		/* the world's horizon colour as the sky, plus the hemi lamps */
@@ -949,10 +957,12 @@ private:
 		return err == 0;
 	}
 
-	void add_lamp(Object *ob, float mat[4][4])
+	/* dupli_name: a lamp of a group instance (its own light, keyed by name) */
+	void add_lamp(Object *ob, float mat[4][4], const char *dupli_name)
 	{
 		Lamp *la = (Lamp *)ob->data;
-		if (!la || (la->mode & LA_NEG)) {
+		/* BGE-Remix P8.9: Only Shadow lamps are left out (they darken only) */
+		if (!la || (la->mode & (LA_NEG | LA_ONLYSHADOW))) {
 			return;
 		}
 		brmx::LampInput in;
@@ -968,15 +978,25 @@ private:
 		in.area_size = la->area_size;
 		in.area_sizey = la->area_sizey;
 		in.area_square = la->area_shape == LA_AREA_SQUARE;
+		in.physical = BKE_lamp_is_physical(la);
+		in.sun_angle = BKE_lamp_sun_angle(la);
+		in.halo = (la->type == LA_SPOT && (la->mode & LA_HALO)) ? la->haint : 0.0f;
 		float size[3];
 		mat4_to_size(size, mat);
 		in.scale[0] = size[0];
 		in.scale[1] = size[1];
 		brb_light_desc d;
 		memset(&d, 0, sizeof(d));
-		d.hash = unique_hash("light", ob->id.name + 2, ob);
+		const void *key = ob;
+		if (dupli_name) {
+			d.hash = unique_hash("light", dupli_name, NULL);
+			key = (const void *)(uintptr_t)d.hash;
+		}
+		else {
+			d.hash = unique_hash("light", ob->id.name + 2, ob);
+		}
 		if (brmx::lamp_light(in, mat[3], mat[0], mat[1], mat[2], m_light_scale, d, m_dome) == 1) {
-			send_light(ob, d);
+			send_light(key, d);
 		}
 	}
 

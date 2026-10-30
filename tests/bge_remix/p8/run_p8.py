@@ -1,4 +1,4 @@
-"""BGE-Remix P8 tests, Part A (materials).
+"""BGE-Remix P8 tests, Parts A (materials) and B (lamps and shadows).
 
 T8.1  one mode: no mode switch in the UI; new and old files play as GLSL;
       saved files open in stock 2.79 as GLSL
@@ -22,9 +22,17 @@ T8.9  one physical material: pbr_spheres against its reference pictures;
       the translated values; the file opens in stock 2.79
 T8.10 Classic into Remix: each classic_remix material reaches Remix as the
       right kind; the invisible material is hidden
+T8.11 lights: each lamp of the lamps scene against F12 (our build), area
+      lamps included; the light group, the spot halo, a lamp a script
+      changes; Remix gets each lamp's size, shape and power (the fake
+      runtime's log); Only Shadow lamps are not sent
+T8.12 shadows: every lamp type casts; edges soften with the light's size;
+      no acne under grazing light; a cut-out fence's holes show in its
+      shadow (Simple and Variance); the far sun shadow is there; static
+      lamps stop drawing their shadow; contact shadows where objects touch
 T8.20 regression: P0-P7 unchanged (their results from the same CI run;
       P7's own tests are the Game View's, built and tested with P8)
-B8.1-B8.5 reported (their targets are for the RTX run at the end of P8)
+B8.1-B8.5, B8.7 reported (their targets are for the RTX run at the end of P8)
 
   python run_p8.py --ours <build> --official <stock 2.79b> --mock <fake runtime> --out <dir>   (CI)
 """
@@ -59,6 +67,8 @@ TOL_MULTITEX = 12.0     # GLSL against Multitexture's fixed-function drawing
 TOL_VIEW = 8.0          # the 3D view against the game
 TOL_BAKE = 8.0          # a baked image against Blender's own bake
 TOL_BAKE_NORMAL = 16.0  # a baked normal map against Blender's
+TOL_LAMP = 10.0         # a lamp's tile: mean brightness, game against F12
+TOL_LAMP_SHAPE = 14.0   # a lamp's tile: its light's shape (aligned difference)
 
 # ---------------------------------------------------------------------------
 # scripts run inside Blender (Python 3.5)
@@ -838,6 +848,236 @@ def t810(args, out, scenes, expected):
 
 
 # ---------------------------------------------------------------------------
+# Part B: lamps and shadows
+
+def brightness(a):
+    return None if a is None else a.mean(axis=2)
+
+
+def rect_mean(a, rect):
+    return None if a is None else round(float(crop(a, rect).mean()), 1)
+
+
+def remix_light_problems(f, e):
+    """what differs between a light in the fake runtime's log and what the
+    lamp should give (remix_light.cc's formulas, make_scenes_p8.remix_expect)"""
+    if f is None:
+        return ["not sent"]
+    bad = []
+    if f.get("type") != e["type"]:
+        bad.append("type %s, not %s" % (f.get("type"), e["type"]))
+        return bad
+    if "radiance" in e and not p2.close(f.get("radiance"), e["radiance"], tol=2e-3):
+        bad.append("radiance %s, not %s" % (f.get("radiance"), e["radiance"]))
+    for key, field in (("radius", "radius"), ("radii", "radii"), ("size", "size"), ("angle", "angle"),
+                       ("cone", "cone"), ("volumetric", "volumetric")):
+        if key in e and not p2.close(f.get(field), e[key], tol=2e-3):
+            bad.append("%s %s, not %s" % (field, f.get(field), e[key]))
+    return bad
+
+
+def t811(args, out, scenes, expected, shots):
+    """lights: each lamp in the game against F12 (our build: physical
+    falloff), area lamps included; the light group; the script's change;
+    Remix gets each lamp's size, shape and power; Only Shadow lamps are not
+    sent"""
+    E = expected.get("lamps")
+    if not E:
+        return {"the lamps scene was made": False}, {}
+    c, d = {}, {"cells": {}}
+    f12 = os.path.join(out, "t811_f12_lamps.png")
+    blender_script(args.ours, out, "t811_f12", RENDER, [f12], blend=os.path.join(scenes, "lamps.blend"),
+                   timeout=1800)
+    a, b = picture(shots.get("lamps")), picture(f12)
+    c["F12 rendered"] = b is not None
+    c["the game's picture made"] = a is not None
+    if a is not None and b is not None:
+        sa, sb = blurred(a), blurred(b)
+        for name, cell in E["cells"].items():
+            if name in E["f12_skip"]:
+                continue
+            ga, gb = rect_mean(a, cell["rect"]), rect_mean(b, cell["rect"])
+            md = aligned_diff(sa, sb, cell["rect"])
+            d["cells"][name] = {"game": ga, "f12": gb, "difference": md}
+            c["%s: as bright as F12 (within %.0f)" % (name, TOL_LAMP)] = abs(ga - gb) <= TOL_LAMP
+            c["%s: its light's shape as F12's (within %.0f)" % (name, TOL_LAMP_SHAPE)] = \
+                md is not None and md <= TOL_LAMP_SHAPE
+        # the light group: lit by its group's lamp (left) only
+        l, t, r, btm = E["cells"]["light_group"]["rect"]
+        mid = (l + r) // 2
+        left, right = rect_mean(a, [l, t, mid, btm]), rect_mean(a, [mid, t, r, btm])
+        d["light_group_halves"] = [left, right]
+        c["light group: only the group's lamp lights its material"] = left > right + 10.0
+        # the halo adds its cone over the light
+        halo = rect_mean(a, E["cells"]["spot_halo"]["rect"])
+        twin = rect_mean(a, E["cells"]["spot_no_halo"]["rect"])
+        d["halo"] = {"with": halo, "without": twin}
+        c["the spot halo shows in the game"] = halo > twin + 3.0
+        # the lamp the script changed looks like the one it copied
+        ra, rb = E["cells"]["changed_by_script"]["rect"], E["cells"]["point_physical_small"]["rect"]
+        w, h = min(ra[2] - ra[0], rb[2] - rb[0]), min(ra[3] - ra[1], rb[3] - rb[1])
+        ca = a[ra[1]:ra[1] + h, ra[0]:ra[0] + w]
+        cb = a[rb[1]:rb[1] + h, rb[0]:rb[0] + w]
+        md = round(float(abs(ca - cb).mean()), 2)
+        d["changed_by_script"] = md
+        c["a lamp changed by a script lights as its new settings say"] = md <= 4.0
+
+    # Remix (the fake runtime's log)
+    cache = p3.fresh(os.path.join(out, "cache_lamps"))
+    log, env = mock_env(args, out, "t811_remix", cache)
+    r = play(args.ours, out, "t811_remix", os.path.join(scenes, "lamps.blend"), env)
+    lines = p2.read_lines(log)
+    lights = p2.created(lines, "CreateLight")
+    c["the player ran (fake runtime)"] = r["ran"]
+    d["remix"] = {}
+    by_name = {e["name"]: e for e in E["remix"]}
+    for e in E["remix"]:
+        if e["name"] in (E["only_shadow"], E["changing"]) or e["type"] == "dome":
+            continue
+        f = lights.get(p2.fnv1a("light:" + e["name"]))
+        bad = remix_light_problems(f, e)
+        d["remix"][e["name"]] = {"got": f, "problems": bad}
+        c["Remix: %s as its size, shape and power say" % e["name"]] = not bad
+    only = lights.get(p2.fnv1a("light:" + E["only_shadow"]))
+    d["remix"][E["only_shadow"]] = only
+    c["Remix: the Only Shadow lamp is not sent"] = only is None
+    like = dict(by_name[E["like"]], name=E["changing"])
+    f = lights.get(p2.fnv1a("light:" + E["changing"]))
+    bad = remix_light_problems(f, like)
+    d["remix"][E["changing"]] = {"got": f, "problems": bad}
+    c["Remix: the lamp the script changed arrives changed"] = not bad
+    return c, d
+
+
+def shadow_trace(text):
+    """{lamp: times its shadow was drawn} (BGE_REMIX_TRACE_SHADOWS)"""
+    counts = {}
+    for m in re.finditer(r"^BGE-Remix shadow: (\S+) drawn", text, re.M):
+        counts[m.group(1)] = counts.get(m.group(1), 0) + 1
+    return counts
+
+
+def darkening(on, off):
+    """how much darker the picture with shadows is, per pixel (0-255)"""
+    if on is None or off is None or on.shape != off.shape:
+        return None
+    return brightness(off) - brightness(on)
+
+
+def shadow_mask(dark, rect, level=20.0):
+    l, t, r, b = rect
+    return dark[t:b, l:r] > level
+
+
+def penumbra(dark, rect):
+    """pixels partly in shadow: between 15% and 85% of the cell's full shadow"""
+    l, t, r, b = rect
+    region = dark[t:b, l:r]
+    import numpy as np
+    full = float(np.percentile(region, 98))
+    if full < 20.0:
+        return 0
+    return int(((region > 0.15 * full) & (region < 0.85 * full)).sum())
+
+
+def t812(args, out, scenes, expected, shots, runs):
+    """shadows: every lamp type casts; edges soften with the light's size;
+    no acne on grazing light; a cut-out fence's holes show in its shadow
+    (Simple and Variance maps); the far sun shadow is there; static lamps
+    stop drawing their shadow; contact shadows appear where objects touch"""
+    import numpy as np
+    E, F = expected.get("shadows"), expected.get("shadows_far")
+    if not E or not F:
+        return {"the shadows scenes were made": False}, {}
+    c, d = {}, {}
+    on, off, noc = (picture(shots.get(n)) for n in ("shadows", "shadows_noshadow", "shadows_nocontact"))
+    dark = darkening(on, off)
+    c["the pictures made (shadows on, off, without contact shadows)"] = dark is not None and noc is not None
+    if dark is None or noc is None:
+        return c, d
+    cells = E["cells"]
+
+    # every lamp type casts, away from the lamp
+    d["cast"] = {}
+    for name in ("point_hard", "spot", "sun", "area"):
+        cell = cells[name]
+        mask = shadow_mask(dark, cell["rect"])
+        frac = float(mask.mean())
+        ys, xs = np.nonzero(mask)
+        away = False
+        if len(xs):
+            cx, cy = xs.mean() + cell["rect"][0], ys.mean() + cell["rect"][1]
+            px, py = cell["center"]
+            lx, ly = cell["lamp"]
+            away = (cx - px) * (px - lx) + (cy - py) * (py - ly) > 0
+        d["cast"][name] = {"shadowed": round(frac, 3), "away_from_the_lamp": away}
+        c["%s lamp casts (away from the lamp)" % cell["kind"].lower()] = frac > 0.02 and away
+
+    # softer with a bigger light
+    hard, soft = penumbra(dark, cells["point_hard"]["rect"]), penumbra(dark, cells["point_soft"]["rect"])
+    d["penumbra_pixels"] = {"size 0.05": hard, "size 0.4": soft}
+    c["shadow edges soften with the light's size"] = soft > 1.5 * max(hard, 1)
+
+    # no acne under grazing light (nothing casts there)
+    d["acne"] = {}
+    for name in ("graze_sun", "graze_point"):
+        rect = cells[name]["rect"]
+        frac = float(shadow_mask(dark, rect, 12.0).mean())
+        lit = rect_mean(off, rect)
+        d["acne"][name] = {"darkened": round(frac, 4), "lit": lit}
+        c["no acne: %s" % name] = frac < 0.02 and lit > 20.0
+
+    # the fence's holes let light through its shadow
+    d["fence"] = {}
+    for name in ("fence", "fence_variance"):
+        l, t, r, b = cells[name]["rect"]
+        region = dark[t:b, l:r]
+        full = float(np.percentile(region, 98))
+        strong = region > 0.5 * full
+        ys, xs = np.nonzero(strong)
+        through = None
+        if full > 30.0 and len(xs):
+            box = region[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+            through = round(float((box < 0.3 * full).mean()), 3)
+        d["fence"][name] = {"full_shadow": round(full, 1), "lit_through": through}
+        c["the fence's holes show in its shadow (%s)" % ("Variance" if "variance" in name else "Simple")] = \
+            through is not None and 0.15 < through < 0.85
+
+    # contact shadows: only near the slab
+    cell = cells["contact"]
+    l, t, r, b = cell["rect"]
+    extra = brightness(noc)[t:b, l:r] - brightness(on)[t:b, l:r]
+    mask = extra > 10.0
+    reach = int(0.5 * E["px_per_unit"])
+    sl, st, sr, sb = cell["slab"]
+    near = np.zeros_like(mask)
+    near[max(st - reach - t, 0):sb + reach - t, max(sl - reach - l, 0):sr + reach - l] = True
+    count = int(mask.sum())
+    inside = int((mask & near).sum())
+    d["contact"] = {"darker_pixels": count, "near_the_slab": inside}
+    c["contact shadows appear where objects touch"] = count >= 30 and inside >= 0.9 * count
+
+    # the far sun shadow (and the near one)
+    fon, foff = picture(shots.get("shadows_far")), picture(shots.get("shadows_far_noshadow"))
+    fdark = darkening(fon, foff)
+    d["far"] = {}
+    for name, pts in F["points"].items():
+        xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+        rect = [int(min(xs)) - 5, int(min(ys)) - 2, int(max(xs)) + 6, int(max(ys)) + 3]
+        v = None if fdark is None else round(float(crop(fdark, rect).mean()), 1)
+        d["far"][name] = v
+        c["the %s sun shadow is there" % name] = v is not None and v > 12.0
+
+    # static lamps stop drawing their shadow
+    counts = shadow_trace(runs.get("shadows", {}).get("text", ""))
+    d["drawn"] = counts
+    c["a static lamp stops drawing its shadow"] = 0 < counts.get("S_static", 0) <= 3
+    c["a moving lamp draws its shadow again"] = counts.get("S_moving", 0) >= 10
+    c["a lamp draws again when something near it moves"] = counts.get("S_static_mover", 0) >= 10
+    return c, d
+
+
+# ---------------------------------------------------------------------------
 
 def run(args, out):
     scenes, expected = make_scenes(args, out)
@@ -853,6 +1093,13 @@ def run(args, out):
         shots[name] = runs[name].get("screenshot")
     api_path = os.path.join(out, "t86_api.json")
     runs["api"] = play(args.ours, out, "game_api", S("glsl_features"), {"BGE_REMIX_P8_API": api_path}, frames=60)
+
+    # Part B: lamps and shadows (the shadows run says when each lamp draws its shadow)
+    for name in ("lamps", "shadows", "shadows_noshadow", "shadows_nocontact", "shadows_far", "shadows_far_noshadow"):
+        if os.path.isfile(S(name)):
+            runs[name] = play(args.ours, out, "game_" + name, S(name),
+                              {"BGE_REMIX_TRACE_SHADOWS": "1"} if name == "shadows" else None)
+            shots[name] = runs[name].get("screenshot")
     api = p2.read_json(api_path)
 
     def mt_run(build, tag):
@@ -887,7 +1134,9 @@ def run(args, out):
             ("T8.7 Procedurals in GLSL", lambda: t87(args, out, scenes, expected, shots)),
             ("T8.8 Procedurals baked", lambda: t88(args, out, scenes, expected)),
             ("T8.9 One physical material", lambda: t89(args, out, scenes, expected, shots)),
-            ("T8.10 Classic into Remix", lambda: t810(args, out, scenes, expected))]
+            ("T8.10 Classic into Remix", lambda: t810(args, out, scenes, expected)),
+            ("T8.11 Lights", lambda: t811(args, out, scenes, expected, shots)),
+            ("T8.12 Shadows", lambda: t812(args, out, scenes, expected, shots, runs))]
     needs_official = ("T8.1", "T8.2", "T8.3")
     for name, fn in plan:
         if not args.official and name.split()[0] in needs_official:
@@ -916,10 +1165,15 @@ def run(args, out):
              ("glsl_features: ours", shots.get("glsl_features")),
              ("glsl_features: stock 2.79", shots.get("stock_glsl_features")),
              ("classic_remix: game", shots.get("classic_remix_gl")),
-             ("fallback: FailMe failing on purpose", os.path.join(out, "t84_fail.png"))]
+             ("fallback: FailMe failing on purpose", os.path.join(out, "t84_fail.png")),
+             ("lamps: game", shots.get("lamps")),
+             ("lamps: F12", os.path.join(out, "t811_f12_lamps.png")),
+             ("shadows: game", shots.get("shadows")),
+             ("shadows: without shadows", shots.get("shadows_noshadow")),
+             ("shadows_far: game", shots.get("shadows_far"))]
     res["sheet"] = p2.contact_sheet(sheet, os.path.join(out, "sheet_p8a.png"))
 
-    lines = ["BGE-Remix P8 tests, Part A (CI)", "=" * 32, ""]
+    lines = ["BGE-Remix P8 tests, Parts A and B (CI)", "=" * 38, ""]
     for name, t in tests.items():
         lines.append("%-34s %s" % (name, p2.mark(t["ok"])))
         for check, ok in t["checks"].items():
@@ -965,6 +1219,12 @@ def benchmarks(args, out, scenes, runs):
     b["B8.4 baking"] = bake
     phys = play(args.ours, out, "b85_physical", S("mt_bench_physical"), frames=600)
     b["B8.5 physical vs Classic (ms)"] = {"physical": ms(phys), "classic": ms(ours)}
+    shadows = {}
+    for name in ("0", "1", "4", "8", "sun", "hard"):
+        path = S("shadows_bench_" + name)
+        if os.path.isfile(path):
+            shadows[name] = ms(play(args.ours, out, "b87_" + name, path, frames=600))
+    b["B8.7 shadows (ms): casting point lamps 0/1/4/8, the sun only, 8 hard"] = shadows
     return b
 
 

@@ -218,6 +218,7 @@ private:
 
 	void					RenderFrame(KX_Scene* scene, KX_Camera* cam);
 	void					PostRenderScene(KX_Scene* scene);
+	void					RenderSpotHalos(KX_Scene *scene);  /* BGE-Remix P8.9 */
 	void					RenderDebugProperties();
 
 public:
