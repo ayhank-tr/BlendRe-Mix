@@ -98,7 +98,9 @@ static void batch_array_free(void *storage)
 	delete ba;
 }
 
-/* indices as drawn: quads made triangles */
+/* indices as drawn: quads made triangles, split as OpenGL splits an indexed
+ * GL_QUADS draw (0 1 3, 1 2 3: the last vertex leads both), so a quad that is
+ * not flat or not a parallelogram looks as it did in stock 2.79 */
 static void batch_indices(const RAS_DisplayArray *array, size_t first, size_t count, bool quads,
                           std::vector<unsigned short>& out)
 {
@@ -109,8 +111,8 @@ static void batch_indices(const RAS_DisplayArray *array, size_t first, size_t co
 		for (size_t i = first; i + 3 < first + count; i += 4) {
 			out.push_back(src[i]);
 			out.push_back(src[i + 1]);
-			out.push_back(src[i + 2]);
-			out.push_back(src[i]);
+			out.push_back(src[i + 3]);
+			out.push_back(src[i + 1]);
 			out.push_back(src[i + 2]);
 			out.push_back(src[i + 3]);
 		}
