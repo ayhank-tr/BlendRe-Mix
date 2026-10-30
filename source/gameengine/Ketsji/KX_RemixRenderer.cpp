@@ -328,6 +328,8 @@ KX_RemixRenderer::KX_RemixRenderer(RAS_ICanvas *canvas, bool window_mode_allowed
 	m_material_notes = 0;
 	m_bakes = m_rebakes = 0;
 	m_bake_ms = 0.0;
+	m_bakes_cached = 0;
+	m_bake_gpu_ms = 0.0;
 	m_light_frame = 0;
 	m_bakes_checked = 0.0;
 	for (int i = 0; i < 16; i++) {
@@ -812,8 +814,19 @@ void KX_RemixRenderer::Bake(MaterialEntry &e)
 	m_bake_ms += (e.bake_checked - t0) * 1000.0;
 	if (ok) {
 		brmx::apply_bake(r, *e.spec);
-		printf("BGE-Remix: material \"%s\" on mesh \"%s\": procedural textures baked (%.0f ms)\n", e.name.c_str(),
-		       e.mesh->GetName().ReadPtr(), (now_seconds() - t0) * 1000.0);
+		if (r.from_cache) {
+			printf("BGE-Remix: material \"%s\" on mesh \"%s\": procedural textures from the cache (%.0f ms)\n",
+			       e.name.c_str(), e.mesh->GetName().ReadPtr(), (now_seconds() - t0) * 1000.0);
+			m_bakes_cached++;
+		}
+		else {
+			printf("BGE-Remix: material \"%s\" on mesh \"%s\": procedural textures baked (%.0f ms, %.1f ms on "
+			       "the graphics card)\n", e.name.c_str(), e.mesh->GetName().ReadPtr(), (now_seconds() - t0) * 1000.0,
+			       r.gpu_ms);
+			if (r.gpu_ms > 0.0) {
+				m_bake_gpu_ms += r.gpu_ms;
+			}
+		}
 		m_bakes++;
 	}
 	else {
@@ -2101,6 +2114,8 @@ void KX_RemixRenderer::WriteStats()
 	        m_materials_swapped, m_material_notes, m_max_swap_ms);
 	fprintf(f, "  \"procedural_bakes\": %d,\n  \"procedural_rebakes\": %d,\n  \"procedural_bake_ms\": %.2f,\n",
 	        m_bakes, m_rebakes, m_bake_ms);
+	fprintf(f, "  \"procedural_bakes_cached\": %d,\n  \"procedural_bake_gpu_ms\": %.2f,\n",
+	        m_bakes_cached, m_bake_gpu_ms);
 	/* P4 (the counts are the last frame's) */
 	fprintf(f, "  \"skinned_objects\": %d,\n  \"skinned_draws\": %d,\n  \"bones_last_frame\": %d,\n",
 	        m_skinned_objects, st.skinned_draws, st.bones);

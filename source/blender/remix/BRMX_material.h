@@ -136,6 +136,11 @@ public:
 	 * else in the temp folder. */
 	static std::wstring folder();
 
+	/* P8.7: the file a baked image with a content key goes to, and whether
+	 * it is there already */
+	static std::wstring baked_path(const TextureRequest &req);
+	static bool cached(const TextureRequest &req);
+
 	/* for the tests' statistics */
 	int encoded, reused, failed;
 	double encode_seconds;

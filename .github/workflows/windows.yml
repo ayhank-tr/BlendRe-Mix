@@ -342,7 +342,7 @@ jobs:
         run: |
           python blender/tests/bge_remix/p7/run_p7.py --ours ours --official blender-2.79b-windows64 --mock mock --out results/p7
 
-      - name: Phase 8 tests (plan v2 Parts A1-A2, OpenGL 4.5, meshes as batches, and the first build's tests)
+      - name: Phase 8 tests (plan v2 Part A, OpenGL 4.5, batches, bakes on the card, and the first build's tests)
         if: always()
         shell: pwsh
         env:

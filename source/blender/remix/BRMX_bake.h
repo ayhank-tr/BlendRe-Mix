@@ -47,7 +47,12 @@ struct BakedImage {
 	std::string name; /* for the cache file's name */
 	int width, height;
 	std::vector<unsigned char> rgba;
-	BakedImage() : width(0), height(0) {}
+	/* P8.7: the bake's content key (the material, its textures, the mesh, the
+	 * size): its file is named by it, so a second start finds it without
+	 * baking; "cached": found so, no pixels here */
+	uint64_t key;
+	bool cached;
+	BakedImage() : width(0), height(0), key(0), cached(false) {}
 };
 
 enum BakeSlot { BAKE_ALBEDO = 0, BAKE_ROUGHNESS, BAKE_EMISSIVE, BAKE_NORMAL, BAKE_METALLIC, BAKE_SLOTS };
@@ -58,7 +63,9 @@ struct BakeResult {
 	float emissive_intensity; /* the emissive image is emit / this */
 	uint64_t signature;       /* bake_signature() when baked */
 	std::string error;        /* why something was not baked */
-	BakeResult() : has_alpha(false), emissive_intensity(1.0f), signature(0) {}
+	bool from_cache;          /* P8.7: every image was in the cache: nothing drawn */
+	double gpu_ms;            /* P8.7: the bake's time on the graphics card (-1: unknown) */
+	BakeResult() : has_alpha(false), emissive_intensity(1.0f), signature(0), from_cache(false), gpu_ms(-1.0) {}
 };
 
 /* Which values of a material come from procedural textures (bits 1 <<
@@ -79,7 +86,10 @@ int bake_size(const Material *ma);
 DerivedMesh *bake_mesh_from(Mesh *me);
 
 /* Bake the material slot `slot` (1-based) of dm, placed by obmat. Main
- * thread, with an OpenGL context current. False: r.error says why. */
+ * thread, with an OpenGL context current. False: r.error says why.
+ * P8.7: drawn into textures on the graphics card, the seams padded and the
+ * channels made into Remix's images by compute shaders; when the cache
+ * already holds every image of the same content, nothing is drawn. */
 bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const float obmat[4][4],
                    const std::string &name, BakeResult &r);
 

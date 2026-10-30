@@ -1081,3 +1081,47 @@ void gpu_layer_exit(void)
 	stream_exit();
 	gpu_builtin_exit();
 }
+
+/* ------------------------------------------------------------------------ */
+/* compute (BGE-Remix P8.7) */
+
+unsigned int GPU_compute_program(const char *source, const char *label)
+{
+	const char *src[2] = {"#version 450 core\n", source};
+	GLuint sh = glCreateShader(GL_COMPUTE_SHADER);
+	glShaderSource(sh, 2, src, NULL);
+	glCompileShader(sh);
+	GLint ok = 0;
+	glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+	if (!ok) {
+		char log[2048];
+		glGetShaderInfoLog(sh, sizeof(log), NULL, log);
+		printf("BGE-Remix compute %s: does not build:\n%s\n", label ? label : "", log);
+		glDeleteShader(sh);
+		return 0;
+	}
+	GLuint prog = glCreateProgram();
+	glAttachShader(prog, sh);
+	glLinkProgram(prog);
+	glDeleteShader(sh);
+	glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+	if (!ok) {
+		char log[2048];
+		glGetProgramInfoLog(prog, sizeof(log), NULL, log);
+		printf("BGE-Remix compute %s: does not link:\n%s\n", label ? label : "", log);
+		glDeleteProgram(prog);
+		return 0;
+	}
+	GPU_debug_label(GL_PROGRAM, prog, label);
+	return prog;
+}
+
+void GPU_compute_dispatch_2d(int width, int height, int group)
+{
+	if (width <= 0 || height <= 0 || group <= 0) {
+		return;
+	}
+	glDispatchCompute((GLuint)((width + group - 1) / group), (GLuint)((height + group - 1) / group), 1);
+	glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT |
+	                GL_TEXTURE_UPDATE_BARRIER_BIT | GL_PIXEL_BUFFER_BARRIER_BIT);
+}

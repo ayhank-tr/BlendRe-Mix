@@ -153,6 +153,21 @@ std::wstring TextureCache::folder()
 	return tmp + L"\\bge-remix\\remix_cache";
 }
 
+std::wstring TextureCache::baked_path(const TextureRequest &req)
+{
+	if (!req.baked) {
+		return std::wstring();
+	}
+	wchar_t hex[24];
+	swprintf(hex, 24, L"%016llx", (unsigned long long)req.baked->key);
+	return folder() + L"\\" + safe_name(req.baked->name.c_str()) + L"_" + kind_tag(req) + L"_k" + hex + L".dds";
+}
+
+bool TextureCache::cached(const TextureRequest &req)
+{
+	return req.baked && req.baked->key && exists(baked_path(req));
+}
+
 TextureCache::State TextureCache::request(const TextureRequest &req, std::wstring &r_path)
 {
 	if (!req.wanted()) {
@@ -178,6 +193,22 @@ TextureCache::State TextureCache::request(const TextureRequest &req, std::wstrin
 	std::vector<float> rgbaf;
 	const unsigned char *rgba8 = NULL;
 	std::string name;
+	if (req.baked && req.baked->key) {
+		/* P8.7: a bake named by its content: found, or encoded under that name */
+		e.path = baked_path(req);
+		r_path = e.path;
+		if (exists(e.path)) {
+			e.state = READY;
+			reused++;
+			return READY;
+		}
+		if (req.baked->cached) {
+			/* the file went away after the bake was skipped */
+			e.state = FAILED;
+			failed++;
+			return FAILED;
+		}
+	}
 	if (req.baked) {
 		/* P8.6: a baked procedural texture */
 		w = req.baked->width;
@@ -234,7 +265,9 @@ TextureCache::State TextureCache::request(const TextureRequest &req, std::wstrin
 	const std::wstring dir = folder();
 	wchar_t hex[16];
 	swprintf(hex, 16, L"%08x", hash);
-	e.path = dir + L"\\" + safe_name(name.c_str()) + L"_" + kind_tag(req) + L"_" + hex + L".dds";
+	if (!(req.baked && req.baked->key)) {
+		e.path = dir + L"\\" + safe_name(name.c_str()) + L"_" + kind_tag(req) + L"_" + hex + L".dds";
+	}
 	r_path = e.path;
 	if (exists(e.path)) {
 		if (ibuf) {

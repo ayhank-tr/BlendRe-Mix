@@ -187,6 +187,15 @@ void GPU_imm_end(void);
 /* the colour for GPU_BUILTIN_FLAT and the texture unit for IMAGE and TEXT */
 void GPU_imm_uniform_color(float r, float g, float b, float a);
 
+/* ---- compute (BGE-Remix P8.7) ---- */
+
+/* a compute program from GLSL 4.50 source (the "#version" line is added);
+ * 0 when it does not build (the log is printed under "label") */
+unsigned int GPU_compute_program(const char *source, const char *label);
+/* runs it over a width x height grid in groups of group x group (the
+ * program must be bound); a barrier for image and texture reads follows */
+void GPU_compute_dispatch_2d(int width, int height, int group);
+
 /* ---- matrices ---- */
 
 typedef enum GPUMatrixMode {

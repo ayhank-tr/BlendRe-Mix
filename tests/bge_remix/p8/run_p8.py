@@ -19,6 +19,10 @@ Meshes as batches: the deform scene (a cylinder bent by an armature, a cube
 T8.4, T8.5, T8.7 (the fallback drawn with the built-in classic shader),
 T8.8, T8.9 run on batches; B8.6 (game drawing) early reading
 
+Part A, build A3 (bakes on the graphics card):
+T8.11 also: a second start draws no bake (every one found in the cache by
+      its content); B8.4 reports the bakes' time on the graphics card
+
 The first build's tests, renumbered (P8 plan v2):
 T8.4  one mode (was T8.1)            T8.5  Multitexture's features (T8.2)
 T8.6  GLSL unchanged (T8.3)          T8.7  fallback (T8.4)
@@ -727,6 +731,9 @@ def t88(args, out, scenes, expected):
     s2 = again["stats"]
     c["a second start reuses the files (nothing encoded)"] = again["ran"] and s2.get("textures_encoded") == 0 and \
         (s2.get("textures_reused") or 0) >= len(names) + len(bumps)
+    # P8.7: by content: the second start finds every bake in the cache and draws nothing
+    c["a second start draws no bake (every one from the cache)"] = \
+        s2.get("procedural_bakes_cached") == len(names) + len(bumps)
     d["first"], d["again"] = st, s2
     d["exits"] = {"first": first["exit"], "first_crashed": first["crashed"], "again": again["exit"]}
 
@@ -1441,7 +1448,7 @@ def run(args, out):
              ("layer self-test", os.path.join(out, "layer_selftest", "layer_selftest.png"))]
     res["sheet"] = p2.contact_sheet(sheet, os.path.join(out, "sheet_p8a.png"))
 
-    lines = ["BGE-Remix P8 tests, plan v2: Parts A1-A2 and the first build's tests (CI)", "=" * 70, ""]
+    lines = ["BGE-Remix P8 tests, plan v2: Part A (A1-A3) and the first build's tests (CI)", "=" * 70, ""]
     for name, t in tests.items():
         lines.append("%-34s %s" % (name, p2.mark(t["ok"])))
         for check, ok in t["checks"].items():
@@ -1482,6 +1489,8 @@ def benchmarks(args, out, scenes, runs):
             r = play(args.ours, out, tag, S("proc_textures"), env, frames=300, seconds=30, gl_debug=False)
             st = r["stats"]
             bake["%d %s" % (size, when)] = {"bake_ms": st.get("procedural_bake_ms"),
+                                            "gpu_ms": st.get("procedural_bake_gpu_ms"),
+                                            "from_cache": st.get("procedural_bakes_cached"),
                                             "encoded": st.get("textures_encoded"), "reused": st.get("textures_reused"),
                                             "start_s": start(r)}
     b["B8.4 baking"] = bake

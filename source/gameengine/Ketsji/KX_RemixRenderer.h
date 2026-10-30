@@ -300,6 +300,8 @@ private:
 	int m_material_notes;      /* lines the translator could not represent */
 	int m_bakes, m_rebakes;    /* P8.6: materials baked, and baked again while playing */
 	double m_bake_ms;          /* P8.6: time spent baking */
+	int m_bakes_cached;        /* P8.7: bakes found in the cache (nothing drawn) */
+	double m_bake_gpu_ms;      /* P8.7: their time on the graphics card */
 	double m_max_swap_ms;      /* slowest frame that swapped materials */
 	double m_frame_ms_max;     /* longest gap between two Remix frames (after the first 10) */
 	double m_last_render;
