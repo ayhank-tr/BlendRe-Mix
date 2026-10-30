@@ -421,6 +421,11 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 	if (!glsl450) {
 		gpu_shader_standard_extensions(standard_extensions, geocode != NULL);
 	}
+	else {
+		/* the library's bicubic bump reads the level of detail; GLSL 4.00
+		 * made the extension's textureQueryLOD core as textureQueryLod */
+		strcat(standard_extensions, "#define textureQueryLOD textureQueryLod\n");
+	}
 
 	/* the pieces of each stage, in order */
 	const char *vsrc[8], *fsrc[10], *gsrc[6];

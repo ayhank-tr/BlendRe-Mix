@@ -1624,6 +1624,20 @@ void RAS_OpenGLRasterizer::MotionBlur()
 	float motionblurvalue;
 	if (state)
 	{
+		/* BGE-Remix P8.1: motion blur uses the accumulation buffer; a window
+		 * without one would only collect driver errors (stock 2.79 draws the
+		 * same picture there, unblurred), so it is skipped and said once */
+		static int accum_bits = -1;
+		if (accum_bits < 0) {
+			GLint r = 0;
+			glGetIntegerv(GL_ACCUM_RED_BITS, &r);
+			accum_bits = r;
+			if (r == 0)
+				printf("BGE-Remix: motion blur needs an accumulation buffer, which this window does not have; it is skipped\n");
+		}
+		if (accum_bits == 0)
+			return;
+
 		motionblurvalue = GetMotionBlurValue();
 		if (state==1)
 		{

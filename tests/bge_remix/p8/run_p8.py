@@ -1140,9 +1140,16 @@ def t82_cache(gl):
     first, second = counts(gl["cache_first"]), counts(gl["cache_second"])
     d["first_start"] = {"loaded_built_saved": first, "seconds": gl["cache_first"].get("seconds_total")}
     d["second_start"] = {"loaded_built_saved": second, "seconds": gl["cache_second"].get("seconds_total")}
-    c["the first start saves its shaders"] = bool(first) and first[2] > 0
-    c["a second start loads them and builds none"] = bool(first) and bool(second) and \
-        second[0] >= first[2] and second[1] == 0
+    no_binaries = "the driver offers no program binaries"
+    if no_binaries in gl["cache_first"].get("text", "") and no_binaries in gl["cache_second"].get("text", ""):
+        # Mesa on Windows offers no program binaries: the cache must stay off
+        # cleanly here; saving and loading are checked in the RTX run
+        d["cache"] = "the driver offers no program binaries; saving and loading are checked in the RTX run"
+        c["without program binaries the cache stays off"] = first == [0, 0, 0] and second == [0, 0, 0]
+    else:
+        c["the first start saves its shaders"] = bool(first) and first[2] > 0
+        c["a second start loads them and builds none"] = bool(first) and bool(second) and \
+            second[0] >= first[2] and second[1] == 0
     c["both starts ran"] = bool(gl["cache_first"].get("ran")) and bool(gl["cache_second"].get("ran"))
 
     r = gl["reset"]
