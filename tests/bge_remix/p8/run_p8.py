@@ -969,15 +969,17 @@ def shadow_mask(dark, rect, level=20.0):
     return dark[t:b, l:r] > level
 
 
-def penumbra(dark, rect):
-    """pixels partly in shadow: between 15% and 85% of the cell's full shadow"""
-    l, t, r, b = rect
-    region = dark[t:b, l:r]
+def penumbra(dark, off, rect):
+    """pixels partly in shadow: between 15% and 85% of the light that
+    reaches them without shadows. Measured against the picture without
+    shadows, so the lamp's falloff across the shadow does not count."""
     import numpy as np
-    full = float(np.percentile(region, 98))
-    if full < 20.0:
-        return 0
-    return int(((region > 0.15 * full) & (region < 0.85 * full)).sum())
+    l, t, r, b = rect
+    region, lit = dark[t:b, l:r], brightness(off)[t:b, l:r]
+    seen = lit > 20.0
+    part = np.zeros_like(region)
+    part[seen] = np.clip(region[seen] / lit[seen], 0.0, 1.0)
+    return int(((part > 0.15) & (part < 0.85)).sum())
 
 
 def t812(args, out, scenes, expected, shots, runs):
@@ -1014,7 +1016,7 @@ def t812(args, out, scenes, expected, shots, runs):
         c["%s lamp casts (away from the lamp)" % cell["kind"].lower()] = frac > 0.02 and away
 
     # softer with a bigger light
-    hard, soft = penumbra(dark, cells["point_hard"]["rect"]), penumbra(dark, cells["point_soft"]["rect"])
+    hard, soft = (penumbra(dark, off, cells[n]["rect"]) for n in ("point_hard", "point_soft"))
     d["penumbra_pixels"] = {"size 0.05": hard, "size 0.4": soft}
     c["shadow edges soften with the light's size"] = soft > 1.5 * max(hard, 1)
 
