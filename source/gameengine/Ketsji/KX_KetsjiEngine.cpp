@@ -1183,10 +1183,10 @@ static unsigned int shadow_casters_signature(
 		if (layer != 0 && !(ob->GetLayer() & layer))
 			continue;
 		if (!sun) {
-			MT_Point3 box[2];
-			ob->GetSGNode()->getAABBox(box);
-			const MT_Vector3 center = (box[0] + box[1]) * 0.5;
-			if ((center - lamppos).length() - (box[1] - box[0]).length() * 0.5 > reach)
+			/* the object's bounding sphere, as KX_Scene's culling has it */
+			const MT_Vector3 scale = ob->GetSGNode()->GetWorldScaling();
+			const MT_Scalar radius = fabs(scale[scale.closestAxis()] * ob->GetSGNode()->Radius());
+			if ((ob->NodeGetWorldPosition() - lamppos).length() - radius > reach)
 				continue;
 		}
 		HASH_BYTES(&ob, sizeof(ob));
