@@ -225,6 +225,10 @@ bool BL_ShapeDeformer::Update(void)
 
 		// We also need to handle transverts now (used to be in BL_SkinDeformer::Apply())
 		UpdateTransverts();
+		/* BGE-Remix P8.4: tell the rasterizer the mesh changed (Apply), as the
+		 * armature path does: the meshes live on the card and are copied
+		 * there only when changed (stock read the arrays at every draw) */
+		m_poseApplied = false;
 		bSkinUpdate = true;
 	}
 

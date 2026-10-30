@@ -519,6 +519,12 @@ static GLuint build_program(const char *vert, const char *frag, const char *who,
 	if (fs) {
 		glAttachShader(prog, fs);
 	}
+	/* BGE-Remix P8.4: a custom shader's "Tangent" attribute is fed at place 1
+	 * (setAttrib, BL_Shader::SHD_TANGENT); stock 2.79 got it there by the
+	 * linker's order, which the game front end's own attributes change */
+	if (vs) {
+		glBindAttribLocation(prog, 1, "Tangent");
+	}
 	glLinkProgram(prog);
 	GLint ok = 0;
 	glGetProgramiv(prog, GL_LINK_STATUS, &ok);
