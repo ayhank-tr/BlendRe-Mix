@@ -917,8 +917,12 @@ def make_lamps(folder, E):
 
     E["lamps"] = {"cells": cells, "remix": [remix_expect(ob) for ob in lamps],
                   "only_shadow": "L_only_shadow", "changing": "Changing", "like": "L_point_phys_small",
-                  "f12_skip": ["spot_halo"]}
+                  "f12_skip": ["spot_halo", "changed_by_script"]}
+    # lamps.blend with RTX Remix on (the fake runtime's log), lamps_gl.blend without
+    scene["bge_remix"] = 1
     save(scene, os.path.join(folder, "lamps.blend"), physical=False, lamps_physical=True)
+    scene["bge_remix"] = 0
+    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, "lamps_gl.blend"), copy=True)
 
 
 MOVE_SCRIPT = r'''

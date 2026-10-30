@@ -50,6 +50,9 @@ public:
 
 	virtual ~KX_BlenderMaterial();
 
+	/* BGE-Remix P8.9: the layers whose "This Layer Only" lamps light it */
+	int GetLightLayer() const { return mLightLayer; }
+
 	// --------------------------------
 	virtual TCachingInfo GetCachingInfo(void) const {
 		return (void*) this;

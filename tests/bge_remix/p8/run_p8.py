@@ -886,9 +886,9 @@ def t811(args, out, scenes, expected, shots):
         return {"the lamps scene was made": False}, {}
     c, d = {}, {"cells": {}}
     f12 = os.path.join(out, "t811_f12_lamps.png")
-    blender_script(args.ours, out, "t811_f12", RENDER, [f12], blend=os.path.join(scenes, "lamps.blend"),
+    blender_script(args.ours, out, "t811_f12", RENDER, [f12], blend=os.path.join(scenes, "lamps_gl.blend"),
                    timeout=1800)
-    a, b = picture(shots.get("lamps")), picture(f12)
+    a, b = picture(shots.get("lamps_gl")), picture(f12)
     c["F12 rendered"] = b is not None
     c["the game's picture made"] = a is not None
     if a is not None and b is not None:
@@ -1095,10 +1095,15 @@ def run(args, out):
     runs["api"] = play(args.ours, out, "game_api", S("glsl_features"), {"BGE_REMIX_P8_API": api_path}, frames=60)
 
     # Part B: lamps and shadows (the shadows run says when each lamp draws its shadow)
-    for name in ("lamps", "shadows", "shadows_noshadow", "shadows_nocontact", "shadows_far", "shadows_far_noshadow"):
+    # (each lamp's shadow buffer is written out once, for checking the maps)
+    for name in ("lamps_gl", "shadows", "shadows_noshadow", "shadows_nocontact", "shadows_far", "shadows_far_noshadow"):
         if os.path.isfile(S(name)):
-            runs[name] = play(args.ours, out, "game_" + name, S(name),
-                              {"BGE_REMIX_TRACE_SHADOWS": "1"} if name == "shadows" else None)
+            dump = os.path.join(out, "shadow_dump_" + name)
+            os.makedirs(dump, exist_ok=True)
+            env = {"BGE_REMIX_SHADOW_DUMP": dump}
+            if name == "shadows":
+                env["BGE_REMIX_TRACE_SHADOWS"] = "1"
+            runs[name] = play(args.ours, out, "game_" + name, S(name), env)
             shots[name] = runs[name].get("screenshot")
     api = p2.read_json(api_path)
 
@@ -1166,7 +1171,7 @@ def run(args, out):
              ("glsl_features: stock 2.79", shots.get("stock_glsl_features")),
              ("classic_remix: game", shots.get("classic_remix_gl")),
              ("fallback: FailMe failing on purpose", os.path.join(out, "t84_fail.png")),
-             ("lamps: game", shots.get("lamps")),
+             ("lamps: game", shots.get("lamps_gl")),
              ("lamps: F12", os.path.join(out, "t811_f12_lamps.png")),
              ("shadows: game", shots.get("shadows")),
              ("shadows: without shadows", shots.get("shadows_noshadow")),

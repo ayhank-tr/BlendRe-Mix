@@ -226,8 +226,8 @@ void RAS_OpenGLLight::SetupShadowCamera(RAS_ICanvas *canvas, KX_Camera *cam, MT_
                                         float viewmat[4][4], float winmat[4][4], const int rect[4])
 {
 	/* the view's place in the buffer (GPU_lamp_shadow_buffer_view set the
-	 * viewport), so update the canvas */
-	canvas->UpdateViewPort(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]);
+	 * viewport), so update the canvas (x, y, width, height) */
+	canvas->UpdateViewPort(rect[0], rect[1], rect[2], rect[3]);
 
 	/* setup camera transformation */
 	MT_Matrix4x4 modelviewmat((float*)viewmat);

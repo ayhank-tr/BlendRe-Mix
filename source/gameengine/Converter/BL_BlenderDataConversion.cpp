@@ -885,7 +885,23 @@ static bool ConvertMaterial(
 	return true;
 }
 
-static RAS_MaterialBucket *material_from_mesh(Material *ma, MFace *mface, MTFace *tface, MCol *mcol, MTF_localLayer *layers, int lightlayer, unsigned int *rgb, MT_Point2 uvs[4][RAS_TexVert::MAX_UNIT], const char *tfaceName, KX_Scene* scene, KX_BlenderSceneConverter *converter)
+/* BGE-Remix P8.9: whether a lamp of the scene lights its own layers only */
+static bool scene_has_layer_lamps(Scene *blenderscene)
+{
+	bool found = false;
+	Scene *sce_iter;
+	Base *base;
+	for (SETLOOPER(blenderscene, sce_iter, base)) {
+		Object *ob = base->object;
+		if (ob->type == OB_LAMP && ob->data && (((Lamp *)ob->data)->mode & LA_LAYER)) {
+			found = true;
+			break;
+		}
+	}
+	return found;
+}
+
+static RAS_MaterialBucket *material_from_mesh(Material *ma, MFace *mface, MTFace *tface, MCol *mcol, MTF_localLayer *layers, int lightlayer, unsigned int *rgb, MT_Point2 uvs[4][RAS_TexVert::MAX_UNIT], const char *tfaceName, KX_Scene* scene, KX_BlenderSceneConverter *converter, bool layer_lamps)
 {
 	RAS_IPolyMaterial* polymat = converter->FindCachedPolyMaterial(scene, ma);
 	BL_Material* bl_mat = converter->FindCachedBlenderMaterial(scene, ma);
@@ -910,6 +926,16 @@ static RAS_MaterialBucket *material_from_mesh(Material *ma, MFace *mface, MTFace
 
 	GetUVs(bl_mat, layers, mface, tface, uvs);
 
+	/* BGE-Remix P8.9: the material keeps the light layer it was made for
+	 * (lamps with "This Layer Only" light it by that layer), so where the
+	 * scene has such lamps, an object on other layers gets its own (it was
+	 * lit as the first object's layer) */
+	bool cache = true;
+	if (layer_lamps && polymat && static_cast<KX_BlenderMaterial *>(polymat)->GetLightLayer() != lightlayer) {
+		polymat = NULL;
+		cache = false;
+	}
+
 	/* then the KX_BlenderMaterial */
 	if (polymat == NULL)
 	{
@@ -917,7 +943,7 @@ static RAS_MaterialBucket *material_from_mesh(Material *ma, MFace *mface, MTFace
 
 		kx_blmat->Initialize(scene, bl_mat, (ma?&ma->game:NULL), lightlayer);
 		polymat = static_cast<RAS_IPolyMaterial*>(kx_blmat);
-		if (ma && (ma->mode & MA_FACETEXTURE) == 0)
+		if (cache && ma && (ma->mode & MA_FACETEXTURE) == 0)
 			converter->CachePolyMaterial(scene, ma, polymat);
 	}
 	
@@ -955,6 +981,9 @@ RAS_MeshObject* BL_ConvertMesh(Mesh* mesh, Object* blenderobj, KX_Scene* scene, 
 	 * game's shaders, Remix's bakes) made from its vertices now; the one
 	 * kept with the mesh was found unset in the player (CI, P8 run 6) */
 	BKE_mesh_texspace_calc(mesh);
+
+	/* BGE-Remix P8.9: materials per light layer where lamps light their own layers */
+	const bool layer_lamps = scene_has_layer_lamps(scene->GetBlenderScene());
 
 	// Get DerivedMesh data
 	DerivedMesh *dm = CDDM_from_mesh(mesh);
@@ -1090,7 +1119,8 @@ RAS_MeshObject* BL_ConvertMesh(Mesh* mesh, Object* blenderobj, KX_Scene* scene, 
 
 		{
 
-			RAS_MaterialBucket* bucket = material_from_mesh(ma, mface, tface, mcol, layers, lightlayer, rgb, uvs, tfaceName, scene, converter);
+			RAS_MaterialBucket* bucket = material_from_mesh(ma, mface, tface, mcol, layers, lightlayer, rgb, uvs, tfaceName, scene, converter,
+			                                                   layer_lamps);
 
 			// set render flags
 			bool visible = ((ma->game.flag & GEMAT_INVISIBLE)==0);

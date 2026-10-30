@@ -1485,6 +1485,8 @@ void KX_KetsjiEngine::RenderFrame(KX_Scene* scene, KX_Camera* cam)
 			scene->RenderBuckets(camtrans, m_rasterizer);
 			m_rasterizer->SetDrawingMode(drawmode);
 			GPU_scene_depth_end();
+			/* drawing marks every mesh slot culled for the next pass */
+			scene->CalculateVisibleMeshes(m_rasterizer, cam);
 		}
 
 		scene->RenderBuckets(camtrans, m_rasterizer);

@@ -32,6 +32,8 @@
  */
 
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "MEM_guardedalloc.h"
@@ -224,6 +226,7 @@ struct GPULamp {
 	bool has_cam;
 	float cam_viewinv[4][4], cam_winmat[4][4];
 	GPUFrameBuffer *depthfb;                           /* Variance: the depth pass */
+	bool dumped;                                       /* BGE_REMIX_SHADOW_DUMP */
 
 	int falloff_type;
 	struct CurveMapping *curfalloff;
@@ -3808,6 +3811,47 @@ static void gpu_lamp_vsm_moments(GPULamp *lamp)
 	GPU_framebuffer_texture_unbind(lamp->fb, lamp->tex);
 }
 
+/* BGE-Remix P8.10: BGE_REMIX_SHADOW_DUMP=<folder> writes each lamp's shadow
+ * buffer once (the sun's once it follows a camera) with its views, for
+ * checking the maps against what the shaders expect: <lamp>.depth holds
+ * ints w, h, views, size, has_cam, then floats: the depths (w x h), each
+ * view's viewmat and winmat, cascade scale and range, shadow params and
+ * clip, the camera's camtoworld and winmat */
+static void gpu_lamp_shadow_dump(GPULamp *lamp)
+{
+	const char *dir = getenv("BGE_REMIX_SHADOW_DUMP");
+	if (!dir || !dir[0] || lamp->dumped || lamp->depthfb ||
+	    (lamp->shadow_kind == GPU_LAMP_SHADOW_CASCADE && !lamp->has_cam))
+	{
+		return;
+	}
+	lamp->dumped = true;
+	const int w = lamp->size * lamp->tiles_x, h = lamp->size * lamp->tiles_y;
+	float *depth = MEM_mallocN(sizeof(float) * w * h, "shadow dump");
+	glBindTexture(GL_TEXTURE_2D, GPU_texture_opengl_bindcode(lamp->tex));
+	glGetTexImage(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, GL_FLOAT, depth);
+	glBindTexture(GL_TEXTURE_2D, 0);
+	char path[1024];
+	BLI_snprintf(path, sizeof(path), "%s/%s.depth", dir, lamp->ob->id.name + 2);
+	FILE *f = fopen(path, "wb");
+	if (f) {
+		const int head[5] = {w, h, lamp->nviews, lamp->size, lamp->has_cam ? 1 : 0};
+		fwrite(head, sizeof(int), 5, f);
+		fwrite(depth, sizeof(float), (size_t)w * h, f);
+		fwrite(lamp->view_viewmat, sizeof(float[16]), 6, f);
+		fwrite(lamp->view_winmat, sizeof(float[16]), 6, f);
+		fwrite(lamp->cascade_scale, sizeof(float), 4, f);
+		fwrite(lamp->cascade_range, sizeof(float), 4, f);
+		fwrite(lamp->shadow_params, sizeof(float), 4, f);
+		fwrite(lamp->shadow_clip, sizeof(float), 4, f);
+		fwrite(lamp->cam_viewinv, sizeof(float), 16, f);
+		fwrite(lamp->cam_winmat, sizeof(float), 16, f);
+		fclose(f);
+		printf("BGE-Remix shadow: %s dumped to %s\n", lamp->ob->id.name + 2, path);
+	}
+	MEM_freeN(depth);
+}
+
 void GPU_lamp_shadow_buffer_unbind(GPULamp *lamp)
 {
 	glDisable(GL_SCISSOR_TEST);
@@ -3820,6 +3864,7 @@ void GPU_lamp_shadow_buffer_unbind(GPULamp *lamp)
 	}
 	GPU_framebuffer_restore();
 	glEnable(GL_SCISSOR_TEST);
+	gpu_lamp_shadow_dump(lamp);
 }
 
 int GPU_lamp_shadow_buffer_type(GPULamp *lamp)
