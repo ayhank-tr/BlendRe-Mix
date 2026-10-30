@@ -255,6 +255,7 @@ CRASH_LINE = re.compile(r"^BGE-Remix crash\s*$", re.M)  # the echo, not the comm
 # logged; no Windows message boxes in CI
 GL_ENV = {"BGE_REMIX_GL_DEBUG": "1", "BGE_REMIX_NO_DIALOGS": "1"}
 GL_ERROR = re.compile(r"^BGE-Remix GL error: .*$", re.M)
+DELIBERATE_MISTAKE = "not_declared_anywhere"  # make_scenes_p8.py, the custom shader "Broken"
 GL_VERSION = re.compile(r"^BGE-Remix GL: (\d+)\.(\d+) (compatibility|core)( \(debug\))?, tier (\d)(.*)$", re.M)
 GL_LOG = {}
 OURS = {"build": None}
@@ -265,6 +266,12 @@ def note_gl(build, tag, text):
     if not OURS["build"] or os.path.abspath(build) != OURS["build"]:
         return
     errors = GL_ERROR.findall(text or "")
+    # the custom shader scene's deliberate mistake (its "Broken" shader) is
+    # meant to fail: its compiler errors, on the lines that name the mistake,
+    # are not driver errors
+    loc = re.compile(r"shader compiler error \d+: (\d+:\d+)\(")
+    meant = {m.group(1) for e in errors if DELIBERATE_MISTAKE in e for m in [loc.search(e)] if m}
+    errors = [e for e in errors if not (loc.search(e) and loc.search(e).group(1) in meant)]
     m = GL_VERSION.search(text or "")
     GL_LOG[tag] = {"errors": len(errors), "first": errors[:5],
                    "version": [int(m.group(1)), int(m.group(2))] if m else None,
@@ -1145,7 +1152,8 @@ def t82_cache(gl):
         # Mesa on Windows offers no program binaries: the cache must stay off
         # cleanly here; saving and loading are checked in the RTX run
         d["cache"] = "the driver offers no program binaries; saving and loading are checked in the RTX run"
-        c["without program binaries the cache stays off"] = first == [0, 0, 0] and second == [0, 0, 0]
+        c["without program binaries the cache stays off"] = bool(first) and bool(second) and \
+            first[0] == 0 and first[2] == 0 and second[0] == 0 and second[2] == 0
     else:
         c["the first start saves its shaders"] = bool(first) and first[2] > 0
         c["a second start loads them and builds none"] = bool(first) and bool(second) and \
