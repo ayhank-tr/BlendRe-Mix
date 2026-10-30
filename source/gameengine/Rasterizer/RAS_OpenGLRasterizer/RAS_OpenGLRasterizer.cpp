@@ -49,8 +49,7 @@
 #include "RAS_OpenGLOffScreen.h"
 #include "RAS_OpenGLSync.h"
 
-#include "RAS_StorageVA.h"
-#include "RAS_StorageVBO.h"
+#include "RAS_StorageBatch.h"
 
 #include "GPU_draw.h"
 #include "GPU_extensions.h"
@@ -127,16 +126,10 @@ RAS_OpenGLRasterizer::RAS_OpenGLRasterizer(RAS_ICanvas* canvas, RAS_STORAGE_TYPE
 
 	m_prevafvalue = GPU_get_anisotropic();
 
-	if (m_storage_type == RAS_VBO /*|| m_storage_type == RAS_AUTO_STORAGE && GLEW_ARB_vertex_buffer_object*/) {
-		m_storage = new RAS_StorageVBO(&m_texco_num, m_texco, &m_attrib_num, m_attrib, m_attrib_layer);
-	}
-	else if ((m_storage_type == RAS_VA) || (m_storage_type == RAS_AUTO_STORAGE)) {
-		m_storage = new RAS_StorageVA(&m_texco_num, m_texco, &m_attrib_num, m_attrib, m_attrib_layer);
-	}
-	else {
-		printf("Unknown rasterizer storage type, falling back to vertex arrays\n");
-		m_storage = new RAS_StorageVA(&m_texco_num, m_texco, &m_attrib_num, m_attrib, m_attrib_layer);
-	}
+	/* BGE-Remix P8.4: the game's meshes are batches on the card, whatever
+	 * storage the file asks for (Display Lists, Vertex Arrays or VBO) */
+	m_classic = false;
+	m_storage = new RAS_StorageBatch(&m_texco_num, m_texco, &m_attrib_num, m_attrib, m_attrib_layer, &m_classic);
 
 	glGetIntegerv(GL_MAX_LIGHTS, (GLint *) &m_numgllights);
 	if (m_numgllights < 8)
@@ -302,6 +295,8 @@ bool RAS_OpenGLRasterizer::BeginFrame(double time)
 	m_lastauxinfo = NULL;
 	m_lastlighting = true; /* force disable in DisableOpenGLLights() */
 	DisableOpenGLLights();
+
+	m_storage->BeginFrame();
 	
 	return true;
 }
@@ -832,7 +827,7 @@ void RAS_OpenGLRasterizer::DrawDerivedMesh(class RAS_MeshSlot &ms)
 		Material* blmat = current_polymat->GetBlenderMaterial();
 		Scene* blscene = current_polymat->GetBlenderScene();
 		if (!current_wireframe && blscene && blmat)
-			GPU_material_vertex_attributes(GPU_material_from_blender(blscene, blmat, false), &current_gpu_attribs);
+			GPU_material_vertex_attributes(GPU_material_from_blender_ex(blscene, blmat, false, true), &current_gpu_attribs);
 		else
 			memset(&current_gpu_attribs, 0, sizeof(current_gpu_attribs));
 		// DM draw can mess up blending mode, restore at the end

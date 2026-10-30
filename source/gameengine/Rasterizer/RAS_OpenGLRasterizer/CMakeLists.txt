@@ -54,6 +54,7 @@ set(SRC
 	RAS_OpenGLOffScreen.cpp
 	RAS_OpenGLSync.cpp
 	RAS_OpenGLRasterizer.cpp
+	RAS_StorageBatch.cpp
 	RAS_StorageVA.cpp
 	RAS_StorageVBO.cpp
 
@@ -63,6 +64,7 @@ set(SRC
 	RAS_OpenGLOffScreen.h
 	RAS_OpenGLSync.h
 	RAS_OpenGLRasterizer.h
+	RAS_StorageBatch.h
 	RAS_StorageVA.h
 	RAS_StorageVBO.h
 )

@@ -32,6 +32,7 @@
 #include "MEM_guardedalloc.h"
 
 #include "GPU_glew.h"
+#include "GPU_glcheck.h"
 #include "GPU_layer.h"
 #include "GPU_shader.h"
 
@@ -40,7 +41,7 @@
 /* ---- sources ---- */
 
 static const char *vert_common =
-        "in vec4 bge_pos;\n"
+        "layout(location = 0) in vec4 bge_pos;\n"
         "in vec4 bge_col;\n"
         "in vec2 bge_texco;\n"
         "uniform mat4 bge_mvp;\n"
@@ -80,7 +81,7 @@ static const char *frag_text =
 /* lines of any width: each segment made a screen-space quad; the distance
  * along the line (in pixels) gives the dashes */
 static const char *vert_line =
-        "in vec4 bge_pos;\n"
+        "layout(location = 0) in vec4 bge_pos;\n"
         "in vec4 bge_col;\n"
         "uniform mat4 bge_mvp;\n"
         "out vec4 l_col;\n"
@@ -126,7 +127,7 @@ static const char *frag_line =
         "}\n";
 
 static const char *vert_point =
-        "in vec4 bge_pos;\n"
+        "layout(location = 0) in vec4 bge_pos;\n"
         "in vec4 bge_col;\n"
         "uniform mat4 bge_mvp;\n"
         "uniform float bge_point_size;\n"
@@ -147,7 +148,7 @@ static const char *frag_point =
  * (infinite viewer, one-sided), colour material, texture environment, fog
  * from the eye distance, alpha test */
 static const char *vert_classic =
-        "in vec4 bge_pos;\n"
+        "layout(location = 0) in vec4 bge_pos;\n"
         "in vec3 bge_nor;\n"
         "in vec4 bge_col;\n"
         "in vec2 bge_texco;\n"
@@ -421,6 +422,107 @@ void GPU_classic_uniforms(struct GPUShader *shader, const GPUClassicState *st)
 	uniform_f(program, "bge_cl_alpha_ref", st->alpha_ref);
 }
 
+/* BGE-Remix P8.4: the classic look as the old OpenGL state has it (a game
+ * material whose shader could not be built set it up for fixed-function
+ * drawing); only in a compatibility context */
+void GPU_classic_state_from_gl(GPUClassicState *st)
+{
+	GPU_classic_state_default(st);
+	if (GPU_caps()->core_profile) {
+		return;
+	}
+	st->lighting = glIsEnabled(GL_LIGHTING) == GL_TRUE;
+	st->light_count = 0;
+	if (st->lighting) {
+		for (int i = 0; i < 8; i++) {
+			const GLenum light = GL_LIGHT0 + (GLenum)i;
+			if (!glIsEnabled(light)) {
+				continue;
+			}
+			GPUClassicLight *l = &st->lights[st->light_count++];
+			glGetLightfv(light, GL_POSITION, l->position);
+			glGetLightfv(light, GL_AMBIENT, l->ambient);
+			glGetLightfv(light, GL_DIFFUSE, l->diffuse);
+			glGetLightfv(light, GL_SPECULAR, l->specular);
+			glGetLightfv(light, GL_SPOT_DIRECTION, l->spot_direction);
+			glGetLightfv(light, GL_SPOT_CUTOFF, &l->spot_cutoff);
+			glGetLightfv(light, GL_SPOT_EXPONENT, &l->spot_exponent);
+			glGetLightfv(light, GL_CONSTANT_ATTENUATION, &l->attenuation[0]);
+			glGetLightfv(light, GL_LINEAR_ATTENUATION, &l->attenuation[1]);
+			glGetLightfv(light, GL_QUADRATIC_ATTENUATION, &l->attenuation[2]);
+		}
+		glGetFloatv(GL_LIGHT_MODEL_AMBIENT, st->scene_ambient);
+		glGetMaterialfv(GL_FRONT, GL_AMBIENT, st->mat_ambient);
+		glGetMaterialfv(GL_FRONT, GL_DIFFUSE, st->mat_diffuse);
+		glGetMaterialfv(GL_FRONT, GL_SPECULAR, st->mat_specular);
+		glGetMaterialfv(GL_FRONT, GL_EMISSION, st->mat_emission);
+		glGetMaterialfv(GL_FRONT, GL_SHININESS, &st->shininess);
+		st->vertex_color = glIsEnabled(GL_COLOR_MATERIAL) ? 1 : 0;
+	}
+	else {
+		/* unlit: the colour is the vertex's (or the current one) */
+		st->vertex_color = 1;
+	}
+
+	GLint active = GL_TEXTURE0;
+	glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
+	glActiveTexture(GL_TEXTURE0);
+	st->texturing = glIsEnabled(GL_TEXTURE_2D) == GL_TRUE;
+	if (st->texturing) {
+		GLint mode = GL_MODULATE;
+		glGetTexEnviv(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, &mode);
+		switch (mode) {
+			case GL_REPLACE: st->texenv = GPU_TEXENV_REPLACE; break;
+			case GL_DECAL: st->texenv = GPU_TEXENV_DECAL; break;
+			case GL_ADD: st->texenv = GPU_TEXENV_ADD; break;
+			case GL_BLEND: st->texenv = GPU_TEXENV_BLEND; break;
+			default: st->texenv = GPU_TEXENV_MODULATE; break;  /* modulate, combine */
+		}
+		glGetTexEnvfv(GL_TEXTURE_ENV, GL_TEXTURE_ENV_COLOR, st->texenv_color);
+	}
+	glActiveTexture((GLenum)active);
+
+	if (glIsEnabled(GL_FOG)) {
+		GLint mode = GL_EXP;
+		glGetIntegerv(GL_FOG_MODE, &mode);
+		st->fog = (mode == GL_LINEAR) ? GPU_FOG_LINEAR : (mode == GL_EXP2) ? GPU_FOG_EXP2 : GPU_FOG_EXP;
+		glGetFloatv(GL_FOG_START, &st->fog_start);
+		glGetFloatv(GL_FOG_END, &st->fog_end);
+		glGetFloatv(GL_FOG_DENSITY, &st->fog_density);
+		glGetFloatv(GL_FOG_COLOR, st->fog_color);
+	}
+	if (glIsEnabled(GL_ALPHA_TEST)) {
+		glGetFloatv(GL_ALPHA_TEST_REF, &st->alpha_ref);
+	}
+}
+
+/* BGE-Remix P8.4: the game's shadow maps: depth only, from the game's
+ * batches, with the old matrices (compatibility) */
+static const char *vert_game_depth =
+        "void main() { gl_Position = bge_proj * (bge_mv * bge_pos); }\n";
+static const char *frag_game_depth =
+        "void main() { bge_fragcolor = vec4(1.0); }\n";
+
+static struct GPUShader *gpu_game_depth = NULL;
+static bool gpu_game_depth_failed = false;
+
+struct GPUShader *GPU_builtin_game_depth(void)
+{
+	if (!gpu_game_depth && !gpu_game_depth_failed) {
+		gpu_game_depth = GPU_shader_create_ex(vert_game_depth, frag_game_depth, NULL, NULL, NULL, 0, 0, 0,
+		                                      GPU_SHADER_FLAGS_GLSL450 | GPU_SHADER_FLAGS_FRONTEND |
+		                                      GPU_SHADER_FLAGS_BATCH);
+		if (!gpu_game_depth) {
+			gpu_game_depth_failed = true;
+			fprintf(stderr, "BGE-Remix layer: the game's depth shader failed\n");
+		}
+		else {
+			GPU_debug_label(GL_PROGRAM, GPU_shader_program(gpu_game_depth), "BGE-Remix game depth");
+		}
+	}
+	return gpu_game_depth;
+}
+
 void gpu_builtin_exit(void)
 {
 	for (int i = 0; i < GPU_BUILTIN_COUNT; i++) {
@@ -430,4 +532,9 @@ void gpu_builtin_exit(void)
 		}
 		gpu_builtin_failed[i] = false;
 	}
+	if (gpu_game_depth) {
+		GPU_shader_free(gpu_game_depth);
+		gpu_game_depth = NULL;
+	}
+	gpu_game_depth_failed = false;
 }

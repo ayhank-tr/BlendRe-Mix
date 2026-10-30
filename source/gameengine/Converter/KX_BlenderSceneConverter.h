@@ -174,7 +174,7 @@ public:
 
 	/* BGE-Remix P8: build the material's GLSL shader now; false (and a
 	 * console line) when it cannot be built, so the material falls back to
-	 * the fixed-function drawing. BGE_REMIX_GLSL_FAIL=<material name> makes
+	 * the built-in classic shader. BGE_REMIX_GLSL_FAIL=<material name> makes
 	 * it fail on purpose (tests). */
 	bool MaterialGLSLWorks(KX_Scene *scene, struct Material *ma);
 	const std::set<struct Material *> &GetGLSLFailures() const { return m_glslFailed; }

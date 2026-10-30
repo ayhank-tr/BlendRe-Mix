@@ -435,6 +435,8 @@ KX_BlenderMaterial::ActivatShaders(
 {
 	KX_BlenderMaterial *tmp = const_cast<KX_BlenderMaterial*>(this);
 
+	rasty->SetClassicFallback(false);
+
 	// reset... 
 	if (tmp->mMaterial->IsShared()) 
 		cachingInfo =0;
@@ -487,6 +489,8 @@ KX_BlenderMaterial::ActivateBlenderShaders(
 {
 	KX_BlenderMaterial *tmp = const_cast<KX_BlenderMaterial*>(this);
 
+	rasty->SetClassicFallback(false);
+
 	if (mLastShader) {
 		mLastShader->SetProg(false);
 		mLastShader= NULL;
@@ -532,6 +536,11 @@ KX_BlenderMaterial::ActivateMat(
 	)const
 {
 	KX_BlenderMaterial *tmp = const_cast<KX_BlenderMaterial*>(this);
+
+	/* BGE-Remix P8.4: a material whose GLSL shader could not be built: the
+	 * fixed-function state is set up as before and drawn with the built-in
+	 * classic shader */
+	rasty->SetClassicFallback(true);
 
 	if (mLastShader) {
 		mLastShader->SetProg(false);

@@ -282,6 +282,27 @@ static const char *gpu_frontend_vert_compat =
         "#define BGE_VCOL_OUT gl_FrontColor\n"
         "#define BGE_VCOL2_OUT gl_FrontSecondaryColor\n";
 
+/* BGE-Remix P8.4: the game's meshes come from batches (generic attributes);
+ * Blender's own mesh drawing (modifiers drawn as derived meshes) still feeds
+ * the old built-ins, so the uniform bge_batch picks the source */
+static const char *gpu_frontend_vert_batch =
+        "#define BGE_COMPAT\n"
+        "#define BGE_BATCH\n"
+        "in vec4 bge_pos_b;\n"
+        "in vec3 bge_nor_b;\n"
+        "in vec4 bge_col_b;\n"
+        "uniform int bge_batch;\n"
+        "#define bge_pos (bge_batch != 0 ? bge_pos_b : gl_Vertex)\n"
+        "#define bge_nor (bge_batch != 0 ? bge_nor_b : gl_Normal)\n"
+        "#define bge_col (bge_batch != 0 ? bge_col_b : gl_Color)\n"
+        "#define bge_mv gl_ModelViewMatrix\n"
+        "#define bge_mvinv gl_ModelViewMatrixInverse\n"
+        "#define bge_proj gl_ProjectionMatrix\n"
+        "#define bge_projinv gl_ProjectionMatrixInverse\n"
+        "#define bge_normalmat gl_NormalMatrix\n"
+        "#define BGE_VCOL_OUT gl_FrontColor\n"
+        "#define BGE_VCOL2_OUT gl_FrontSecondaryColor\n";
+
 static const char *gpu_frontend_frag_compat =
         "#define BGE_COMPAT\n"
         "#define bge_mv gl_ModelViewMatrix\n"
@@ -387,7 +408,9 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 	const bool core = glsl450 && (flags & GPU_SHADER_FLAGS_CORE);
 	const bool frontend = (flags & GPU_SHADER_FLAGS_FRONTEND) != 0;
 	const char *version = gpu_shader_version_ex(flags, use_opensubdiv);
-	const char *vert_front = frontend ? (core ? gpu_frontend_vert_core : gpu_frontend_vert_compat) : NULL;
+	const char *vert_front = frontend ? (core ? gpu_frontend_vert_core :
+	                                     ((flags & GPU_SHADER_FLAGS_BATCH) ? gpu_frontend_vert_batch :
+	                                                                         gpu_frontend_vert_compat)) : NULL;
 	const char *frag_front = frontend ? (core ? gpu_frontend_frag_core : gpu_frontend_frag_compat) : NULL;
 	const char *shared = (glsl450 && (flags & GPU_SHADER_FLAGS_SHARED)) ? gpu_frontend_shared : NULL;
 

@@ -46,6 +46,31 @@
 #include "RAS_MeshObject.h"
 #include "RAS_Deformer.h"	// __NLA
 
+/* BGE-Remix P8.4: the batch storage frees an array's buffers */
+void (*RAS_DisplayArray::s_storage_free)(void *storage) = NULL;
+
+RAS_DisplayArray& RAS_DisplayArray::operator=(const RAS_DisplayArray& other)
+{
+	if (this != &other) {
+		if (m_storage && s_storage_free)
+			s_storage_free(m_storage);
+		m_storage = NULL;
+		m_offset = other.m_offset;
+		m_vertex = other.m_vertex;
+		m_index = other.m_index;
+		m_type = other.m_type;
+		m_users = other.m_users;
+	}
+	return *this;
+}
+
+RAS_DisplayArray::~RAS_DisplayArray()
+{
+	if (m_storage && s_storage_free)
+		s_storage_free(m_storage);
+	m_storage = NULL;
+}
+
 /* mesh slot */
 
 RAS_MeshSlot::RAS_MeshSlot() : SG_QList()

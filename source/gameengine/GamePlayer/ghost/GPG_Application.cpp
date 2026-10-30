@@ -609,20 +609,11 @@ bool GPG_Application::initEngine(GHOST_IWindow* window, const int stereoMode)
 		if (gm->flag & GAME_SHOW_MOUSE)
 			m_canvas->SetMouseState(RAS_ICanvas::MOUSE_NORMAL);
 		
-		RAS_STORAGE_TYPE raster_storage = RAS_AUTO_STORAGE;
-
-		if (gm->raster_storage == RAS_STORE_VBO) {
-			raster_storage = RAS_VBO;
-		}
-		else if (gm->raster_storage == RAS_STORE_VA) {
-			raster_storage = RAS_VA;
-		}
-		//Don't use displaylists with VBOs
-		//If auto starts using VBOs, make sure to check for that here
-		if (useLists && raster_storage != RAS_VBO)
-			m_rasterizer = new RAS_ListRasterizer(m_canvas, true, raster_storage);
-		else
-			m_rasterizer = new RAS_OpenGLRasterizer(m_canvas, raster_storage);
+		/* BGE-Remix P8.4: meshes are batches on the card; the file's Display
+		 * Lists, Vertex Arrays or VBO setting (and -g displaylists) is kept
+		 * for stock 2.79 and has no effect here */
+		(void)useLists;
+		m_rasterizer = new RAS_OpenGLRasterizer(m_canvas, RAS_AUTO_STORAGE);
 
 		/* Stereo parameters - Eye Separation from the UI - stereomode from the command-line/UI */
 		m_rasterizer->SetStereoMode((RAS_IRasterizer::StereoMode) stereoMode);

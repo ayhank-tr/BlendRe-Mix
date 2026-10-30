@@ -913,7 +913,7 @@ static RAS_MaterialBucket *material_from_mesh(Material *ma, MFace *mface, MTFace
 		bl_mat = new BL_Material();
 
 		/* BGE-Remix P8: a material whose GLSL shader cannot be built falls
-		 * back to the fixed-function drawing */
+		 * back to the built-in classic shader */
 		ConvertMaterial(bl_mat, ma, tface, tfaceName, mface, mcol,
 			converter->GetGLSLMaterials() && converter->MaterialGLSLWorks(scene, ma));
 

@@ -1740,7 +1740,8 @@ GPUPass *GPU_generate_pass(
         GPUVertexAttribs *attribs, int *builtins,
         const GPUMatType type, const char *UNUSED(name),
         const bool use_opensubdiv,
-        const bool use_new_shading)
+        const bool use_new_shading,
+        const bool use_batch)
 {
 	GPUShader *shader;
 	GPUPass *pass;
@@ -1775,6 +1776,10 @@ GPUPass *GPU_generate_pass(
 	}
 	if (use_new_shading) {
 		flags |= GPU_SHADER_FLAGS_NEW_SHADING;
+	}
+	/* BGE-Remix P8.4: the game's materials read its batches */
+	if (use_batch) {
+		flags |= GPU_SHADER_FLAGS_BATCH;
 	}
 	shader = GPU_shader_create_ex(vertexcode,
 	                              fragmentcode,

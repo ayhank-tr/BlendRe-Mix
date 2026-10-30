@@ -61,6 +61,9 @@ size_t GPU_buf_size(const GPUBuf *buf);
 void *GPU_stream_alloc(size_t size, unsigned int *r_buffer, size_t *r_offset);
 /* the end of a frame: the part written this frame is fenced */
 void GPU_stream_frame_end(void);
+/* after writing what GPU_stream_alloc gave: a request too large for the
+ * streaming buffer got a buffer of its own, mapped until this is called */
+void GPU_stream_written(unsigned int buffer);
 
 /* ---- vertex formats ---- */
 
@@ -162,6 +165,12 @@ typedef struct GPUClassicState {
 
 void GPU_classic_state_default(GPUClassicState *state);
 void GPU_classic_uniforms(struct GPUShader *shader, const GPUClassicState *state);
+/* BGE-Remix P8.4: the classic look read from the old OpenGL state (lights,
+ * material, texture environment, fog, alpha test); compatibility only */
+void GPU_classic_state_from_gl(GPUClassicState *state);
+/* BGE-Remix P8.4: depth only, for the game's shadow maps (the game's front
+ * end: its batches, the old matrices) */
+struct GPUShader *GPU_builtin_game_depth(void);
 
 /* ---- immediate drawing (in place of glBegin/glEnd) ---- */
 

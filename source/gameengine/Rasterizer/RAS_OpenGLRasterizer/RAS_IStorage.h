@@ -47,6 +47,9 @@ public:
 
 	virtual void	SetDrawingMode(int drawingmode)=0;
 
+	/* BGE-Remix P8.4: the start of a frame */
+	virtual void	BeginFrame() {}
+
 
 #ifdef WITH_CXX_GUARDEDALLOC
 	MEM_CXX_CLASS_ALLOC_FUNCS("GE:RAS_IStorage")

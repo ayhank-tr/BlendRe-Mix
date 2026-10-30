@@ -304,21 +304,11 @@ extern "C" void StartKetsjiShell(struct bContext *C, struct ARegion *ar, rcti *c
 		else
 			canvas->SetSwapInterval((startscene->gm.vsync == VSYNC_ON) ? 1 : 0);
 
-		RAS_IRasterizer* rasterizer = NULL;
-		RAS_STORAGE_TYPE raster_storage = RAS_AUTO_STORAGE;
-
-		if (startscene->gm.raster_storage == RAS_STORE_VBO) {
-			raster_storage = RAS_VBO;
-		}
-		else if (startscene->gm.raster_storage == RAS_STORE_VA) {
-			raster_storage = RAS_VA;
-		}
-		//Don't use displaylists with VBOs
-		//If auto starts using VBOs, make sure to check for that here
-		if (displaylists && raster_storage != RAS_VBO)
-			rasterizer = new RAS_ListRasterizer(canvas, true, raster_storage);
-		else
-			rasterizer = new RAS_OpenGLRasterizer(canvas, raster_storage);
+		/* BGE-Remix P8.4: meshes are batches on the card; the file's Display
+		 * Lists, Vertex Arrays or VBO setting is kept for stock 2.79 and has
+		 * no effect here */
+		(void)displaylists;
+		RAS_IRasterizer* rasterizer = new RAS_OpenGLRasterizer(canvas, RAS_AUTO_STORAGE);
 
 		RAS_IRasterizer::MipmapOption mipmapval = rasterizer->GetMipmapping();
 
@@ -477,7 +467,7 @@ extern "C" void StartKetsjiShell(struct bContext *C, struct ARegion *ar, rcti *c
 			sceneconverter->SetMaterials(true);
 
 			/* BGE-Remix P8: one material mode, GLSL (a material whose shader
-			 * cannot be built falls back to the fixed-function drawing) */
+			 * cannot be built falls back to the built-in classic shader) */
 			sceneconverter->SetGLSLMaterials(true);
 			if (scene->gm.flag & GAME_NO_MATERIAL_CACHING)
 				sceneconverter->SetCacheMaterials(false);

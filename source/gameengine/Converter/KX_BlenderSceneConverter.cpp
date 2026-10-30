@@ -430,11 +430,11 @@ bool KX_BlenderSceneConverter::MaterialGLSLWorks(KX_Scene *scene, Material *ma)
 		ok = false;
 	}
 	else if (ok) {
-		ok = GPU_material_is_valid(GPU_material_from_blender(scene->GetBlenderScene(), ma, false));
+		ok = GPU_material_is_valid(GPU_material_from_blender_ex(scene->GetBlenderScene(), ma, false, true));
 	}
 	if (!ok) {
 		printf("BGE-Remix: material \"%s\": its GLSL shader could not be built, it is drawn with the "
-		       "fixed-function path\n", ma->id.name + 2);
+		       "built-in classic shader\n", ma->id.name + 2);
 		m_glslFailed.insert(ma);
 	}
 	m_glslWorks[ma] = ok;

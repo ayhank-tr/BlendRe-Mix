@@ -139,6 +139,8 @@ protected:
 	 * Examples of concrete strategies: Vertex Arrays, VBOs, Immediate Mode*/
 	int m_storage_type;
 	RAS_IStorage *m_storage;
+	/* BGE-Remix P8.4: see SetClassicFallback */
+	bool m_classic;
 
 public:
 	double GetTime();
@@ -294,6 +296,7 @@ public:
 
 	virtual void SetUsingOverrideShader(bool val);
 	virtual bool GetUsingOverrideShader();
+	virtual void SetClassicFallback(bool val) { m_classic = val; }
 
 	/**
 	 * Render Tools

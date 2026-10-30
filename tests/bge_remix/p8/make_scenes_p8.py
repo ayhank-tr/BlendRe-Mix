@@ -1381,6 +1381,145 @@ def make_custom_filters(folder, E):
     E["custom_filters"] = {"modes": [m.lower() for m in CF_MODES]}
 
 
+# ---------------------------------------------------------------------------
+# deform (P8 v2 Part A2: meshes the CPU changes, streamed to the card)
+
+DF_SCRIPT = r"""
+# BGE-Remix P8 v2 (A2): the bend and the shape key set frame by frame (the
+# same frames in every build), screenshots at frames 20 and 50
+import os
+import bge
+g = bge.logic.globalDict
+n = g.get("p8_df", 0) + 1
+g["p8_df"] = n
+sc = bge.logic.getCurrentScene()
+rig, cube = sc.objects["Rig"], sc.objects["ShapeCube"]
+f = 1.0 + (n %% 60)
+if n == 1:
+    rig.playAction("BendAction", 1, 61, play_mode=bge.logic.KX_ACTION_MODE_LOOP)
+    cube.playAction("ShapeAction", 1, 61, play_mode=bge.logic.KX_ACTION_MODE_LOOP)
+rig.setActionFrame(f)
+cube.setActionFrame(f)
+if n in %s:
+    out = os.environ.get("BGE_REMIX_P8_DEFORM_DIR")
+    if out:
+        bge.render.makeScreenshot(os.path.join(out, "deform_%%d.png" %% n))
+"""
+
+DF_FRAMES = (20, 50)
+
+
+def df_cylinder(scene, name, ma, rings=9, segments=16, radius=0.45, height=3.0):
+    """a cylinder along Z (no caps), UV-mapped, with Lower and Upper weights"""
+    verts, faces, uvs = [], [], []
+    for r in range(rings):
+        z = -height / 2.0 + height * r / (rings - 1)
+        for s in range(segments):
+            a = 2.0 * math.pi * s / segments
+            verts.append((radius * math.cos(a), radius * math.sin(a), z))
+    for r in range(rings - 1):
+        for s in range(segments):
+            a, b = r * segments + s, r * segments + (s + 1) % segments
+            faces.append((a, b, b + segments, a + segments))
+            uvs.append([(s / segments, r / (rings - 1)), ((s + 1) / segments, r / (rings - 1)),
+                        ((s + 1) / segments, (r + 1) / (rings - 1)), (s / segments, (r + 1) / (rings - 1))])
+    me = bpy.data.meshes.new(name + "Mesh")
+    me.from_pydata(verts, [], faces)
+    me.update()
+    me.uv_textures.new("UVMap")
+    for poly, quad in zip(me.polygons, uvs):
+        for li, uv in zip(poly.loop_indices, quad):
+            me.uv_layers[0].data[li].uv = uv
+    me.materials.append(ma)
+    ob = bpy.data.objects.new(name, me)
+    scene.objects.link(ob)
+    lower, upper = ob.vertex_groups.new("Lower"), ob.vertex_groups.new("Upper")
+    for i, v in enumerate(verts):
+        w = min(max((v[2] + 0.3) / 0.6, 0.0), 1.0)
+        if w < 1.0:
+            lower.add([i], 1.0 - w, 'REPLACE')
+        if w > 0.0:
+            upper.add([i], w, 'REPLACE')
+    return ob
+
+
+def make_deform(folder, E):
+    scene = base("Deform")
+    img = p3.image("DF_checker", p3.checker)
+
+    # the cylinder bent by a two-bone armature
+    arm = bpy.data.armatures.new("RigData")
+    rig = bpy.data.objects.new("Rig", arm)
+    rig.location = (-3.5, 0.0, 0.0)
+    scene.objects.link(rig)
+    scene.objects.active = rig
+    rig.select = True
+    bpy.ops.object.mode_set(mode='EDIT')
+    lower = arm.edit_bones.new("Lower")
+    lower.head, lower.tail = (0.0, 0.0, -1.5), (0.0, 0.0, 0.0)
+    upper = arm.edit_bones.new("Upper")
+    upper.head, upper.tail = (0.0, 0.0, 0.0), (0.0, 0.0, 1.5)
+    upper.parent = lower
+    upper.use_connect = True
+    bpy.ops.object.mode_set(mode='OBJECT')
+    ma_cyl = classic("DF_Cylinder", (0.9, 0.55, 0.2))
+    p3.bi_slot(ma_cyl, img, color=True)
+    cyl = df_cylinder(scene, "Cylinder", ma_cyl)
+    cyl.parent = rig
+    cyl.location = (0.0, 0.0, 0.0)
+    mod = cyl.modifiers.new("Armature", 'ARMATURE')
+    mod.object = rig
+    rig.animation_data_create()
+    bend = bpy.data.actions.new("BendAction")
+    bend.use_fake_user = True
+    rig.animation_data.action = bend
+    pb = rig.pose.bones["Upper"]
+    pb.rotation_mode = 'XYZ'
+    for frame, angle in ((1, 0.0), (61, 1.2)):
+        pb.rotation_euler = (0.0, 0.0, angle)
+        pb.keyframe_insert("rotation_euler", frame=frame)
+    rig.animation_data.action = None
+    pb.rotation_euler = (0.0, 0.0, 0.0)
+
+    # the cube with a shape key
+    ma_cube = classic("DF_Cube", (0.3, 0.6, 0.9))
+    p3.bi_slot(ma_cube, img, color=True)
+    cube = p3.textured_cube(scene, "ShapeCube", 1.2, (0.0, 0.0, 0.0), ma_cube)
+    cube.shape_key_add(name="Basis", from_mix=False)
+    grow = cube.shape_key_add(name="Grow", from_mix=False)
+    for d in grow.data:
+        if d.co.z > 0.0:
+            d.co.z += 0.8
+            d.co.x *= 1.5
+    key = cube.data.shape_keys
+    key.animation_data_create()
+    shape = bpy.data.actions.new("ShapeAction")
+    shape.use_fake_user = True
+    key.animation_data.action = shape
+    kb = key.key_blocks["Grow"]
+    for frame, value in ((1, 0.0), (61, 1.0)):
+        kb.value = value
+        kb.keyframe_insert("value", frame=frame)
+    key.animation_data.action = None
+    kb.value = 0.0
+
+    # the plain cube beside them
+    p3.textured_cube(scene, "PlainCube", 1.2, (3.5, 0.0, 0.0), ma_cube)
+
+    la = bpy.data.lamps.new("Sun", 'SUN')
+    sun = bpy.data.objects.new("Sun", la)
+    sun.location = (0.0, -10.0, 5.0)
+    sun.rotation_euler = (math.radians(60.0), 0.0, math.radians(20.0))
+    scene.objects.link(sun)
+    driver = bpy.data.objects.new("DeformDriver", None)
+    scene.objects.link(driver)
+    logic(scene, driver, "df_driver.py", DF_SCRIPT % repr(DF_FRAMES))
+    save(scene, os.path.join(folder, "deform.blend"), physical=False)
+    E["deform"] = {"rects": {"Cylinder": layout_rect(-3.5, 0.0, 1.7), "ShapeCube": layout_rect(0.0, 0.3, 1.2),
+                             "PlainCube": layout_rect(3.5, 0.0, 0.6)},
+                   "frames": list(DF_FRAMES)}
+
+
 def main():
     folder = out_dir()
     E = {"width": WIDTH, "height": HEIGHT, "failed": {}}
@@ -1402,7 +1541,9 @@ def main():
                   ("shadows_bench", lambda: make_shadows_bench(folder)),
                   # P8 v2 Part A: users' old GLSL
                   ("custom_shaders", lambda: make_custom_shaders(folder, E)),
-                  ("custom_filters", lambda: make_custom_filters(folder, E))]
+                  ("custom_filters", lambda: make_custom_filters(folder, E)),
+                  # P8 v2 Part A2: meshes as batches
+                  ("deform", lambda: make_deform(folder, E))]
         target = os.path.join(folder, "p8_expected.json")
     for name, make in makers:
         try:

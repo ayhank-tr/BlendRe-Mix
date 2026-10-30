@@ -69,7 +69,7 @@ BL_BlenderShader::~BL_BlenderShader()
 
 void BL_BlenderShader::ReloadMaterial()
 {
-	mGPUMat = (mMat) ? GPU_material_from_blender(mBlenderScene, mMat, false) : NULL;
+	mGPUMat = (mMat) ? GPU_material_from_blender_ex(mBlenderScene, mMat, false, true) : NULL;
 }
 
 void BL_BlenderShader::SetProg(bool enable, double time, RAS_IRasterizer* rasty)

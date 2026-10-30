@@ -1214,7 +1214,7 @@ void GVBuilder::Rendering()
 				/* P8: a material whose GLSL shader could not be built */
 				if (m_conv.glsl_fallback.count(ma->id.name + 2)) {
 					Warn(el, "REN_GLSL_FALLBACK", GV_WARN_NOTE,
-					     "its GLSL shader could not be built: drawn without it (fixed-function), looks simpler");
+					     "its GLSL shader could not be built: drawn with the built-in classic shader, looks simpler");
 				}
 				for (int t = 0; t < MAX_MTEX; t++) {
 					MTex *mtex = ma->mtex[t];

@@ -169,6 +169,17 @@ void *GPU_stream_alloc(size_t size, unsigned int *r_buffer, size_t *r_offset)
 	return gpu_stream.mapped + *r_offset;
 }
 
+void GPU_stream_written(unsigned int buffer)
+{
+	if (buffer && buffer != gpu_stream.id) {
+		GLint mapped = 0;
+		glGetNamedBufferParameteriv(buffer, GL_BUFFER_MAPPED, &mapped);
+		if (mapped) {
+			glUnmapNamedBuffer(buffer);
+		}
+	}
+}
+
 static void stream_unmap_big(void)
 {
 	for (int i = 0; i < gpu_stream.nbig; i++) {

@@ -433,6 +433,10 @@ public:
 	virtual void SetUsingOverrideShader(bool val) = 0;
 	virtual bool GetUsingOverrideShader() = 0;
 
+	/* BGE-Remix P8.4: the next meshes are a material whose GLSL shader could
+	 * not be built (drawn with the built-in classic shader) */
+	virtual void SetClassicFallback(bool) {}
+
 	/**
 	 * Render Tools
 	 */

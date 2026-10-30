@@ -159,6 +159,8 @@ struct GPUMaterial {
 	bool bound;
 
 	bool is_opensubdiv;
+	/* BGE-Remix P8.4: made for the game (its shader reads the game's batches) */
+	bool is_game;
 
 	/* BGE-Remix P8: "Face Textures" (the face image, set per draw) */
 	bool use_face_image;
@@ -483,7 +485,8 @@ static int gpu_material_construct_end(GPUMaterial *material, const char *passnam
 			&material->attribs, &material->builtins, material->type,
 			passname,
 			material->is_opensubdiv,
-			GPU_material_use_new_shading_nodes(material));
+			GPU_material_use_new_shading_nodes(material),
+			material->is_game);
 
 		if (!material->pass)
 			return 0;
@@ -2890,7 +2893,8 @@ GPUMaterial *GPU_material_matcap(Scene *scene, Material *ma, bool use_opensubdiv
 	for (link = ma->gpumaterial.first; link; link = link->next) {
 		GPUMaterial *current_material = (GPUMaterial *)link->data;
 		if (current_material->scene == scene &&
-		    current_material->is_opensubdiv == use_opensubdiv)
+		    current_material->is_opensubdiv == use_opensubdiv &&
+		    !current_material->is_game)
 		{
 			return current_material;
 		}
@@ -3259,14 +3263,26 @@ void GPU_material_bake_free(GPUMaterial *material)
 
 GPUMaterial *GPU_material_from_blender(Scene *scene, Material *ma, bool use_opensubdiv)
 {
+	return GPU_material_from_blender_ex(scene, ma, use_opensubdiv, false);
+}
+
+GPUMaterial *GPU_material_from_blender_ex(Scene *scene, Material *ma, bool use_opensubdiv, bool for_game)
+{
 	GPUMaterial *mat;
 	GPUNodeLink *outlink;
 	LinkData *link;
 
+	/* BGE-Remix P8.4: the game's material reads the game's batches, so it is
+	 * kept apart from the one Blender's views draw with */
+	if (use_opensubdiv) {
+		for_game = false;
+	}
+
 	for (link = ma->gpumaterial.first; link; link = link->next) {
 		GPUMaterial *current_material = (GPUMaterial *)link->data;
 		if (current_material->scene == scene &&
-		    current_material->is_opensubdiv == use_opensubdiv)
+		    current_material->is_opensubdiv == use_opensubdiv &&
+		    current_material->is_game == for_game)
 		{
 			return current_material;
 		}
@@ -3277,6 +3293,7 @@ GPUMaterial *GPU_material_from_blender(Scene *scene, Material *ma, bool use_open
 	mat->scene = scene;
 	mat->type = GPU_MATERIAL_TYPE_MESH;
 	mat->is_opensubdiv = use_opensubdiv;
+	mat->is_game = for_game;
 
 	/* render pipeline option */
 	bool new_shading_nodes = BKE_scene_use_new_shading_nodes(scene);

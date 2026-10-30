@@ -12,6 +12,13 @@ T8.3  old shaders: custom_shaders (old-style GLSL) and every 2D filter match
       is reported
 T8.35 tiers: the pictures are the same with Tier 1 forced
 
+Part A, build A2 (meshes as batches, one mode):
+Meshes as batches: the deform scene (a cylinder bent by an armature, a cube
+      with a shape key, a plain cube) as stock 2.79 draws it at frames 20 and
+      50, the bent and shaped ones moving between them
+T8.4, T8.5, T8.7 (the fallback drawn with the built-in classic shader),
+T8.8, T8.9 run on batches; B8.6 (game drawing) early reading
+
 The first build's tests, renumbered (P8 plan v2):
 T8.4  one mode (was T8.1)            T8.5  Multitexture's features (T8.2)
 T8.6  GLSL unchanged (T8.3)          T8.7  fallback (T8.4)
@@ -576,7 +583,9 @@ def t84(args, out, scenes, expected, normal_run):
         "reported once in the console": len(console) == 1,
         "reported in the game's checks": len(report) == 1,
         "reported in the Game View, on FailMe": len(ws) == 1 and ws[0]["name"] == "FailMe",
-        "the failing material is drawn with its texture (fixed-function)": look is not None and look[1] > 20.0,
+        "the failing material is drawn with its texture": look is not None and look[1] > 20.0,
+        "it is drawn with the built-in classic shader":
+            "a material without its GLSL shader is drawn with the built-in classic shader" in r["text"],
         "it looks like its neighbour": same is not None and same <= TOL_F12,
         "the neighbour is unaffected": (lambda v: v is not None and v <= 2.0)(region_diff(a, n, other)),
     }
@@ -1218,6 +1227,35 @@ def t83_shaders(expected, runs, shots, cf_dirs):
     return c, d
 
 
+def t84_batches(expected, runs, df_dirs):
+    """P8.4: meshes as batches; the CPU's changes (an armature's bend, a shape
+    key) reach the card each frame: the deform scene against stock 2.79"""
+    c, d = {}, {}
+    E = expected.get("deform")
+    if not E:
+        return {"the deform scene was made": False}, {}
+    rects, frames = E["rects"], E["frames"]
+    c["the deform scene played (ours, stock)"] = bool(runs.get("deform", {}).get("ran")) and \
+        bool(runs.get("stock_deform", {}).get("ran"))
+    pics = {}
+    for frame in frames:
+        a = picture(os.path.join(df_dirs[0], "deform_%d.png" % frame))
+        b = picture(os.path.join(df_dirs[1], "deform_%d.png" % frame))
+        pics[frame] = a
+        for name, rect in rects.items():
+            v = region_diff(a, b, rect)
+            d["%s at frame %d" % (name, frame)] = v
+            c["%s at frame %d as in stock 2.79 (within %.0f)" % (name, frame, TOL_SAME_CODE)] = \
+                v is not None and v <= TOL_SAME_CODE
+    first, last = pics.get(frames[0]), pics.get(frames[-1])
+    moved = {name: region_diff(first, last, rect) for name, rect in rects.items()}
+    d["frame %d against frame %d" % (frames[0], frames[-1])] = moved
+    c["the bend moves the cylinder between the frames"] = (moved["Cylinder"] or 0.0) > 3.0
+    c["the shape key moves the cube between the frames"] = (moved["ShapeCube"] or 0.0) > 3.0
+    c["the plain cube stays the same"] = moved["PlainCube"] is not None and moved["PlainCube"] <= 1.0
+    return c, d
+
+
 def t835_tiers(gl, shots):
     c, d = {}, {}
     for key, name in (("tier1_glsl", "glsl_features"), ("tier1_cs", "custom_shaders")):
@@ -1296,6 +1334,18 @@ def run(args, out):
         gl["tier1_cs"] = {}
     gl["tier1_glsl"] = play(args.ours, out, "t835_tier1_glsl", S("glsl_features"), {"BGE_REMIX_GL_TIER": "1"})
 
+    # P8 v2 Part A2: meshes the CPU changes (an armature, a shape key)
+    df_dirs = (os.path.join(out, "deform_ours"), os.path.join(out, "deform_stock"))
+    for dpath in df_dirs:
+        shutil.rmtree(dpath, ignore_errors=True)
+        os.makedirs(dpath, exist_ok=True)
+    if os.path.isfile(S("deform")):
+        runs["deform"] = play(args.ours, out, "game_deform", S("deform"), {"BGE_REMIX_P8_DEFORM_DIR": df_dirs[0]},
+                              frames=120)
+        if args.official:
+            runs["stock_deform"] = play(args.official, out, "stock_deform", S("deform"),
+                                        {"BGE_REMIX_P8_DEFORM_DIR": df_dirs[1]}, frames=120)
+
     def mt_run(build, tag):
         res = {}
         # not tag + ".json": that is the probe's own result file
@@ -1333,8 +1383,9 @@ def run(args, out):
             ("T8.21 Shadows", lambda: t812(args, out, scenes, expected, shots, runs)),
             ("T8.2 Cache and recovery", lambda: t82_cache(gl)),
             ("T8.3 Old shaders", lambda: t83_shaders(expected, runs, shots, cf_dirs)),
-            ("T8.35 Tiers", lambda: t835_tiers(gl, shots))]
-    needs_official = ("T8.4", "T8.5", "T8.6", "T8.3")
+            ("T8.35 Tiers", lambda: t835_tiers(gl, shots)),
+            ("Meshes as batches (deform scene)", lambda: t84_batches(expected, runs, df_dirs))]
+    needs_official = ("T8.4", "T8.5", "T8.6", "T8.3", "Meshes")
     for name, fn in plan:
         if not args.official and name.split()[0] in needs_official:
             tests[name] = {"ok": False, "checks": {"official 2.79b given (--official)": False}, "detail": {}}
@@ -1385,10 +1436,12 @@ def run(args, out):
              ("shadows_far: game", shots.get("shadows_far")),
              ("custom_shaders: ours (translated)", shots.get("custom_shaders")),
              ("custom_shaders: stock 2.79", shots.get("stock_custom_shaders")),
+             ("deform at frame 50: ours (batches)", os.path.join(out, "deform_ours", "deform_50.png")),
+             ("deform at frame 50: stock 2.79", os.path.join(out, "deform_stock", "deform_50.png")),
              ("layer self-test", os.path.join(out, "layer_selftest", "layer_selftest.png"))]
     res["sheet"] = p2.contact_sheet(sheet, os.path.join(out, "sheet_p8a.png"))
 
-    lines = ["BGE-Remix P8 tests, plan v2: Part A1 and the first build's tests (CI)", "=" * 70, ""]
+    lines = ["BGE-Remix P8 tests, plan v2: Parts A1-A2 and the first build's tests (CI)", "=" * 70, ""]
     for name, t in tests.items():
         lines.append("%-34s %s" % (name, p2.mark(t["ok"])))
         for check, ok in t["checks"].items():
@@ -1440,6 +1493,15 @@ def benchmarks(args, out, scenes, runs):
         if os.path.isfile(path):
             shadows[name] = ms(play(args.ours, out, "b87_" + name, path, frames=600, gl_debug=False))
     b["B8.10 shadows (ms): casting point lamps 0/1/4/8, the sun only, 8 hard"] = shadows
+    # B8.6 early reading: the game's drawing with batches; against the build
+    # before P8 in the RTX run (here: stock 2.79's vertex arrays beside it)
+    room = os.path.join(out, "..", "p2", "scenes", "p2_room.blend")
+    b6 = {"mt_bench": {"ours": ms(ours), "stock": ms(stock) if stock else None}}
+    if os.path.isfile(room):
+        r_ours = play(args.ours, out, "b86_room_ours", room, frames=600, gl_debug=False)
+        r_stock = play(args.official, out, "b86_room_stock", room, frames=600, gl_debug=False) if args.official else {}
+        b6["p2_room"] = {"ours": ms(r_ours), "stock": ms(r_stock) if r_stock else None}
+    b["B8.6 game drawing (ms, early reading)"] = b6
     return b
 
 
