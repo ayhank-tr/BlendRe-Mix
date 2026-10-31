@@ -975,7 +975,7 @@ void GPU_old_builtins(unsigned int program, const GPUClassicState *st)
 		old_f(program, pl[LS_SPOTEXP], l->spot_exponent);
 		old_f(program, pl[LS_SPOTCUT], l->spot_cutoff);
 		old_f(program, pl[LS_SPOTCOS], l->spot_cutoff >= 180.0f ? -1.0f :
-		      cosf(l->spot_cutoff * (float)(M_PI / 180.0)));
+		      cosf(l->spot_cutoff * 0.017453292519943295f));  /* degrees to radians (MSVC has no M_PI here) */
 		old_f(program, pl[LS_CATT], l->attenuation[0]);
 		old_f(program, pl[LS_LATT], l->attenuation[1]);
 		old_f(program, pl[LS_QATT], l->attenuation[2]);
