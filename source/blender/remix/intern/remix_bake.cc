@@ -37,6 +37,7 @@ extern "C" {
 #include "MEM_guardedalloc.h"
 
 #include "DNA_customdata_types.h"
+#include "DNA_image_types.h"
 #include "DNA_material_types.h"
 #include "DNA_mesh_types.h"
 #include "DNA_meshdata_types.h"
@@ -637,7 +638,11 @@ uint64_t bake_signature(const Material *ma)
 		h = fnv_v(mtex->hardfac, h);
 		h = fnv_v(mtex->alphafac, h);
 		h = fnv_v(mtex->emitfac, h);
-		h = fnv_v(mtex->object, h);
+		/* P8.7: names, not addresses: the key must be the same on the next
+		 * start (the cache finds a bake by it) */
+		if (mtex->object) {
+			h = fnv(mtex->object->id.name, strlen(mtex->object->id.name), h);
+		}
 		if (mtex->object && mtex->texco == TEXCO_OBJECT) {
 			h = fnv(mtex->object->obmat, sizeof(mtex->object->obmat), h);
 		}
@@ -671,7 +676,9 @@ uint64_t bake_signature(const Material *ma)
 		h = fnv_v(tex->noisebasis, h);
 		h = fnv_v(tex->noisebasis2, h);
 		h = fnv_v(tex->nabla, h);
-		h = fnv_v(tex->ima, h);
+		if (tex->ima) {
+			h = fnv(tex->ima->id.name, strlen(tex->ima->id.name), h);
+		}
 		h = fnv_v(bake_size(ma), h);
 		if (tex->coba) {
 			h = fnv_v(tex->coba->tot, h);
