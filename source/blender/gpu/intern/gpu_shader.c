@@ -392,6 +392,7 @@ static const char *gpu_frontend_lights =
         "	mat4 shadowmat[4];\n"
         "	vec4 bound;\n"
         "	uvec4 bits;\n"
+        "	vec4 extra;\n"
         "};\n"
         "layout(std430, binding = 11) readonly buffer BgeLamps { BgeLamp bge_lamps[]; };\n"
         "layout(std430, binding = 12) readonly buffer BgeClusterInfo {\n"

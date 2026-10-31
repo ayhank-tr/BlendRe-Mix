@@ -27,6 +27,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "MEM_guardedalloc.h"
@@ -377,6 +378,7 @@ static const char *cluster_cs =
         "	mat4 shadowmat[4];\n"
         "	vec4 bound;\n"
         "	uvec4 bits;\n"
+        "	vec4 extra;\n"
         "};\n"
         "layout(std430, binding = 11) readonly buffer BgeLamps { BgeLamp lamps[]; };\n"
         "layout(std430, binding = 13) writeonly buffer BgeClusterMasks { uint mask[]; };\n"
@@ -438,6 +440,7 @@ static struct {
 	unsigned int hash;
 	int count;
 	bool uploaded;
+	bool halos;  /* a record has a halo (the fog grid draws its shafts) */
 	/* what the masks were made for */
 	float view[4][4], proj[4][4];
 	int viewport[4];
@@ -525,6 +528,14 @@ void GPU_lights_cluster(const void *records, int count, size_t record_size, unsi
 		cl.count = count;
 		cl.uploaded = true;
 		changed = true;
+		/* the halo intensity is the record's last vec4's first float */
+		cl.halos = false;
+		for (int i = 0; i < count; i++) {
+			const float *extra = (const float *)((const char *)records + (size_t)i * record_size + record_size - 16);
+			if (extra[0] > 0.0f) {
+				cl.halos = true;
+			}
+		}
 	}
 	const unsigned int words = (unsigned int)max_ii((count + 31) / 32, 1);
 	const size_t maskbytes = (size_t)CL_COUNT * words * sizeof(unsigned int);
@@ -587,6 +598,331 @@ void GPU_lights_cluster(const void *records, int count, size_t record_size, unsi
 	glUseProgram((GLuint)program);
 }
 
+/* ------------------------------------------------------------------------ */
+/* P8.17: the Modern pipeline's volumetric fog: the mist (its type, start,
+ * distance, intensity and height) as a medium in a grid of cells over the
+ * view, lit by the clustered lamps and their shadow maps; spot lamps with
+ * Halo scatter in their cone (light shafts). One pass fills each cell, one
+ * sums the cells front to back; the pipeline's last pass applies the sum at
+ * each pixel's depth. Where the light adds nothing it is the mist as F12
+ * shows it: the colour times the mist's visibility plus the mist colour. */
+
+#define FOG_LAMP_DECL \
+        "struct BgeLamp {\n" \
+        "	vec4 co_type, vec_dist, col_energy, spot;\n" \
+        "	mat4 imat;\n" \
+        "	vec4 falloff, coeff;\n" \
+        "	vec4 area[4];\n" \
+        "	vec4 shadow_color, shadow_params, shadow_clip, contact, cascade_scale, cascade_range;\n" \
+        "	mat4 shadowmat[4];\n" \
+        "	vec4 bound;\n" \
+        "	uvec4 bits;\n" \
+        "	vec4 extra;\n" \
+        "};\n" \
+        "layout(std430, binding = 11) readonly buffer BgeLamps { BgeLamp lamps[]; };\n" \
+        "layout(std430, binding = 12) readonly buffer BgeClusterInfo {\n" \
+        "	vec4 cl_viewport; vec4 cl_depth; uvec4 cl_counts; };\n" \
+        "layout(std430, binding = 13) readonly buffer BgeClusterMasks { uint cl_mask[]; };\n"
+
+static const char *fog_inject_cs =
+        "layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;\n"
+        "layout(rgba16f, binding = 0) uniform writeonly image3D cells;\n"
+        FOG_LAMP_DECL
+        "uniform sampler2DArray pool;\n"
+        "uniform mat4 projinv, viewinv, view;\n"
+        "uniform ivec3 grid;\n"
+        "uniform vec4 zr;\n"         /* near, far, ln(far / near), orthographic */
+        "uniform vec4 mist0;\n"      /* on, type, start, distance */
+        "uniform vec4 mist1;\n"      /* intensity, height */
+        "uniform vec3 mistcol;\n"
+        "uniform int lamps_on;\n"
+        "float slice_z(float k) { return zr.x * exp(zr.z * k / float(grid.z)); }\n"
+        "vec3 at_depth(vec2 ndc, float z)\n"
+        "{\n"
+        "	vec4 a = projinv * vec4(ndc, -1.0, 1.0);\n"
+        "	vec4 b = projinv * vec4(ndc, 1.0, 1.0);\n"
+        "	a /= a.w;\n"
+        "	b /= b.w;\n"
+        "	return mix(a.xyz, b.xyz, (-z - a.z) / (b.z - a.z));\n"
+        "}\n"
+        /* the mist's visibility at a point (F12's mistfactor) */
+        "float mist_vis(vec3 p)\n"
+        "{\n"
+        "	if (mist0.x < 0.5) return 1.0;\n"
+        "	float zc = (zr.w > 0.5) ? -p.z : length(p);\n"
+        "	float f = clamp((zc - mist0.z) / max(mist0.w, 1e-6), 0.0, 1.0);\n"
+        "	if (mist0.y < 0.5) f *= f; else if (mist0.y > 1.5) f = sqrt(f);\n"
+        "	if (mist1.y != 0.0 && f != 0.0) {\n"
+        "		float hi = (viewinv * vec4(p, 1.0)).z;\n"
+        "		if (hi > mist1.y) f = 0.0;\n"
+        "		else if (hi > 0.0) { hi = (mist1.y - hi) / mist1.y; f *= hi * hi; }\n"
+        "	}\n"
+        "	return (1.0 - f) * (1.0 - mist1.x);\n"
+        "}\n"
+        "float linear_depth(float d, vec3 clip)\n"
+        "{\n"
+        "	if (clip.z > 0.5) return clip.x + d * (clip.y - clip.x);\n"
+        "	return clip.x * clip.y / max(clip.y - d * (clip.y - clip.x), 1e-8);\n"
+        "}\n"
+        /* a lamp's shadow at a world point (one tap) */
+        "float lamp_shadow(BgeLamp L, vec3 w)\n"
+        "{\n"
+        "	int kind = int(L.shadow_color.w + 0.5);\n"
+        "	float layer = L.shadow_clip.w, bias = 0.05;\n"
+        "	if (kind == 1) {\n"
+        "		vec4 c = L.shadowmat[0] * vec4(w, 1.0);\n"
+        "		if (c.w <= 0.0) return 1.0;\n"
+        "		vec2 uv = c.xy / c.w;\n"
+        "		if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) return 1.0;\n"
+        "		float d = texture(pool, vec3(uv, layer)).r;\n"
+        "		return (d >= 0.99999 || linear_depth(d, vec3(L.shadow_clip.xy, 0.0)) >= c.w - bias) ? 1.0 : 0.0;\n"
+        "	}\n"
+        "	if (kind == 2) {\n"
+        "		vec3 l = (L.shadowmat[0] * vec4(w, 1.0)).xyz, al = abs(l), f, u;\n"
+        "		float face;\n"
+        "		if (al.x >= al.y && al.x >= al.z) { face = l.x >= 0.0 ? 0.0 : 1.0; f = vec3(sign(l.x), 0.0, 0.0); u = vec3(0.0, 1.0, 0.0); }\n"
+        "		else if (al.y >= al.z) { face = l.y >= 0.0 ? 2.0 : 3.0; f = vec3(0.0, sign(l.y), 0.0); u = vec3(0.0, 0.0, 1.0); }\n"
+        "		else { face = l.z >= 0.0 ? 4.0 : 5.0; f = vec3(0.0, 0.0, sign(l.z)); u = vec3(1.0, 0.0, 0.0); }\n"
+        "		float zr2 = dot(l, f);\n"
+        "		if (zr2 <= L.shadow_clip.x) return 1.0;\n"
+        "		vec2 uv = vec2(dot(l, cross(f, u)), dot(l, u)) / (zr2 * L.shadow_clip.z) * 0.5 + 0.5;\n"
+        "		float d = texture(pool, vec3(uv, layer + face)).r;\n"
+        "		return (d >= 0.99999 || linear_depth(d, vec3(L.shadow_clip.xy, 0.0)) >= zr2 - bias) ? 1.0 : 0.0;\n"
+        "	}\n"
+        "	if (kind == 3) {\n"
+        "		for (int k = 0; k < 4; k++) {\n"
+        "			vec3 c = (L.shadowmat[k] * vec4(w, 1.0)).xyz;\n"
+        "			if (all(greaterThan(c, vec3(0.0))) && all(lessThan(c, vec3(1.0)))) {\n"
+        "				float rg = L.cascade_range[k];\n"
+        "				float d = texture(pool, vec3(c.xy, layer + float(k))).r;\n"
+        "				return (d >= 0.99999 || d * rg >= c.z * rg - bias) ? 1.0 : 0.0;\n"
+        "			}\n"
+        "		}\n"
+        "	}\n"
+        "	return 1.0;\n"
+        "}\n"
+        /* the light a lamp brings to a point (its colour, falloff, cone, shadow) */
+        "vec3 lamp_light(BgeLamp L, vec3 p, vec3 w, out float halo)\n"
+        "{\n"
+        "	halo = 0.0;\n"
+        "	int type = int(L.co_type.w + 0.5);\n"
+        "	vec3 col = L.col_energy.rgb * L.col_energy.w;\n"
+        "	if (type == 1 || type == 3) return col * lamp_shadow(L, w);\n"
+        "	vec3 d = w - L.co_type.xyz;\n"
+        "	float dist = length(d), ld = L.vec_dist.w, v = 1.0;\n"
+        "	int fo = int(L.falloff.x + 0.5);\n"
+        "	if (type != 4) {\n"
+        "		if (fo == 1) v = ld / (ld + dist);\n"
+        "		else if (fo == 2) v = ld / (ld + dist * dist);\n"
+        "		else if (fo == 4) v = ld / (ld + L.falloff.y * dist) * ld / (ld + L.falloff.z * dist * dist);\n"
+        "		else if (fo == 5) v = 1.0 / max(L.coeff.x + L.coeff.y * dist + L.coeff.z * dist * dist, 1e-6);\n"
+        "		if ((L.bits.x & 64u) != 0u) v *= max(ld - dist, 0.0) / ld;\n"
+        "	}\n"
+        "	if (type == 2) {\n"
+        "		vec3 lp = (L.imat * vec4(w, 1.0)).xyz;\n"
+        "		vec2 xy = lp.xy / max(-lp.z, 1e-6) / L.spot.zw;\n"
+        "		float inpr = (lp.z < 0.0) ? 1.0 / sqrt(1.0 + dot(xy, xy)) : 0.0;\n"
+        "		float t = inpr - L.spot.x;\n"
+        "		if (t <= 0.0) return vec3(0.0);\n"
+        "		if (L.spot.y > 0.0 && t < L.spot.y) { t /= L.spot.y; v *= t * t * (3.0 - 2.0 * t); }\n"
+        "		halo = L.extra.x;\n"
+        "	}\n"
+        "	if (v <= 0.0) return vec3(0.0);\n"
+        "	return col * v * lamp_shadow(L, w);\n"
+        "}\n"
+        "void main()\n"
+        "{\n"
+        "	ivec3 c = ivec3(gl_GlobalInvocationID);\n"
+        "	if (any(greaterThanEqual(c, grid))) return;\n"
+        "	vec2 uv = (vec2(c.xy) + 0.5) / vec2(grid.xy);\n"
+        "	vec2 ndc = uv * 2.0 - 1.0;\n"
+        "	float z0 = (c.z == 0) ? 0.0 : slice_z(float(c.z)), z1 = slice_z(float(c.z + 1));\n"
+        "	float zm = slice_z(float(c.z) + 0.5);\n"
+        "	vec3 p0 = at_depth(ndc, max(z0, 1e-4)), p1 = at_depth(ndc, z1), pm = at_depth(ndc, zm);\n"
+        "	float v0 = (c.z == 0) ? 1.0 : mist_vis(p0), v1 = mist_vis(p1);\n"
+        "	float sigma = max(log(max(v0, 1e-6)) - log(max(v1, 1e-6)), 0.0) / max(z1 - z0, 1e-6);\n"
+        "	vec3 scat = sigma * mistcol;\n"
+        "	float ext = sigma;\n"
+        "	if (lamps_on != 0) {\n"
+        "		vec3 w = (viewinv * vec4(pm, 1.0)).xyz;\n"
+        "		uvec2 t = uvec2(clamp(uv, vec2(0.0), vec2(0.99999)) * vec2(16.0, 9.0));\n"
+        "		uint k = uint(clamp(log(max(zm, cl_depth.x) / cl_depth.x) * cl_depth.z, 0.0, 23.0));\n"
+        "		uint ci = (k * 9u + t.y) * 16u + t.x;\n"
+        "		uint W = cl_counts.x;\n"
+        "		for (uint wd = 0u; wd < W; wd++) {\n"
+        "			uint bits = cl_mask[ci * W + wd];\n"
+        "			while (bits != 0u) {\n"
+        "				int b = findLSB(bits);\n"
+        "				bits &= bits - 1u;\n"
+        "				float halo;\n"
+        "				vec3 L = lamp_light(lamps[wd * 32u + uint(b)], pm, w, halo);\n"
+        "				float sh = 0.02 * halo;\n"   /* a halo's own medium in its cone */
+        "				scat += (sigma + sh) * L * 0.07957747;\n"  /* isotropic: 1 / 4 pi */
+        "				ext += sh;\n"
+        "			}\n"
+        "		}\n"
+        "	}\n"
+        "	imageStore(cells, c, vec4(scat, ext));\n"
+        "}\n";
+
+static const char *fog_sum_cs =
+        "layout(local_size_x = 8, local_size_y = 8) in;\n"
+        "layout(rgba16f, binding = 0) uniform readonly image3D cells;\n"
+        "layout(rgba16f, binding = 1) uniform writeonly image3D sums;\n"
+        "uniform ivec3 grid;\n"
+        "uniform vec4 zr;\n"
+        "float slice_z(float k) { return zr.x * exp(zr.z * k / float(grid.z)); }\n"
+        "void main()\n"
+        "{\n"
+        "	ivec2 c = ivec2(gl_GlobalInvocationID.xy);\n"
+        "	if (any(greaterThanEqual(c, grid.xy))) return;\n"
+        "	vec3 S = vec3(0.0);\n"
+        "	float T = 1.0;\n"
+        "	for (int k = 0; k < grid.z; k++) {\n"
+        "		vec4 s = imageLoad(cells, ivec3(c, k));\n"
+        "		float dz = slice_z(float(k + 1)) - ((k == 0) ? 0.0 : slice_z(float(k)));\n"
+        "		float tk = exp(-s.a * dz);\n"
+        "		S += T * ((s.a > 1e-6) ? s.rgb / s.a * (1.0 - tk) : s.rgb * dz);\n"
+        "		T *= tk;\n"
+        "		imageStore(sums, ivec3(c, k), vec4(S, T));\n"
+        "	}\n"
+        "}\n";
+
+static struct {
+	GLuint prog_inject, prog_sum;
+	bool failed;
+	GLuint cells, sums;
+	int grid[3];
+	float zr[4];
+	bool valid;
+} fog = {0};
+
+static void fog_grid_size(int r_grid[3])
+{
+	r_grid[0] = 160;
+	r_grid[1] = 90;
+	r_grid[2] = 64;
+	const char *env = getenv("BGE_REMIX_FOG_GRID");
+	if (env && env[0]) {
+		int x, y, z;
+		if (sscanf(env, "%dx%dx%d", &x, &y, &z) == 3 && x > 0 && y > 0 && z > 0) {
+			r_grid[0] = x;
+			r_grid[1] = y;
+			r_grid[2] = z;
+		}
+	}
+}
+
+bool GPU_fog_grid_wanted(void)
+{
+	float mist[9];
+	gpu_world_mist_get(mist);
+	return mist[0] > 0.5f || (cl.count > 0 && cl.halos);
+}
+
+bool GPU_fog_grid(const float view[4][4], const float proj[4][4])
+{
+	fog.valid = false;
+	if (fog.failed) {
+		return false;
+	}
+	if (!fog.prog_inject) {
+		fog.prog_inject = GPU_compute_program(fog_inject_cs, "BGE-Remix fog cells");
+		fog.prog_sum = GPU_compute_program(fog_sum_cs, "BGE-Remix fog sums");
+		if (!fog.prog_inject || !fog.prog_sum) {
+			fog.failed = true;
+			return false;
+		}
+	}
+	int grid[3];
+	fog_grid_size(grid);
+	if (!fog.cells || memcmp(grid, fog.grid, sizeof(grid)) != 0) {
+		if (fog.cells) {
+			glDeleteTextures(1, &fog.cells);
+			glDeleteTextures(1, &fog.sums);
+		}
+		glCreateTextures(GL_TEXTURE_3D, 1, &fog.cells);
+		glTextureStorage3D(fog.cells, 1, GL_RGBA16F, grid[0], grid[1], grid[2]);
+		glCreateTextures(GL_TEXTURE_3D, 1, &fog.sums);
+		glTextureStorage3D(fog.sums, 1, GL_RGBA16F, grid[0], grid[1], grid[2]);
+		glTextureParameteri(fog.sums, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTextureParameteri(fog.sums, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glTextureParameteri(fog.sums, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTextureParameteri(fog.sums, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glTextureParameteri(fog.sums, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+		GPU_debug_label(GL_TEXTURE, fog.sums, "BGE-Remix fog");
+		memcpy(fog.grid, grid, sizeof(grid));
+	}
+
+	/* the depth range: the camera's, at most 2 km */
+	const bool ortho = proj[3][3] != 0.0f;
+	float znear, zfar;
+	if (!ortho) {
+		znear = proj[3][2] / (proj[2][2] - 1.0f);
+		zfar = proj[3][2] / (proj[2][2] + 1.0f);
+	}
+	else {
+		znear = (proj[3][2] + 1.0f) / proj[2][2];
+		zfar = (proj[3][2] - 1.0f) / proj[2][2];
+	}
+	znear = max_ff(znear, 1e-2f);
+	zfar = min_ff(max_ff(zfar, znear * 1.01f), 2000.0f);
+	fog.zr[0] = znear;
+	fog.zr[1] = zfar;
+	fog.zr[2] = logf(zfar / znear);
+	fog.zr[3] = ortho ? 1.0f : 0.0f;
+
+	float mist[9], projinv[4][4], viewinv[4][4];
+	gpu_world_mist_get(mist);
+	m4_invert(projinv, proj);
+	m4_invert(viewinv, view);
+
+	GLint program = 0;
+	glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+	GLuint p = fog.prog_inject;
+	glUseProgram(p);
+	glUniformMatrix4fv(glGetUniformLocation(p, "projinv"), 1, GL_FALSE, &projinv[0][0]);
+	glUniformMatrix4fv(glGetUniformLocation(p, "viewinv"), 1, GL_FALSE, &viewinv[0][0]);
+	glUniformMatrix4fv(glGetUniformLocation(p, "view"), 1, GL_FALSE, &view[0][0]);
+	glUniform3iv(glGetUniformLocation(p, "grid"), 1, grid);
+	glUniform4fv(glGetUniformLocation(p, "zr"), 1, fog.zr);
+	glUniform4f(glGetUniformLocation(p, "mist0"), mist[0], mist[1], mist[2], mist[3]);
+	glUniform4f(glGetUniformLocation(p, "mist1"), mist[4], mist[5], 0.0f, 0.0f);
+	glUniform3fv(glGetUniformLocation(p, "mistcol"), 1, mist + 6);
+	glUniform1i(glGetUniformLocation(p, "lamps_on"), (cl.lampbuf && cl.count > 0) ? 1 : 0);
+	glUniform1i(glGetUniformLocation(p, "pool"), 0);
+	glBindTextureUnit(0, pool.tex ? pool.tex : pool.blank);
+	cluster_bind();
+	glBindImageTexture(0, fog.cells, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+	glDispatchCompute((GLuint)(grid[0] + 3) / 4, (GLuint)(grid[1] + 3) / 4, (GLuint)(grid[2] + 3) / 4);
+	glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+
+	p = fog.prog_sum;
+	glUseProgram(p);
+	glUniform3iv(glGetUniformLocation(p, "grid"), 1, grid);
+	glUniform4fv(glGetUniformLocation(p, "zr"), 1, fog.zr);
+	glBindImageTexture(0, fog.cells, 0, GL_TRUE, 0, GL_READ_ONLY, GL_RGBA16F);
+	glBindImageTexture(1, fog.sums, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+	glDispatchCompute((GLuint)(grid[0] + 7) / 8, (GLuint)(grid[1] + 7) / 8, 1);
+	glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT);
+	glBindImageTexture(0, 0, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16F);
+	glBindImageTexture(1, 0, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16F);
+	glBindTextureUnit(0, 0);
+	glUseProgram((GLuint)program);
+	fog.valid = true;
+	return true;
+}
+
+unsigned int GPU_fog_grid_texture(float r_zr[4], int r_depth[1])
+{
+	if (!fog.valid) {
+		return 0;
+	}
+	memcpy(r_zr, fog.zr, sizeof(fog.zr));
+	r_depth[0] = fog.grid[2];
+	return fog.sums;
+}
+
 /* Blender's ramp blend (gpu_material.c has a node-making function of that
  * name) */
 void gpu_ramp_blend_rgb(int type, float r_col[3], float fac, const float col[3])
@@ -620,4 +956,15 @@ void GPU_lights_exit(void)
 		MEM_freeN(pool.used);
 	}
 	memset(&pool, 0, sizeof(pool));
+	if (fog.prog_inject) {
+		glDeleteProgram(fog.prog_inject);
+	}
+	if (fog.prog_sum) {
+		glDeleteProgram(fog.prog_sum);
+	}
+	if (fog.cells) {
+		glDeleteTextures(1, &fog.cells);
+		glDeleteTextures(1, &fog.sums);
+	}
+	memset(&fog, 0, sizeof(fog));
 }

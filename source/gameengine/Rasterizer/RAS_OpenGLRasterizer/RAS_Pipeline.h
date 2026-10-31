@@ -43,6 +43,7 @@
 #ifndef __RAS_PIPELINE_H__
 #define __RAS_PIPELINE_H__
 
+#include <stddef.h>
 #include <string>
 
 struct Scene;
@@ -62,7 +63,7 @@ public:
 	           const int area[4], const int clear[4]);
 	/* the target put on the framebuffer bound before Begin (the window, or
 	 * an offscreen target), which is bound again */
-	void End();
+	void End(const float *view = NULL, const float *proj = NULL, const int *viewport = NULL);
 
 	bool Active() const { return m_active; }
 	/* the target's depth texture while active (0 otherwise), whether it is

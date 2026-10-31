@@ -811,7 +811,11 @@ void RAS_OpenGLRasterizer::EndScene()
 		m_culling->Invalidate();
 	}
 	m_scene_first = false;
-	m_pipeline->End();
+	/* P8.17: the main camera's view for the Modern fog */
+	if (m_mainview_drawn)
+		m_pipeline->End(m_mainview_view, m_mainview_proj, m_mainview_vp);
+	else
+		m_pipeline->End();
 	glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
 }
 

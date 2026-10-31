@@ -38,6 +38,7 @@ extern "C" {
 #include "IMB_colormanagement.h"
 #include "GPU_glcheck.h"
 #include "GPU_layer.h"
+#include "GPU_lights.h"
 #include "GPU_shader.h"
 }
 
@@ -63,6 +64,12 @@ static const char *comp_frag =
         "uniform int bge_modern;\n"
         "uniform float bge_exposure;\n"   /* a multiplier */
         "uniform float bge_gamma;\n"      /* the exponent (1 / gamma) */
+        /* P8.17: the volumetric fog (GPU_fog_grid) */
+        "uniform int bge_fog;\n"
+        "uniform sampler3D bge_fogvol;\n"
+        "uniform vec4 bge_fogzr;\n"      /* near, far, ln(far / near), slices */
+        "uniform vec3 bge_camz;\n"       /* the camera's near, far, orthographic */
+        "uniform vec4 bge_fogarea;\n"    /* the view's x, y, width, height */
         "out vec4 bge_fragcolor;\n"
         "const float LUT_N = " "64.0" ";\n"
         "const float LUT_LO = " "-14.0" ";\n"
@@ -76,6 +83,18 @@ static const char *comp_frag =
         "	if (bge_gamma != 1.0) d = pow(max(d, vec3(0.0)), vec3(bge_gamma));\n"
         "	return d;\n"
         "}\n"
+        "vec4 fogged(vec4 c, float d)\n"
+        "{\n"
+        "	if (bge_fog == 0 || d >= 1.0) return c;\n"
+        "	float n = bge_camz.x, f = bge_camz.y;\n"
+        "	float z = (bge_camz.z > 0.5) ? n + d * (f - n) : n * f / max(f - d * (f - n), 1e-8);\n"
+        "	float s = log(max(z, 1e-6) / bge_fogzr.x) / bge_fogzr.z * bge_fogzr.w;\n"
+        "	if (s <= 0.0) return c;\n"
+        "	vec2 uv = (gl_FragCoord.xy - bge_fogarea.xy) / bge_fogarea.zw;\n"
+        "	vec4 g = texture(bge_fogvol, vec3(uv, (clamp(s, 1.0, bge_fogzr.w) - 0.5) / bge_fogzr.w));\n"
+        "	if (s < 1.0) g = mix(vec4(0.0, 0.0, 0.0, 1.0), g, s);\n"
+        "	return vec4(c.rgb * g.a + g.rgb * c.a, c.a);\n"
+        "}\n"
         "vec4 one(vec4 c)\n"
         "{\n"
         "	c.a = clamp(c.a, 0.0, 1.0);\n"
@@ -88,11 +107,11 @@ static const char *comp_frag =
         "	ivec2 p = ivec2(gl_FragCoord.xy);\n"
         "#ifdef MULTISAMPLE\n"
         "	vec4 acc = vec4(0.0);\n"
-        "	for (int i = 0; i < bge_samples; i++) acc += one(texelFetch(bge_color, p, i));\n"
+        "	for (int i = 0; i < bge_samples; i++) acc += one(fogged(texelFetch(bge_color, p, i), texelFetch(bge_depth, p, i).r));\n"
         "	bge_fragcolor = acc / float(bge_samples);\n"
         "	gl_FragDepth = texelFetch(bge_depth, p, 0).r;\n"
         "#else\n"
-        "	bge_fragcolor = one(texelFetch(bge_color, p, 0));\n"
+        "	bge_fragcolor = one(fogged(texelFetch(bge_color, p, 0), texelFetch(bge_depth, p, 0).r));\n"
         "	gl_FragDepth = texelFetch(bge_depth, p, 0).r;\n"
         "#endif\n"
         "}\n";
@@ -337,11 +356,26 @@ bool RAS_Pipeline::Begin(const Scene *scene, bool first, const float background[
 	return true;
 }
 
-void RAS_Pipeline::End()
+void RAS_Pipeline::End(const float *view, const float *proj, const int *viewport)
 {
 	if (!m_active)
 		return;
 	m_active = false;
+
+	/* P8.17: Modern scenes' volumetric fog, from the main camera's view */
+	float fogzr[4] = {0.0f, 0.0f, 0.0f, 0.0f}, camz[3] = {0.1f, 100.0f, 0.0f};
+	int fogdepth = 0;
+	unsigned int fogtex = 0;
+	if (m_modern && view && proj && GPU_fog_grid_wanted() &&
+	    GPU_fog_grid((const float (*)[4])view, (const float (*)[4])proj))
+	{
+		fogtex = GPU_fog_grid_texture(fogzr, &fogdepth);
+		fogzr[3] = (float)fogdepth;
+		const bool ortho = proj[15] != 0.0f;
+		camz[0] = ortho ? (proj[14] + 1.0f) / proj[10] : proj[14] / (proj[10] - 1.0f);
+		camz[1] = ortho ? (proj[14] - 1.0f) / proj[10] : proj[14] / (proj[10] + 1.0f);
+		camz[2] = ortho ? 1.0f : 0.0f;
+	}
 
 	glBindFramebuffer(GL_FRAMEBUFFER, m_prevfb);
 	GPUShader *shader = Shader(m_samples > 1);
@@ -385,10 +419,22 @@ void RAS_Pipeline::End()
 		glUniform1f(loc, m_exposure);
 	if ((loc = glGetUniformLocation(program, "bge_gamma")) >= 0)
 		glUniform1f(loc, m_gamma);
+	if ((loc = glGetUniformLocation(program, "bge_fog")) >= 0)
+		glUniform1i(loc, fogtex ? 1 : 0);
+	if (fogtex) {
+		glBindTextureUnit(3, fogtex);
+		glUniform1i(glGetUniformLocation(program, "bge_fogvol"), 3);
+		glUniform4fv(glGetUniformLocation(program, "bge_fogzr"), 1, fogzr);
+		glUniform3fv(glGetUniformLocation(program, "bge_camz"), 1, camz);
+		const int *vp = viewport ? viewport : m_area;
+		glUniform4f(glGetUniformLocation(program, "bge_fogarea"), (float)vp[0], (float)vp[1], (float)vp[2],
+		            (float)vp[3]);
+	}
 	GPU_draw_fullscreen_triangle();
 	glBindTextureUnit(0, 0);
 	glBindTextureUnit(1, 0);
 	glBindTextureUnit(2, 0);
+	glBindTextureUnit(3, 0);
 	glDepthFunc(GL_LEQUAL);
 	GPU_state_scope_end(&scope);
 }

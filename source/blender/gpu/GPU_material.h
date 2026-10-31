@@ -448,6 +448,8 @@ GPUNodeLink *GPU_lamp_get_data(
 void GPU_mist_update_enable(short enable);
 /* BGE-Remix P8 Part B (P8.17): the height above which there is no mist (0: none) */
 void GPU_mist_update_height(float height);
+/* the mist drawn by the Modern pipeline's fog grid, not by the materials */
+void GPU_mist_update_volumetric(bool on);
 void GPU_mist_update_values(int type, float start, float dist, float inten, float color[3]);
 void GPU_horizon_update_color(float color[3]);
 void GPU_ambient_update_color(float color[3]);

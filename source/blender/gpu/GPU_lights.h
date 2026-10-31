@@ -107,6 +107,16 @@ void GPU_lights_program_samplers(unsigned int program);
 void GPU_lights_cluster(const void *records, int count, size_t record_size, unsigned int hash,
                         const float view[4][4], const float proj[4][4], const int viewport[4]);
 
+/* P8.17: the Modern pipeline's volumetric fog over the view (view matrix,
+ * projection): whether the scene needs it (mist, or a spot lamp's halo),
+ * the passes (false: not available), and the result: a 3D texture of the
+ * light gathered (rgb) and the visibility (a) up to the end of each depth
+ * slice; r_zr: near, far, ln(far / near), orthographic; r_depth: slices.
+ * BGE_REMIX_FOG_GRID=WxHxD sets the grid (160x90x64). */
+bool GPU_fog_grid_wanted(void);
+bool GPU_fog_grid(const float view[4][4], const float proj[4][4]);
+unsigned int GPU_fog_grid_texture(float r_zr[4], int r_depth[1]);
+
 void GPU_lights_exit(void);
 
 #ifdef __cplusplus

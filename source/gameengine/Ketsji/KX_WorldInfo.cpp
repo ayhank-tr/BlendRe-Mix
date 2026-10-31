@@ -208,12 +208,16 @@ void KX_WorldInfo::UpdateWorldSettings()
 			m_rasterizer->SetAmbientColor(m_con_ambientcolor);
 			GPU_ambient_update_color(m_ambientcolor);
 
+			/* BGE-Remix P8 Part B (P8.17): Modern scenes' mist is the fog grid's */
+			const bool modern = m_blenderscene &&
+			                    BKE_scene_game_pipeline(m_blenderscene) == BKE_SCENE_GAME_PIPELINE_MODERN;
+			GPU_mist_update_volumetric(modern);
 			if (m_hasmist) {
 				m_rasterizer->SetFog(m_misttype, m_miststart, m_mistdistance, m_mistintensity, m_con_mistcolor);
 				GPU_mist_update_values(m_misttype, m_miststart, m_mistdistance, m_mistintensity, m_mistcolor);
 				GPU_mist_update_height(m_misthi);
 				m_rasterizer->SetFogHeight(m_misthi);
-				m_rasterizer->EnableFog(true);
+				m_rasterizer->EnableFog(!modern);
 				GPU_mist_update_enable(true);
 			}
 			else {

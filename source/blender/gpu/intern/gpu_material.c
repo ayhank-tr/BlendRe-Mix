@@ -128,6 +128,8 @@ static struct GPUWorld {
 	/* the environment light's horizon and zenith (the world's, or with a sun
 	 * lamp's sky blended over them) */
 	float envhor[4], envzen[4];
+	/* the materials' own mist (off where the Modern fog grid draws it) */
+	float mist_mat_on;
 } GPUWorld;
 
 struct GPUMaterial {
@@ -2002,6 +2004,7 @@ typedef struct GPULampRecord {
 	float shadowmat[4][4][4];
 	float bound[4];
 	unsigned int bits[4];
+	float extra[4];  /* halo intensity (P8.17: light shafts in the fog grid) */
 } GPULampRecord;
 
 static void gpu_lamp_record(GPULamp *lamp, GPULampRecord *r)
@@ -2062,6 +2065,20 @@ static void gpu_lamp_record(GPULamp *lamp, GPULampRecord *r)
 	r->bits[1] = (unsigned int)lamp->lay;
 	r->bits[2] = gpu_lamp_groupbits(lamp);
 	r->bits[3] = lamp->excl ? 4u : 0u;
+	r->extra[0] = (lamp->type == LA_SPOT && (lamp->mode & LA_HALO)) ? lamp->la->haint : 0.0f;
+}
+
+/* BGE-Remix P8 Part B (P8.17): the world's mist for the fog grid: on, type,
+ * start, distance, intensity, height, colour */
+void gpu_world_mist_get(float r[9])
+{
+	r[0] = GPUWorld.mistenabled;
+	r[1] = GPUWorld.mistype;
+	r[2] = GPUWorld.miststart;
+	r[3] = GPUWorld.mistdistance;
+	r[4] = GPUWorld.mistintensity;
+	r[5] = GPUWorld.misthi;
+	copy_v3_v3(r + 6, GPUWorld.mistcol);
 }
 
 /* the lamps changed (counted on by every lamp update) */
@@ -3224,9 +3241,19 @@ static void gpu_sunsky_bind(GPUMaterial *material)
 	}
 }
 
+static bool gpu_mist_volumetric = false;
+
 void GPU_mist_update_enable(short enable)
 {
 	GPUWorld.mistenabled = (float)enable;
+	GPUWorld.mist_mat_on = (enable && !gpu_mist_volumetric) ? 1.0f : 0.0f;
+}
+
+/* BGE-Remix P8 Part B (P8.17): the Modern fog grid draws the mist */
+void GPU_mist_update_volumetric(bool on)
+{
+	gpu_mist_volumetric = on;
+	GPUWorld.mist_mat_on = (GPUWorld.mistenabled != 0.0f && !on) ? 1.0f : 0.0f;
 }
 
 void GPU_mist_update_values(int type, float start, float dist, float inten, float color[3])
@@ -3461,7 +3488,7 @@ void GPU_shaderesult_set(GPUShadeInput *shi, GPUShadeResult *shr)
 
 	if (!(ma->mode & MA_NOMIST)) {
 		GPU_link(mat, "shade_mist_factor", GPU_builtin(GPU_VIEW_POSITION),
-		         GPU_dynamic_uniform(&GPUWorld.mistenabled, GPU_DYNAMIC_MIST_ENABLE, NULL),
+		         GPU_dynamic_uniform(&GPUWorld.mist_mat_on, GPU_DYNAMIC_MIST_ENABLE, NULL),
 		         GPU_dynamic_uniform(&GPUWorld.miststart, GPU_DYNAMIC_MIST_START, NULL),
 		         GPU_dynamic_uniform(&GPUWorld.mistdistance, GPU_DYNAMIC_MIST_DISTANCE, NULL),
 		         GPU_dynamic_uniform(&GPUWorld.mistype, GPU_DYNAMIC_MIST_TYPE, NULL),

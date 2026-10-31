@@ -60,6 +60,7 @@ int GPU_layer_selftest(const char *dir);
 /* gpu_lights.c, gpu_material.c (BGE-Remix P8 Part B, P8.16) */
 void gpu_lights_views_get(int *r_count, const float **r_mats, int *r_layer);
 bool gpu_scene_depth_is_on(void);
+void gpu_world_mist_get(float r[9]);
 void gpu_ramp_blend_rgb(int type, float r_col[3], float fac, const float col[3]);
 
 #endif  /* __GPU_PRIVATE_H__ */

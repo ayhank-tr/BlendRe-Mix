@@ -87,6 +87,9 @@
 #include "GPU_glew.h"
 #include "GPU_glcheck.h" /* BGE-Remix P8.1 */
 #include "GPU_layer.h"   /* BGE-Remix P8.2 */
+extern "C" {
+#include "BKE_scene.h"  /* BGE-Remix P8 Part B: the pipeline */
+}
 
 #ifdef WITH_REMIX
 #  include "KX_RemixRenderer.h"
@@ -1597,8 +1600,10 @@ void KX_KetsjiEngine::RenderFrame(KX_Scene* scene, KX_Camera* cam)
 		// render all the font objects for this scene
 		scene->RenderFonts();
 
-		/* BGE-Remix P8.9: spot halos as a light cone */
-		RenderSpotHalos(scene);
+		/* BGE-Remix P8.9: spot halos as a light cone (BGE-Remix P8 Part B
+		 * (P8.17): Modern scenes' fog grid draws them as light shafts) */
+		if (BKE_scene_game_pipeline(scene->GetBlenderScene()) != BKE_SCENE_GAME_PIPELINE_MODERN)
+			RenderSpotHalos(scene);
 	}
 
 	if (scene->GetPhysicsEnvironment())
