@@ -222,7 +222,8 @@ jobs:
   test:
     needs: build
     runs-on: windows-2022
-    timeout-minutes: 90
+    # P8 Part B plays about 150 more scenes on software OpenGL
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
         with:

@@ -2163,10 +2163,11 @@ def partb_benchmarks(args, out, S, expected):
         r = play(args.ours, out, tag, S(name), env, frames=frames, gl_debug=False)
         return r.get("probe", {}).get("frame_ms_median")
 
+    # (the full crowd is slow on CI's software OpenGL: a short clip)
     b["B8.7 GPU-driven drawing (ms): crowd"] = {
-        "on": ms("crowd", "b87_crowd_on", frames=200),
+        "on": ms("crowd", "b87_crowd_on", frames=80),
         "instancing and GPU culling off": ms("crowd", "b87_crowd_off", {"BGE_REMIX_NO_INSTANCING": "1",
-                                                                        "BGE_REMIX_NO_GPU_CULLING": "1"}, frames=200)}
+                                                                        "BGE_REMIX_NO_GPU_CULLING": "1"}, frames=80)}
     b["B8.8 Modern pipeline (ms)"] = {
         "glsl_features classic": ms("glsl_features", "b88_glsl_classic"),
         "glsl_features modern": ms("glsl_features_modern_filmic", "b88_glsl_modern"),
