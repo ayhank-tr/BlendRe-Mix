@@ -52,9 +52,10 @@ char *GPU_glsl_translate(const char *source, int stage, bool core, const char *w
  * the core front end; 0 when it did not build (the caller then builds the
  * original, as stock Blender does) */
 unsigned int GPU_glsl_translate_program(const char *vert, const char *frag, const char *who);
-/* BGE-Remix P8 Part B: "game": the program is a custom shader the game
- * draws, built from the core translation (the compatibility one when that
- * does not build) */
+/* BGE-Remix P8 Part B: "game": the program is a custom shader or 2D filter
+ * the game draws, built from the core translation (the compatibility one
+ * when that does not build); a core 2D filter reads attribute 0 (bge_pos)
+ * and the uniform bge_canvascoord */
 unsigned int GPU_glsl_translate_program_ex(const char *vert, const char *frag, const char *who, bool game);
 
 /* a user's name as the translation spells it (names GLSL 4.50 reserves,

@@ -112,6 +112,11 @@ void GPU_render_text(
         const char *textstr, int textlen, unsigned int *col,
         const float *v_quad[4], const float *uv_quad[4],
         int glattrib);
+/* BGE-Remix P8 Part B: the same through the drawing layer (the game) */
+void GPU_render_text_layer(
+        struct MTexPoly *mtexpoly, int mode,
+        const char *textstr, int textlen, unsigned int *col,
+        const float *v_quad[4], const float *uv_quad[4], const float obcol[4]);
 
 /* Mipmap settings
  * - these will free textures on changes */

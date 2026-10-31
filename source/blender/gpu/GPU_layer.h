@@ -118,7 +118,7 @@ typedef enum GPULayerShader {
 	GPU_BUILTIN_FLAT = 0,   /* one colour (bge_color) */
 	GPU_BUILTIN_SMOOTH,     /* vertex colours */
 	GPU_BUILTIN_IMAGE,      /* a texture times the vertex colour */
-	GPU_BUILTIN_TEXT,       /* a glyph texture's red channel as alpha, times the colour */
+	GPU_BUILTIN_TEXT,       /* a glyph texture's alpha (coverage), times the colour */
 	GPU_BUILTIN_LINE,       /* lines of any width, solid or dashed */
 	GPU_BUILTIN_POINT,      /* points of any size, square or round */
 	GPU_BUILTIN_CLASSIC,    /* the fixed-function look: per-vertex lights, texture, fog */
@@ -207,6 +207,33 @@ void GPU_imm_vertex3f(float x, float y, float z);
 void GPU_imm_end(void);
 /* the colour for GPU_BUILTIN_FLAT and the texture unit for IMAGE and TEXT */
 void GPU_imm_uniform_color(float r, float g, float b, float a);
+
+/* BGE-Remix P8 Part B: one triangle covering the viewport; its corners are
+ * attribute 0 (vec2, -1..3: use layout(location = 0)) */
+void GPU_draw_fullscreen_triangle(void);
+
+/* ---- GPU time of the game's passes (BGE-Remix P8 Part B) ---- */
+
+typedef enum GPUPassTimer {
+	GPU_PASS_SHADOWS = 0,
+	GPU_PASS_OPAQUE,
+	GPU_PASS_TRANSPARENT,
+	GPU_PASS_SKY,
+	GPU_PASS_FILTERS,
+	GPU_PASS_OVERLAYS,
+	GPU_PASS_COUNT,
+} GPUPassTimer;
+
+/* timestamps around a pass (a pass may run several times a frame: summed) */
+void GPU_pass_timer_begin(GPUPassTimer pass);
+void GPU_pass_timer_end(GPUPassTimer pass);
+/* the end of a frame: the results of earlier frames are collected (the
+ * card answers some frames later; the game does not wait for them) */
+void GPU_pass_timer_frame(void);
+/* the pass's GPU time per frame in milliseconds (averaged over recent
+ * frames; -1 while unknown) and its name */
+float GPU_pass_timer_ms(GPUPassTimer pass);
+const char *GPU_pass_timer_name(GPUPassTimer pass);
 
 /* ---- compute (BGE-Remix P8.7) ---- */
 

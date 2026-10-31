@@ -539,6 +539,11 @@ void RAS_StorageBatch::IndexPrimitives(RAS_MeshSlot& ms)
 		GPU_old_builtins((unsigned int)bound, &state);
 	}
 
+	/* a shader still the old kind (its translation did not build) reads the
+	 * old matrices */
+	if (!pi.core && !own)
+		GPU_matrix_to_gl();
+
 	/* the old alpha test only for the old kind of drawing (shaders do their own) */
 	if (!pi.core && !own && state.alpha_test) {
 		glEnable(GL_ALPHA_TEST);

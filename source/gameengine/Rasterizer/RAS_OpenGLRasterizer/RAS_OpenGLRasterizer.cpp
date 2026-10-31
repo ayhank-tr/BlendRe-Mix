@@ -129,6 +129,13 @@ RAS_OpenGLRasterizer::RAS_OpenGLRasterizer(RAS_ICanvas* canvas, RAS_STORAGE_TYPE
 	/* BGE-Remix P8.4: the game's meshes are batches on the card, whatever
 	 * storage the file asks for (Display Lists, Vertex Arrays or VBO) */
 	m_classic = false;
+	m_mbtex[0] = m_mbtex[1] = 0;
+	m_mbsize[0] = m_mbsize[1] = 0;
+	m_mbshader = NULL;
+	m_stereotex = 0;
+	m_stereorect[0] = m_stereorect[1] = m_stereorect[2] = m_stereorect[3] = 0;
+	m_stereoleft = false;
+	m_stereoshader = NULL;
 	GPU_classic_state_default(&m_state);
 	m_storage = new RAS_StorageBatch(&m_texco_num, m_texco, &m_attrib_num, m_attrib, m_attrib_layer, &m_classic,
 	                                 &m_state);
@@ -146,6 +153,7 @@ RAS_OpenGLRasterizer::~RAS_OpenGLRasterizer()
 
 	if (m_storage)
 		delete m_storage;
+	FreeMotionBlur();
 }
 
 bool RAS_OpenGLRasterizer::Init()
@@ -356,37 +364,21 @@ void RAS_OpenGLRasterizer::FlushDebugShapes(SCA_IScene *scene)
 	if (debugShapes.empty())
 		return;
 
-	// DrawDebugLines
-	GLboolean light, tex;
-
-	light= glIsEnabled(GL_LIGHTING);
-	tex= glIsEnabled(GL_TEXTURE_2D);
-
-	if (light) glDisable(GL_LIGHTING);
-	if (tex) glDisable(GL_TEXTURE_2D);
-
-	// draw lines
-	glBegin(GL_LINES);
+	/* BGE-Remix P8 Part B: debug and physics lines (and bge.render's
+	 * drawLine) with the layer's line shader, all of a frame in one draw */
+	GPU_line_style(1.0f, 0.0f, 0.0f);
+	GPU_imm_begin(GL_LINES, GPU_BUILTIN_LINE);
 	for (unsigned int i = 0; i < debugShapes.size(); i++) {
-		if (debugShapes[i].m_type != OglDebugShape::LINE)
+		const OglDebugShape& sh = debugShapes[i];
+		GPU_imm_color4f(sh.m_color[0], sh.m_color[1], sh.m_color[2], 1.0f);
+		if (sh.m_type == OglDebugShape::LINE) {
+			GPU_imm_vertex3f(sh.m_pos.x(), sh.m_pos.y(), sh.m_pos.z());
+			GPU_imm_vertex3f(sh.m_param.x(), sh.m_param.y(), sh.m_param.z());
 			continue;
-		glColor4f(debugShapes[i].m_color[0], debugShapes[i].m_color[1], debugShapes[i].m_color[2], 1.0f);
-		const MT_Scalar *fromPtr = &debugShapes[i].m_pos.x();
-		const MT_Scalar *toPtr= &debugShapes[i].m_param.x();
-		glVertex3fv(fromPtr);
-		glVertex3fv(toPtr);
-	}
-	glEnd();
-
-	// draw circles
-	for (unsigned int i = 0; i < debugShapes.size(); i++) {
-		if (debugShapes[i].m_type != OglDebugShape::CIRCLE)
-			continue;
-		glBegin(GL_LINE_LOOP);
-		glColor4f(debugShapes[i].m_color[0], debugShapes[i].m_color[1], debugShapes[i].m_color[2], 1.0f);
-
+		}
+		/* a circle: its segments */
 		static const MT_Vector3 worldUp(0.0f, 0.0f, 1.0f);
-		MT_Vector3 norm = debugShapes[i].m_param;
+		MT_Vector3 norm = sh.m_param;
 		MT_Matrix3x3 tr;
 		if (norm.fuzzyZero() || norm == worldUp)
 		{
@@ -401,22 +393,19 @@ void RAS_OpenGLRasterizer::FlushDebugShapes(SCA_IScene *scene)
 				yaxis.x(), yaxis.y(), yaxis.z(),
 				norm.x(), norm.y(), norm.z());
 		}
-		MT_Scalar rad = debugShapes[i].m_param2.x();
-		int n = (int)debugShapes[i].m_param2.y();
-		for (int j = 0; j<n; j++)
-		{
-			MT_Scalar theta = j*(float)M_PI*2/n;
-			MT_Vector3 pos(cosf(theta) * rad, sinf(theta) * rad, 0.0f);
-			pos = pos*tr;
-			pos += debugShapes[i].m_pos;
-			const MT_Scalar* posPtr = &pos.x();
-			glVertex3fv(posPtr);
+		MT_Scalar rad = sh.m_param2.x();
+		int n = (int)sh.m_param2.y();
+		for (int j = 0; j < n; j++) {
+			for (int e = 0; e < 2; e++) {
+				MT_Scalar theta = ((j + e) % n) * (float)M_PI * 2 / n;
+				MT_Vector3 pos(cosf(theta) * rad, sinf(theta) * rad, 0.0f);
+				pos = pos * tr;
+				pos += sh.m_pos;
+				GPU_imm_vertex3f(pos.x(), pos.y(), pos.z());
+			}
 		}
-		glEnd();
 	}
-
-	if (light) glEnable(GL_LIGHTING);
-	if (tex) glEnable(GL_TEXTURE_2D);
+	GPU_imm_end();
 
 	debugShapes.clear();
 }
@@ -554,21 +543,34 @@ void RAS_OpenGLRasterizer::SetEye(const StereoEye eye)
 			}
 			break;
 		case RAS_STEREO_VINTERLACE:
-		{
-			// OpenGL stippling is deprecated, it is no longer possible to affect all shaders
-			// this way, offscreen rendering and then compositing may be the better solution
-			glEnable(GL_POLYGON_STIPPLE);
-			glPolygonStipple((const GLubyte*) ((m_curreye == RAS_STEREO_LEFTEYE) ? left_eye_vinterlace_mask : right_eye_vinterlace_mask));
-			if (m_curreye == RAS_STEREO_RIGHTEYE)
-				ClearDepthBuffer();
-			break;
-		}
 		case RAS_STEREO_INTERLACED:
 		{
-			glEnable(GL_POLYGON_STIPPLE);
-			glPolygonStipple((const GLubyte*) &hinterlace_mask[m_curreye == RAS_STEREO_LEFTEYE?0:1]);
-			if (m_curreye == RAS_STEREO_RIGHTEYE)
+			/* BGE-Remix P8 Part B: no polygon stipple (it does not reach
+			 * shaders): the left eye's whole picture is kept, the right eye
+			 * draws over it, and FinishStereo puts the left eye's columns
+			 * (vertical interlace) or rows back, as the stipple masks chose
+			 * them (odd window columns or rows) */
+			if (m_curreye == RAS_STEREO_RIGHTEYE) {
+				const RAS_Rect& area = m_2DCanvas->GetWindowArea();
+				const int r[4] = {area.GetLeft(), area.GetBottom(), area.GetWidth() + 1, area.GetHeight() + 1};
+				if (r[2] > 0 && r[3] > 0) {
+					if (!m_stereotex || r[2] != m_stereorect[2] || r[3] != m_stereorect[3]) {
+						if (m_stereotex)
+							glDeleteTextures(1, &m_stereotex);
+						glCreateTextures(GL_TEXTURE_2D, 1, &m_stereotex);
+						glTextureStorage2D(m_stereotex, 1, GL_RGBA8, r[2], r[3]);
+						glTextureParameteri(m_stereotex, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+						glTextureParameteri(m_stereotex, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+					}
+					memcpy(m_stereorect, r, sizeof(r));
+					glCopyTextureSubImage2D(m_stereotex, 0, 0, 0, r[0], r[1], r[2], r[3]);
+					m_stereoleft = true;
+				}
 				ClearDepthBuffer();
+			}
+			else {
+				m_stereoleft = false;
+			}
 			break;
 		}
 		default:
@@ -649,19 +651,18 @@ const MT_Matrix4x4& RAS_OpenGLRasterizer::GetViewInvMatrix() const
 void RAS_OpenGLRasterizer::IndexPrimitives_3DText(RAS_MeshSlot& ms,
 									class RAS_IPolyMaterial* polymat)
 { 
+	/* BGE-Remix P8 Part B: Face Texture text through the layer (the image
+	 * shader, the layer's matrices) */
 	bool obcolor = ms.m_bObjectColor;
 	MT_Vector4& rgba = ms.m_RGBAcolor;
 	RAS_MeshSlot::iterator it;
+	float obcol[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+	if (obcolor) {
+		for (int k = 0; k < 4; k++)
+			obcol[k] = (float)rgba[k];
+	}
 
 	const STR_String& mytext = ((CValue*)m_clientobject)->GetPropertyText("Text");
-
-	// handle object color
-	if (obcolor) {
-		glDisableClientState(GL_COLOR_ARRAY);
-		glColor4d(rgba[0], rgba[1], rgba[2], rgba[3]);
-	}
-	else
-		glEnableClientState(GL_COLOR_ARRAY);
 
 	for (ms.begin(it); !ms.end(it); ms.next(it)) {
 		RAS_TexVert *vertex;
@@ -671,18 +672,18 @@ void RAS_OpenGLRasterizer::IndexPrimitives_3DText(RAS_MeshSlot& ms,
 
 		if (it.array->m_type == RAS_DisplayArray::LINE) {
 			// line drawing, no text
-			glBegin(GL_LINES);
-
+			GPU_line_style(1.0f, 0.0f, 0.0f);
+			GPU_imm_begin(GL_LINES, GPU_BUILTIN_LINE);
+			GPU_imm_color4f(obcol[0], obcol[1], obcol[2], obcol[3]);
 			for (i=0; i<it.totindex; i+=2)
 			{
 				vertex = &it.vertex[it.index[i]];
-				glVertex3fv(vertex->getXYZ());
+				GPU_imm_vertex3f(vertex->getXYZ()[0], vertex->getXYZ()[1], vertex->getXYZ()[2]);
 
 				vertex = &it.vertex[it.index[i+1]];
-				glVertex3fv(vertex->getXYZ());
+				GPU_imm_vertex3f(vertex->getXYZ()[0], vertex->getXYZ()[1], vertex->getXYZ()[2]);
 			}
-
-			glEnd();
+			GPU_imm_end();
 		}
 		else {
 			// triangle and quad text drawing
@@ -691,7 +692,6 @@ void RAS_OpenGLRasterizer::IndexPrimitives_3DText(RAS_MeshSlot& ms,
 				float  v[4][3];
 				const float  *v_ptr[4] = {NULL};
 				const float *uv_ptr[4] = {NULL};
-				int glattrib, unit;
 
 				for (j=0; j<numvert; j++) {
 					vertex = &it.vertex[it.index[i+j]];
@@ -704,23 +704,14 @@ void RAS_OpenGLRasterizer::IndexPrimitives_3DText(RAS_MeshSlot& ms,
 					uv_ptr[j] = vertex->getUV(0);
 				}
 
-				// find the right opengl attribute
-				glattrib = -1;
-				if (GLEW_ARB_vertex_program)
-					for (unit=0; unit<m_attrib_num; unit++)
-						if (m_attrib[unit] == RAS_TEXCO_UV)
-							glattrib = unit;
-
-				GPU_render_text(
+				GPU_render_text_layer(
 				        polymat->GetMTexPoly(), polymat->GetDrawingMode(), mytext, mytext.Length(), polymat->GetMCol(),
-				        v_ptr, uv_ptr, glattrib);
+				        v_ptr, uv_ptr, obcolor ? obcol : NULL);
 
 				ClearCachingInfo();
 			}
 		}
 	}
-
-	glDisableClientState(GL_COLOR_ARRAY);
 }
 
 void RAS_OpenGLRasterizer::SetTexCoordNum(int num)
@@ -760,23 +751,12 @@ void RAS_OpenGLRasterizer::IndexPrimitives(RAS_MeshSlot& ms)
 	m_storage->IndexPrimitives(ms);
 }
 
-/* BGE-Remix P8 Part B: the old OpenGL matrices follow the layer's (see the
- * header); the matrix mode is left as modelview, as the drawing expects */
-void RAS_OpenGLRasterizer::MirrorModelview()
+/* BGE-Remix P8 Part B: the old OpenGL matrices are set from the layer's only
+ * where old drawing still reads them (Python's bgl in drawing callbacks, a
+ * shader whose translation did not build) */
+void RAS_OpenGLRasterizer::SyncOldMatrices()
 {
-	float m[4][4];
-	GPU_matrix_get(GPU_MATRIX_MODELVIEW, m);
-	glMatrixMode(GL_MODELVIEW);
-	glLoadMatrixf(&m[0][0]);
-}
-
-void RAS_OpenGLRasterizer::MirrorProjection()
-{
-	float m[4][4];
-	GPU_matrix_get(GPU_MATRIX_PROJECTION, m);
-	glMatrixMode(GL_PROJECTION);
-	glLoadMatrixf(&m[0][0]);
-	glMatrixMode(GL_MODELVIEW);
+	GPU_matrix_to_gl();
 }
 
 void RAS_OpenGLRasterizer::SetProjectionMatrix(MT_CmMatrix4x4 &mat)
@@ -785,7 +765,6 @@ void RAS_OpenGLRasterizer::SetProjectionMatrix(MT_CmMatrix4x4 &mat)
 	GPU_matrix_mode(GPU_MATRIX_PROJECTION);
 	GPU_matrix_load((const float (*)[4])matrix);
 	GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
-	MirrorProjection();
 
 	m_camortho = (mat(3, 3) != 0.0f);
 }
@@ -798,7 +777,6 @@ void RAS_OpenGLRasterizer::SetProjectionMatrix(const MT_Matrix4x4 & mat)
 	GPU_matrix_mode(GPU_MATRIX_PROJECTION);
 	GPU_matrix_load((const float (*)[4])matrix);
 	GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
-	MirrorProjection();
 
 	m_camortho = (mat[3][3] != 0.0f);
 }
@@ -864,7 +842,6 @@ MT_Matrix4x4 RAS_OpenGLRasterizer::GetFrustumMatrix(
 	GPU_matrix_mode(GPU_MATRIX_PROJECTION);
 	GPU_matrix_load((const float (*)[4])mat);
 	GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
-	MirrorProjection();
 
 	return result;
 }
@@ -896,7 +873,6 @@ MT_Matrix4x4 RAS_OpenGLRasterizer::GetOrthoMatrix(
 	GPU_matrix_mode(GPU_MATRIX_PROJECTION);
 	GPU_matrix_load((const float (*)[4])mat);
 	GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
-	MirrorProjection();
 
 	return result;
 }
@@ -964,7 +940,6 @@ void RAS_OpenGLRasterizer::SetViewMatrix(const MT_Matrix4x4 &mat,
 
 	GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
 	GPU_matrix_load((const float (*)[4])glviewmat);
-	MirrorModelview();
 	m_campos = pos;
 	m_camnegscale = negX ^ negY ^ negZ;
 }
@@ -1294,7 +1269,6 @@ bool RAS_OpenGLRasterizer::RayHit(struct KX_ClientObjectInfo *client, KX_RayCast
 
 		GPU_matrix_translate(oglmatrix[12],oglmatrix[13],oglmatrix[14]);
 		GPU_matrix_mult((const float (*)[4])maat);
-		MirrorModelview();
 		return true;
 	}
 	else {
@@ -1362,7 +1336,6 @@ void RAS_OpenGLRasterizer::applyTransform(float* oglmatrix,int objectdrawmode )
 
 		GPU_matrix_translate(objpos[0],objpos[1],objpos[2]);
 		GPU_matrix_mult((const float (*)[4])maat);
-		MirrorModelview();
 
 	}
 	else {
@@ -1391,57 +1364,49 @@ void RAS_OpenGLRasterizer::applyTransform(float* oglmatrix,int objectdrawmode )
 			{
 				// couldn't find something to cast the shadow on...
 				GPU_matrix_mult((const float (*)[4])oglmatrix);
-				MirrorModelview();
 			}
 			else
 			{ // we found the "ground", but the cast matrix doesn't take
 			  // scaling in consideration, so we must apply the object scale
 				MT_Vector3  size = gameobj->GetSGNode()->GetLocalScale();
 				GPU_matrix_scale(size[0], size[1], size[2]);
-				MirrorModelview();
 			}
 		} else
 		{
 
 			// 'normal' object
 			GPU_matrix_mult((const float (*)[4])oglmatrix);
-			MirrorModelview();
 		}
 	}
 }
 
 static void DisableForText()
 {
+	/* BGE-Remix P8 Part B: text draws through the layer (its own shader and
+	 * texture); only the state it shares is reset */
 	glPolygonMode(GL_FRONT_AND_BACK, GL_FILL); /* needed for texture fonts otherwise they render as wireframe */
-
 	glDisable(GL_BLEND);
 	glDisable(GL_ALPHA_TEST);
+}
 
-	glDisable(GL_LIGHTING);
-	glDisable(GL_COLOR_MATERIAL);
+/* BGE-Remix P8 Part B: a 2D pass on the layer: pixels as units */
+static void layer_2d_begin(int width, int height)
+{
+	GPU_matrix_mode(GPU_MATRIX_PROJECTION);
+	GPU_matrix_push();
+	GPU_matrix_identity();
+	GPU_matrix_ortho(0, width, 0, height, -100, 100);
+	GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
+	GPU_matrix_push();
+	GPU_matrix_identity();
+}
 
-	if (GLEW_ARB_multitexture) {
-		for (int i=0; i<RAS_MAX_TEXCO; i++) {
-			glActiveTextureARB(GL_TEXTURE0_ARB+i);
-
-			if (GLEW_ARB_texture_cube_map) {
-				glDisable(GL_TEXTURE_CUBE_MAP_ARB);
-				glDisable(GL_TEXTURE_GEN_S);
-				glDisable(GL_TEXTURE_GEN_T);
-				glDisable(GL_TEXTURE_GEN_Q);
-				glDisable(GL_TEXTURE_GEN_R);
-			}
-			glDisable(GL_TEXTURE_2D);
-		}
-
-		glActiveTextureARB(GL_TEXTURE0_ARB);
-	}
-	else {
-		if (GLEW_ARB_texture_cube_map)
-			glDisable(GL_TEXTURE_CUBE_MAP_ARB);
-
-		glDisable(GL_TEXTURE_2D);
-	}
+static void layer_2d_end()
+{
+	GPU_matrix_mode(GPU_MATRIX_PROJECTION);
+	GPU_matrix_pop();
+	GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
+	GPU_matrix_pop();
 }
 
 void RAS_OpenGLRasterizer::RenderBox2D(int xco,
@@ -1455,40 +1420,27 @@ void RAS_OpenGLRasterizer::RenderBox2D(int xco,
 	 * what cause it, though :/ .*/
 	glDisable(GL_DEPTH_TEST);
 
-	glMatrixMode(GL_PROJECTION);
-	glPushMatrix();
-	glLoadIdentity();
-
-	glOrtho(0, width, 0, height, -100, 100);
-
-	glMatrixMode(GL_MODELVIEW);
-	glPushMatrix();
-	glLoadIdentity();
+	layer_2d_begin(width, height);
 
 	yco = height - yco;
 	int barsize = 50;
 
 	/* draw in black first */
-	glColor3ub(0, 0, 0);
-	glBegin(GL_QUADS);
-	glVertex2f(xco + 1 + 1 + barsize * percentage, yco - 1 + 10);
-	glVertex2f(xco + 1, yco - 1 + 10);
-	glVertex2f(xco + 1, yco - 1);
-	glVertex2f(xco + 1 + 1 + barsize * percentage, yco - 1);
-	glEnd();
+	GPU_imm_begin(GL_QUADS, GPU_BUILTIN_SMOOTH);
+	GPU_imm_color4ub(0, 0, 0, 255);
+	GPU_imm_vertex2f(xco + 1 + 1 + barsize * percentage, yco - 1 + 10);
+	GPU_imm_vertex2f(xco + 1, yco - 1 + 10);
+	GPU_imm_vertex2f(xco + 1, yco - 1);
+	GPU_imm_vertex2f(xco + 1 + 1 + barsize * percentage, yco - 1);
 
-	glColor3ub(255, 255, 255);
-	glBegin(GL_QUADS);
-	glVertex2f(xco + 1 + barsize * percentage, yco + 10);
-	glVertex2f(xco, yco + 10);
-	glVertex2f(xco, yco);
-	glVertex2f(xco + 1 + barsize * percentage, yco);
-	glEnd();
+	GPU_imm_color4ub(255, 255, 255, 255);
+	GPU_imm_vertex2f(xco + 1 + barsize * percentage, yco + 10);
+	GPU_imm_vertex2f(xco, yco + 10);
+	GPU_imm_vertex2f(xco, yco);
+	GPU_imm_vertex2f(xco + 1 + barsize * percentage, yco);
+	GPU_imm_end();
 
-	glMatrixMode(GL_PROJECTION);
-	glPopMatrix();
-	glMatrixMode(GL_MODELVIEW);
-	glPopMatrix();
+	layer_2d_end();
 	glEnable(GL_DEPTH_TEST);
 }
 
@@ -1499,8 +1451,8 @@ void RAS_OpenGLRasterizer::RenderText3D(
 	/* gl prepping */
 	DisableForText();
 
-	/* the actual drawing */
-	glColor4fv(color);
+	/* the actual drawing (BGE-Remix P8 Part B: through the layer) */
+	BLF_layer_begin(color);
 
 	/* multiply the text matrix by the object matrix */
 	BLF_enable(fontid, BLF_MATRIX|BLF_ASPECT);
@@ -1516,6 +1468,7 @@ void RAS_OpenGLRasterizer::RenderText3D(
 	BLF_draw(fontid, text, 65535);
 
 	BLF_disable(fontid, BLF_MATRIX|BLF_ASPECT);
+	BLF_layer_end();
 }
 
 void RAS_OpenGLRasterizer::RenderText2D(
@@ -1530,34 +1483,27 @@ void RAS_OpenGLRasterizer::RenderText2D(
 	DisableForText();
 	glDisable(GL_DEPTH_TEST);
 
-	glMatrixMode(GL_PROJECTION);
-	glPushMatrix();
-	glLoadIdentity();
-
-	glOrtho(0, width, 0, height, -100, 100);
-
-	glMatrixMode(GL_MODELVIEW);
-	glPushMatrix();
-	glLoadIdentity();
+	layer_2d_begin(width, height);
 
 	if (mode == RAS_TEXT_PADDED) {
 		/* draw in black first */
-		glColor3ub(0, 0, 0);
+		const float black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+		BLF_layer_begin(black);
 		BLF_size(blf_mono_font, 11, 72);
 		BLF_position(blf_mono_font, (float)xco+1, (float)(height-yco-1), 0.0f);
 		BLF_draw(blf_mono_font, text, 65535); /* XXX, use real len */
+		BLF_layer_end();
 	}
 
 	/* the actual drawing */
-	glColor3ub(255, 255, 255);
+	const float white[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+	BLF_layer_begin(white);
 	BLF_size(blf_mono_font, 11, 72);
 	BLF_position(blf_mono_font, (float)xco, (float)(height-yco), 0.0f);
 	BLF_draw(blf_mono_font, text, 65535); /* XXX, use real len */
+	BLF_layer_end();
 
-	glMatrixMode(GL_PROJECTION);
-	glPopMatrix();
-	glMatrixMode(GL_MODELVIEW);
-	glPopMatrix();
+	layer_2d_end();
 	glEnable(GL_DEPTH_TEST);
 }
 
@@ -1571,43 +1517,159 @@ void RAS_OpenGLRasterizer::PopMatrix()
 {
 	GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
 	GPU_matrix_pop();
-	MirrorModelview();
 }
+
+void RAS_OpenGLRasterizer::FreeMotionBlur()
+{
+	if (m_mbtex[0])
+		glDeleteTextures(2, m_mbtex);
+	m_mbtex[0] = m_mbtex[1] = 0;
+	m_mbsize[0] = m_mbsize[1] = 0;
+	if (m_mbshader)
+		GPU_shader_free(m_mbshader);
+	m_mbshader = NULL;
+	if (m_stereotex)
+		glDeleteTextures(1, &m_stereotex);
+	m_stereotex = 0;
+	if (m_stereoshader)
+		GPU_shader_free(m_stereoshader);
+	m_stereoshader = NULL;
+}
+
+static const char *stereo_vert =
+        "layout(location = 0) in vec4 bge_pos;\n"
+        "void main() { gl_Position = vec4(bge_pos.xy, 0.0, 1.0); }\n";
+static const char *stereo_frag =
+        "uniform sampler2D bge_left;\n"
+        "uniform vec4 bge_rect;\n"
+        "uniform int bge_columns;\n"
+        "out vec4 bge_fragcolor;\n"
+        "void main()\n"
+        "{\n"
+        "	float c = (bge_columns != 0) ? gl_FragCoord.x : gl_FragCoord.y;\n"
+        "	if (mod(floor(c), 2.0) < 0.5) discard;\n"
+        "	bge_fragcolor = texture(bge_left, (gl_FragCoord.xy - bge_rect.xy) / bge_rect.zw);\n"
+        "}\n";
+
+void RAS_OpenGLRasterizer::FinishStereo()
+{
+	if (!m_stereoleft || !m_stereotex)
+		return;
+	m_stereoleft = false;
+	if (m_stereomode != RAS_STEREO_INTERLACED && m_stereomode != RAS_STEREO_VINTERLACE)
+		return;
+	if (!m_stereoshader) {
+		m_stereoshader = GPU_shader_create_ex(stereo_vert, stereo_frag, NULL, NULL, NULL, 0, 0, 0,
+		                                      GPU_SHADER_FLAGS_GLSL450 | GPU_SHADER_FLAGS_CORE);
+		if (!m_stereoshader)
+			return;
+	}
+	GPUStateScope scope;
+	GPU_state_scope_begin(&scope);
+	GPU_state_blend(GPU_LAYER_BLEND_NONE);
+	GPU_state_depth(false, false);
+	glDisable(GL_CULL_FACE);
+	glDisable(GL_SCISSOR_TEST);
+	glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+	glViewport(m_stereorect[0], m_stereorect[1], m_stereorect[2], m_stereorect[3]);
+
+	const GLuint program = GPU_shader_program(m_stereoshader);
+	GPU_shader_bind(m_stereoshader);
+	glBindTextureUnit(0, m_stereotex);
+	glUniform1i(glGetUniformLocation(program, "bge_left"), 0);
+	glUniform4f(glGetUniformLocation(program, "bge_rect"), (float)m_stereorect[0], (float)m_stereorect[1],
+	            (float)m_stereorect[2], (float)m_stereorect[3]);
+	glUniform1i(glGetUniformLocation(program, "bge_columns"), m_stereomode == RAS_STEREO_VINTERLACE ? 1 : 0);
+	GPU_draw_fullscreen_triangle();
+	GPU_state_scope_end(&scope);
+}
+
+/* BGE-Remix P8 Part B: motion blur as the accumulation buffer did it (the
+ * history becomes history * value + frame * (1 - value), and is shown), with
+ * a history texture and one full-screen triangle; it works on windows
+ * without an accumulation buffer too */
+static const char *mb_vert =
+        "layout(location = 0) in vec4 bge_pos;\n"
+        "out vec2 uv;\n"
+        "void main() { gl_Position = vec4(bge_pos.xy, 0.0, 1.0); uv = bge_pos.xy * 0.5 + 0.5; }\n";
+static const char *mb_frag =
+        "in vec2 uv;\n"
+        "uniform sampler2D bge_frame;\n"
+        "uniform sampler2D bge_history;\n"
+        "uniform float bge_value;\n"
+        "out vec4 bge_fragcolor;\n"
+        "void main() { bge_fragcolor = texture(bge_history, uv) * bge_value + texture(bge_frame, uv) * (1.0 - bge_value); }\n";
 
 void RAS_OpenGLRasterizer::MotionBlur()
 {
 	int state = GetMotionBlurState();
-	float motionblurvalue;
-	if (state)
-	{
-		/* BGE-Remix P8.1: motion blur uses the accumulation buffer; a window
-		 * without one would only collect driver errors (stock 2.79 draws the
-		 * same picture there, unblurred), so it is skipped and said once */
-		static int accum_bits = -1;
-		if (accum_bits < 0) {
-			GLint r = 0;
-			glGetIntegerv(GL_ACCUM_RED_BITS, &r);
-			accum_bits = r;
-			if (r == 0)
-				printf("BGE-Remix: motion blur needs an accumulation buffer, which this window does not have; it is skipped\n");
-		}
-		if (accum_bits == 0)
-			return;
+	if (!state)
+		return;
+	const float motionblurvalue = GetMotionBlurValue();
 
-		motionblurvalue = GetMotionBlurValue();
-		if (state==1)
-		{
-			// bugfix:load color buffer into accum buffer for the first time(state=1)
-			glAccum(GL_LOAD, 1.0f);
-			SetMotionBlurState(2);
+	GLint vp[4];
+	glGetIntegerv(GL_VIEWPORT, vp);
+	if (vp[2] <= 0 || vp[3] <= 0)
+		return;
+	if (!m_mbtex[0] || m_mbsize[0] != vp[2] || m_mbsize[1] != vp[3]) {
+		if (m_mbtex[0])
+			glDeleteTextures(2, m_mbtex);
+		glCreateTextures(GL_TEXTURE_2D, 2, m_mbtex);
+		for (int i = 0; i < 2; i++) {
+			glTextureStorage2D(m_mbtex[i], 1, GL_RGBA8, vp[2], vp[3]);
+			glTextureParameteri(m_mbtex[i], GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+			glTextureParameteri(m_mbtex[i], GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+			glTextureParameteri(m_mbtex[i], GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+			glTextureParameteri(m_mbtex[i], GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 		}
-		else if (motionblurvalue >= 0.0f && motionblurvalue <= 1.0f) {
-			glAccum(GL_MULT, motionblurvalue);
-			glAccum(GL_ACCUM, 1-motionblurvalue);
-			glAccum(GL_RETURN, 1.0f);
-			glFlush();
+		m_mbsize[0] = vp[2];
+		m_mbsize[1] = vp[3];
+		state = 1;  /* a new history */
+	}
+
+	if (state == 1) {
+		/* the first frame: the history is the frame */
+		glCopyTextureSubImage2D(m_mbtex[1], 0, 0, 0, vp[0], vp[1], vp[2], vp[3]);
+		SetMotionBlurState(2);
+		return;
+	}
+	if (motionblurvalue < 0.0f || motionblurvalue > 1.0f)
+		return;
+
+	if (!m_mbshader) {
+		m_mbshader = GPU_shader_create_ex(mb_vert, mb_frag, NULL, NULL, NULL, 0, 0, 0,
+		                                  GPU_SHADER_FLAGS_GLSL450 | GPU_SHADER_FLAGS_CORE);
+		if (!m_mbshader) {
+			printf("BGE-Remix: the motion blur shader does not build; motion blur is skipped\n");
+			DisableMotionBlur();
+			return;
 		}
 	}
+
+	glCopyTextureSubImage2D(m_mbtex[0], 0, 0, 0, vp[0], vp[1], vp[2], vp[3]);
+
+	GPUStateScope scope;
+	GPU_state_scope_begin(&scope);
+	GPU_state_blend(GPU_LAYER_BLEND_NONE);
+	GPU_state_depth(false, false);
+	glDisable(GL_CULL_FACE);
+	glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
+	const GLuint program = GPU_shader_program(m_mbshader);
+	GPU_shader_bind(m_mbshader);
+	glBindTextureUnit(0, m_mbtex[0]);
+	glBindTextureUnit(1, m_mbtex[1]);
+	glUniform1i(glGetUniformLocation(program, "bge_frame"), 0);
+	glUniform1i(glGetUniformLocation(program, "bge_history"), 1);
+	glUniform1f(glGetUniformLocation(program, "bge_value"), motionblurvalue);
+	GPU_draw_fullscreen_triangle();
+	glBindTextureUnit(1, 0);
+	GPU_state_scope_end(&scope);
+
+	/* what is shown is the next frame's history */
+	glCopyTextureSubImage2D(m_mbtex[1], 0, 0, 0, vp[0], vp[1], vp[2], vp[3]);
 }
 
 void RAS_OpenGLRasterizer::SetClientObject(void* obj)

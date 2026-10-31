@@ -57,6 +57,7 @@
 
 #ifndef BLF_STANDALONE
 #include "GPU_basic_shader.h"
+#include "GPU_layer.h"
 #endif
 
 #include "blf_internal_types.h"
@@ -329,6 +330,23 @@ void blf_glyph_free(GlyphBLF *g)
 
 static void blf_texture_draw(float uv[2][2], float dx, float y1, float dx1, float y2)
 {
+	if (blf_layer.on) {
+		/* BGE-Remix P8 Part B: through the layer (the glyph texture is bound
+		 * to unit 0, the text shader reads its alpha) */
+		const float *c = blf_layer.cur;
+		GPU_imm_begin(GL_QUADS, GPU_BUILTIN_TEXT);
+		GPU_imm_color4f(c[0], c[1], c[2], c[3]);
+		GPU_imm_texco2f(uv[0][0], uv[0][1]);
+		GPU_imm_vertex2f(dx, y1);
+		GPU_imm_texco2f(uv[0][0], uv[1][1]);
+		GPU_imm_vertex2f(dx, y2);
+		GPU_imm_texco2f(uv[1][0], uv[1][1]);
+		GPU_imm_vertex2f(dx1, y2);
+		GPU_imm_texco2f(uv[1][0], uv[0][1]);
+		GPU_imm_vertex2f(dx1, y1);
+		GPU_imm_end();
+		return;
+	}
 	glBegin(GL_QUADS);
 	glTexCoord2f(uv[0][0], uv[0][1]);
 	glVertex2f(dx, y1);
@@ -363,12 +381,12 @@ static void blf_texture5_draw(const float shadow_col[4], float uv[2][2], float x
 	for (dx = -2; dx < 3; dx++) {
 		for (dy = -2; dy < 3; dy++, fp++) {
 			color[3] = *(fp) * shadow_col[3];
-			glColor4fv(color);
+			blf_color4fv(color);
 			blf_texture_draw(uv, x1 + dx, y1 + dy, x2 + dx, y2 + dy);
 		}
 	}
 	
-	glColor4fv(color);
+	blf_color4fv(color);
 }
 
 static void blf_texture3_draw(const float shadow_col[4], float uv[2][2], float x1, float y1, float x2, float y2)
@@ -388,12 +406,12 @@ static void blf_texture3_draw(const float shadow_col[4], float uv[2][2], float x
 	for (dx = -1; dx < 2; dx++) {
 		for (dy = -1; dy < 2; dy++, fp++) {
 			color[3] = *(fp) * shadow_col[3];
-			glColor4fv(color);
+			blf_color4fv(color);
 			blf_texture_draw(uv, x1 + dx, y1 + dy, x2 + dx, y2 + dy);
 		}
 	}
 	
-	glColor4fv(color);
+	blf_color4fv(color);
 }
 
 static void blf_glyph_calc_rect(rctf *rect, GlyphBLF *g, float x, float y)
@@ -501,12 +519,12 @@ void blf_glyph_render(FontBLF *font, GlyphBLF *g, float x, float y)
 				blf_texture5_draw(font->shadow_col, g->uv, rect_ofs.xmin, rect_ofs.ymin, rect_ofs.xmax, rect_ofs.ymax);
 				break;
 			default:
-				glColor4fv(font->shadow_col);
+				blf_color4fv(font->shadow_col);
 				blf_texture_draw(g->uv, rect_ofs.xmin, rect_ofs.ymin, rect_ofs.xmax, rect_ofs.ymax);
 				break;
 		}
 
-		glColor4fv(font->orig_col);
+		blf_color4fv(font->orig_col);
 	}
 
 	switch (font->blur) {

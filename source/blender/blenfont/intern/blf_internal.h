@@ -37,6 +37,16 @@ struct GlyphBLF;
 struct GlyphCacheBLF;
 struct rctf;
 
+/* BGE-Remix P8 Part B: text through the drawing layer (the game): on, the
+ * colour asked for, and the colour the next glyph is drawn with */
+struct BLFLayerDraw {
+	int on;
+	float color[4];
+	float cur[4];
+};
+extern struct BLFLayerDraw blf_layer;
+void blf_color4fv(const float color[4]);
+
 unsigned int blf_next_p2(unsigned int x);
 unsigned int blf_hash(unsigned int val);
 

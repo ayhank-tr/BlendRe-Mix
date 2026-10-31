@@ -42,6 +42,8 @@
 
 #include "RAS_BucketManager.h"
 
+#include "GPU_layer.h"
+
 #include <algorithm>
 /* sorting */
 
@@ -225,8 +227,18 @@ void RAS_BucketManager::Renderbuckets(const MT_Transform& cameratrans, RAS_IRast
 	/* beginning each frame, clear (texture/material) caching information */
 	rasty->ClearCachingInfo();
 
+	/* BGE-Remix P8 Part B: the GPU time of the main passes (not shadows) */
+	const bool timed = rasty->GetDrawingMode() != RAS_IRasterizer::KX_SHADOW;
+	if (timed)
+		GPU_pass_timer_begin(GPU_PASS_OPAQUE);
 	RenderSolidBuckets(cameratrans, rasty);
+	if (timed) {
+		GPU_pass_timer_end(GPU_PASS_OPAQUE);
+		GPU_pass_timer_begin(GPU_PASS_TRANSPARENT);
+	}
 	RenderAlphaBuckets(cameratrans, rasty);
+	if (timed)
+		GPU_pass_timer_end(GPU_PASS_TRANSPARENT);
 
 	/* If we're drawing shadows and bucket wasn't rendered (outside of the lamp frustum or doesn't cast shadows)
 	 * then the mesh is still modified, so we don't want to set MeshModified to false yet (it will mess up

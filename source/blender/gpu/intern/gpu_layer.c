@@ -1107,6 +1107,10 @@ void GPU_imm_end(void)
 			const GLuint vao = gpu_imm.vaos[slot];
 			glVertexArrayVertexBuffer(vao, 0, buffer, (GLintptr)offset, gpu_imm.format.stride);
 
+			/* BGE-Remix P8 Part B: the program bound before is bound again
+			 * after (the game's drawing reads which one is bound) */
+			GLint prev_program = 0;
+			glGetIntegerv(GL_CURRENT_PROGRAM, &prev_program);
 			GPU_shader_bind(shader);
 			GPU_matrix_uniforms(shader);
 			const GLint color_loc = glGetUniformLocation(program, "bge_color");
@@ -1122,6 +1126,7 @@ void GPU_imm_end(void)
 			if (gpu_imm.shader == GPU_BUILTIN_POINT) {
 				glDisable(GL_PROGRAM_POINT_SIZE);
 			}
+			glUseProgram((GLuint)prev_program);
 		}
 	}
 	if (owned) {
@@ -1137,8 +1142,157 @@ void gpu_layer_init(void)
 	gpu_imm.color[0] = gpu_imm.color[1] = gpu_imm.color[2] = gpu_imm.color[3] = 1.0f;
 }
 
+/* BGE-Remix P8 Part B: GPU time of the game's passes, from timestamps. Each
+ * frame has its own set of queries; a set is read four frames later (when
+ * its results are there), summed per pass and averaged. */
+
+#define PT_FRAMES 4
+#define PT_QUERIES 64  /* begin and end pairs per frame */
+
+static const char *gpu_pt_names[GPU_PASS_COUNT] = {
+	"Shadows", "Opaque", "Transparent", "Sky", "Filters", "Overlays"};
+
+static struct {
+	bool init, broken;
+	GLuint queries[PT_FRAMES][PT_QUERIES * 2];
+	int pass[PT_FRAMES][PT_QUERIES];
+	int used[PT_FRAMES];
+	int open[GPU_PASS_COUNT];   /* the open pair of each pass (-1: none) */
+	int frame;                  /* the set written this frame */
+	int frames_done;
+	float ms[GPU_PASS_COUNT];   /* averaged; -1: unknown */
+} gpu_pt = {false};
+
+static void pt_init(void)
+{
+	if (gpu_pt.init) {
+		return;
+	}
+	gpu_pt.init = true;
+	glGenQueries(PT_FRAMES * PT_QUERIES * 2, &gpu_pt.queries[0][0]);
+	for (int p = 0; p < GPU_PASS_COUNT; p++) {
+		gpu_pt.open[p] = -1;
+		gpu_pt.ms[p] = -1.0f;
+	}
+}
+
+void GPU_pass_timer_begin(GPUPassTimer pass)
+{
+	pt_init();
+	const int f = gpu_pt.frame;
+	if (pass < 0 || pass >= GPU_PASS_COUNT || gpu_pt.open[pass] >= 0 || gpu_pt.used[f] >= PT_QUERIES) {
+		return;
+	}
+	const int i = gpu_pt.used[f]++;
+	gpu_pt.pass[f][i] = pass;
+	gpu_pt.open[pass] = i;
+	glQueryCounter(gpu_pt.queries[f][i * 2], GL_TIMESTAMP);
+}
+
+void GPU_pass_timer_end(GPUPassTimer pass)
+{
+	if (!gpu_pt.init || pass < 0 || pass >= GPU_PASS_COUNT || gpu_pt.open[pass] < 0) {
+		return;
+	}
+	const int i = gpu_pt.open[pass];
+	gpu_pt.open[pass] = -1;
+	glQueryCounter(gpu_pt.queries[gpu_pt.frame][i * 2 + 1], GL_TIMESTAMP);
+}
+
+void GPU_pass_timer_frame(void)
+{
+	if (!gpu_pt.init) {
+		return;
+	}
+	/* a pass left open is closed with the frame */
+	for (int p = 0; p < GPU_PASS_COUNT; p++) {
+		if (gpu_pt.open[p] >= 0) {
+			GPU_pass_timer_end((GPUPassTimer)p);
+		}
+	}
+	gpu_pt.frames_done++;
+	gpu_pt.frame = (gpu_pt.frame + 1) % PT_FRAMES;
+	/* the set about to be written again is the oldest: read it */
+	const int f = gpu_pt.frame;
+	if (gpu_pt.frames_done >= PT_FRAMES) {
+		double sum[GPU_PASS_COUNT] = {0.0};
+		bool seen[GPU_PASS_COUNT] = {false};
+		bool ok = true;
+		for (int i = 0; i < gpu_pt.used[f] && ok; i++) {
+			GLuint avail = 0;
+			glGetQueryObjectuiv(gpu_pt.queries[f][i * 2 + 1], GL_QUERY_RESULT_AVAILABLE, &avail);
+			if (!avail) {
+				ok = false;  /* not there yet: skipped (not waited for) */
+				break;
+			}
+			GLuint64 t0 = 0, t1 = 0;
+			glGetQueryObjectui64v(gpu_pt.queries[f][i * 2], GL_QUERY_RESULT, &t0);
+			glGetQueryObjectui64v(gpu_pt.queries[f][i * 2 + 1], GL_QUERY_RESULT, &t1);
+			const int p = gpu_pt.pass[f][i];
+			sum[p] += (t1 > t0) ? (double)(t1 - t0) * 1e-6 : 0.0;
+			seen[p] = true;
+		}
+		if (ok) {
+			for (int p = 0; p < GPU_PASS_COUNT; p++) {
+				const float v = seen[p] ? (float)sum[p] : 0.0f;
+				gpu_pt.ms[p] = (gpu_pt.ms[p] < 0.0f) ? v : gpu_pt.ms[p] * 0.9f + v * 0.1f;
+			}
+		}
+	}
+	gpu_pt.used[f] = 0;
+}
+
+float GPU_pass_timer_ms(GPUPassTimer pass)
+{
+	if (pass < 0 || pass >= GPU_PASS_COUNT || !gpu_pt.init) {
+		return -1.0f;
+	}
+	return gpu_pt.ms[pass];
+}
+
+const char *GPU_pass_timer_name(GPUPassTimer pass)
+{
+	return (pass >= 0 && pass < GPU_PASS_COUNT) ? gpu_pt_names[pass] : "";
+}
+
+/* BGE-Remix P8 Part B: one triangle over the viewport (2D filters, motion
+ * blur, stereo interlace); attribute 0 holds its corners, so a
+ * compatibility context draws it too */
+static struct {
+	GLuint vao, vbo;
+} gpu_fs = {0, 0};
+
+void GPU_draw_fullscreen_triangle(void)
+{
+	if (!gpu_fs.vao) {
+		const float corners[6] = {-1.0f, -1.0f, 3.0f, -1.0f, -1.0f, 3.0f};
+		glCreateBuffers(1, &gpu_fs.vbo);
+		glNamedBufferStorage(gpu_fs.vbo, sizeof(corners), corners, 0);
+		glCreateVertexArrays(1, &gpu_fs.vao);
+		glVertexArrayVertexBuffer(gpu_fs.vao, 0, gpu_fs.vbo, 0, 2 * sizeof(float));
+		glVertexArrayAttribFormat(gpu_fs.vao, 0, 2, GL_FLOAT, GL_FALSE, 0);
+		glVertexArrayAttribBinding(gpu_fs.vao, 0, 0);
+		glEnableVertexArrayAttrib(gpu_fs.vao, 0);
+		GPU_debug_label(GL_VERTEX_ARRAY, gpu_fs.vao, "BGE-Remix full-screen triangle");
+	}
+	GLint prev = 0;
+	glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prev);
+	glBindVertexArray(gpu_fs.vao);
+	glDrawArrays(GL_TRIANGLES, 0, 3);
+	glBindVertexArray((GLuint)prev);
+}
+
 void gpu_layer_exit(void)
 {
+	if (gpu_pt.init) {
+		glDeleteQueries(PT_FRAMES * PT_QUERIES * 2, &gpu_pt.queries[0][0]);
+		memset(&gpu_pt, 0, sizeof(gpu_pt));
+	}
+	if (gpu_fs.vao) {
+		glDeleteVertexArrays(1, &gpu_fs.vao);
+		glDeleteBuffers(1, &gpu_fs.vbo);
+		gpu_fs.vao = gpu_fs.vbo = 0;
+	}
 	for (int i = 0; i < IMM_VAOS; i++) {
 		if (gpu_imm.vaos[i]) {
 			glDeleteVertexArrays(1, &gpu_imm.vaos[i]);

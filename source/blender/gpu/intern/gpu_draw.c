@@ -79,6 +79,7 @@
 #include "GPU_basic_shader.h"
 #include "GPU_buffers.h"
 #include "GPU_draw.h"
+#include "GPU_layer.h"
 #include "GPU_extensions.h"
 #include "GPU_material.h"
 #include "GPU_shader.h"
@@ -219,6 +220,104 @@ void GPU_render_text(
 
 		BKE_image_release_ibuf(ima, first_ibuf, NULL);
 	}
+}
+
+/* BGE-Remix P8 Part B: Face Texture text through the drawing layer (its
+ * matrices, the image shader): each character a quad textured from the
+ * bitmap font image (bound to unit 0 here), in the vertex colours, the
+ * object colour (TF_OBCOL, "obcol") or white */
+void GPU_render_text_layer(
+        MTexPoly *mtexpoly, int mode,
+        const char *textstr, int textlen, unsigned int *col,
+        const float *v_quad[4], const float *uv_quad[4], const float obcol[4])
+{
+	if (!((mode & GEMAT_TEXT) && (textlen > 0) && mtexpoly->tpage))
+		return;
+
+	const float *v1 = v_quad[0];
+	const float *v2 = v_quad[1];
+	const float *v3 = v_quad[2];
+	const float *v4 = v_quad[3];
+	Image *ima = (Image *)mtexpoly->tpage;
+	const size_t textlen_st = textlen;
+	float centerx, centery, sizex, sizey, transx, transy, movex, movey, advance;
+	float line_start = 0.0f, line_height;
+	float white[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+	const float *flat = white;
+
+	if (v4)
+		line_height = max_ffff(v1[1], v2[1], v3[1], v4[2]) - min_ffff(v1[1], v2[1], v3[1], v4[2]);
+	else
+		line_height = max_fff(v1[1], v2[1], v3[1]) - min_fff(v1[1], v2[1], v3[1]);
+	line_height *= 1.2f;
+
+	if (mtexpoly->mode & TF_OBCOL) {
+		col = NULL;
+		if (obcol)
+			flat = obcol;
+	}
+
+	glActiveTexture(GL_TEXTURE0);
+	const int bind = GPU_verify_image(ima, NULL, GL_TEXTURE_2D, 0, false, false, false);
+	if (!bind)
+		return;
+	glBindTexture(GL_TEXTURE_2D, (GLuint)bind);
+
+	GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
+	GPU_matrix_push();
+
+	ImBuf *first_ibuf = BKE_image_get_first_ibuf(ima);
+	matrixGlyph(first_ibuf, ' ', &centerx, &centery,
+	            &sizex, &sizey, &transx, &transy, &movex, &movey, &advance);
+	float advance_tab = advance * 4;
+
+	for (size_t index = 0; index < textlen_st; ) {
+		unsigned int character;
+		float uv[4][2];
+
+		character = BLI_str_utf8_as_unicode_and_size_safe(textstr + index, &index);
+		if (character == '\n') {
+			GPU_matrix_translate(line_start, -line_height, 0.0f);
+			line_start = 0.0f;
+			continue;
+		}
+		else if (character == '\t') {
+			GPU_matrix_translate(advance_tab, 0.0f, 0.0f);
+			line_start -= advance_tab;
+			continue;
+		}
+		else if (character > USHRT_MAX) {
+			character = '?';
+		}
+
+		matrixGlyph(first_ibuf, character, &centerx, &centery,
+		            &sizex, &sizey, &transx, &transy, &movex, &movey, &advance);
+
+		const int nv = v4 ? 4 : 3;
+		GPU_imm_begin(GL_POLYGON, GPU_BUILTIN_IMAGE);
+		for (int k = 0; k < nv; k++) {
+			const float *v = v_quad[k];
+			uv[k][0] = (uv_quad[k][0] - centerx) * sizex + transx;
+			uv[k][1] = (uv_quad[k][1] - centery) * sizey + transy;
+			if (col) {
+				/* mcol order is swapped */
+				const unsigned char *cp = (const unsigned char *)&col[k];
+				GPU_imm_color4ub(cp[3], cp[2], cp[1], 255);
+			}
+			else {
+				GPU_imm_color4f(flat[0], flat[1], flat[2], flat[3]);
+			}
+			GPU_imm_texco2f(uv[k][0], uv[k][1]);
+			GPU_imm_vertex3f(sizex * v[0] + movex, sizey * v[1] + movey, v[2]);
+		}
+		GPU_imm_end();
+
+		GPU_matrix_translate(advance, 0.0f, 0.0f);
+		line_start -= advance;
+	}
+	GPU_matrix_pop();
+
+	BKE_image_release_ibuf(ima, first_ibuf, NULL);
 }
 
 /* Checking powers of two for images since OpenGL ES requires it */

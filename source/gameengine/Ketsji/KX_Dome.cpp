@@ -29,6 +29,7 @@
  */
 
 #include "KX_Dome.h"
+#include "GPU_layer.h"
 
 #ifdef WITH_PYTHON
 #include <structmember.h>
@@ -44,6 +45,34 @@
 #include "glew-mx.h"
 
 // constructor
+
+/* BGE-Remix P8 Part B: glOrtho and gluLookAt on the layer's matrix stack
+ * (an ortho box with no depth, as the warp mesh passes, left the matrix as it
+ * was in OpenGL: an error) */
+static void dome_ortho(double left, double right, double bottom, double top, double znear, double zfar)
+{
+	if (left == right || bottom == top || znear == zfar)
+		return;
+	GPU_matrix_ortho((float)left, (float)right, (float)bottom, (float)top, (float)znear, (float)zfar);
+}
+
+static void dome_lookat(float ex, float ey, float ez, float cx, float cy, float cz, float ux, float uy, float uz)
+{
+	MT_Vector3 f(cx - ex, cy - ey, cz - ez);
+	f.normalize();
+	MT_Vector3 up(ux, uy, uz);
+	MT_Vector3 side = f.cross(up);
+	side.normalize();
+	MT_Vector3 u = side.cross(f);
+	float m[4][4] = {{0.0f}};
+	m[0][0] = side[0]; m[1][0] = side[1]; m[2][0] = side[2];
+	m[0][1] = u[0];    m[1][1] = u[1];    m[2][1] = u[2];
+	m[0][2] = -f[0];   m[1][2] = -f[1];   m[2][2] = -f[2];
+	m[3][3] = 1.0f;
+	GPU_matrix_mult(m);
+	GPU_matrix_translate(-ex, -ey, -ez);
+}
+
 KX_Dome::KX_Dome (
         RAS_ICanvas* canvas,
         /// rasterizer
@@ -257,6 +286,11 @@ void KX_Dome::CalculateImageSize(void)
 
 bool KX_Dome::CreateDL()
 {
+	/* BGE-Remix P8 Part B: the dome draws through the layer (its matrices,
+	 * the image shader), which display lists cannot record */
+	if (true)
+		return false;
+
 	dlistId = glGenLists((GLsizei) m_numimages);
 	if (dlistId != 0) {
 		if (m_mode == DOME_FISHEYE || m_mode == DOME_TRUNCATED_FRONT || m_mode == DOME_TRUNCATED_REAR) {
@@ -374,14 +408,14 @@ bool KX_Dome::CreateFBO(void)
 void KX_Dome::GLDrawTriangles(vector <DomeFace>& face, int nfaces)
 {
 	int i,j;
-	glBegin(GL_TRIANGLES);
+	GPU_imm_begin(GL_TRIANGLES, GPU_BUILTIN_IMAGE);
 		for (i=0;i<nfaces;i++) {
 			for (j=0;j<3;j++) {
-				glTexCoord2f(face[i].u[j],face[i].v[j]);
-				glVertex3f((GLfloat)face[i].verts[j][0],(GLfloat)face[i].verts[j][1],(GLfloat)face[i].verts[j][2]);
+				GPU_imm_texco2f(face[i].u[j],face[i].v[j]);
+				GPU_imm_vertex3f((GLfloat)face[i].verts[j][0],(GLfloat)face[i].verts[j][1],(GLfloat)face[i].verts[j][2]);
 			}
 		}
-	glEnd();
+	GPU_imm_end();
 }
 
 void KX_Dome::GLDrawWarpQuads(void)
@@ -392,33 +426,33 @@ void KX_Dome::GLDrawWarpQuads(void)
 	float uv_height = (float)(warp.bufferheight) / warp.imagesize;
 
 	if (warp.mode ==2 ) {
-		glBegin(GL_QUADS);
+		GPU_imm_begin(GL_QUADS, GPU_BUILTIN_IMAGE);
 		for (i=0;i<warp.n_height-1;i++) {
 			for (j=0;j<warp.n_width-1;j++) {
 				if (warp.nodes[i][j].i < 0 || warp.nodes[i+1][j].i < 0 || warp.nodes[i+1][j+1].i < 0 || warp.nodes[i][j+1].i < 0)
 					continue;
 
-				glColor3f(warp.nodes[i][j+1].i, warp.nodes[i][j+1].i, warp.nodes[i][j+1].i);
-				glTexCoord2f((warp.nodes[i][j+1].u * uv_width), (warp.nodes[i][j+1].v * uv_height));
-				glVertex3f(warp.nodes[i][j+1].x, warp.nodes[i][j+1].y,0.0f);
+				GPU_imm_color4f(warp.nodes[i][j+1].i, warp.nodes[i][j+1].i, warp.nodes[i][j+1].i, 1.0f);
+				GPU_imm_texco2f((warp.nodes[i][j+1].u * uv_width), (warp.nodes[i][j+1].v * uv_height));
+				GPU_imm_vertex3f(warp.nodes[i][j+1].x, warp.nodes[i][j+1].y,0.0f);
 
-				glColor3f(warp.nodes[i+1][j+1].i, warp.nodes[i+1][j+1].i, warp.nodes[i+1][j+1].i);
-				glTexCoord2f((warp.nodes[i+1][j+1].u * uv_width), (warp.nodes[i+1][j+1].v * uv_height));
-				glVertex3f(warp.nodes[i+1][j+1].x, warp.nodes[i+1][j+1].y,0.0f);
+				GPU_imm_color4f(warp.nodes[i+1][j+1].i, warp.nodes[i+1][j+1].i, warp.nodes[i+1][j+1].i, 1.0f);
+				GPU_imm_texco2f((warp.nodes[i+1][j+1].u * uv_width), (warp.nodes[i+1][j+1].v * uv_height));
+				GPU_imm_vertex3f(warp.nodes[i+1][j+1].x, warp.nodes[i+1][j+1].y,0.0f);
 
-				glColor3f(warp.nodes[i+1][j].i, warp.nodes[i+1][j].i, warp.nodes[i+1][j].i);
-				glTexCoord2f((warp.nodes[i+1][j].u * uv_width), (warp.nodes[i+1][j].v * uv_height));
-				glVertex3f(warp.nodes[i+1][j].x, warp.nodes[i+1][j].y,0.0f);
+				GPU_imm_color4f(warp.nodes[i+1][j].i, warp.nodes[i+1][j].i, warp.nodes[i+1][j].i, 1.0f);
+				GPU_imm_texco2f((warp.nodes[i+1][j].u * uv_width), (warp.nodes[i+1][j].v * uv_height));
+				GPU_imm_vertex3f(warp.nodes[i+1][j].x, warp.nodes[i+1][j].y,0.0f);
 
-				glColor3f(warp.nodes[i][j].i, warp.nodes[i][j].i, warp.nodes[i][j].i);
-				glTexCoord2f((warp.nodes[i][j].u * uv_width), (warp.nodes[i][j].v * uv_height));
-				glVertex3f(warp.nodes[i][j].x, warp.nodes[i][j].y,0.0f);
+				GPU_imm_color4f(warp.nodes[i][j].i, warp.nodes[i][j].i, warp.nodes[i][j].i, 1.0f);
+				GPU_imm_texco2f((warp.nodes[i][j].u * uv_width), (warp.nodes[i][j].v * uv_height));
+				GPU_imm_vertex3f(warp.nodes[i][j].x, warp.nodes[i][j].y,0.0f);
 			}
 		}
-		glEnd();
+		GPU_imm_end();
 	}
 	else if (warp.mode == 1) {
-		glBegin(GL_QUADS);
+		GPU_imm_begin(GL_QUADS, GPU_BUILTIN_IMAGE);
 		for (i=0;i<warp.n_height-1;i++) {
 			for (j=0;j<warp.n_width-1;j++) {
 				i2 = (i+1) % warp.n_width; // Wrap around, i = warp.n_width = 0
@@ -426,25 +460,25 @@ void KX_Dome::GLDrawWarpQuads(void)
 				if (warp.nodes[i][j].i < 0 || warp.nodes[i2][j].i < 0 || warp.nodes[i2][j+1].i < 0 || warp.nodes[i][j+1].i < 0)
 					continue;
 
-				glColor3f(warp.nodes[i][j].i,warp.nodes[i][j].i,warp.nodes[i][j].i);
-				glTexCoord2f((warp.nodes[i][j].u * uv_width), (warp.nodes[i][j].v * uv_height));
-				glVertex3f(warp.nodes[i][j].x,warp.nodes[i][j].y,0.0f);
+				GPU_imm_color4f(warp.nodes[i][j].i,warp.nodes[i][j].i,warp.nodes[i][j].i, 1.0f);
+				GPU_imm_texco2f((warp.nodes[i][j].u * uv_width), (warp.nodes[i][j].v * uv_height));
+				GPU_imm_vertex3f(warp.nodes[i][j].x,warp.nodes[i][j].y,0.0f);
 
-				glColor3f(warp.nodes[i2][j].i,warp.nodes[i2][j].i,warp.nodes[i2][j].i);
-				glTexCoord2f((warp.nodes[i2][j].u * uv_width), (warp.nodes[i2][j].v * uv_height));
-				glVertex3f(warp.nodes[i2][j].x,warp.nodes[i2][j].y,0.0f);
+				GPU_imm_color4f(warp.nodes[i2][j].i,warp.nodes[i2][j].i,warp.nodes[i2][j].i, 1.0f);
+				GPU_imm_texco2f((warp.nodes[i2][j].u * uv_width), (warp.nodes[i2][j].v * uv_height));
+				GPU_imm_vertex3f(warp.nodes[i2][j].x,warp.nodes[i2][j].y,0.0f);
 
-				glColor3f(warp.nodes[i2][j+1].i,warp.nodes[i2][j+1].i,warp.nodes[i2][j+1].i);
-				glTexCoord2f((warp.nodes[i2][j+1].u * uv_width), (warp.nodes[i2][j+1].v * uv_height));
-				glVertex3f(warp.nodes[i2][j+1].x,warp.nodes[i2][j+1].y,0.0f);
+				GPU_imm_color4f(warp.nodes[i2][j+1].i,warp.nodes[i2][j+1].i,warp.nodes[i2][j+1].i, 1.0f);
+				GPU_imm_texco2f((warp.nodes[i2][j+1].u * uv_width), (warp.nodes[i2][j+1].v * uv_height));
+				GPU_imm_vertex3f(warp.nodes[i2][j+1].x,warp.nodes[i2][j+1].y,0.0f);
 
-				glColor3f(warp.nodes[i2][j+1].i,warp.nodes[i2][j+1].i,warp.nodes[i2][j+1].i);
-				glTexCoord2f((warp.nodes[i2][j+1].u * uv_width), (warp.nodes[i2][j+1].v * uv_height));
-				glVertex3f(warp.nodes[i2][j+1].x,warp.nodes[i2][j+1].y,0.0f);
+				GPU_imm_color4f(warp.nodes[i2][j+1].i,warp.nodes[i2][j+1].i,warp.nodes[i2][j+1].i, 1.0f);
+				GPU_imm_texco2f((warp.nodes[i2][j+1].u * uv_width), (warp.nodes[i2][j+1].v * uv_height));
+				GPU_imm_vertex3f(warp.nodes[i2][j+1].x,warp.nodes[i2][j+1].y,0.0f);
 
 			}
 		}
-		glEnd();
+		GPU_imm_end();
 	}
 	else {
 		printf("Dome Error: Warp Mode %d unsupported. Try 1 for Polar Mesh or 2 for Fisheye.\n", warp.mode);
@@ -1445,8 +1479,8 @@ void KX_Dome::CalculateFrustum(KX_Camera *cam)
 	right = aspect * top
 
 	// the equivalent GLU call is:
-	glMatrixMode(GL_PROJECTION);
-	glLoadIdentity();
+	GPU_matrix_mode(GPU_MATRIX_PROJECTION);
+	GPU_matrix_identity();
 	gluPerspective(90.0f,1.0f,cam->GetCameraNear(),cam->GetCameraFar());
 #endif
 
@@ -1610,6 +1644,9 @@ void KX_Dome::RotateCamera(KX_Camera* cam, int i)
 
 void KX_Dome::Draw(void)
 {
+	/* BGE-Remix P8 Part B: the faces' textures are bound to unit 0, which
+	 * the image shader reads */
+	glActiveTexture(GL_TEXTURE0);
 
 	if (fboSupported) {
 		glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, warp.fboId);
@@ -1655,8 +1692,8 @@ void KX_Dome::Draw(void)
 void KX_Dome::DrawEnvMap(void)
 {
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-	glMatrixMode(GL_PROJECTION);
-	glLoadIdentity();
+	GPU_matrix_mode(GPU_MATRIX_PROJECTION);
+	GPU_matrix_identity();
 
 	// Making the viewport always square 
 
@@ -1666,7 +1703,7 @@ void KX_Dome::DrawEnvMap(void)
 	float ortho_width, ortho_height;
 
 	if (warp.usemesh)
-		glOrtho((-1.0), 1.0, (-0.66), 0.66, 0.0, 0.0); //stretch the image to reduce resolution lost
+		dome_ortho((-1.0), 1.0, (-0.66), 0.66, 0.0, 0.0); //stretch the image to reduce resolution lost
 
 	else {
 		if (can_width/3 <= can_height/2) {
@@ -1678,14 +1715,12 @@ void KX_Dome::DrawEnvMap(void)
 			ortho_width = (float)can_width/can_height * ortho_height;
 		}
 		
-		glOrtho((-ortho_width), ortho_width, (-ortho_height), ortho_height, -20.0f, 10.0f);
+		dome_ortho((-ortho_width), ortho_width, (-ortho_height), ortho_height, -20.0f, 10.0f);
 	}
 
-	glMatrixMode(GL_TEXTURE);
-	glLoadIdentity();
-	glMatrixMode(GL_MODELVIEW);
-	glLoadIdentity();
-	gluLookAt(0.0f,0.0f,1.0f, 0.0f,0.0f,0.0f, 0.0f,1.0f,0.0f);
+		GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
+	GPU_matrix_identity();
+	dome_lookat(0.0f,0.0f,1.0f, 0.0f,0.0f,0.0f, 0.0f,1.0f,0.0f);
 
 	glPolygonMode(GL_FRONT, GL_FILL);
 	glShadeModel(GL_SMOOTH);
@@ -1693,88 +1728,88 @@ void KX_Dome::DrawEnvMap(void)
 	glDisable(GL_DEPTH_TEST);
 
 	glEnable(GL_TEXTURE_2D);
-	glColor3f(1.0f,1.0f,1.0f);
+	GPU_imm_color4f(1.0f,1.0f,1.0f, 1.0f);
 
 	float uv_ratio = (float)(m_buffersize-1) / m_imagesize;
 	double onebythree = 1.0f / 3;
 
 	// domefacesId[0] =>  (top)
 	glBindTexture(GL_TEXTURE_2D, domefacesId[0]);
-	glBegin(GL_QUADS);
-		glTexCoord2f(uv_ratio,uv_ratio);
-		glVertex3f( onebythree, 0.0f, 3.0f);
-		glTexCoord2f(0.0f,uv_ratio);
-		glVertex3f(-onebythree, 0.0f, 3.0f);
-		glTexCoord2f(0.0f,0.0f);
-		glVertex3f(-onebythree,-2 * onebythree, 3.0f);
-		glTexCoord2f(uv_ratio,0.0f);
-		glVertex3f(onebythree,-2 * onebythree, 3.0f);
-	glEnd();
+	GPU_imm_begin(GL_QUADS, GPU_BUILTIN_IMAGE);
+		GPU_imm_texco2f(uv_ratio,uv_ratio);
+		GPU_imm_vertex3f( onebythree, 0.0f, 3.0f);
+		GPU_imm_texco2f(0.0f,uv_ratio);
+		GPU_imm_vertex3f(-onebythree, 0.0f, 3.0f);
+		GPU_imm_texco2f(0.0f,0.0f);
+		GPU_imm_vertex3f(-onebythree,-2 * onebythree, 3.0f);
+		GPU_imm_texco2f(uv_ratio,0.0f);
+		GPU_imm_vertex3f(onebythree,-2 * onebythree, 3.0f);
+	GPU_imm_end();
 
 	// domefacesId[1] =>  (bottom)
 	glBindTexture(GL_TEXTURE_2D, domefacesId[1]);
-	glBegin(GL_QUADS);
-		glTexCoord2f(uv_ratio,uv_ratio);
-		glVertex3f(-onebythree, 0.0f, 3.0f);
-		glTexCoord2f(0.0f,uv_ratio);
-		glVertex3f(-1.0f, 0.0f, 3.0f);
-		glTexCoord2f(0.0f,0.0f);
-		glVertex3f(-1.0f,-2 * onebythree, 3.0f);
-		glTexCoord2f(uv_ratio,0.0f);
-		glVertex3f(-onebythree,-2 * onebythree, 3.0f);
-	glEnd();
+	GPU_imm_begin(GL_QUADS, GPU_BUILTIN_IMAGE);
+		GPU_imm_texco2f(uv_ratio,uv_ratio);
+		GPU_imm_vertex3f(-onebythree, 0.0f, 3.0f);
+		GPU_imm_texco2f(0.0f,uv_ratio);
+		GPU_imm_vertex3f(-1.0f, 0.0f, 3.0f);
+		GPU_imm_texco2f(0.0f,0.0f);
+		GPU_imm_vertex3f(-1.0f,-2 * onebythree, 3.0f);
+		GPU_imm_texco2f(uv_ratio,0.0f);
+		GPU_imm_vertex3f(-onebythree,-2 * onebythree, 3.0f);
+	GPU_imm_end();
 
 	// domefacesId[2] => -90deg (left)
 	glBindTexture(GL_TEXTURE_2D, domefacesId[2]);
-	glBegin(GL_QUADS);
-		glTexCoord2f(uv_ratio,uv_ratio);
-		glVertex3f(-onebythree, 2 * onebythree, 3.0f);
-		glTexCoord2f(0.0f,uv_ratio);
-		glVertex3f(-1.0f, 2 * onebythree, 3.0f);
-		glTexCoord2f(0.0f,0.0f);
-		glVertex3f(-1.0f, 0.0f, 3.0f);
-		glTexCoord2f(uv_ratio,0.0f);
-		glVertex3f(-onebythree, 0.0f, 3.0f);
-	glEnd();
+	GPU_imm_begin(GL_QUADS, GPU_BUILTIN_IMAGE);
+		GPU_imm_texco2f(uv_ratio,uv_ratio);
+		GPU_imm_vertex3f(-onebythree, 2 * onebythree, 3.0f);
+		GPU_imm_texco2f(0.0f,uv_ratio);
+		GPU_imm_vertex3f(-1.0f, 2 * onebythree, 3.0f);
+		GPU_imm_texco2f(0.0f,0.0f);
+		GPU_imm_vertex3f(-1.0f, 0.0f, 3.0f);
+		GPU_imm_texco2f(uv_ratio,0.0f);
+		GPU_imm_vertex3f(-onebythree, 0.0f, 3.0f);
+	GPU_imm_end();
 
 	// domefacesId[3] => 90deg (right)
 	glBindTexture(GL_TEXTURE_2D, domefacesId[3]);
-	glBegin(GL_QUADS);
-		glTexCoord2f(uv_ratio,uv_ratio);
-		glVertex3f( 1.0f, 2 * onebythree, 3.0f);
-		glTexCoord2f(0.0f,uv_ratio);
-		glVertex3f( onebythree, 2 * onebythree, 3.0f);
-		glTexCoord2f(0.0f,0.0f);
-		glVertex3f( onebythree, 0.0f, 3.0f);
-		glTexCoord2f(uv_ratio,0.0f);
-		glVertex3f(1.0f, 0.0f, 3.0f);
-	glEnd();
+	GPU_imm_begin(GL_QUADS, GPU_BUILTIN_IMAGE);
+		GPU_imm_texco2f(uv_ratio,uv_ratio);
+		GPU_imm_vertex3f( 1.0f, 2 * onebythree, 3.0f);
+		GPU_imm_texco2f(0.0f,uv_ratio);
+		GPU_imm_vertex3f( onebythree, 2 * onebythree, 3.0f);
+		GPU_imm_texco2f(0.0f,0.0f);
+		GPU_imm_vertex3f( onebythree, 0.0f, 3.0f);
+		GPU_imm_texco2f(uv_ratio,0.0f);
+		GPU_imm_vertex3f(1.0f, 0.0f, 3.0f);
+	GPU_imm_end();
 
 	// domefacesId[4] => 0deg (front)
 	glBindTexture(GL_TEXTURE_2D, domefacesId[4]);
-	glBegin(GL_QUADS);
-		glTexCoord2f(uv_ratio,uv_ratio);
-		glVertex3f( 1.0f, 0.0f, 3.0f);
-		glTexCoord2f(0.0f,uv_ratio);
-		glVertex3f( onebythree, 0.0f, 3.0f);
-		glTexCoord2f(0.0f,0.0f);
-		glVertex3f( onebythree,-2 * onebythree, 3.0f);
-		glTexCoord2f(uv_ratio,0.0f);
-		glVertex3f(1.0f, -2 * onebythree, 3.0f);
-	glEnd();
+	GPU_imm_begin(GL_QUADS, GPU_BUILTIN_IMAGE);
+		GPU_imm_texco2f(uv_ratio,uv_ratio);
+		GPU_imm_vertex3f( 1.0f, 0.0f, 3.0f);
+		GPU_imm_texco2f(0.0f,uv_ratio);
+		GPU_imm_vertex3f( onebythree, 0.0f, 3.0f);
+		GPU_imm_texco2f(0.0f,0.0f);
+		GPU_imm_vertex3f( onebythree,-2 * onebythree, 3.0f);
+		GPU_imm_texco2f(uv_ratio,0.0f);
+		GPU_imm_vertex3f(1.0f, -2 * onebythree, 3.0f);
+	GPU_imm_end();
 
 	// domefacesId[5] => 180deg (back)
 	glBindTexture(GL_TEXTURE_2D, domefacesId[5]);
-	glBegin(GL_QUADS);
-		glTexCoord2f(uv_ratio,uv_ratio);
-		glVertex3f( onebythree, 2 * onebythree, 3.0f);
-		glTexCoord2f(0.0f,uv_ratio);
-		glVertex3f(-onebythree, 2 * onebythree, 3.0f);
-		glTexCoord2f(0.0f,0.0f);
-		glVertex3f(-onebythree, 0.0f, 3.0f);
-		glTexCoord2f(uv_ratio,0.0f);
-		glVertex3f(onebythree, 0.0f, 3.0f);
-	glEnd();
+	GPU_imm_begin(GL_QUADS, GPU_BUILTIN_IMAGE);
+		GPU_imm_texco2f(uv_ratio,uv_ratio);
+		GPU_imm_vertex3f( onebythree, 2 * onebythree, 3.0f);
+		GPU_imm_texco2f(0.0f,uv_ratio);
+		GPU_imm_vertex3f(-onebythree, 2 * onebythree, 3.0f);
+		GPU_imm_texco2f(0.0f,0.0f);
+		GPU_imm_vertex3f(-onebythree, 0.0f, 3.0f);
+		GPU_imm_texco2f(uv_ratio,0.0f);
+		GPU_imm_vertex3f(onebythree, 0.0f, 3.0f);
+	GPU_imm_end();
 
 	glDisable(GL_TEXTURE_2D);
 	glEnable(GL_DEPTH_TEST);
@@ -1785,8 +1820,8 @@ void KX_Dome::DrawDomeFisheye(void)
 	int i;
 
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-	glMatrixMode(GL_PROJECTION);
-	glLoadIdentity();
+	GPU_matrix_mode(GPU_MATRIX_PROJECTION);
+	GPU_matrix_identity();
 
 	// Making the viewport always square 
 
@@ -1797,7 +1832,7 @@ void KX_Dome::DrawDomeFisheye(void)
 
 	if (m_mode == DOME_FISHEYE) {
 		if (warp.usemesh)
-			glOrtho((-1.0f), 1.0f, (-1.0f), 1.0f, -20.0f, 10.0f); //stretch the image to reduce resolution lost
+			dome_ortho((-1.0f), 1.0f, (-1.0f), 1.0f, -20.0f, 10.0f); //stretch the image to reduce resolution lost
 
 		else {
 			if (can_width < can_height) {
@@ -1809,7 +1844,7 @@ void KX_Dome::DrawDomeFisheye(void)
 				ortho_height = 1.0f;
 			}
 			
-			glOrtho((-ortho_width), ortho_width, (-ortho_height), ortho_height, -20.0f, 10.0f);
+			dome_ortho((-ortho_width), ortho_width, (-ortho_height), ortho_height, -20.0f, 10.0f);
 		}
 	}
 	else if (m_mode == DOME_TRUNCATED_FRONT)
@@ -1817,20 +1852,18 @@ void KX_Dome::DrawDomeFisheye(void)
 		ortho_width = 1.0f;
 		ortho_height = 2.0f * ((float)can_height / can_width) - 1.0f;
 
-		glOrtho((-ortho_width), ortho_width, (-ortho_height), ortho_width, -20.0f, 10.0f);
+		dome_ortho((-ortho_width), ortho_width, (-ortho_height), ortho_width, -20.0f, 10.0f);
 	}
 	else { //m_mode == DOME_TRUNCATED_REAR
 		ortho_width = 1.0f;
 		ortho_height = 2.0f * ((float)can_height / can_width) - 1.0f;
 
-		glOrtho((-ortho_width), ortho_width, (-ortho_width), ortho_height, -20.0f, 10.0f);
+		dome_ortho((-ortho_width), ortho_width, (-ortho_width), ortho_height, -20.0f, 10.0f);
 	}
 
-	glMatrixMode(GL_TEXTURE);
-	glLoadIdentity();
-	glMatrixMode(GL_MODELVIEW);
-	glLoadIdentity();
-	gluLookAt(0.0f,-1.0f,0.0f, 0.0f,0.0f,0.0f, 0.0f,0.0f,1.0f);
+		GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
+	GPU_matrix_identity();
+	dome_lookat(0.0f,-1.0f,0.0f, 0.0f,0.0f,0.0f, 0.0f,0.0f,1.0f);
 
 	if (m_drawingmode == RAS_IRasterizer::KX_WIREFRAME)
 		glPolygonMode(GL_FRONT, GL_LINE);
@@ -1842,7 +1875,7 @@ void KX_Dome::DrawDomeFisheye(void)
 	glDisable(GL_DEPTH_TEST);
 
 	glEnable(GL_TEXTURE_2D);
-	glColor3f(1.0f,1.0f,1.0f);
+	GPU_imm_color4f(1.0f,1.0f,1.0f, 1.0f);
 
 	if (dlistSupported) {
 		for (i=0;i<m_numfaces;i++) {
@@ -1881,8 +1914,8 @@ void KX_Dome::DrawPanorama(void)
 {
 	int i;
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-	glMatrixMode(GL_PROJECTION);
-	glLoadIdentity();
+	GPU_matrix_mode(GPU_MATRIX_PROJECTION);
+	GPU_matrix_identity();
 
 	// Making the viewport always square 
 
@@ -1893,7 +1926,7 @@ void KX_Dome::DrawPanorama(void)
 	float ortho_width = 1.0f;
 
 	if (warp.usemesh)
-		glOrtho((-1.0f), 1.0f, (-0.5f), 0.5f, -20.0f, 10.0f); //stretch the image to reduce resolution lost
+		dome_ortho((-1.0f), 1.0f, (-0.5f), 0.5f, -20.0f, 10.0f); //stretch the image to reduce resolution lost
 
 	else {
 		//using all the screen
@@ -1906,14 +1939,12 @@ void KX_Dome::DrawPanorama(void)
 			ortho_height = 0.5f;
 		}
 		
-		glOrtho((-ortho_width), ortho_width, (-ortho_height), ortho_height, -20.0f, 10.0f);
+		dome_ortho((-ortho_width), ortho_width, (-ortho_height), ortho_height, -20.0f, 10.0f);
 	}
 
-	glMatrixMode(GL_TEXTURE);
-	glLoadIdentity();
-	glMatrixMode(GL_MODELVIEW);
-	glLoadIdentity();
-	gluLookAt(0.0f,-1.0f,0.0f, 0.0f,0.0f,0.0f, 0.0f,0.0f,1.0f);
+		GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
+	GPU_matrix_identity();
+	dome_lookat(0.0f,-1.0f,0.0f, 0.0f,0.0f,0.0f, 0.0f,0.0f,1.0f);
 
 	if (m_drawingmode == RAS_IRasterizer::KX_WIREFRAME)
 		glPolygonMode(GL_FRONT, GL_LINE);
@@ -1925,7 +1956,7 @@ void KX_Dome::DrawPanorama(void)
 	glDisable(GL_DEPTH_TEST);
 
 	glEnable(GL_TEXTURE_2D);
-	glColor3f(1.0f,1.0f,1.0f);
+	GPU_imm_color4f(1.0f,1.0f,1.0f, 1.0f);
 
 	if (dlistSupported) {
 		for (i=0;i<m_numfaces;i++) {
@@ -1965,8 +1996,8 @@ void KX_Dome::DrawPanorama(void)
 void KX_Dome::DrawDomeWarped(void)
 {
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-	glMatrixMode(GL_PROJECTION);
-	glLoadIdentity();
+	GPU_matrix_mode(GPU_MATRIX_PROJECTION);
+	GPU_matrix_identity();
 
 	// Making the viewport always square 
 	int can_width = m_viewport.GetRight();
@@ -1974,14 +2005,12 @@ void KX_Dome::DrawDomeWarped(void)
 
 	double screen_ratio = can_width/ (double) can_height;
 
-	glOrtho(-screen_ratio,screen_ratio,-1.0f,1.0f,-20.0f,10.0f);
+	dome_ortho(-screen_ratio,screen_ratio,-1.0f,1.0f,-20.0f,10.0f);
 
 
-	glMatrixMode(GL_TEXTURE);
-	glLoadIdentity();
-	glMatrixMode(GL_MODELVIEW);
-	glLoadIdentity();
-	gluLookAt(0.0f, 0.0f, 1.0f, 0.0f,0.0f,0.0f, 0.0f,1.0f,0.0f);
+		GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
+	GPU_matrix_identity();
+	dome_lookat(0.0f, 0.0f, 1.0f, 0.0f,0.0f,0.0f, 0.0f,1.0f,0.0f);
 
 	if (m_drawingmode == RAS_IRasterizer::KX_WIREFRAME)
 		glPolygonMode(GL_FRONT, GL_LINE);
@@ -1993,7 +2022,7 @@ void KX_Dome::DrawDomeWarped(void)
 	glDisable(GL_DEPTH_TEST);
 
 	glEnable(GL_TEXTURE_2D);
-	glColor3f(1.0f,1.0f,1.0f);
+	GPU_imm_color4f(1.0f,1.0f,1.0f, 1.0f);
 
 	if (dlistSupported) {
 		glBindTexture(GL_TEXTURE_2D, domefacesId[m_numfaces]);

@@ -347,7 +347,9 @@ void KX_KetsjiEngine::RenderDome()
 
 			// shadow buffers
 			if (i == 0) {
+				GPU_pass_timer_begin(GPU_PASS_SHADOWS);
 				RenderShadowBuffers(scene);
+				GPU_pass_timer_end(GPU_PASS_SHADOWS);
 			}
 			// Avoid drawing the scene with the active camera twice when its viewport is enabled
 			if (cam && !cam->GetViewport())
@@ -421,6 +423,7 @@ void KX_KetsjiEngine::RenderDome()
 	// Draw Callback for the last scene
 #ifdef WITH_PYTHON
 	PHY_SetActiveEnvironment(scene->GetPhysicsEnvironment());
+	m_rasterizer->SyncOldMatrices();  /* BGE-Remix P8 Part B: for Python's bgl */
 	scene->RunDrawingCallbacks(scene->GetPostDrawCB());
 #endif
 	EndFrame();
@@ -471,10 +474,8 @@ void KX_KetsjiEngine::StartEngine(bool clearIpo)
 
 void KX_KetsjiEngine::ClearFrame()
 {
-	// clear unless we're drawing overlapping stereo
-	if (m_rasterizer->InterlacedStereo() &&
-		m_rasterizer->GetEye() == RAS_IRasterizer::RAS_STEREO_RIGHTEYE)
-		return;
+	/* BGE-Remix P8 Part B: interlaced stereo's right eye is cleared too (the
+	 * left eye's picture is kept aside, FinishStereo puts its rows back) */
 
 	// clear the viewports with the background color of the first scene
 	bool doclear = false;
@@ -540,6 +541,9 @@ bool KX_KetsjiEngine::BeginFrame()
 
 void KX_KetsjiEngine::EndFrame()
 {
+	/* BGE-Remix P8 Part B: interlaced stereo's left eye, before the blur */
+	if (m_rasterizer->Stereo())
+		m_rasterizer->FinishStereo();
 	m_rasterizer->MotionBlur();
 
 	// Show profiling info
@@ -553,7 +557,9 @@ void KX_KetsjiEngine::EndFrame()
 #endif
 	if (m_show_framerate || m_show_profile || (m_show_debug_properties))
 	{
+		GPU_pass_timer_begin(GPU_PASS_OVERLAYS);
 		RenderDebugProperties();
+		GPU_pass_timer_end(GPU_PASS_OVERLAYS);
 	}
 
 	double tottime = m_logger->GetAverage();
@@ -568,6 +574,17 @@ void KX_KetsjiEngine::EndFrame()
 		PyTuple_SetItem(val, 1, PyFloat_FromDouble(time/tottime * 100.0));
 
 		PyDict_SetItemString(m_pyprofiledict, m_profileLabels[i], val);
+		Py_DECREF(val);
+	}
+	/* BGE-Remix P8 Part B: the GPU time of each pass ("GPU Shadows"...) */
+	for (int i = 0; i < GPU_PASS_COUNT; i++) {
+		const float ms = GPU_pass_timer_ms((GPUPassTimer)i);
+		PyObject *val = PyTuple_New(2);
+		PyTuple_SetItem(val, 0, PyFloat_FromDouble(ms));
+		PyTuple_SetItem(val, 1, PyFloat_FromDouble(ms >= 0.0f ? ms / (tottime * 1000.0) * 100.0 : 0.0));
+		char key[64];
+		snprintf(key, sizeof(key), "GPU %s", GPU_pass_timer_name((GPUPassTimer)i));
+		PyDict_SetItemString(m_pyprofiledict, key, val);
 		Py_DECREF(val);
 	}
 #endif
@@ -595,6 +612,8 @@ void KX_KetsjiEngine::EndFrame()
 
 	/* BGE-Remix P8.2: the streaming buffer's frame */
 	GPU_stream_frame_end();
+	/* BGE-Remix P8 Part B: the GPU pass times */
+	GPU_pass_timer_frame();
 }
 
 //#include "PIL_time.h"
@@ -944,8 +963,11 @@ void KX_KetsjiEngine::Render()
 		//scene->UpdateMeshTransformations();
 
 		// shadow buffers (Remix computes its own shadows)
-		if (scene != m_remixScene)
+		if (scene != m_remixScene) {
+			GPU_pass_timer_begin(GPU_PASS_SHADOWS);
 			RenderShadowBuffers(scene);
+			GPU_pass_timer_end(GPU_PASS_SHADOWS);
+		}
 
 		// Avoid drawing the scene with the active camera twice when its viewport is enabled
 		if (cam && !cam->GetViewport())
@@ -1348,6 +1370,7 @@ void KX_KetsjiEngine::RenderFrame(KX_Scene* scene, KX_Camera* cam)
 	KX_SetActiveScene(scene);
 
 #ifdef WITH_PYTHON
+	m_rasterizer->SyncOldMatrices();  /* BGE-Remix P8 Part B: for Python's bgl */
 	scene->RunDrawingCallbacks(scene->GetPreDrawSetupCB());
 #endif
 
@@ -1485,6 +1508,7 @@ void KX_KetsjiEngine::RenderFrame(KX_Scene* scene, KX_Camera* cam)
 #ifdef WITH_PYTHON
 	PHY_SetActiveEnvironment(scene->GetPhysicsEnvironment());
 	// Run any pre-drawing python callbacks
+	m_rasterizer->SyncOldMatrices();  /* BGE-Remix P8 Part B: for Python's bgl */
 	scene->RunDrawingCallbacks(scene->GetPreDrawCB());
 #endif
 
@@ -1541,6 +1565,7 @@ void KX_KetsjiEngine::RenderSpotHalos(KX_Scene *scene)
 	CListValue *lights = scene->GetLightList();
 	bool started = false;
 	const int segments = 32;
+	GPUStateScope scope;
 
 	for (int i = 0; i < lights->GetCount(); i++) {
 		KX_LightObject *light = (KX_LightObject *)lights->GetValue(i);
@@ -1553,18 +1578,15 @@ void KX_KetsjiEngine::RenderSpotHalos(KX_Scene *scene)
 			continue;
 		}
 		if (!started) {
+			/* BGE-Remix P8 Part B: through the layer (its matrices, the
+			 * smooth shader), the state kept in a scope */
 			started = true;
-			glPushAttrib(GL_ENABLE_BIT | GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_CURRENT_BIT);
-			glUseProgram(0);
-			glDisable(GL_LIGHTING);
-			glDisable(GL_TEXTURE_2D);
+			GPU_state_scope_begin(&scope);
 			glDisable(GL_CULL_FACE);
+			GPU_state_blend(GPU_LAYER_BLEND_NONE);
 			glEnable(GL_BLEND);
 			glBlendFunc(GL_ONE, GL_ONE);
-			glEnable(GL_DEPTH_TEST);
-			glDepthMask(GL_FALSE);
-			glShadeModel(GL_SMOOTH);
-			glMatrixMode(GL_MODELVIEW);
+			GPU_state_depth(true, false);
 		}
 		const MT_Point3 &pos = light->NodeGetWorldPosition();
 		const MT_Matrix3x3 &ori = light->NodeGetWorldOrientation();
@@ -1577,20 +1599,19 @@ void KX_KetsjiEngine::RenderSpotHalos(KX_Scene *scene)
 		const float k = 0.25f * la->haint * data->m_energy;
 		const float col[3] = {data->m_color[0] * k, data->m_color[1] * k, data->m_color[2] * k};
 
-		glBegin(GL_TRIANGLE_FAN);
-		glColor3fv(col);
-		glVertex3d(pos[0], pos[1], pos[2]);
-		glColor3f(0.0f, 0.0f, 0.0f);
+		GPU_imm_begin(GL_TRIANGLE_FAN, GPU_BUILTIN_SMOOTH);
+		GPU_imm_color4f(col[0], col[1], col[2], 1.0f);
+		GPU_imm_vertex3f((float)pos[0], (float)pos[1], (float)pos[2]);
+		GPU_imm_color4f(0.0f, 0.0f, 0.0f, 1.0f);
 		for (int s = 0; s <= segments; s++) {
 			const double a = 6.283185307179586 * s / segments;
 			const MT_Point3 p = pos + dir * length + (x * cos(a) + y * sin(a)) * radius;
-			glVertex3d(p[0], p[1], p[2]);
+			GPU_imm_vertex3f((float)p[0], (float)p[1], (float)p[2]);
 		}
-		glEnd();
+		GPU_imm_end();
 	}
 	if (started) {
-		glDepthMask(GL_TRUE);
-		glPopAttrib();
+		GPU_state_scope_end(&scope);
 	}
 }
 
@@ -1604,7 +1625,9 @@ void KX_KetsjiEngine::PostRenderScene(KX_Scene* scene)
 	// We need to first make sure our viewport is correct (enabling multiple viewports can mess this up)
 	m_canvas->SetViewPort(0, 0, m_canvas->GetWidth(), m_canvas->GetHeight());
 	
+	GPU_pass_timer_begin(GPU_PASS_OVERLAYS);
 	m_rasterizer->FlushDebugShapes(scene);
+	GPU_pass_timer_end(GPU_PASS_OVERLAYS);
 #ifdef WITH_REMIX
 	if (m_remix && scene == m_remixScene && scene->Has2DFilters()) {
 		/* the filters would work on an empty depth buffer */
@@ -1613,15 +1636,20 @@ void KX_KetsjiEngine::PostRenderScene(KX_Scene* scene)
 	else
 #endif
 	{
+		GPU_pass_timer_begin(GPU_PASS_FILTERS);
 		scene->Render2DFilters(m_canvas);
+		GPU_pass_timer_end(GPU_PASS_FILTERS);
 	}
 
 #ifdef WITH_PYTHON
 	PHY_SetActiveEnvironment(scene->GetPhysicsEnvironment());
+	m_rasterizer->SyncOldMatrices();  /* BGE-Remix P8 Part B: for Python's bgl */
 	scene->RunDrawingCallbacks(scene->GetPostDrawCB());
 
 	// Python draw callback can also call debug draw functions, so we have to clear debug shapes.
+	GPU_pass_timer_begin(GPU_PASS_OVERLAYS);
 	m_rasterizer->FlushDebugShapes(scene);
+	GPU_pass_timer_end(GPU_PASS_OVERLAYS);
 #endif
 }
 
@@ -1806,6 +1834,30 @@ void KX_KetsjiEngine::RenderDebugProperties()
 			                            m_canvas->GetHeight());
 
 			m_rasterizer->RenderBox2D(xcoord + (int)(2.2f * profile_indent), ycoord, m_canvas->GetWidth(), m_canvas->GetHeight(), (float)time/tottime);
+			ycoord += const_ysize;
+		}
+		/* BGE-Remix P8 Part B: the GPU time of each pass */
+		for (int j = 0; j < GPU_PASS_COUNT; j++) {
+			const float ms = GPU_pass_timer_ms((GPUPassTimer)j);
+			debugtxt.Format("GPU %s:", GPU_pass_timer_name((GPUPassTimer)j));
+			m_rasterizer->RenderText2D(RAS_IRasterizer::RAS_TEXT_PADDED,
+			                            debugtxt.ReadPtr(),
+			                            xcoord + const_xindent,
+			                            ycoord,
+			                            m_canvas->GetWidth(),
+			                            m_canvas->GetHeight());
+			if (ms >= 0.0f)
+				debugtxt.Format("%5.2fms | %d%%", ms, (int)(ms / (tottime * 1000.f) * 100.f));
+			else
+				debugtxt = "  -";
+			m_rasterizer->RenderText2D(RAS_IRasterizer::RAS_TEXT_PADDED,
+			                            debugtxt.ReadPtr(),
+			                            xcoord + const_xindent + profile_indent, ycoord,
+			                            m_canvas->GetWidth(),
+			                            m_canvas->GetHeight());
+			if (ms >= 0.0f)
+				m_rasterizer->RenderBox2D(xcoord + (int)(2.2f * profile_indent), ycoord, m_canvas->GetWidth(),
+				                          m_canvas->GetHeight(), ms / (tottime * 1000.f));
 			ycoord += const_ysize;
 		}
 	}

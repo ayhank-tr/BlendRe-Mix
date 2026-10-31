@@ -57,6 +57,7 @@
 
 #ifndef BLF_STANDALONE
 #include "GPU_basic_shader.h"
+#include "GPU_layer.h"
 #endif
 
 #include "blf_internal_types.h"
@@ -491,8 +492,68 @@ void BLF_rotation_default(float angle)
 	}
 }
 
+struct BLFLayerDraw blf_layer = {0, {1.0f, 1.0f, 1.0f, 1.0f}, {1.0f, 1.0f, 1.0f, 1.0f}};
+
+void BLF_layer_begin(const float color[4])
+{
+	blf_layer.on = 1;
+	copy_v4_v4(blf_layer.color, color);
+	copy_v4_v4(blf_layer.cur, color);
+}
+
+void BLF_layer_end(void)
+{
+	blf_layer.on = 0;
+}
+
+void blf_color4fv(const float color[4])
+{
+	if (blf_layer.on) {
+		copy_v4_v4(blf_layer.cur, color);
+	}
+	else {
+		glColor4fv(color);
+	}
+}
+
+/* BGE-Remix P8 Part B: the start and end of drawing through the layer */
+static void blf_draw_layer__start(FontBLF *font)
+{
+	GPU_state_blend(GPU_LAYER_BLEND_ALPHA);
+	glActiveTexture(GL_TEXTURE0);
+
+	GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
+	GPU_matrix_push();
+	if (font->flags & BLF_MATRIX)
+		GPU_matrix_mult((const float (*)[4])font->m);
+	GPU_matrix_translate(font->pos[0], font->pos[1], font->pos[2]);
+	if (font->flags & BLF_ASPECT)
+		GPU_matrix_scale(font->aspect[0], font->aspect[1], font->aspect[2]);
+	if (font->flags & BLF_ROTATION)  /* radians -> degrees */
+		GPU_matrix_rotate(font->angle * (float)(180.0 / M_PI), 0.0f, 0.0f, 1.0f);
+
+	copy_v4_v4(font->orig_col, blf_layer.color);
+	copy_v4_v4(blf_layer.cur, blf_layer.color);
+
+	/* always bind the texture for the first glyph */
+	font->tex_bind_state = -1;
+}
+
+static void blf_draw_layer__end(void)
+{
+	GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
+	GPU_matrix_pop();
+	GPU_state_blend(GPU_LAYER_BLEND_NONE);
+}
+
 static void blf_draw_gl__start(FontBLF *font, GLint *mode)
 {
+	if (blf_layer.on) {
+		*mode = GL_MODELVIEW;
+		blf_draw_layer__start(font);
+		return;
+	}
+
 	/*
 	 * The pixmap alignment hack is handle
 	 * in BLF_position (old ui_rasterpos_safe).
@@ -535,6 +596,11 @@ static void blf_draw_gl__start(FontBLF *font, GLint *mode)
 
 static void blf_draw_gl__end(GLint mode)
 {
+	if (blf_layer.on) {
+		blf_draw_layer__end();
+		return;
+	}
+
 	glMatrixMode(GL_TEXTURE);
 	glPopMatrix();
 

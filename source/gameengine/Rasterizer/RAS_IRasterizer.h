@@ -492,6 +492,12 @@ public:
 	virtual void RemoveLight(RAS_ILightObject *lightobject) = 0;
 
 	virtual void MotionBlur() = 0;
+	/* BGE-Remix P8 Part B: the end of a stereo frame (interlaced stereo puts
+	 * the left eye's rows back over the right eye's picture) */
+	virtual void FinishStereo() {}
+	/* BGE-Remix P8 Part B: the old OpenGL matrices set from the layer's, for
+	 * old drawing that reads them (Python's bgl in drawing callbacks) */
+	virtual void SyncOldMatrices() {}
 
 	virtual void SetClientObject(void *obj) = 0;
 

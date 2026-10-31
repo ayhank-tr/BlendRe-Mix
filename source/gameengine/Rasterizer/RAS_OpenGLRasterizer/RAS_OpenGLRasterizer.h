@@ -149,12 +149,21 @@ protected:
 	 * read it as uniforms; glLight, glMaterial and glFog are not set */
 	GPUClassicState m_state;
 
-	/* BGE-Remix P8 Part B: the matrices are the layer's (GPU_matrix_*); the
-	 * old OpenGL matrices follow them for the drawing the next step of
-	 * Part B moves (text, debug lines, 2D filters, dome, bge.texture,
-	 * Python's bgl), and for shaders that are still the old kind */
-	void MirrorModelview();
-	void MirrorProjection();
+	/* BGE-Remix P8 Part B: the matrices are the layer's (GPU_matrix_*) */
+
+	/* BGE-Remix P8 Part B: motion blur as a filter over a history texture
+	 * (the frame and the history, their size, the blending shader) */
+	unsigned int m_mbtex[2];
+	int m_mbsize[2];
+	struct GPUShader *m_mbshader;
+	void FreeMotionBlur();
+
+	/* BGE-Remix P8 Part B: interlaced stereo by a shader: the left eye's
+	 * picture (its texture, size and place) shown on its rows or columns */
+	unsigned int m_stereotex;
+	int m_stereorect[4];
+	bool m_stereoleft;
+	struct GPUShader *m_stereoshader;
 
 public:
 	double GetTime();
@@ -191,6 +200,8 @@ public:
 	virtual RAS_IRasterizer::StereoMode GetStereoMode();
 	virtual bool Stereo();
 	virtual bool InterlacedStereo();
+	virtual void FinishStereo();
+	virtual void SyncOldMatrices();
 	virtual void SetEye(const StereoEye eye);
 	virtual StereoEye GetEye();
 	virtual void SetEyeSeparation(const float eyeseparation);

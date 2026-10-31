@@ -42,6 +42,7 @@
 #include "RAS_Rect.h"
 #include "RAS_2DFilterManager.h"
 #include "GPU_translate.h"
+#include "GPU_layer.h"
 #include <iostream>
 
 #include "GPU_glew.h"
@@ -119,9 +120,10 @@ unsigned int RAS_2DFilterManager::CreateShaderProgram(const char* shadersource)
 	GLuint program = 0;
 	GLint success;
 
-	/* BGE-Remix P8.3: the filter translated to GLSL 4.50; the original is
-	 * built below when the translation does not build */
-	program = GPU_glsl_translate_program(NULL, shadersource, "2D filter");
+	/* BGE-Remix P8.3: the filter translated to GLSL 4.50 (BGE-Remix P8 Part
+	 * B: the core translation, drawn as one full-screen triangle); the
+	 * original is built below when the translation does not build */
+	program = GPU_glsl_translate_program_ex(NULL, shadersource, "2D filter", true);
 	if (program) {
 		return program;
 	}
@@ -483,13 +485,10 @@ void RAS_2DFilterManager::RenderFilters(RAS_ICanvas* canvas)
 	// fix for [#34523] alpha buffer is now available for all OSs
 	glDisable(GL_ALPHA_TEST);
 
-	glPushMatrix();		//GL_MODELVIEW
-	glLoadIdentity();	// GL_MODELVIEW
-	glMatrixMode(GL_TEXTURE);
-	glLoadIdentity();
-	glMatrixMode(GL_PROJECTION);
-	glPushMatrix();
-	glLoadIdentity();
+	/* BGE-Remix P8 Part B: a filter built with the core front end draws one
+	 * full-screen triangle (no matrices); one still the old kind (its
+	 * translation did not build) the old quad with the old matrices */
+	bool old_matrices = false;
 
 	for (passindex =0; passindex<MAX_RENDER_PASS; passindex++)
 	{
@@ -502,6 +501,25 @@ void RAS_2DFilterManager::RenderFilters(RAS_ICanvas* canvas)
 			glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, viewport[0], viewport[1], viewport[2], viewport[3], 0); // Don't use texturewidth and textureheight in case we don't have NPOT support
 			glClear(GL_COLOR_BUFFER_BIT);
 
+			const bool core = glGetAttribLocation(m_filters[passindex], "bge_pos") == 0;
+			if (core) {
+				const GLint loc = glGetUniformLocation(m_filters[passindex], "bge_canvascoord");
+				if (loc != -1)
+					glUniform4f(loc, canvascoord[0], canvascoord[1], canvascoord[2], canvascoord[3]);
+				GPU_draw_fullscreen_triangle();
+				continue;
+			}
+
+			if (!old_matrices) {
+				glPushMatrix();		//GL_MODELVIEW
+				glLoadIdentity();	// GL_MODELVIEW
+				glMatrixMode(GL_TEXTURE);
+				glLoadIdentity();
+				glMatrixMode(GL_PROJECTION);
+				glPushMatrix();
+				glLoadIdentity();
+				old_matrices = true;
+			}
 			glBegin(GL_QUADS);
 				glColor4f(1.f, 1.f, 1.f, 1.f);
 				glTexCoord2f(1.0f, 1.0f);	glMultiTexCoord2fARB(GL_TEXTURE3_ARB, canvascoord[1], canvascoord[3]); glVertex2f(1.0f,1.0f);
@@ -514,9 +532,11 @@ void RAS_2DFilterManager::RenderFilters(RAS_ICanvas* canvas)
 
 	glEnable(GL_DEPTH_TEST);
 	EndShaderProgram();
-	glPopMatrix();
-	glMatrixMode(GL_MODELVIEW);
-	glPopMatrix();
+	if (old_matrices) {
+		glPopMatrix();
+		glMatrixMode(GL_MODELVIEW);
+		glPopMatrix();
+	}
 }
 
 void RAS_2DFilterManager::EnableFilter(vector<STR_String>& propNames, void* gameObj, RAS_2DFILTER_MODE mode, int pass, STR_String& text)

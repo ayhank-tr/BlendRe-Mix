@@ -82,7 +82,7 @@ static const char *frag_text =
         "in vec2 v_texco;\n"
         "uniform sampler2D bge_tex;\n"
         "out vec4 bge_fragcolor;\n"
-        "void main() { bge_fragcolor = vec4(v_col.rgb, v_col.a * texture(bge_tex, v_texco).r); }\n";
+        "void main() { bge_fragcolor = vec4(v_col.rgb, v_col.a * texture(bge_tex, v_texco).a); }\n";
 
 /* lines of any width: each segment made a screen-space quad; the distance
  * along the line (in pixels) gives the dashes */

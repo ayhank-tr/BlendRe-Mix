@@ -23,6 +23,7 @@
  * module _bge_gameview.
  */
 
+#include "GPU_layer.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -479,7 +480,10 @@ static bool dry_convert(bContext *C, ARegion *ar, GVConverted &conv)
 	area_rect.SetTop(ar->winrct.ymax);
 
 	const double t0 = PIL_check_seconds_timer();
-	glPushAttrib(GL_ALL_ATTRIB_BITS);
+	/* BGE-Remix P8 Part B: the layer's state scope (the game's state lives in
+	 * the layer and the rasterizer) */
+	GPUStateScope gl_scope;
+	GPU_state_scope_begin(&gl_scope);
 
 #ifdef WITH_PYTHON
 	resetGamePythonPath();
@@ -571,7 +575,7 @@ static bool dry_convert(bContext *C, ARegion *ar, GVConverted &conv)
 	Py_DECREF(pyGlobalDict);
 	PyGILState_Release(gilstate);
 #endif
-	glPopAttrib();
+	GPU_state_scope_end(&gl_scope);
 	conv.convert_ms = (PIL_check_seconds_timer() - t0) * 1000.0;
 	return true;
 }

@@ -55,6 +55,9 @@
 #include "Exception.h"
 
 #include <memory.h>
+#include <stdint.h>
+#include <string.h>
+#include "GPU_layer.h"
 #include "GPU_glew.h"
 
 extern "C" {
@@ -99,7 +102,28 @@ void loadTexture(unsigned int texId, unsigned int *texture, short *size,
 	{
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-		glTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA, size[0], size[1], 0, GL_RGBA, GL_UNSIGNED_BYTE, texture);
+		/* BGE-Remix P8 Part B: a frame of the same size goes through the
+		 * layer's streaming buffer (the copy to the texture is the card's,
+		 * the game does not wait for it); a new size makes the texture again */
+		GLint w = 0, h = 0;
+		glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
+		glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
+		const size_t bytes = (size_t)size[0] * (size_t)size[1] * 4;
+		unsigned int buffer = 0;
+		size_t offset = 0;
+		void *dst = (w == size[0] && h == size[1] && bytes > 0) ? GPU_stream_alloc(bytes, &buffer, &offset) : NULL;
+		if (dst) {
+			memcpy(dst, texture, bytes);
+			GPU_stream_written(buffer);
+			glBindBuffer(GL_PIXEL_UNPACK_BUFFER, buffer);
+			glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+			glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, size[0], size[1], GL_RGBA, GL_UNSIGNED_BYTE,
+			                (const void *)(uintptr_t)offset);
+			glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+		}
+		else {
+			glTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA, size[0], size[1], 0, GL_RGBA, GL_UNSIGNED_BYTE, texture);
+		}
 	}
 	glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
 }

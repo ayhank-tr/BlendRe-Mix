@@ -142,17 +142,26 @@ static const char *tfe_frag_core =
         "in vec4 bge_frontcolor2;\n"
         "in float bge_fogcoord;\n";
 
-/* the vertex stage the core check gives a 2D filter (the old one had none) */
+/* the vertex stage a 2D filter gets with the core front end (the old one
+ * had none): BGE-Remix P8 Part B, one full-screen triangle (its corners
+ * are attribute 0, GPU_draw_fullscreen_triangle), the old texture
+ * coordinates 0 (the screen) and 3 (the canvas, bge_canvascoord: left,
+ * right, bottom, top) */
 static const char *tfe_filter_vert_core =
-        "in vec4 bge_pos;\n"
-        "in vec4 bge_texco0;\n"
-        "uniform mat4 bge_mvp;\n"
+        "layout(location = 0) in vec4 bge_pos;\n"
+        "uniform vec4 bge_canvascoord;\n"
         "out vec4 bge_texcoord[8];\n"
         "out vec4 bge_frontcolor;\n"
         "out vec4 bge_frontcolor2;\n"
         "out float bge_fogcoord;\n"
-        "void main() { gl_Position = bge_mvp * bge_pos; bge_texcoord[0] = bge_texco0;\n"
-        "	bge_frontcolor = vec4(1.0); bge_frontcolor2 = vec4(0.0); bge_fogcoord = 0.0; }\n";
+        "void main() {\n"
+        "	gl_Position = vec4(bge_pos.xy, 0.0, 1.0);\n"
+        "	vec2 t = bge_pos.xy * 0.5 + 0.5;\n"
+        "	bge_texcoord[0] = vec4(t, 0.0, 1.0);\n"
+        "	bge_texcoord[3] = vec4(mix(bge_canvascoord.x, bge_canvascoord.y, t.x),\n"
+        "	                       mix(bge_canvascoord.z, bge_canvascoord.w, t.y), 0.0, 1.0);\n"
+        "	bge_frontcolor = vec4(1.0); bge_frontcolor2 = vec4(0.0); bge_fogcoord = 0.0;\n"
+        "}\n";
 
 /* ---- the tables ---- */
 
@@ -566,10 +575,11 @@ unsigned int GPU_glsl_translate_program_ex(const char *vert, const char *frag, c
 
 	GLuint prog = 0;
 	bool core_ok = false;
-	if (game && has_vert) {
-		/* BGE-Remix P8 Part B: a custom shader draws with the core
-		 * translation (its matrices, lamps, material and fog are uniforms
-		 * the game sets); the compatibility one when that does not build */
+	if (game) {
+		/* BGE-Remix P8 Part B: a custom shader or 2D filter draws with the
+		 * core translation (its matrices, lamps, material and fog are
+		 * uniforms the game sets; a filter is one full-screen triangle);
+		 * the compatibility one when that does not build */
 		prog = build_program(cv_src, cfs, who, "core");
 		core_ok = prog != 0;
 		pv = cv;
@@ -584,7 +594,7 @@ unsigned int GPU_glsl_translate_program_ex(const char *vert, const char *frag, c
 		if (f) MEM_freeN(f);
 
 		/* and whether the core translation builds too */
-		if (prog && !(game && has_vert)) {
+		if (prog && !game) {
 			const GLuint core_prog = build_program(cv_src, cfs, who, "core");
 			core_ok = core_prog != 0;
 			if (core_prog) {
