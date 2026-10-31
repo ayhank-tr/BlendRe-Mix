@@ -81,7 +81,11 @@ extern "C" {
 #  include "DNA_object_force.h"
 #  include "DNA_particle_types.h"
 #  include "DNA_scene_types.h"
+#  include "DNA_world_types.h"
+#  include "DNA_texture_types.h"
+#  include "DNA_image_types.h"
 }
+#include "GPU_material.h"
 
 #include "BRMX_loader.h"  /* C linkage inside */
 #include "BRMX_bake.h"
@@ -323,6 +327,7 @@ KX_RemixRenderer::KX_RemixRenderer(RAS_ICanvas *canvas, bool window_mode_allowed
       m_screenshot_frame(120)
 {
 	m_cache = new brmx::TextureCache();
+	m_skykey = 0;
 	m_materials_waiting = 0;
 	m_materials_swapped = 0;
 	m_material_notes = 0;
@@ -1787,9 +1792,15 @@ void KX_RemixRenderer::UpdateLights(KX_Scene *scene, float light_scale)
 	}
 
 	/* The world: its horizon colour as a uniform sky (as background and as
-	 * light), plus the hemi lamps */
+	 * light), plus the hemi lamps; BGE-Remix P8 Part B (P8.17): a blend or
+	 * textured sky, or a sun lamp's, as the dome's picture */
 	KX_WorldInfo *world = scene->GetWorldInfo();
-	if (world && world->hasWorld()) {
+	uint64_t skykey = 0;
+	const wchar_t *sky = SkyTexture(scene, &skykey);
+	if (sky) {
+		dome[0] = dome[1] = dome[2] = 1.0f;
+	}
+	else if (world && world->hasWorld()) {
 		const float *bg = world->getBackColor();
 		for (int k = 0; k < 3; k++) {
 			dome[k] += bg[k];
@@ -1797,10 +1808,16 @@ void KX_RemixRenderer::UpdateLights(KX_Scene *scene, float light_scale)
 	}
 	brb_light_desc d;
 	memset(&d, 0, sizeof(d));
-	d.hash = UniqueHash("dome", scene->GetName().ReadPtr(), world);
+	/* a new picture is a new light (Remix's lights do not change) */
+	d.hash = UniqueHash("dome", scene->GetName().ReadPtr(), world) ^ (skykey * 0x9E3779B97F4A7C15ull);
+	if (d.hash == 0) {
+		d.hash = 1;
+	}
 	if (brmx::dome_light(dome, d)) {
+		d.dome_texture = sky;
 		SendLight(scene, world, d);
 	}
+	UpdateFog(scene);
 
 	/* BGE-Remix P8.9: lights of this scene not sent this frame (lamp objects
 	 * removed, turned Only Shadow...) are destroyed, not kept alive */
@@ -1816,6 +1833,133 @@ void KX_RemixRenderer::UpdateLights(KX_Scene *scene, float light_scale)
 			++it;
 		}
 	}
+}
+
+/* BGE-Remix P8 Part B (P8.17): the sky picture: drawn by the game's world
+ * shader into an equirectangular picture when what it shows changed, and
+ * written as a DDS named by its content (kept in the texture cache folder) */
+static void sky_hash(uint64_t &h, const void *data, size_t size)
+{
+	const unsigned char *b = (const unsigned char *)data;
+	for (size_t i = 0; i < size; i++) {
+		h ^= b[i];
+		h *= 1099511628211ull;
+	}
+}
+
+const wchar_t *KX_RemixRenderer::SkyTexture(KX_Scene *scene, uint64_t *r_key)
+{
+	*r_key = 0;
+	KX_WorldInfo *world = scene->GetWorldInfo();
+	Scene *sce = scene->GetBlenderScene();
+	World *wo = sce ? sce->world : NULL;
+	if (!world || !world->hasWorld() || !world->DrawsSky() || !wo) {
+		return NULL;
+	}
+	/* what the picture shows: the world's sky settings and textures, the
+	 * colours the game sets, and a sun lamp's sky with its direction */
+	uint64_t h = 14695981039346656037ull;
+	sky_hash(h, &wo->skytype, sizeof(wo->skytype));
+	sky_hash(h, world->getBackColor(), sizeof(float) * 3);
+	sky_hash(h, &wo->zenr, sizeof(float) * 3);
+	for (int i = 0; i < MAX_MTEX; i++) {
+		MTex *mtex = wo->mtex[i];
+		if (!mtex || !mtex->tex) {
+			continue;
+		}
+		sky_hash(h, mtex->tex->id.name, strlen(mtex->tex->id.name));
+		if (mtex->tex->ima) {
+			sky_hash(h, mtex->tex->ima->id.name, strlen(mtex->tex->ima->id.name));
+		}
+		sky_hash(h, &mtex->texco, sizeof(mtex->texco));
+		sky_hash(h, &mtex->mapto, sizeof(mtex->mapto));
+		sky_hash(h, mtex->ofs, sizeof(mtex->ofs));
+		sky_hash(h, mtex->size, sizeof(mtex->size));
+		sky_hash(h, &mtex->colfac, sizeof(float) * 4);
+		sky_hash(h, &mtex->tex->noisesize, sizeof(float) * 8);
+	}
+	CListValue *lights = scene->GetLightList();
+	for (int i = 0; i < lights->GetCount(); i++) {
+		KX_LightObject *light = (KX_LightObject *)lights->GetValue(i);
+		Object *ob = light->GetBlenderObject();
+		Lamp *la = (ob && ob->type == OB_LAMP) ? (Lamp *)ob->data : NULL;
+		if (la && la->type == LA_SUN && (la->sun_effect_type & LA_SUN_EFFECT_SKY)) {
+			const MT_Vector3 z = light->NodeGetWorldOrientation().getColumn(2);
+			const int q[3] = {(int)floor(z[0] * 1000.0 + 0.5), (int)floor(z[1] * 1000.0 + 0.5),
+			                  (int)floor(z[2] * 1000.0 + 0.5)};
+			sky_hash(h, q, sizeof(q));
+			sky_hash(h, &la->horizon_brightness, sizeof(float) * 6);
+			sky_hash(h, &la->atm_turbidity, sizeof(float));
+			sky_hash(h, &la->skyblendtype, sizeof(short));
+			sky_hash(h, &la->skyblendfac, sizeof(float));
+			sky_hash(h, &la->sky_exposure, sizeof(float));
+			sky_hash(h, &la->sky_colorspace, sizeof(short));
+			break;
+		}
+	}
+	if (h == m_skykey && !m_skypath.empty()) {
+		*r_key = h;
+		return m_skypath.c_str();
+	}
+
+	const int width = 1024, height = width / 2;
+	wchar_t hex[24];
+	swprintf(hex, 24, L"%016llx", (unsigned long long)h);
+	const std::wstring folder = brmx::TextureCache::folder();
+	CreateDirectoryW(folder.c_str(), NULL);
+	const std::wstring path = folder + L"\\sky_k" + hex + L".dds";
+	if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+		std::vector<float> pixels((size_t)width * height * 4);
+		if (!GPU_world_equirect(sce, wo, width, &pixels[0])) {
+			return NULL;
+		}
+		brb_texture_desc desc;
+		memset(&desc, 0, sizeof(desc));
+		desc.path = path.c_str();
+		desc.kind = BRB_TEXTURE_HDR;
+		desc.width = width;
+		desc.height = height;
+		desc.rgbaf = &pixels[0];
+		if (m_bridge->texture_write(&desc, NULL) != 0) {
+			return NULL;
+		}
+		printf("BGE-Remix: the world's sky sent to Remix as a picture\n");
+	}
+	m_skykey = h;
+	m_skypath = path;
+	*r_key = h;
+	return m_skypath.c_str();
+}
+
+/* BGE-Remix P8 Part B (P8.17): the world's mist as Remix's fog (its
+ * volumetrics): the light left after the mist's distance and the mist's
+ * colour as what the fog scatters; sent when it changes */
+void KX_RemixRenderer::UpdateFog(KX_Scene *scene)
+{
+	KX_WorldInfo *world = scene->GetWorldInfo();
+	Scene *sce = scene->GetBlenderScene();
+	World *wo = sce ? sce->world : NULL;
+	if (!world || !world->hasWorld() || !wo || !(wo->mode & WO_MIST)) {
+		return;
+	}
+	/* mist reaches its full strength at start + distance: what passes that
+	 * far is 5 % (Remix measures it over a distance) */
+	const float distance = std::max(wo->miststa + wo->mistdist, 0.1f);
+	const float *col = world->getBackColor();
+	char key[256];
+	snprintf(key, sizeof(key), "%.4f|%.4f, %.4f, %.4f", distance, col[0], col[1], col[2]);
+	if (m_fogsent == key) {
+		return;
+	}
+	m_fogsent = key;
+	char value[96];
+	m_bridge->set_config("rtx.volumetrics.enable", "True");
+	snprintf(value, sizeof(value), "%.4f", distance);
+	m_bridge->set_config("rtx.volumetrics.transmittanceMeasurementDistanceMeters", value);
+	m_bridge->set_config("rtx.volumetrics.transmittanceColor", "0.05, 0.05, 0.05");
+	snprintf(value, sizeof(value), "%.4f, %.4f, %.4f", col[0], col[1], col[2]);
+	m_bridge->set_config("rtx.volumetrics.singleScatteringAlbedo", value);
+	printf("BGE-Remix: the world's mist sent to Remix as fog (%s)\n", key);
 }
 
 void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Matrix4x4 &view,

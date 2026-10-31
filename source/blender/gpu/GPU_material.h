@@ -244,6 +244,10 @@ GPUMaterial *GPU_material_world(struct Scene *scene, struct World *wo);
 GPUMaterial *GPU_material_world_game(struct Scene *scene, struct World *wo);
 bool GPU_material_world_draw(GPUMaterial *mat, int viewlay, double time, float viewmat[4][4],
                              float viewinv[4][4]);
+/* the world in every direction, scene linear: an equirectangular picture
+ * (Blender's layout, Z up, rows from the bottom), width x width / 2 RGBA
+ * floats (BGE-Remix P8 Part B: Remix's sky) */
+bool GPU_world_equirect(struct Scene *scene, struct World *wo, int width, float *r_rgba);
 
 GPUMaterial *GPU_material_from_blender(struct Scene *scene, struct Material *ma, bool use_opensubdiv);
 /* BGE-Remix P8.4: for_game: the game's own material (its shader reads the

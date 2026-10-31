@@ -186,6 +186,7 @@ struct GPUMaterial {
 	 * atmosphere (surfaces) the shader draws */
 	struct Object *sunsky_ob;
 	struct Object *envsky_ob;  /* its sky in the environment light */
+	bool world_linear;         /* a world without the display transform (Remix's sky) */
 
 	/* BGE-Remix P8.5: the texture slots that take Object coordinates from
 	 * an object, and the objects' inverse matrices (refreshed on every
@@ -3071,7 +3072,7 @@ static void gpu_sunsky_compute(Lamp *la, const float tosun_in[3], float s[4][4],
 {
 	float tosun[3];
 	normalize_v3_v3(tosun, tosun_in);
-	const float theta = acosf(clamp_f(tosun[2], -1.0f, 1.0f));
+	const float theta = acosf(CLAMPIS(tosun[2], -1.0f, 1.0f));
 	const float phi = (fabsf(theta) < 1e-5f) ? 0.0f : atan2f(tosun[1], tosun[0]);
 	const float T = la->atm_turbidity, T2 = T * T;
 	const float th2 = theta * theta, th3 = th2 * theta;
@@ -3173,7 +3174,7 @@ static void gpu_sunsky_radiance(const float v_in[3], float s[4][4], float p[4][4
 		v[2] = 0.001f;
 		normalize_v3(v);
 	}
-	float theta = acosf(clamp_f(v[2], -1.0f, 1.0f));
+	float theta = acosf(CLAMPIS(v[2], -1.0f, 1.0f));
 	const float phi = (fabsf(theta) < 1e-5f) ? 0.0f : atan2f(v[1], v[0]);
 	const float suntheta = s[1][0], sunphi = s[1][1];
 	float hfade = 1.0f, nfade = 1.0f;
@@ -3830,20 +3831,23 @@ static void gpu_material_old_world(struct GPUMaterial *mat, struct World *wo)
 	GPU_material_output_link(mat, shr.combined);
 }
 
-static GPUMaterial *gpu_material_world_ex(struct Scene *scene, struct World *wo, bool for_game)
+static GPUMaterial *gpu_material_world_ex(struct Scene *scene, struct World *wo, bool for_game, bool linear)
 {
 	LinkData *link;
 	GPUMaterial *mat;
 
-	for (link = wo->gpumaterial.first; link; link = link->next)
-		if (((GPUMaterial *)link->data)->scene == scene && ((GPUMaterial *)link->data)->is_game == for_game)
-			return link->data;
+	for (link = wo->gpumaterial.first; link; link = link->next) {
+		GPUMaterial *m = link->data;
+		if (m->scene == scene && m->is_game == for_game && m->world_linear == linear)
+			return m;
+	}
 
 	/* allocate material */
 	mat = GPU_material_construct_begin(NULL);
 	mat->scene = scene;
 	mat->type = GPU_MATERIAL_TYPE_WORLD;
 	mat->is_game = for_game;
+	mat->world_linear = linear;
 	
 	/* create nodes */
 	if (BKE_scene_use_new_shading_nodes(scene) && wo->nodetree && wo->use_nodes) {
@@ -3855,7 +3859,7 @@ static GPUMaterial *gpu_material_world_ex(struct Scene *scene, struct World *wo,
 
 	/* BGE-Remix P8 Part B: Modern scenes stay linear (the pipeline's tone map) */
 	const bool modern = for_game && BKE_scene_game_pipeline(scene) == BKE_SCENE_GAME_PIPELINE_MODERN;
-	if (GPU_material_do_color_management(mat) && !modern)
+	if (GPU_material_do_color_management(mat) && !modern && !linear)
 		if (mat->outlink)
 			GPU_link(mat, "linearrgb_to_srgb", mat->outlink, &mat->outlink);
 
@@ -3874,7 +3878,7 @@ static GPUMaterial *gpu_material_world_ex(struct Scene *scene, struct World *wo,
 
 GPUMaterial *GPU_material_world(struct Scene *scene, struct World *wo)
 {
-	return gpu_material_world_ex(scene, wo, false);
+	return gpu_material_world_ex(scene, wo, false, false);
 }
 
 /* BGE-Remix P8 Part B (P8.17): the world drawn behind everything: bound with
@@ -3907,8 +3911,111 @@ bool GPU_material_world_draw(GPUMaterial *mat, int viewlay, double time, float v
  * game's front end and colours) */
 GPUMaterial *GPU_material_world_game(struct Scene *scene, struct World *wo)
 {
-	return gpu_material_world_ex(scene, wo, true);
+	return gpu_material_world_ex(scene, wo, true, false);
 }
+/* BGE-Remix P8 Part B (P8.17): the world in every direction, scene linear,
+ * as an equirectangular picture (Blender's layout: Z up, rows from the
+ * bottom), width x width / 2, RGBA floats: drawn into a cube's faces with
+ * the game's world shader, then read around the sphere */
+static const char *gpu_equirect_cs =
+        "layout(local_size_x = 8, local_size_y = 8) in;\n"
+        "uniform samplerCube cube;\n"
+        "layout(rgba32f, binding = 0) uniform writeonly image2D outimg;\n"
+        "uniform ivec2 size;\n"
+        "void main()\n"
+        "{\n"
+        "	ivec2 p = ivec2(gl_GlobalInvocationID.xy);\n"
+        "	if (any(greaterThanEqual(p, size))) return;\n"
+        "	vec2 uv = (vec2(p) + 0.5) / vec2(size);\n"
+        "	float theta = (0.5 - uv.x) * 6.28318531, phi = (uv.y - 0.5) * 3.14159265;\n"
+        "	vec3 d = vec3(cos(phi) * cos(theta), cos(phi) * sin(theta), sin(phi));\n"
+        "	imageStore(outimg, p, vec4(texture(cube, d).rgb, 1.0));\n"
+        "}\n";
+
+bool GPU_world_equirect(struct Scene *scene, struct World *wo, int width, float *r_rgba)
+{
+	static unsigned int prog = 0;
+	static bool failed = false;
+	if (failed || width < 8) {
+		return false;
+	}
+	if (!prog) {
+		prog = GPU_compute_program(gpu_equirect_cs, "BGE-Remix sky picture");
+		if (!prog) {
+			failed = true;
+			return false;
+		}
+	}
+	GPUMaterial *mat = gpu_material_world_ex(scene, wo, true, true);
+	const int height = width / 2, face = max_ii(32, width / 4);
+
+	GLuint cube = 0, fbo = 0, out = 0;
+	glCreateTextures(GL_TEXTURE_CUBE_MAP, 1, &cube);
+	glTextureStorage2D(cube, 1, GL_RGBA16F, face, face);
+	glTextureParameteri(cube, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTextureParameteri(cube, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glCreateFramebuffers(1, &fbo);
+	GLint prevfb = 0, vp[4];
+	glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prevfb);
+	glGetIntegerv(GL_VIEWPORT, vp);
+	GPU_matrix_mode(GPU_MATRIX_PROJECTION);
+	GPU_matrix_push();
+	float proj[4][4];
+	perspective_m4(proj, -0.1f, 0.1f, -0.1f, 0.1f, 0.1f, 10.0f);
+	GPU_matrix_load((const float (*)[4])proj);
+	GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
+	GPU_matrix_push();
+
+	/* the faces as OpenGL's cube maps hold them (their direction and up) */
+	const float dirs[6][3] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+	const float ups[6][3] = {{0, -1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}, {0, -1, 0}, {0, -1, 0}};
+	bool ok = true;
+	for (int f = 0; f < 6 && ok; f++) {
+		glNamedFramebufferTextureLayer(fbo, GL_COLOR_ATTACHMENT0, cube, 0, f);
+		glNamedFramebufferDrawBuffer(fbo, GL_COLOR_ATTACHMENT0);
+		glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+		glViewport(0, 0, face, face);
+		/* the camera: x = forward x up, y = up, z = -forward */
+		float view[4][4], viewinv[4][4], x[3];
+		cross_v3_v3v3(x, dirs[f], ups[f]);
+		unit_m4(viewinv);
+		copy_v3_v3(viewinv[0], x);
+		copy_v3_v3(viewinv[1], ups[f]);
+		negate_v3_v3(viewinv[2], dirs[f]);
+		invert_m4_m4(view, viewinv);
+		GPU_matrix_load((const float (*)[4])view);
+		ok = GPU_material_world_draw(mat, ~0, 0.0, view, viewinv);
+	}
+	GPU_matrix_pop();
+	GPU_matrix_mode(GPU_MATRIX_PROJECTION);
+	GPU_matrix_pop();
+	GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
+	glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)prevfb);
+	glViewport(vp[0], vp[1], vp[2], vp[3]);
+
+	if (ok) {
+		glCreateTextures(GL_TEXTURE_2D, 1, &out);
+		glTextureStorage2D(out, 1, GL_RGBA32F, width, height);
+		GLint program = 0;
+		glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+		glUseProgram(prog);
+		glBindTextureUnit(0, cube);
+		glUniform1i(glGetUniformLocation(prog, "cube"), 0);
+		glUniform2i(glGetUniformLocation(prog, "size"), width, height);
+		glBindImageTexture(0, out, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
+		glDispatchCompute((GLuint)(width + 7) / 8, (GLuint)(height + 7) / 8, 1);
+		glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
+		glBindImageTexture(0, 0, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
+		glBindTextureUnit(0, 0);
+		glUseProgram((GLuint)program);
+		glGetTextureImage(out, 0, GL_RGBA, GL_FLOAT, (GLsizei)(sizeof(float) * 4 * width * height), r_rgba);
+		glDeleteTextures(1, &out);
+	}
+	glDeleteFramebuffers(1, &fbo);
+	glDeleteTextures(1, &cube);
+	return ok;
+}
+
 
 
 /* BGE-Remix P8: as in Multitexture, a texture mapped to alpha (or the face

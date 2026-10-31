@@ -295,6 +295,14 @@ private:
 	float m_highlight_color[3];
 	int m_vp_x0, m_vp_y0;      /* the viewport's top left corner in the window */
 	brmx::TextureCache *m_cache;
+
+	/* BGE-Remix P8 Part B (P8.17): the world's sky as the dome's picture
+	 * (named by its content), and the mist sent as Remix's fog */
+	uint64_t m_skykey;
+	std::wstring m_skypath;
+	std::string m_fogsent;
+	const wchar_t *SkyTexture(KX_Scene *scene, uint64_t *r_key);
+	void UpdateFog(KX_Scene *scene);
 	int m_materials_waiting;   /* entries with waiting set */
 	int m_materials_swapped;   /* sent again with their textures */
 	int m_material_notes;      /* lines the translator could not represent */

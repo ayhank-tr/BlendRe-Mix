@@ -665,7 +665,7 @@ BRB_API int brb_light_create(const brb_light_desc *d)
 		case BRB_LIGHT_DOME:
 			dome.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DOME_EXT;
 			dome.transform = {{{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}}};
-			dome.colorTexture = dome_texture().c_str();
+			dome.colorTexture = (d->dome_texture && d->dome_texture[0]) ? d->dome_texture : dome_texture().c_str();
 			info.pNext = &dome;
 			break;
 		default:

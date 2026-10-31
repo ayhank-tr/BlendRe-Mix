@@ -53,8 +53,9 @@ extern "C" {
  * 3: P3 (textures, glass, subsurface, alpha test).
  * 4: P4 (skinning, draw categories, picking, particle systems).
  * 5: P4.8 (direct presentation: brb_frame_vk).
- * 8: P8.9 (disk lights, lights' volumetric strength). */
-#define BRB_ABI_VERSION 8
+ * 8: P8.9 (disk lights, lights' volumetric strength).
+ * 9: P8 Part B (a dome light's own sky picture). */
+#define BRB_ABI_VERSION 9
 
 typedef enum brb_status {
 	BRB_STATUS_NOT_LOADED = 0,           /* nothing tried yet */
@@ -219,6 +220,9 @@ typedef struct brb_light_desc {
 	float angular_diameter_deg;  /* distant lights */
 	float radiance[3];
 	float volumetric;            /* interface 8: the light's strength in volumetric fog (Remix's 1 = 0 here) */
+	/* interface 9: dome lights: an equirectangular sky picture (a DDS, Blender's
+	 * equirectangular layout, Z up), times the radiance; NULL or "": white */
+	const wchar_t *dome_texture;
 } brb_light_desc;
 
 typedef struct brb_frame_stats {
