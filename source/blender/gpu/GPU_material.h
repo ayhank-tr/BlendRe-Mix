@@ -399,6 +399,14 @@ void GPU_lamp_update_colors(GPULamp *lamp, float r, float g, float b, float ener
 void GPU_lamp_update_distance(GPULamp *lamp, float distance, float att1, float att2,
                               float coeff_const, float coeff_lin, float coeff_quad);
 void GPU_lamp_update_spot(GPULamp *lamp, float spotsize, float spotblend);
+/* BGE-Remix P8 Part B (P8.15): the lamp's type (LA_LOCAL, LA_SUN...) changed
+ * while playing (the clustered lamps follow it) */
+void GPU_lamp_update_type(GPULamp *lamp, int type);
+/* BGE-Remix P8 Part B (P8.15): the object drawn next with a bound material
+ * (its layers), and whether a lamp keeps per-lamp code in materials (then a
+ * This Layer Only lamp needs a material per layer) */
+void GPU_material_set_object_layer(GPUMaterial *material, int lay);
+bool GPU_lamp_needs_own_code(struct Lamp *la);
 /* BGE-Remix P8.9: the light's size (point/spot radius; area lamps: width and
  * height) and its shadow settings, changed while playing without rebuilding
  * shaders (bias as Lamp.bias) */

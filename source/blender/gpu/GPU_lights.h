@@ -99,6 +99,14 @@ void GPU_lights_bind_textures(unsigned int scenedepth_texture);
 /* a new program: its shared samplers on their units */
 void GPU_lights_program_samplers(unsigned int program);
 
+/* the lamps of the scene being drawn ("count" records of "record_size"
+ * bytes; "hash" says when they changed) sorted into the clusters of the view
+ * (view matrix, projection, viewport); the pass runs only when something
+ * changed. Binds the records (11), the view's numbers (12) and the masks
+ * (13) for the material shaders. */
+void GPU_lights_cluster(const void *records, int count, size_t record_size, unsigned int hash,
+                        const float view[4][4], const float proj[4][4], const int viewport[4]);
+
 void GPU_lights_exit(void);
 
 #ifdef __cplusplus

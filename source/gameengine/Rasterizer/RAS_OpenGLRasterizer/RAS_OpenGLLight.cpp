@@ -365,6 +365,15 @@ void RAS_OpenGLLight::Update()
 			for (int j=0; j<4; j++, dobmat++)
 				obmat[i][j] = (float)*dobmat;
 		int hide = kxlight->GetVisible() ? 0 : 1;
+		/* BGE-Remix P8 Part B (P8.15): a type set from Python (the lamp's own
+		 * when it is the type it was converted as: hemi and area stay) */
+		{
+			Lamp *la = (Lamp *)kxlight->GetBlenderObject()->data;
+			const int converted = (la->type == LA_SUN) ? LIGHT_SUN : (la->type == LA_SPOT) ? LIGHT_SPOT : LIGHT_NORMAL;
+			const int latype = (m_type == converted) ? la->type :
+			                   (m_type == LIGHT_SUN) ? LA_SUN : (m_type == LIGHT_SPOT) ? LA_SPOT : LA_LOCAL;
+			GPU_lamp_update_type(lamp, latype);
+		}
 		GPU_lamp_update(lamp, m_layer, hide, obmat);
 		GPU_lamp_update_colors(lamp, m_color[0], m_color[1],
 			m_color[2], m_energy);

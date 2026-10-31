@@ -72,6 +72,7 @@
 #include "GPU_extensions.h"
 #include "GPU_glew.h"
 #include "GPU_framebuffer.h"
+#include "GPU_layer.h"
 #include "GPU_lights.h"
 #include "GPU_material.h"
 #include "GPU_shader.h"
@@ -177,6 +178,12 @@ struct GPUMaterial {
 	int tot_texco_ob;
 	MTex *texco_mtex[MAX_MTEX];
 	float texco_obimat[MAX_MTEX][4][4];
+
+	/* BGE-Remix P8 Part B (P8.15): its lamps in one loop over the pixel's
+	 * cluster (the speed switch "clustered_lights" when it was made), and
+	 * the place of the object's layers (This Layer Only lamps) */
+	bool clustered;
+	int oblayloc;
 };
 
 struct GPULamp {
@@ -260,6 +267,11 @@ struct GPULamp {
 	int pool_layer;
 	float shadow_layer;
 	unsigned int pool_view, pool_view_gen;
+
+	/* BGE-Remix P8 Part B (P8.15): in an exclusive light group; the light
+	 * groups it is in (bits of gpu_light_groups, made for groups_gen) */
+	bool excl;
+	unsigned int groupbits, groups_gen;
 };
 
 /* Forward declaration so shade_light_textures() can use this, while still keeping the code somewhat organized */
@@ -430,8 +442,12 @@ static void gpu_shared_buffers_bind(GPUMaterial *material)
 	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, GPU_SHARED_WORLD_BINDING, gpu_shared.worldbuf);
 }
 
+static void gpu_lamp_records_free(void);
+static void gpu_lights_cluster_bind(GPUMaterial *material, float viewmat[4][4], int viewlay);
+
 void GPU_shared_buffers_free(void)
 {
+	gpu_lamp_records_free();
 	if (gpu_shared.lampbuf) {
 		glDeleteBuffers(1, &gpu_shared.lampbuf);
 	}
@@ -511,6 +527,8 @@ static int gpu_material_construct_end(GPUMaterial *material, const char *passnam
 		gpu_material_set_attrib_id(material);
 		
 		GPUShader *shader = GPU_pass_shader(material->pass);
+
+		material->oblayloc = GPU_shader_get_uniform(shader, "bge_oblay");
 
 		if (material->builtins & GPU_VIEW_MATRIX)
 			material->viewmatloc = GPU_shader_get_uniform(shader, GPU_builtin_name(GPU_VIEW_MATRIX));
@@ -1014,8 +1032,17 @@ void GPU_material_bind(
 		/* BGE-Remix P8.3: the lamp and world values the shader reads */
 		gpu_shared_buffers_bind(material);
 
+		/* BGE-Remix P8 Part B (P8.15): the lamps in the view's clusters */
+		if (material->clustered) {
+			gpu_lights_cluster_bind(material, viewmat, viewlay);
+		}
+
 		/* note material must be bound before setting uniforms */
 		GPU_pass_bind(material->pass, time, mipmap);
+
+		if (material->oblayloc != -1) {
+			glProgramUniform1i(GPU_shader_program(shader), material->oblayloc, oblay);
+		}
 
 		/* handle per material built-ins */
 		if (material->builtins & GPU_VIEW_MATRIX) {
@@ -1883,11 +1910,330 @@ static bool gpu_lamp_in_exclusive_group(Object *ob)
 	return false;
 }
 
+/* ------------------------------------------------------------------------ */
+/* BGE-Remix P8 Part B (P8.15): the clustered lamps */
+
+/* the light groups materials use, each a bit of the lamps' records (never
+ * reordered: materials keep their index) */
+#define GPU_LIGHT_GROUPS 32
+static struct Group *gpu_light_groups[GPU_LIGHT_GROUPS];
+static int gpu_light_groups_len = 0;
+static unsigned int gpu_light_groups_gen = 1;
+
+static int gpu_light_group_index(struct Group *group)
+{
+	for (int i = 0; i < gpu_light_groups_len; i++) {
+		if (gpu_light_groups[i] == group) {
+			return i;
+		}
+	}
+	if (gpu_light_groups_len == GPU_LIGHT_GROUPS) {
+		return -1;
+	}
+	gpu_light_groups[gpu_light_groups_len++] = group;
+	gpu_light_groups_gen++;
+	return gpu_light_groups_len - 1;
+}
+
+static unsigned int gpu_lamp_groupbits(GPULamp *lamp)
+{
+	if (lamp->groups_gen != gpu_light_groups_gen) {
+		lamp->groupbits = 0;
+		for (int i = 0; i < gpu_light_groups_len; i++) {
+			struct Group *group = gpu_light_groups[i];
+			/* a group freed since (the editor) is skipped */
+			if (group && BLI_findindex(&G.main->group, group) >= 0 && BKE_group_object_exists(group, lamp->ob)) {
+				lamp->groupbits |= 1u << i;
+			}
+		}
+		lamp->groups_gen = gpu_light_groups_gen;
+	}
+	return lamp->groupbits;
+}
+
+/* lamps the loop lights with; the others keep the per-lamp code: textures
+ * (a sampler each), a falloff curve, Variance shadows */
+static bool gpu_lamp_clusterable(GPULamp *lamp)
+{
+	if (lamp->depthfb) {
+		return false;
+	}
+	if (lamp->falloff_type == LA_FALLOFF_CURVE && lamp->type != LA_AREA && lamp->type != LA_SUN &&
+	    lamp->type != LA_HEMI)
+	{
+		return false;
+	}
+	for (int i = 0; i < MAX_MTEX; i++) {
+		MTex *mtex = lamp->la->mtex[i];
+		if (mtex && mtex->tex && (GPU_texture_is_procedural(mtex->tex) ||
+		                          ((mtex->tex->type & TEX_IMAGE) && mtex->tex->ima)))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+/* one lamp as the shaders' BgeLamp (gpu_shader.c), std430: vec4s only */
+typedef struct GPULampRecord {
+	float co_type[4], vec_dist[4], col_energy[4], spot[4];
+	float imat[4][4];
+	float falloff[4], coeff[4];
+	float area[4][4];
+	float shadow_color[4], shadow_params[4], shadow_clip[4], contact[4], cascade_scale[4], cascade_range[4];
+	float shadowmat[4][4][4];
+	float bound[4];
+	unsigned int bits[4];
+} GPULampRecord;
+
+static void gpu_lamp_record(GPULamp *lamp, GPULampRecord *r)
+{
+	memset(r, 0, sizeof(*r));
+	copy_v3_v3(r->co_type, lamp->co);
+	r->co_type[3] = (float)lamp->type;
+	copy_v3_v3(r->vec_dist, lamp->vec);
+	normalize_v3(r->vec_dist);
+	negate_v3(r->vec_dist);
+	r->vec_dist[3] = lamp->dist;
+	copy_v3_v3(r->col_energy, lamp->col);
+	r->col_energy[3] = lamp->energy;
+	r->spot[0] = lamp->spotsi;
+	r->spot[1] = lamp->spotbl;
+	r->spot[2] = lamp->spotvec[0];
+	r->spot[3] = lamp->spotvec[1];
+	copy_m4_m4(r->imat, lamp->imat);
+	r->falloff[0] = (float)lamp->falloff_type;
+	r->falloff[1] = lamp->att1;
+	r->falloff[2] = lamp->att2;
+	r->falloff[3] = lamp->k;
+	r->coeff[0] = lamp->coeff_const;
+	r->coeff[1] = lamp->coeff_lin;
+	r->coeff[2] = lamp->coeff_quad;
+	r->coeff[3] = lamp->areasize;
+	for (int c = 0; c < 4; c++) {
+		copy_v3_v3(r->area[c], lamp->area_corner[c]);
+		r->area[c][3] = 1.0f;
+	}
+	copy_v3_v3(r->shadow_color, lamp->shadow_color);
+	if (GPU_lamp_has_shadow_buffer(lamp) && lamp->pool_layer >= 0) {
+		r->shadow_color[3] = (float)lamp->shadow_kind;
+		copy_v4_v4(r->shadow_params, lamp->shadow_params);
+		copy_v3_v3(r->shadow_clip, lamp->shadow_clip);
+		r->shadow_clip[3] = (float)lamp->pool_layer;
+		copy_v4_v4(r->contact, lamp->contact);
+		copy_v4_v4(r->cascade_scale, lamp->cascade_scale);
+		copy_v4_v4(r->cascade_range, lamp->cascade_range);
+		switch (lamp->shadow_kind) {
+			case GPU_LAMP_SHADOW_SPOT:
+				copy_m4_m4(r->shadowmat[0], lamp->persmat);
+				break;
+			case GPU_LAMP_SHADOW_CUBE:
+				copy_m4_m4(r->shadowmat[0], lamp->viewmat);
+				break;
+			case GPU_LAMP_SHADOW_CASCADE:
+				for (int c = 0; c < GPU_SHADOW_CASCADES; c++) {
+					copy_m4_m4(r->shadowmat[c], lamp->cascade_persmat[c]);
+				}
+				break;
+		}
+	}
+	/* how far it reaches (0: everywhere): a Sphere lamp's distance */
+	copy_v3_v3(r->bound, lamp->co);
+	r->bound[3] = ((lamp->mode & LA_SPHERE) && (lamp->type == LA_LOCAL || lamp->type == LA_SPOT)) ? lamp->dist : 0.0f;
+	r->bits[0] = (unsigned int)lamp->mode;
+	r->bits[1] = (unsigned int)lamp->lay;
+	r->bits[2] = gpu_lamp_groupbits(lamp);
+	r->bits[3] = lamp->excl ? 4u : 0u;
+}
+
+/* the lamps changed (counted on by every lamp update) */
+static unsigned int gpu_lamps_gen = 1;
+
+static struct {
+	Scene *scene;
+	int viewlay;
+	unsigned int lamps_gen, groups_gen;
+	GPULampRecord *records;
+	int len, cap;
+	unsigned int hash;
+} gpu_lamp_records = {NULL};
+
+static void gpu_lamp_records_free(void)
+{
+	MEM_SAFE_FREE(gpu_lamp_records.records);
+	memset(&gpu_lamp_records, 0, sizeof(gpu_lamp_records));
+}
+
+/* the scene's lamps sorted into the view's clusters, for a clustered material */
+static void gpu_lights_cluster_bind(GPUMaterial *material, float viewmat[4][4], int viewlay)
+{
+	if (GPU_shadow_pass()) {
+		return;
+	}
+	if (gpu_lamp_records.scene != material->scene || gpu_lamp_records.viewlay != viewlay ||
+	    gpu_lamp_records.lamps_gen != gpu_lamps_gen || gpu_lamp_records.groups_gen != gpu_light_groups_gen)
+	{
+		gpu_lamp_records.scene = material->scene;
+		gpu_lamp_records.viewlay = viewlay;
+		gpu_lamp_records.lamps_gen = gpu_lamps_gen;
+		gpu_lamp_records.groups_gen = gpu_light_groups_gen;
+		gpu_lamp_records.len = 0;
+		for (int i = 0; i < gpu_shared.len; i++) {
+			GPULamp *lamp = gpu_shared.slots[i];
+			if (!lamp || lamp->scene != material->scene || lamp->hide || !(lamp->lay & viewlay) ||
+			    !gpu_lamp_clusterable(lamp))
+			{
+				continue;
+			}
+			if (gpu_lamp_records.len == gpu_lamp_records.cap) {
+				gpu_lamp_records.cap = max_ii(32, gpu_lamp_records.cap * 2);
+				gpu_lamp_records.records = MEM_reallocN_id(gpu_lamp_records.records,
+				                                           sizeof(GPULampRecord) * gpu_lamp_records.cap,
+				                                           "lamp records");
+			}
+			gpu_lamp_record(lamp, &gpu_lamp_records.records[gpu_lamp_records.len++]);
+		}
+		/* FNV-1a */
+		unsigned int h = 2166136261u;
+		const unsigned char *b = (const unsigned char *)gpu_lamp_records.records;
+		for (size_t k = 0; k < sizeof(GPULampRecord) * (size_t)gpu_lamp_records.len; k++) {
+			h ^= b[k];
+			h *= 16777619u;
+		}
+		gpu_lamp_records.hash = h;
+	}
+
+	/* the projection and viewport the material is drawn with */
+	float proj[4][4];
+	if (material->is_game) {
+		GPU_matrix_get(GPU_MATRIX_PROJECTION, proj);
+	}
+	else {
+		glGetFloatv(GL_PROJECTION_MATRIX, &proj[0][0]);
+	}
+	int viewport[4];
+	glGetIntegerv(GL_VIEWPORT, viewport);
+	GPU_lights_cluster(gpu_lamp_records.records, gpu_lamp_records.len, sizeof(GPULampRecord), gpu_lamp_records.hash,
+	                   (const float (*)[4])viewmat, (const float (*)[4])proj, viewport);
+}
+
+static void material_lights_clustered(GPUShadeInput *shi, GPUShadeResult *shr)
+{
+	Material *ma = shi->mat;
+	GPUMaterial *mat = shi->gpumat;
+	const int gmflag = mat->scene->gm.flag;
+	const int group = ma->group ? gpu_light_group_index(ma->group) : -1;
+
+	int flags = 0;
+	if (ma->shade_flag & MA_CUBIC) flags |= 1;
+	const bool ramp_col = !(gmflag & GAME_GLSL_NO_RAMPS) && ma->ramp_col && (ma->mode & MA_RAMP_COL);
+	const bool ramp_spec = (ma->mode & MA_RAMP_SPEC) && ma->ramp_spec;
+	if (ramp_col) flags |= 2;
+	if (ramp_spec) flags |= 4;
+	if (ma->mode & MA_SHADOW) flags |= 8;
+	if (gmflag & GAME_GLSL_NO_SHADERS) flags |= 16;
+	if (gmflag & GAME_GLSL_NO_SHADOWS) flags |= 32;
+	if (GPU_link_changed(shi->refl) || ma->ref != 0.0f) flags |= 64;
+	if (GPU_link_changed(shi->spec) || ma->spec != 0.0f) flags |= 128;
+
+	float matp[4] = {(float)ma->diff_shader, (float)ma->spec_shader, (float)flags, (float)group};
+	float diffp[4] = {ma->roughness, ma->param[0], ma->param[1], ma->darkness};
+	float specp[4] = {ma->refrac, ma->rms, ma->param[2], ma->param[3]};
+	float matq[4] = {ma->spec, 0.0f, 0.0f, 0.0f};
+
+	if (shi->physical) {
+		MaterialPhysical ph;
+		BKE_material_physical_get(ma, &ph);
+		GPU_link(mat, "shade_lights_clustered_pbr",
+		         GPU_builtin(GPU_VIEW_POSITION), shi->vn, shi->view, shi->rgb, shi->specrgb, shi->refl,
+		         shi->pbr_diff, shi->pbr_f0, shi->roughness, GPU_uniform(&ph.subsurface), GPU_uniform(matp),
+		         GPU_builtin(GPU_VIEW_MATRIX), GPU_builtin(GPU_INVERSE_VIEW_MATRIX),
+		         shr->diff, shr->spec, &shr->diff, &shr->spec);
+	}
+	else if (ramp_col || ramp_spec) {
+		float rampc[4] = {(float)ma->rampin_col, (float)ma->rampblend_col, ma->rampfac_col, 0.0f};
+		float ramps[4] = {(float)ma->rampin_spec, (float)ma->rampblend_spec, ma->rampfac_spec, 0.0f};
+		float *array;
+		int size;
+		GPUNodeLink *bandc, *bands;
+		colorband_table_RGBA(ramp_col ? ma->ramp_col : ma->ramp_spec, &array, &size);
+		bandc = GPU_texture(size, array);
+		if (ramp_col && ramp_spec) {
+			colorband_table_RGBA(ma->ramp_spec, &array, &size);
+			bands = GPU_texture(size, array);
+		}
+		else {
+			bands = bandc;
+		}
+		GPU_link(mat, "shade_lights_clustered_ex",
+		         GPU_builtin(GPU_VIEW_POSITION), shi->vn, shi->view, shi->rgb, shi->specrgb, shi->spec, shi->har,
+		         shi->refl, GPU_uniform(matp), GPU_uniform(diffp), GPU_uniform(specp), GPU_uniform(matq),
+		         GPU_uniform(rampc), GPU_uniform(ramps), bandc, bands,
+		         GPU_builtin(GPU_VIEW_MATRIX), GPU_builtin(GPU_INVERSE_VIEW_MATRIX),
+		         shr->diff, shr->spec, &shr->diff, &shr->spec);
+	}
+	else {
+		GPU_link(mat, "shade_lights_clustered",
+		         GPU_builtin(GPU_VIEW_POSITION), shi->vn, shi->view, shi->rgb, shi->specrgb, shi->spec, shi->har,
+		         shi->refl, GPU_uniform(matp), GPU_uniform(diffp), GPU_uniform(specp), GPU_uniform(matq),
+		         GPU_builtin(GPU_VIEW_MATRIX), GPU_builtin(GPU_INVERSE_VIEW_MATRIX),
+		         shr->diff, shr->spec, &shr->diff, &shr->spec);
+	}
+}
+
+/* BGE-Remix P8 Part B (P8.15): the object drawn next (This Layer Only lamps
+ * of the clustered loop test it per object, so one material serves every
+ * layer) */
+void GPU_material_set_object_layer(GPUMaterial *material, int lay)
+{
+	if (material && material->pass && material->oblayloc != -1) {
+		glProgramUniform1i(GPU_shader_program(GPU_pass_shader(material->pass)), material->oblayloc, lay);
+	}
+}
+
+bool GPU_lamp_needs_own_code(Lamp *la)
+{
+	if (!GPU_speed_feature("clustered_lights") || !GLEW_VERSION_4_3) {
+		return true;
+	}
+	if (la->type == LA_SPOT && la->shadowmap_type == LA_SHADMAP_VARIANCE && BKE_lamp_casts_shadow(la)) {
+		return true;
+	}
+	if (la->falloff_type == LA_FALLOFF_CURVE && !BKE_lamp_is_physical(la) && la->type != LA_AREA &&
+	    la->type != LA_SUN && la->type != LA_HEMI)
+	{
+		return true;
+	}
+	for (int i = 0; i < MAX_MTEX; i++) {
+		MTex *mtex = la->mtex[i];
+		if (mtex && mtex->tex && (GPU_texture_is_procedural(mtex->tex) ||
+		                          ((mtex->tex->type & TEX_IMAGE) && mtex->tex->ima)))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+/* a lamp of the material: its own code, or (clustered) the loop's */
+static void material_light(GPUShadeInput *shi, GPUShadeResult *shr, GPULamp *lamp)
+{
+	if (!shi->gpumat->clustered || !gpu_lamp_clusterable(lamp)) {
+		shade_one_light(shi, shr, lamp);
+	}
+}
+
 static void material_lights(GPUShadeInput *shi, GPUShadeResult *shr)
 {
 	Base *base;
 	Scene *sce_iter;
 	Material *ma = shi->mat;
+
+	/* BGE-Remix P8 Part B (P8.15): the loop over the clusters' lamps (a
+	 * material whose light group has no bit left keeps per-lamp code) */
+	GPUMaterial *gpumat = shi->gpumat;
+	gpumat->clustered = GLEW_VERSION_4_3 && !gpumat->is_opensubdiv && GPU_speed_feature("clustered_lights") &&
+	                    (!ma || !ma->group || gpu_light_group_index(ma->group) >= 0);
 
 	/* BGE-Remix P8.9: a material with a light group is lit by that group's
 	 * lamps only (F12 does so; the game lit it with every lamp) */
@@ -1896,8 +2242,11 @@ static void material_lights(GPUShadeInput *shi, GPUShadeResult *shr)
 			if (go->ob && go->ob->type == OB_LAMP) {
 				GPULamp *lamp = GPU_lamp_from_blender(shi->gpumat->scene, go->ob, NULL);
 				if (lamp)
-					shade_one_light(shi, shr, lamp);
+					material_light(shi, shr, lamp);
 			}
+		}
+		if (gpumat->clustered) {
+			material_lights_clustered(shi, shr);
 		}
 		GPU_link(shi->gpumat, "shade_clamp_positive", shr->spec, &shr->spec);
 		GPU_link(shi->gpumat, "shade_clamp_positive", shr->diff, &shr->diff);
@@ -1910,7 +2259,7 @@ static void material_lights(GPUShadeInput *shi, GPUShadeResult *shr)
 		if (ob->type == OB_LAMP && !gpu_lamp_in_exclusive_group(ob)) {
 			GPULamp *lamp = GPU_lamp_from_blender(shi->gpumat->scene, ob, NULL);
 			if (lamp)
-				shade_one_light(shi, shr, lamp);
+				material_light(shi, shr, lamp);
 		}
 
 		if (ob->transflag & OB_DUPLI) {
@@ -1926,7 +2275,7 @@ static void material_lights(GPUShadeInput *shi, GPUShadeResult *shr)
 
 					GPULamp *lamp = GPU_lamp_from_blender(shi->gpumat->scene, ob_iter, ob);
 					if (lamp)
-						shade_one_light(shi, shr, lamp);
+						material_light(shi, shr, lamp);
 
 					copy_m4_m4(ob_iter->obmat, omat);
 				}
@@ -1934,6 +2283,10 @@ static void material_lights(GPUShadeInput *shi, GPUShadeResult *shr)
 			
 			free_object_duplilist(lb);
 		}
+	}
+
+	if (gpumat->clustered) {
+		material_lights_clustered(shi, shr);
 	}
 
 	/* prevent only shadow lamps from producing negative colors.*/
@@ -3479,6 +3832,7 @@ static void gpu_lamp_area_update(GPULamp *lamp, float obmat[4][4])
 
 void GPU_lamp_update(GPULamp *lamp, int lay, int hide, float obmat[4][4])
 {
+	gpu_lamps_gen++;  /* BGE-Remix P8 Part B: the clusters' records */
 	float mat[4][4];
 	float obmat_scale[3];
 
@@ -3512,6 +3866,7 @@ void GPU_lamp_update(GPULamp *lamp, int lay, int hide, float obmat[4][4])
 
 void GPU_lamp_update_size(GPULamp *lamp, float size, float area_x, float area_y, float sun_angle)
 {
+	gpu_lamps_gen++;  /* BGE-Remix P8 Part B: the clusters' records */
 	lamp->size_radius = size;
 	lamp->sun_angle = sun_angle;
 	if (lamp->type == LA_AREA && (lamp->area_x != area_x || lamp->area_y != area_y)) {
@@ -3525,6 +3880,7 @@ void GPU_lamp_update_size(GPULamp *lamp, float size, float area_x, float area_y,
 
 void GPU_lamp_update_shadow(GPULamp *lamp, float bias, float bleedbias, const float color[3], float contact)
 {
+	gpu_lamps_gen++;  /* BGE-Remix P8 Part B: the clusters' records */
 	/* as gpu_lamp_from_blender: initshadowbuf's 0.02 and a quarter */
 	lamp->bias = 0.02f * bias * 0.25f;
 	lamp->bleedbias = bleedbias;
@@ -3538,6 +3894,7 @@ void GPU_lamp_update_shadow(GPULamp *lamp, float bias, float bleedbias, const fl
 
 void GPU_lamp_update_colors(GPULamp *lamp, float r, float g, float b, float energy)
 {
+	gpu_lamps_gen++;  /* BGE-Remix P8 Part B: the clusters' records */
 	lamp->energy = energy;
 	if (lamp->mode & LA_NEG) lamp->energy = -lamp->energy;
 
@@ -3549,6 +3906,7 @@ void GPU_lamp_update_colors(GPULamp *lamp, float r, float g, float b, float ener
 void GPU_lamp_update_distance(GPULamp *lamp, float distance, float att1, float att2,
                               float coeff_const, float coeff_lin, float coeff_quad)
 {
+	gpu_lamps_gen++;  /* BGE-Remix P8 Part B: the clusters' records */
 	lamp->dist = distance;
 	lamp->att1 = att1;
 	lamp->att2 = att2;
@@ -3564,8 +3922,27 @@ void GPU_lamp_update_distance(GPULamp *lamp, float distance, float att1, float a
 
 void GPU_lamp_update_spot(GPULamp *lamp, float spotsize, float spotblend)
 {
+	gpu_lamps_gen++;  /* BGE-Remix P8 Part B: the clusters' records */
 	lamp->spotsi = cosf(spotsize * 0.5f);
 	lamp->spotbl = (1.0f - lamp->spotsi) * spotblend;
+}
+
+static bool gpu_lamp_shadow_create(GPULamp *lamp);
+static void gpu_lamp_shadow_free(GPULamp *lamp);
+
+/* BGE-Remix P8 Part B (P8.15): the lamp's type changed while playing; the
+ * clustered loop follows it (materials with the lamp's own code keep the
+ * type they were made with); its shadow is made for the new type */
+void GPU_lamp_update_type(GPULamp *lamp, int type)
+{
+	if (lamp->type == type) {
+		return;
+	}
+	gpu_lamps_gen++;
+	lamp->type = type;
+	gpu_lamp_shadow_free(lamp);
+	gpu_lamp_shadow_create(lamp);
+	/* its matrices follow with the next GPU_lamp_update */
 }
 
 static void gpu_lamp_from_blender(Scene *scene, Object *ob, Object *par, Lamp *la, GPULamp *lamp)
@@ -3680,9 +4057,10 @@ static void gpu_lamp_shadow_free(GPULamp *lamp)
 static bool gpu_lamp_shadow_create(GPULamp *lamp)
 {
 	Lamp *la = lamp->la;
-	const int kind = !BKE_lamp_casts_shadow(la) ? GPU_LAMP_SHADOW_NONE :
-	                 (la->type == LA_SPOT) ? GPU_LAMP_SHADOW_SPOT :
-	                 (la->type == LA_SUN) ? GPU_LAMP_SHADOW_CASCADE : GPU_LAMP_SHADOW_CUBE;
+	/* the lamp's type (BGE-Remix P8 Part B: it may differ from the Lamp's) */
+	const int kind = (!BKE_lamp_casts_shadow(la) || lamp->type == LA_HEMI) ? GPU_LAMP_SHADOW_NONE :
+	                 (lamp->type == LA_SPOT) ? GPU_LAMP_SHADOW_SPOT :
+	                 (lamp->type == LA_SUN) ? GPU_LAMP_SHADOW_CASCADE : GPU_LAMP_SHADOW_CUBE;
 	if (kind == GPU_LAMP_SHADOW_NONE) {
 		return false;
 	}
@@ -3782,6 +4160,7 @@ GPULamp *GPU_lamp_from_blender(Scene *scene, Object *ob, Object *par)
 
 	la = ob->data;
 	gpu_lamp_from_blender(scene, ob, par, la, lamp);
+	lamp->excl = gpu_lamp_in_exclusive_group(ob);  /* P8.15 */
 
 	/* BGE-Remix P8.10: every lamp that casts gets a shadow buffer */
 	if (gpu_lamp_shadow_create(lamp)) {
@@ -3950,6 +4329,7 @@ static void gpu_lamp_cascades(GPULamp *lamp)
 
 void GPU_lamp_update_buffer_mats(GPULamp *lamp)
 {
+	gpu_lamps_gen++;  /* BGE-Remix P8 Part B: the clusters' records */
 	float rangemat[4][4], persmat[4][4];
 
 	/* initshadowbuf */

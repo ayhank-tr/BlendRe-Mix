@@ -156,6 +156,8 @@ extern Material defmaterial;	/* material.c */
 
 /* end of blender include block */
 
+#include "GPU_material.h"
+
 #include "KX_BlenderInputDevice.h"
 #include "KX_ConvertProperties.h"
 
@@ -893,7 +895,11 @@ static bool scene_has_layer_lamps(Scene *blenderscene)
 	Base *base;
 	for (SETLOOPER(blenderscene, sce_iter, base)) {
 		Object *ob = base->object;
-		if (ob->type == OB_LAMP && ob->data && (((Lamp *)ob->data)->mode & LA_LAYER)) {
+		/* BGE-Remix P8 Part B (P8.15): the clustered lamps test the layer per
+		 * object: only lamps with their own code in the materials count */
+		if (ob->type == OB_LAMP && ob->data && (((Lamp *)ob->data)->mode & LA_LAYER) &&
+		    GPU_lamp_needs_own_code((Lamp *)ob->data))
+		{
 			found = true;
 			break;
 		}

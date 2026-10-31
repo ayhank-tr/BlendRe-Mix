@@ -25,12 +25,14 @@
  * lamps (see GPU_lights.h).
  */
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "MEM_guardedalloc.h"
 
 #include "BLI_utildefines.h"
+#include "BLI_math_base.h"
 
 #include "GPU_glew.h"
 #include "GPU_glcheck.h"
@@ -345,10 +347,255 @@ void GPU_lights_program_samplers(unsigned int program)
 	if (loc >= 0) {
 		glProgramUniform1i(program, loc, GPU_lights_unit_scenedepth());
 	}
+	/* never read; on a unit of its own type */
+	loc = glGetUniformLocation(program, "bge_noramp");
+	if (loc >= 0) {
+		glProgramUniform1i(program, loc, GPU_lights_unit_scenedepth());
+	}
+}
+
+/* ------------------------------------------------------------------------ */
+/* P8.15: the clustered lamps */
+
+#define CL_X 16
+#define CL_Y 9
+#define CL_Z 24
+#define CL_COUNT (CL_X * CL_Y * CL_Z)
+
+static const char *cluster_cs =
+        "layout(local_size_x = 64) in;\n"
+        "struct BgeLamp {\n"
+        "	vec4 co_type, vec_dist, col_energy, spot;\n"
+        "	mat4 imat;\n"
+        "	vec4 falloff, coeff;\n"
+        "	vec4 area[4];\n"
+        "	vec4 shadow_color, shadow_params, shadow_clip, contact, cascade_scale, cascade_range;\n"
+        "	mat4 shadowmat[4];\n"
+        "	vec4 bound;\n"
+        "	uvec4 bits;\n"
+        "};\n"
+        "layout(std430, binding = 11) readonly buffer BgeLamps { BgeLamp lamps[]; };\n"
+        "layout(std430, binding = 13) writeonly buffer BgeClusterMasks { uint mask[]; };\n"
+        "uniform mat4 view;\n"
+        "uniform mat4 projinv;\n"
+        "uniform vec4 depth;\n"
+        "uniform uint nlamps;\n"
+        "uniform uint words;\n"
+        /* the view space point on the ray through ndc at view depth z */
+        "vec3 at_depth(vec2 ndc, float z)\n"
+        "{\n"
+        "	vec4 a = projinv * vec4(ndc, -1.0, 1.0);\n"
+        "	vec4 b = projinv * vec4(ndc, 1.0, 1.0);\n"
+        "	a /= a.w;\n"
+        "	b /= b.w;\n"
+        "	float t = (-z - a.z) / (b.z - a.z);\n"
+        "	return mix(a.xyz, b.xyz, t);\n"
+        "}\n"
+        "void main()\n"
+        "{\n"
+        "	uint c = gl_GlobalInvocationID.x;\n"
+        "	if (c >= 3456u) return;\n"
+        "	uint tx = c % 16u, ty = (c / 16u) % 9u, k = c / 144u;\n"
+        "	float z0 = depth.x * pow(depth.y / depth.x, float(k) / 24.0);\n"
+        "	float z1 = depth.x * pow(depth.y / depth.x, float(k + 1u) / 24.0);\n"
+        "	vec2 n0 = vec2(tx, ty) / vec2(16.0, 9.0) * 2.0 - 1.0;\n"
+        "	vec2 n1 = vec2(tx + 1u, ty + 1u) / vec2(16.0, 9.0) * 2.0 - 1.0;\n"
+        "	vec3 lo = vec3(1e30), hi = vec3(-1e30);\n"
+        "	for (int i = 0; i < 8; i++) {\n"
+        "		vec2 n = vec2((i & 1) != 0 ? n1.x : n0.x, (i & 2) != 0 ? n1.y : n0.y);\n"
+        "		vec3 p = at_depth(n, (i & 4) != 0 ? z1 : z0);\n"
+        "		lo = min(lo, p);\n"
+        "		hi = max(hi, p);\n"
+        "	}\n"
+        "	for (uint w = 0u; w < words; w++) {\n"
+        "		uint bits = 0u;\n"
+        "		for (uint b = 0u; b < 32u; b++) {\n"
+        "			uint li = w * 32u + b;\n"
+        "			if (li >= nlamps) break;\n"
+        "			vec4 bound = lamps[li].bound;\n"
+        "			bool inside = true;\n"
+        "			if (bound.w > 0.0) {\n"
+        "				vec3 cv = (view * vec4(bound.xyz, 1.0)).xyz;\n"
+        "				vec3 d = max(max(lo - cv, cv - hi), vec3(0.0));\n"
+        "				inside = dot(d, d) <= bound.w * bound.w;\n"
+        "			}\n"
+        "			if (inside) bits |= 1u << b;\n"
+        "		}\n"
+        "		mask[c * words + w] = bits;\n"
+        "	}\n"
+        "}\n";
+
+static struct {
+	GLuint prog;
+	bool failed;
+	GLint loc_view, loc_projinv, loc_depth, loc_nlamps, loc_words;
+	GLuint lampbuf, infobuf, maskbuf;
+	size_t lampbuf_size, maskbuf_size;
+	unsigned int hash;
+	int count;
+	bool uploaded;
+	/* what the masks were made for */
+	float view[4][4], proj[4][4];
+	int viewport[4];
+	bool valid;
+} cl = {0};
+
+static void m4_invert(float r[4][4], const float m[4][4])
+{
+	/* general 4x4 inverse (cofactors), in double */
+	double inv[16], det;
+	const float *a = &m[0][0];
+	inv[0] = a[5] * a[10] * a[15] - a[5] * a[11] * a[14] - a[9] * a[6] * a[15] + a[9] * a[7] * a[14] + a[13] * a[6] * a[11] - a[13] * a[7] * a[10];
+	inv[4] = -a[4] * a[10] * a[15] + a[4] * a[11] * a[14] + a[8] * a[6] * a[15] - a[8] * a[7] * a[14] - a[12] * a[6] * a[11] + a[12] * a[7] * a[10];
+	inv[8] = a[4] * a[9] * a[15] - a[4] * a[11] * a[13] - a[8] * a[5] * a[15] + a[8] * a[7] * a[13] + a[12] * a[5] * a[11] - a[12] * a[7] * a[9];
+	inv[12] = -a[4] * a[9] * a[14] + a[4] * a[10] * a[13] + a[8] * a[5] * a[14] - a[8] * a[6] * a[13] - a[12] * a[5] * a[10] + a[12] * a[6] * a[9];
+	inv[1] = -a[1] * a[10] * a[15] + a[1] * a[11] * a[14] + a[9] * a[2] * a[15] - a[9] * a[3] * a[14] - a[13] * a[2] * a[11] + a[13] * a[3] * a[10];
+	inv[5] = a[0] * a[10] * a[15] - a[0] * a[11] * a[14] - a[8] * a[2] * a[15] + a[8] * a[3] * a[14] + a[12] * a[2] * a[11] - a[12] * a[3] * a[10];
+	inv[9] = -a[0] * a[9] * a[15] + a[0] * a[11] * a[13] + a[8] * a[1] * a[15] - a[8] * a[3] * a[13] - a[12] * a[1] * a[11] + a[12] * a[3] * a[9];
+	inv[13] = a[0] * a[9] * a[14] - a[0] * a[10] * a[13] - a[8] * a[1] * a[14] + a[8] * a[2] * a[13] + a[12] * a[1] * a[10] - a[12] * a[2] * a[9];
+	inv[2] = a[1] * a[6] * a[15] - a[1] * a[7] * a[14] - a[5] * a[2] * a[15] + a[5] * a[3] * a[14] + a[13] * a[2] * a[7] - a[13] * a[3] * a[6];
+	inv[6] = -a[0] * a[6] * a[15] + a[0] * a[7] * a[14] + a[4] * a[2] * a[15] - a[4] * a[3] * a[14] - a[12] * a[2] * a[7] + a[12] * a[3] * a[6];
+	inv[10] = a[0] * a[5] * a[15] - a[0] * a[7] * a[13] - a[4] * a[1] * a[15] + a[4] * a[3] * a[13] + a[12] * a[1] * a[7] - a[12] * a[3] * a[5];
+	inv[14] = -a[0] * a[5] * a[14] + a[0] * a[6] * a[13] + a[4] * a[1] * a[14] - a[4] * a[2] * a[13] - a[12] * a[1] * a[6] + a[12] * a[2] * a[5];
+	inv[3] = -a[1] * a[6] * a[11] + a[1] * a[7] * a[10] + a[5] * a[2] * a[11] - a[5] * a[3] * a[10] - a[9] * a[2] * a[7] + a[9] * a[3] * a[6];
+	inv[7] = a[0] * a[6] * a[11] - a[0] * a[7] * a[10] - a[4] * a[2] * a[11] + a[4] * a[3] * a[10] + a[8] * a[2] * a[7] - a[8] * a[3] * a[6];
+	inv[11] = -a[0] * a[5] * a[11] + a[0] * a[7] * a[9] + a[4] * a[1] * a[11] - a[4] * a[3] * a[9] - a[8] * a[1] * a[7] + a[8] * a[3] * a[5];
+	inv[15] = a[0] * a[5] * a[10] - a[0] * a[6] * a[9] - a[4] * a[1] * a[10] + a[4] * a[2] * a[9] + a[8] * a[1] * a[6] - a[8] * a[2] * a[5];
+	det = a[0] * inv[0] + a[1] * inv[4] + a[2] * inv[8] + a[3] * inv[12];
+	det = (det != 0.0) ? 1.0 / det : 0.0;
+	float *o = &r[0][0];
+	for (int i = 0; i < 16; i++) {
+		o[i] = (float)(inv[i] * det);
+	}
+}
+
+static void cluster_bind(void)
+{
+	if (cl.lampbuf) {
+		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 11, cl.lampbuf);
+		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 12, cl.infobuf);
+		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 13, cl.maskbuf);
+	}
+}
+
+void GPU_lights_cluster(const void *records, int count, size_t record_size, unsigned int hash,
+                        const float view[4][4], const float proj[4][4], const int viewport[4])
+{
+	if (cl.failed || !GLEW_VERSION_4_3) {
+		return;
+	}
+	if (!cl.prog) {
+		cl.prog = GPU_compute_program(cluster_cs, "BGE-Remix clustered lamps");
+		if (!cl.prog) {
+			cl.failed = true;
+			return;
+		}
+		cl.loc_view = glGetUniformLocation(cl.prog, "view");
+		cl.loc_projinv = glGetUniformLocation(cl.prog, "projinv");
+		cl.loc_depth = glGetUniformLocation(cl.prog, "depth");
+		cl.loc_nlamps = glGetUniformLocation(cl.prog, "nlamps");
+		cl.loc_words = glGetUniformLocation(cl.prog, "words");
+		glCreateBuffers(1, &cl.infobuf);
+		glNamedBufferStorage(cl.infobuf, sizeof(float) * 12, NULL, GL_DYNAMIC_STORAGE_BIT);
+		GPU_debug_label(GL_BUFFER, cl.infobuf, "BGE-Remix cluster info");
+	}
+
+	/* the records, when they changed */
+	const size_t bytes = (size_t)max_ii(count, 1) * record_size;
+	if (!cl.lampbuf || cl.lampbuf_size < bytes) {
+		if (cl.lampbuf) {
+			glDeleteBuffers(1, &cl.lampbuf);
+		}
+		cl.lampbuf_size = (bytes > cl.lampbuf_size * 2) ? bytes : cl.lampbuf_size * 2;
+		glCreateBuffers(1, &cl.lampbuf);
+		glNamedBufferStorage(cl.lampbuf, (GLsizeiptr)cl.lampbuf_size, NULL, GL_DYNAMIC_STORAGE_BIT);
+		GPU_debug_label(GL_BUFFER, cl.lampbuf, "BGE-Remix lamps");
+		cl.uploaded = false;
+	}
+	bool changed = false;
+	if (!cl.uploaded || cl.hash != hash || cl.count != count) {
+		if (count > 0) {
+			glNamedBufferSubData(cl.lampbuf, 0, (GLsizeiptr)(count * record_size), records);
+		}
+		cl.hash = hash;
+		cl.count = count;
+		cl.uploaded = true;
+		changed = true;
+	}
+	const unsigned int words = (unsigned int)max_ii((count + 31) / 32, 1);
+	const size_t maskbytes = (size_t)CL_COUNT * words * sizeof(unsigned int);
+	if (!cl.maskbuf || cl.maskbuf_size < maskbytes) {
+		if (cl.maskbuf) {
+			glDeleteBuffers(1, &cl.maskbuf);
+		}
+		cl.maskbuf_size = maskbytes;
+		glCreateBuffers(1, &cl.maskbuf);
+		glNamedBufferStorage(cl.maskbuf, (GLsizeiptr)maskbytes, NULL, 0);
+		GPU_debug_label(GL_BUFFER, cl.maskbuf, "BGE-Remix cluster masks");
+		changed = true;
+	}
+	if (!changed && cl.valid && memcmp(cl.view, view, sizeof(cl.view)) == 0 &&
+	    memcmp(cl.proj, proj, sizeof(cl.proj)) == 0 && memcmp(cl.viewport, viewport, sizeof(cl.viewport)) == 0)
+	{
+		cluster_bind();
+		return;
+	}
+	memcpy(cl.view, view, sizeof(cl.view));
+	memcpy(cl.proj, proj, sizeof(cl.proj));
+	memcpy(cl.viewport, viewport, sizeof(cl.viewport));
+	cl.valid = true;
+
+	/* the view's depth range from its projection */
+	float znear, zfar;
+	if (proj[3][3] == 0.0f) {
+		znear = proj[3][2] / (proj[2][2] - 1.0f);
+		zfar = proj[3][2] / (proj[2][2] + 1.0f);
+	}
+	else {
+		znear = (proj[3][2] + 1.0f) / proj[2][2];
+		zfar = (proj[3][2] - 1.0f) / proj[2][2];
+	}
+	znear = max_ff(znear, 1e-3f);
+	zfar = max_ff(zfar, znear * 1.001f);
+
+	float info[12] = {
+		(float)viewport[0], (float)viewport[1], (float)viewport[2], (float)viewport[3],
+		znear, zfar, (float)CL_Z / logf(zfar / znear), 0.0f,
+		0.0f, 0.0f, 0.0f, 0.0f,
+	};
+	unsigned int counts[2] = {words, (unsigned int)count};
+	memcpy(&info[8], counts, sizeof(counts));
+	glNamedBufferSubData(cl.infobuf, 0, sizeof(info), info);
+
+	float projinv[4][4];
+	m4_invert(projinv, proj);
+	GLint program = 0;
+	glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+	glUseProgram(cl.prog);
+	glUniformMatrix4fv(cl.loc_view, 1, GL_FALSE, &view[0][0]);
+	glUniformMatrix4fv(cl.loc_projinv, 1, GL_FALSE, &projinv[0][0]);
+	glUniform4f(cl.loc_depth, znear, zfar, 0.0f, 0.0f);
+	glUniform1ui(cl.loc_nlamps, (GLuint)count);
+	glUniform1ui(cl.loc_words, words);
+	cluster_bind();
+	glDispatchCompute((CL_COUNT + 63) / 64, 1, 1);
+	glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+	glUseProgram((GLuint)program);
 }
 
 void GPU_lights_exit(void)
 {
+	if (cl.prog) {
+		glDeleteProgram(cl.prog);
+	}
+	GLuint bufs[3] = {cl.lampbuf, cl.infobuf, cl.maskbuf};
+	for (int i = 0; i < 3; i++) {
+		if (bufs[i]) {
+			glDeleteBuffers(1, &bufs[i]);
+		}
+	}
+	memset(&cl, 0, sizeof(cl));
+
 	if (pool.tex) {
 		glDeleteTextures(1, &pool.tex);
 	}

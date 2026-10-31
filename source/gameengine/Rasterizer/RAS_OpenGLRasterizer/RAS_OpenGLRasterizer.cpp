@@ -1132,6 +1132,12 @@ void RAS_OpenGLRasterizer::SetAlphaBlend(int alphablend)
 	/* BGE-Remix P8 Part B: the alpha test is the shaders' (the storage sets
 	 * the old one only for drawing that is still fixed-function) */
 	GPU_material_alpha_test(alphablend, &m_state.alpha_test, &m_state.alpha_ref);
+	/* BGE-Remix P8 Part B (P8.16): cut-out and transparent casters leave
+	 * holes in shadow maps where they are less than half covered */
+	if (m_drawingmode == KX_SHADOW && alphablend != GPU_BLEND_SOLID && alphablend != GPU_BLEND_ADD) {
+		m_state.alpha_test = true;
+		m_state.alpha_ref = (alphablend == GPU_BLEND_CLIP) ? m_state.alpha_ref : 0.5f;
+	}
 	/* BGE-Remix P8 Part B (P8.12): cut-outs (clip alpha) in a multisampled
 	 * target become alpha to coverage (smooth edges) */
 	if (alphablend == GPU_BLEND_CLIP && m_pipeline->Multisampled()) {

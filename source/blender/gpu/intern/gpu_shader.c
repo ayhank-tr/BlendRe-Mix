@@ -372,10 +372,31 @@ static const char *gpu_frontend_lights =
         "uniform sampler2D bge_scenedepth;\n"
         "uniform float bge_scenedepth_on;\n"
         "uniform int bge_shadowpass;\n"
+        "uniform sampler2D bge_noramp;\n"
+        "uniform int bge_oblay;\n"
         "#if __VERSION__ >= 400\n"
         "#define BGE_GATHER(uvl) textureGather(bge_shadowpool, uvl, 0)\n"
         "#else\n"
         "#define BGE_GATHER(uvl) vec4(texture(bge_shadowpool, uvl).r)\n"
+        "#endif\n"
+        /* P8.15: the lamps (world space; GPULampRecord in gpu_material.c),
+         * and the view's clusters (gpu_lights.c) */
+        "#if __VERSION__ >= 430\n"
+        "#define BGE_CLUSTERED\n"
+        "struct BgeLamp {\n"
+        "	vec4 co_type, vec_dist, col_energy, spot;\n"
+        "	mat4 imat;\n"
+        "	vec4 falloff, coeff;\n"
+        "	vec4 area[4];\n"
+        "	vec4 shadow_color, shadow_params, shadow_clip, contact, cascade_scale, cascade_range;\n"
+        "	mat4 shadowmat[4];\n"
+        "	vec4 bound;\n"
+        "	uvec4 bits;\n"
+        "};\n"
+        "layout(std430, binding = 11) readonly buffer BgeLamps { BgeLamp bge_lamps[]; };\n"
+        "layout(std430, binding = 12) readonly buffer BgeClusterInfo {\n"
+        "	vec4 bge_cl_viewport; vec4 bge_cl_depth; uvec4 bge_cl_counts; };\n"
+        "layout(std430, binding = 13) readonly buffer BgeClusterMasks { uint bge_cl_mask[]; };\n"
         "#endif\n";
 
 /* BGE-Remix P8 Part B (P8.16): a lamp's shadow views in one pass. Each view

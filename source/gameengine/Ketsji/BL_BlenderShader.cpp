@@ -39,6 +39,7 @@
 
 #include "BL_BlenderShader.h"
 #include "BL_Material.h"
+#include "KX_GameObject.h"
 
 #include "GPU_material.h"
 #include "GPU_shader.h"
@@ -164,6 +165,10 @@ void BL_BlenderShader::Update(const RAS_MeshSlot & ms, RAS_IRasterizer* rasty )
 
 	if (!gpumat || !GPU_material_bound(gpumat))
 		return;
+
+	/* BGE-Remix P8 Part B (P8.15): the object's layers (This Layer Only lamps) */
+	if (ms.m_clientObj)
+		GPU_material_set_object_layer(gpumat, ((KX_GameObject *)ms.m_clientObj)->GetLayer());
 
 	MT_Matrix4x4 model;
 	model.setValue(ms.m_OpenGLMatrix);

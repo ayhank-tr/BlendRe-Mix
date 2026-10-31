@@ -4274,3 +4274,363 @@ void shade_pbr_alpha(vec3 vn, vec3 view, vec3 f0, float transmission, float alph
 	float f = pbr_fresnel(f0, max(dot(N, V), 0.0)).g;
 	outalpha = alpha * (1.0 - clamp(transmission, 0.0, 1.0) * (1.0 - f));
 }
+
+/* ---- BGE-Remix P8 Part B (P8.15): the clustered lamps ----
+ * The material's lamps in one loop: the lamps of the pixel's cluster (a
+ * compute pass sorted them, GPU_lights.h), each lit as shade_one_light in
+ * gpu_material.c writes code for one lamp, with the material's own diffuse
+ * and specular models and ramps. Lamps with textures or a falloff curve,
+ * and Variance shadows, keep that per-lamp code. In view space; shadows in
+ * world space (the lamp records are world space).
+ * matp: diffuse model, specular model, flags (BGE_LF_*), light group (-1:
+ * none); diffp: roughness, toon size, toon smooth (or Fresnel), darkness;
+ * specp: refraction (Blinn), rms (Ward), toon size, toon smooth;
+ * rampc, ramps: input, blend type, factor, 0 */
+
+#define BGE_LF_CUBIC 1
+#define BGE_LF_RAMPCOL 2
+#define BGE_LF_RAMPSPEC 4
+#define BGE_LF_SHADOW 8
+#define BGE_LF_NOSHADERS 16
+#define BGE_LF_NOSHADOWS 32
+#define BGE_LF_DIFFUSE 64
+#define BGE_LF_SPECULAR 128
+
+#ifdef BGE_CLUSTERED
+
+uint bge_cluster_index(vec3 co)
+{
+	vec2 f = (gl_FragCoord.xy - bge_cl_viewport.xy) / max(bge_cl_viewport.zw, vec2(1.0));
+	uvec2 t = uvec2(clamp(f, vec2(0.0), vec2(0.99999)) * vec2(16.0, 9.0));
+	float z = max(-co.z, bge_cl_depth.x);
+	uint k = uint(clamp(log(z / bge_cl_depth.x) * bge_cl_depth.z, 0.0, 23.0));
+	return (k * 9u + t.y) * 16u + t.x;
+}
+
+void bge_ramp_blend(float type, float fac, vec4 col1, vec4 col2, out vec4 outcol)
+{
+	int t = int(type + 0.5);
+	if (t == 0) mix_blend(fac, col1, col2, outcol);
+	else if (t == 1) mix_add(fac, col1, col2, outcol);
+	else if (t == 2) mix_mult(fac, col1, col2, outcol);
+	else if (t == 3) mix_sub(fac, col1, col2, outcol);
+	else if (t == 4) mix_screen(fac, col1, col2, outcol);
+	else if (t == 5) mix_div(fac, col1, col2, outcol);
+	else if (t == 6) mix_diff(fac, col1, col2, outcol);
+	else if (t == 7) mix_dark(fac, col1, col2, outcol);
+	else if (t == 8) mix_light(fac, col1, col2, outcol);
+	else if (t == 9) mix_overlay(fac, col1, col2, outcol);
+	else if (t == 10) mix_dodge(fac, col1, col2, outcol);
+	else if (t == 11) mix_burn(fac, col1, col2, outcol);
+	else if (t == 12) mix_hue(fac, col1, col2, outcol);
+	else if (t == 13) mix_sat(fac, col1, col2, outcol);
+	else if (t == 14) mix_val(fac, col1, col2, outcol);
+	else if (t == 15) mix_color(fac, col1, col2, outcol);
+	else if (t == 16) mix_soft(fac, col1, col2, outcol);
+	else mix_linear(fac, col1, col2, outcol);
+}
+
+/* do_colorband_blend */
+void bge_colorband_blend(sampler2D band, vec4 rp, float fac, vec4 incol, out vec4 outcol)
+{
+	vec4 col;
+	float a;
+	valtorgb(fac, band, col, a);
+	bge_ramp_blend(rp.y, col.a * rp.z, incol, col, outcol);
+}
+
+/* one lamp's visibility (lamp_get_visibility): visifac, and lv, dist, the
+ * view space lamp position and direction (it returns a value: the
+ * library's parser reads only functions without one, and would stop at its
+ * struct parameter) */
+float bge_lamp_visibility(BgeLamp L, vec3 co, mat4 viewmat, mat4 viewinv, out vec3 lampco, out vec3 lampvec,
+                          out vec3 lv, out float dist)
+{
+	float visifac;
+	int type = int(L.co_type.w + 0.5);
+	uint mode = L.bits.x;
+	lampvec = normalize(mat3(viewmat) * L.vec_dist.xyz);
+	lampco = (viewmat * vec4(L.co_type.xyz, 1.0)).xyz;
+	if (type == 1 || type == 3) {
+		lamp_visibility_sun_hemi(lampvec, lv, dist, visifac);
+		return visifac;
+	}
+	lamp_visibility_other(co, lampco, lv, dist, visifac);
+	if (type == 4)
+		return visifac;
+	int falloff = int(L.falloff.x + 0.5);
+	float ldist = L.vec_dist.w;
+	if (falloff == 1) lamp_falloff_invlinear(ldist, dist, visifac);
+	else if (falloff == 2) lamp_falloff_invsquare(ldist, dist, visifac);
+	else if (falloff == 4) lamp_falloff_sliders(ldist, L.falloff.y, L.falloff.z, dist, visifac);
+	else if (falloff == 5) lamp_falloff_invcoefficients(L.coeff.x, L.coeff.y, L.coeff.z, dist, visifac);
+	if ((mode & 64u) != 0u)  /* LA_SPHERE */
+		lamp_visibility_sphere(ldist, dist, visifac, visifac);
+	if (type == 2) {
+		float inpr;
+		mat4 dynimat = L.imat * viewinv;
+		if ((mode & 128u) != 0u)  /* LA_SQUARE */
+			lamp_visibility_spot_square(lampvec, dynimat, L.spot.zw, lv, inpr);
+		else
+			lamp_visibility_spot_circle(lampvec, dynimat, L.spot.zw, lv, inpr);
+		lamp_visibility_spot(L.spot.x, L.spot.y, inpr, visifac, visifac);
+	}
+	lamp_visibility_clamp(visifac, visifac);
+	return visifac;
+}
+
+/* the lamp's shadow (gpu_lamp_shadow): its map in the pool, then contact */
+float bge_lamp_shadow(BgeLamp L, vec3 co, vec3 vn, vec3 lv, float inp, mat4 viewinv)
+{
+	int kind = int(L.shadow_color.w + 0.5);
+	vec3 wp = (viewinv * vec4(co, 1.0)).xyz;
+	vec3 wn = mat3(viewinv) * vn;
+	float layer = L.shadow_clip.w;
+	float s = 1.0;
+	if (kind == 1)
+		shadow_spot_soft(wp, wn, inp, layer, L.shadowmat[0], L.shadow_params, L.shadow_clip, s);
+	else if (kind == 2)
+		shadow_cube_soft(wp, wn, inp, layer, L.shadowmat[0], L.shadow_params, L.shadow_clip, s);
+	else if (kind == 3)
+		shadow_sun_soft(wp, wn, inp, layer, L.shadowmat[0], L.shadowmat[1], L.shadowmat[2], L.shadowmat[3],
+		                L.cascade_scale, L.cascade_range, L.shadow_params, s);
+	shadow_contact(co, lv, L.contact, s, s);
+	return s;
+}
+
+/* whether the lamp lights this material and object */
+bool bge_lamp_applies(BgeLamp L, int flags, float group)
+{
+	uint mode = L.bits.x;
+	if ((mode & 4u) != 0u && (L.bits.y & uint(bge_oblay)) == 0u)  /* LA_LAYER */
+		return false;
+	if ((mode & 32u) != 0u && (flags & BGE_LF_SHADOW) == 0)  /* LA_ONLYSHADOW */
+		return false;
+	if (group >= 0.0)
+		return (L.bits.z & (1u << uint(group))) != 0u;
+	return (L.bits.w & 4u) == 0u;  /* in an exclusive light group */
+}
+
+void shade_lights_clustered_ex(
+        vec3 co, vec3 vn, vec3 view, vec4 rgb, vec4 specrgb, float spec, float har, float refl,
+        vec4 matp, vec4 diffp, vec4 specp, vec4 matq, vec4 rampc, vec4 ramps, sampler2D bandc, sampler2D bands,
+        mat4 viewmat, mat4 viewinv, vec4 diff_in, vec4 spec_in, out vec4 diff_out, out vec4 spec_out)
+{
+	diff_out = diff_in;
+	spec_out = spec_in;
+	if (bge_shadowpass != 0)
+		return;
+	int flags = int(matp.z + 0.5);
+	int dmodel = int(matp.x + 0.5), smodel = int(matp.y + 0.5);
+	bool shaders = (flags & BGE_LF_NOSHADERS) == 0;
+	uint ci = bge_cluster_index(co);
+	uint W = bge_cl_counts.x;
+	for (uint w = 0u; w < W; w++) {
+		uint bits = bge_cl_mask[ci * W + w];
+		while (bits != 0u) {
+			int b = findLSB(bits);
+			bits &= bits - 1u;
+			BgeLamp L = bge_lamps[w * 32u + uint(b)];
+			if (!bge_lamp_applies(L, flags, matp.w))
+				continue;
+			uint mode = L.bits.x;
+			int type = int(L.co_type.w + 0.5);
+			vec3 lampco, lampvec, lv;
+			float dist;
+			float visifac = bge_lamp_visibility(L, co, viewmat, viewinv, lampco, lampvec, lv, dist);
+
+			float inp, is;
+			shade_inp(vn, lv, inp);
+			if ((mode & 2048u) != 0u) {  /* LA_NO_DIFF */
+				is = 0.0;
+			}
+			else if (type == 3) {
+				shade_is_hemi(inp, is);
+			}
+			else {
+				if (type == 4) {
+					mat4 area = mat4(viewmat * L.area[0], viewmat * L.area[1], viewmat * L.area[2], viewmat * L.area[3]);
+					shade_inp_area(co, lampco, lampvec, vn, area, L.coeff.w, L.falloff.w, inp);
+				}
+				is = inp;
+				if (shaders) {
+					if (dmodel == 1) shade_diffuse_oren_nayer(inp, vn, lv, view, diffp.x, is);
+					else if (dmodel == 2) shade_diffuse_toon(vn, lv, view, diffp.y, diffp.z, is);
+					else if (dmodel == 3) shade_diffuse_minnaert(inp, vn, view, diffp.w, is);
+					else if (dmodel == 4) shade_diffuse_fresnel(vn, lv, view, diffp.y, diffp.z, is);
+				}
+			}
+			if (shaders && (flags & BGE_LF_CUBIC) != 0)
+				shade_cubic(is, is);
+
+			float i;
+			shade_visifac(is, visifac, refl, i);
+			vec3 lcol = L.col_energy.rgb * L.col_energy.w;
+
+			float shadfac = 1.0;
+			bool onlyshadow = (mode & 32u) != 0u;
+			if ((flags & BGE_LF_SHADOW) != 0 && L.shadow_color.w > 0.5) {
+				if ((flags & BGE_LF_NOSHADOWS) == 0) {
+					shadfac = bge_lamp_shadow(L, co, vn, lv, inp, viewinv);
+					if (onlyshadow) {
+						vec3 shadrgb;
+						shade_only_shadow(i, shadfac, L.col_energy.w, L.shadow_color.rgb, shadrgb);
+						if ((mode & 2048u) == 0u)
+							shade_only_shadow_diffuse(shadrgb, rgb.rgb, diff_out, diff_out);
+						if ((mode & 4096u) == 0u)
+							shade_only_shadow_specular(shadrgb, specrgb.rgb, spec_out, spec_out);
+						continue;
+					}
+				}
+			}
+			else if ((flags & BGE_LF_NOSHADOWS) != 0 && onlyshadow) {
+				continue;
+			}
+
+			if ((flags & BGE_LF_DIFFUSE) != 0 && (mode & 2048u) == 0u) {
+				vec4 lrgb;
+				shade_mul_value(i, vec4(lcol, 1.0), lrgb);
+				mix_mult(1.0 - shadfac, lrgb, vec4(L.shadow_color.rgb, 1.0), lrgb);
+				/* add_to_diffuse */
+				vec4 addcol = rgb;
+				if ((flags & BGE_LF_RAMPCOL) != 0 && int(rampc.x + 0.5) != 3) {
+					int rin = int(rampc.x + 0.5);
+					float fac = 0.0;
+					if (rin == 1) ramp_rgbtobw(lrgb.rgb, fac);
+					else if (rin == 0) fac = is;
+					else if (rin == 2) fac = dot(view, vn);
+					bge_colorband_blend(bandc, rampc, fac, rgb, addcol);
+				}
+				shade_madd(diff_out, lrgb, addcol, diff_out);
+			}
+
+			if (shaders && (flags & BGE_LF_SPECULAR) != 0 && (mode & 4096u) == 0u && !onlyshadow) {
+				vec3 outcol;
+				if (type == 3) {
+					float t;
+					shade_hemi_spec(vn, lv, view, matq.x, har, visifac, t);
+					shade_add_spec(t, lcol, specrgb.rgb, outcol);
+				}
+				else {
+					float specfac;
+					if (smodel == 1) shade_phong_spec(vn, lv, view, har, specfac);
+					else if (smodel == 0) shade_cooktorr_spec(vn, lv, view, har, specfac);
+					else if (smodel == 2) shade_blinn_spec(vn, lv, view, specp.x, har, specfac);
+					else if (smodel == 4) shade_wardiso_spec(vn, lv, view, specp.y, specfac);
+					else shade_toon_spec(vn, lv, view, specp.z, specp.w, specfac);
+					if (type == 4)
+						shade_spec_area_inp(specfac, inp, specfac);
+					float t;
+					shade_spec_t(shadfac, spec, visifac, specfac, t);
+					vec4 sp = specrgb;
+					if ((flags & BGE_LF_RAMPSPEC) != 0 && int(ramps.x + 0.5) != 3) {
+						/* do_specular_ramp */
+						int rin = int(ramps.x + 0.5);
+						float fac = 0.0;
+						if (rin == 1) fac = t;
+						else if (rin == 0) fac = specfac;
+						else if (rin == 2) fac = dot(view, vn);
+						bge_colorband_blend(bands, ramps, fac, specrgb, sp);
+					}
+					shade_add_spec(t, lcol, sp.rgb, outcol);
+				}
+				shade_add_clamped(spec_out, vec4(outcol, 1.0), spec_out);
+			}
+		}
+	}
+}
+
+void shade_lights_clustered_pbr(
+        vec3 co, vec3 vn, vec3 view, vec4 rgb, vec4 specrgb, float refl, vec3 diffcol, vec3 f0, float roughness,
+        float subsurface, vec4 matp, mat4 viewmat, mat4 viewinv, vec4 diff_in, vec4 spec_in, out vec4 diff_out,
+        out vec4 spec_out)
+{
+	diff_out = diff_in;
+	spec_out = spec_in;
+	if (bge_shadowpass != 0)
+		return;
+	int flags = int(matp.z + 0.5);
+	uint ci = bge_cluster_index(co);
+	uint W = bge_cl_counts.x;
+	for (uint w = 0u; w < W; w++) {
+		uint bits = bge_cl_mask[ci * W + w];
+		while (bits != 0u) {
+			int b = findLSB(bits);
+			bits &= bits - 1u;
+			BgeLamp L = bge_lamps[w * 32u + uint(b)];
+			if (!bge_lamp_applies(L, flags, matp.w))
+				continue;
+			uint mode = L.bits.x;
+			int type = int(L.co_type.w + 0.5);
+			vec3 lampco, lampvec, lv;
+			float dist;
+			float visifac = bge_lamp_visibility(L, co, viewmat, viewinv, lampco, lampvec, lv, dist);
+			float inp;
+			shade_inp(vn, lv, inp);
+			if (type == 4 && (mode & 2048u) == 0u) {
+				mat4 area = mat4(viewmat * L.area[0], viewmat * L.area[1], viewmat * L.area[2], viewmat * L.area[3]);
+				shade_inp_area(co, lampco, lampvec, vn, area, L.coeff.w, L.falloff.w, inp);
+			}
+			float is = ((mode & 2048u) != 0u) ? 0.0 : (type == 3) ? 0.5 * inp + 0.5 : inp;
+			float i;
+			shade_visifac(is, visifac, refl, i);
+			vec3 lcol = L.col_energy.rgb * L.col_energy.w;
+			float shadfac = 1.0;
+			bool onlyshadow = (mode & 32u) != 0u;
+			if ((flags & BGE_LF_SHADOW) != 0 && L.shadow_color.w > 0.5) {
+				if ((flags & BGE_LF_NOSHADOWS) == 0) {
+					shadfac = bge_lamp_shadow(L, co, vn, lv, inp, viewinv);
+					if (onlyshadow) {
+						vec3 shadrgb;
+						shade_only_shadow(i, shadfac, L.col_energy.w, L.shadow_color.rgb, shadrgb);
+						if ((mode & 2048u) == 0u)
+							shade_only_shadow_diffuse(shadrgb, rgb.rgb, diff_out, diff_out);
+						if ((mode & 4096u) == 0u)
+							shade_only_shadow_specular(shadrgb, specrgb.rgb, spec_out, spec_out);
+						continue;
+					}
+				}
+			}
+			else if ((flags & BGE_LF_NOSHADOWS) != 0 && onlyshadow) {
+				continue;
+			}
+			vec3 lf = vec3(((mode & 2048u) != 0u) ? 1.0 : 0.0, ((mode & (4096u | 32u)) != 0u) ? 1.0 : 0.0,
+			               (type == 3) ? 1.0 : 0.0);
+			shade_pbr_light(vn, lv, view, inp, visifac, shadfac, lcol, L.shadow_color.rgb, diffcol, f0, roughness,
+			                subsurface, lf, diff_out, spec_out, diff_out, spec_out);
+		}
+	}
+}
+
+#else  /* no storage buffers (GLSL before 4.30): no clustered lamps */
+
+void shade_lights_clustered_ex(
+        vec3 co, vec3 vn, vec3 view, vec4 rgb, vec4 specrgb, float spec, float har, float refl,
+        vec4 matp, vec4 diffp, vec4 specp, vec4 matq, vec4 rampc, vec4 ramps, sampler2D bandc, sampler2D bands,
+        mat4 viewmat, mat4 viewinv, vec4 diff_in, vec4 spec_in, out vec4 diff_out, out vec4 spec_out)
+{
+	diff_out = diff_in;
+	spec_out = spec_in;
+}
+
+void shade_lights_clustered_pbr(
+        vec3 co, vec3 vn, vec3 view, vec4 rgb, vec4 specrgb, float refl, vec3 diffcol, vec3 f0, float roughness,
+        float subsurface, vec4 matp, mat4 viewmat, mat4 viewinv, vec4 diff_in, vec4 spec_in, out vec4 diff_out,
+        out vec4 spec_out)
+{
+	diff_out = diff_in;
+	spec_out = spec_in;
+}
+
+#endif  /* BGE_CLUSTERED */
+
+/* without ramps (the samplers are never read) */
+void shade_lights_clustered(
+        vec3 co, vec3 vn, vec3 view, vec4 rgb, vec4 specrgb, float spec, float har, float refl,
+        vec4 matp, vec4 diffp, vec4 specp, vec4 matq, mat4 viewmat, mat4 viewinv, vec4 diff_in, vec4 spec_in,
+        out vec4 diff_out, out vec4 spec_out)
+{
+	shade_lights_clustered_ex(co, vn, view, rgb, specrgb, spec, har, refl, matp, diffp, specp, matq, vec4(0.0),
+	                          vec4(0.0), bge_noramp, bge_noramp, viewmat, viewinv, diff_in, spec_in, diff_out,
+	                          spec_out);
+}
