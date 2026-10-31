@@ -213,7 +213,8 @@ void GPU_imm_uniform_color(float r, float g, float b, float a);
 void GPU_draw_fullscreen_triangle(void);
 
 /* ---- speed features (BGE-Remix P8 Part B): each can be switched off
- * ("instancing", "gpu_culling", "gpu_skinning"); the environment variable
+ * ("instancing", "gpu_culling", "gpu_skinning", "layered_shadows",
+ * "clustered_lights": the last is read when a material is made); the environment variable
  * BGE_REMIX_NO_<NAME in capitals>=1 switches one off at start ---- */
 bool GPU_speed_feature(const char *name);
 /* false when the name is unknown */

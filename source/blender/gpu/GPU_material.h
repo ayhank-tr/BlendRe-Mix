@@ -412,6 +412,12 @@ void GPU_lamp_update_shadow(GPULamp *lamp, float bias, float bleedbias, const fl
  * it. The signature changes whenever the lamp's views or shadow settings do. */
 int GPU_lamp_shadow_view_count(GPULamp *lamp);
 void GPU_lamp_shadow_buffer_view(GPULamp *lamp, int view, float viewmat[4][4], float winmat[4][4], int r_rect[4]);
+/* BGE-Remix P8 Part B (P8.16): every view of the lamp in one pass (false:
+ * not for this lamp or card; then bind and view as before). Gives the first
+ * view's matrices, which the drawing uses, and a projection for culling that
+ * holds every view (with the first view's matrix) */
+bool GPU_lamp_shadow_buffer_bind_layered(GPULamp *lamp, float viewmat[4][4], float winmat[4][4],
+                                         float cullwinmat[4][4]);
 void GPU_lamp_shadow_camera(GPULamp *lamp, float camtoworld[4][4], float winmat[4][4]);
 unsigned int GPU_lamp_shadow_signature(GPULamp *lamp);
 

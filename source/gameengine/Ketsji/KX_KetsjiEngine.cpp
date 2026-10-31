@@ -1333,6 +1333,22 @@ void KX_KetsjiEngine::RenderShadowBuffers(KX_Scene *scene)
 			drawmode = m_rasterizer->GetDrawingMode();
 			m_rasterizer->SetDrawingMode(RAS_IRasterizer::KX_SHADOW);
 
+			/* BGE-Remix P8 Part B (P8.16): every view in one pass where the
+			 * card allows (the casters culled once, for all the views) */
+			if (raslight->BindShadowBufferLayered(m_canvas, cam, camtrans)) {
+				scene->CalculateVisibleMeshes(m_rasterizer, cam, layer);
+				m_logger->StartLog(tc_animations, m_kxsystem->GetTimeInSeconds(), true);
+				SG_SetActiveStage(SG_STAGE_ANIMATION_UPDATE);
+				UpdateAnimations(scene);
+				m_logger->StartLog(tc_rasterizer, m_kxsystem->GetTimeInSeconds(), true);
+				SG_SetActiveStage(SG_STAGE_RENDER);
+				scene->RenderBuckets(camtrans, m_rasterizer);
+				raslight->UnbindShadowBuffer();
+				m_rasterizer->SetDrawingMode(drawmode);
+				cam->Release();
+				continue;
+			}
+
 			/* binds framebuffer object, sets up camera .. */
 			raslight->BindShadowBuffer(m_canvas, cam, camtrans);
 

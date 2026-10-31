@@ -36,6 +36,7 @@
 
 #include "BKE_global.h"
 
+#include "GPU_lights.h"
 #include "GPU_material.h"
 #include "GPU_shader.h"
 
@@ -91,6 +92,7 @@ void GPU_exit(void)
 	GPU_shader_cache_exit();
 	gpu_layer_exit();
 	GPU_shared_buffers_free();
+	GPU_lights_exit();  /* P8 Part B */
 	gpu_glcheck_exit();
 
 	gpu_codegen_exit();

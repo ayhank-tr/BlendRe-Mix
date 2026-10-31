@@ -107,6 +107,10 @@ public:
 	 * sun's cascades follow (column-major 4x4s); the views' signature */
 	virtual int ShadowViewCount() = 0;
 	virtual void SetShadowView(RAS_ICanvas *canvas, KX_Camera *cam, MT_Transform& camtrans, int view) = 0;
+	/* BGE-Remix P8 Part B (P8.16): every view in one pass (false: not for
+	 * this lamp or card; BindShadowBuffer and SetShadowView then). The
+	 * camera culls for all the views at once. */
+	virtual bool BindShadowBufferLayered(RAS_ICanvas *canvas, KX_Camera *cam, MT_Transform& camtrans) = 0;
 	virtual void SetShadowCamera(const float camtoworld[16], const float winmat[16]) = 0;
 	virtual unsigned int ShadowSignature() = 0;
 	virtual Image *GetTextureImage(short texslot) = 0;

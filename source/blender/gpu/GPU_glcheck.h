@@ -44,6 +44,7 @@ typedef struct GPUCaps {
 	int tier;                /* 1: OpenGL 4.5; 2: plus extras */
 	/* tier 2 extras, each used only when present (never required) */
 	bool bindless, sparse, vk_interop, aniso;
+	bool vs_layer;           /* the vertex stage picks the layer (P8.16: shadows in one pass) */
 	bool robustness;         /* driver resets can be reported */
 	char text[512];          /* one line for logs */
 } GPUCaps;

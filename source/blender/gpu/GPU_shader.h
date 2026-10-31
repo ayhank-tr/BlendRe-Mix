@@ -131,6 +131,13 @@ typedef struct GPUVertexAttribs {
 	int totlayer;
 } GPUVertexAttribs;
 
+/* BGE-Remix P8 Part B (P8.16): the pieces a core vertex stage gets for
+ * shadow views drawn in one pass: the extension (after #version), the
+ * front (after the front end) and the suffix (after the stage's text) */
+const char *GPU_shader_views_vert_ext(void);
+const char *GPU_shader_views_vert_front(void);
+const char *GPU_shader_views_vert_suffix(void);
+
 #ifdef __cplusplus
 }
 #endif

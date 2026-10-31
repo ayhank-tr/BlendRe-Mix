@@ -223,16 +223,19 @@ void GPU_caps_init(void)
 		gpu_caps.vk_interop = has_ext("GL_EXT_memory_object") && has_ext("GL_EXT_semaphore");
 		gpu_caps.aniso = has_ext("GL_ARB_texture_filter_anisotropic") ||
 		                 has_ext("GL_EXT_texture_filter_anisotropic");
+		gpu_caps.vs_layer = has_ext("GL_ARB_shader_viewport_layer_array");
 	}
-	gpu_caps.tier = (gpu_caps.bindless || gpu_caps.sparse || gpu_caps.vk_interop || gpu_caps.aniso) ? 2 : 1;
+	gpu_caps.tier = (gpu_caps.bindless || gpu_caps.sparse || gpu_caps.vk_interop || gpu_caps.aniso ||
+	                 gpu_caps.vs_layer) ? 2 : 1;
 
 	BLI_snprintf(gpu_caps.text, sizeof(gpu_caps.text),
-	             "%d.%d %s%s, tier %d%s%s%s%s%s%s, %s / %s / %s",
+	             "%d.%d %s%s, tier %d%s%s%s%s%s%s%s, %s / %s / %s",
 	             gpu_caps.major, gpu_caps.minor, gpu_caps.core_profile ? "core" : "compatibility",
 	             gpu_caps.debug ? " (debug)" : "", gpu_caps.tier,
 	             tier1 ? " (forced)" : "",
 	             gpu_caps.bindless ? " bindless" : "", gpu_caps.sparse ? " sparse" : "",
 	             gpu_caps.vk_interop ? " vulkan-interop" : "", gpu_caps.aniso ? " anisotropic" : "",
+	             gpu_caps.vs_layer ? " vertex-layer" : "",
 	             gpu_caps.robustness ? ", resets reported" : "",
 	             vendor ? vendor : "?", renderer ? renderer : "?", version ? version : "?");
 	printf("BGE-Remix GL: %s\n", gpu_caps.text);

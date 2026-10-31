@@ -43,6 +43,7 @@
 extern "C" {
 #include "GPU_glcheck.h"
 #include "GPU_layer.h"
+#include "GPU_lights.h"
 #include "GPU_shader.h"
 }
 
@@ -541,9 +542,28 @@ void RAS_StorageBatch::DrawArray(RAS_MeshSlot& ms, RAS_DisplayArray *array, unsi
 	const size_t gl_first = ba->quads ? first / 4 * 6 : first;
 	const size_t gl_count = ba->quads ? totindex / 4 * 6 : totindex;
 
+	/* BGE-Remix P8 Part B (P8.16): a lamp's shadow views in one pass, each
+	 * an instance (a shader without the core front end cannot pick its
+	 * layer: left out) */
+	const int views = GPU_shadow_views_count();
+	if (views > 0 && !pi.core) {
+		static bool said = false;
+		if (!said) {
+			printf("BGE-Remix shadows: a caster whose shader is the old kind is left out of one-pass shadows\n");
+			said = true;
+		}
+		return;
+	}
+
 	glBindVertexArray(vao);
-	glDrawElements(mode, (GLsizei)gl_count, GL_UNSIGNED_SHORT,
-	               (const void *)(uintptr_t)(gl_first * sizeof(unsigned short)));
+	if (views > 0) {
+		glDrawElementsInstanced(mode, (GLsizei)gl_count, GL_UNSIGNED_SHORT,
+		                        (const void *)(uintptr_t)(gl_first * sizeof(unsigned short)), views);
+	}
+	else {
+		glDrawElements(mode, (GLsizei)gl_count, GL_UNSIGNED_SHORT,
+		               (const void *)(uintptr_t)(gl_first * sizeof(unsigned short)));
+	}
 	glBindVertexArray(0);
 }
 

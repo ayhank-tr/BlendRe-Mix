@@ -37,6 +37,7 @@
 #include "GPU_glew.h"
 #include "GPU_glcheck.h"
 #include "GPU_layer.h"
+#include "GPU_lights.h"
 #include "GPU_shader.h"
 
 #include "gpu_private.h"
@@ -578,6 +579,10 @@ typedef struct OldPlaces {
 	int lprod[8][LP_COUNT];
 	int fog[FOG_COUNT];
 	int alphatest;
+	/* BGE-Remix P8 Part B (P8.16): shadow views in one pass, the shadow
+	 * pass, contact shadows' depth */
+	int views, view_m, view_layer, shadowpass, scenedepth_on;
+	bool pass;
 } OldPlaces;
 
 #define OLD_PLACES 512  /* a power of two */
@@ -646,7 +651,7 @@ static void old_find(OldPlaces *op, unsigned int program)
 	memset(op, 0xff, sizeof(*op));  /* every place -1 */
 	op->program = program;
 	op->frame = gpu_old.frame;
-	op->matrices = op->state = false;
+	op->matrices = op->state = op->pass = false;
 
 	GLint linked = 0, count = 0;
 	glGetProgramiv(program, GL_LINK_STATUS, &linked);
@@ -724,6 +729,26 @@ static void old_find(OldPlaces *op, unsigned int program)
 			op->alphatest = glGetUniformLocation(program, name);
 			op->state = true;
 		}
+		else if (STREQ(name, "bge_views")) {
+			op->views = glGetUniformLocation(program, name);
+			op->pass = true;
+		}
+		else if (STREQ(name, "bge_view_m[0]") || STREQ(name, "bge_view_m")) {
+			op->view_m = glGetUniformLocation(program, "bge_view_m[0]");
+			op->pass = true;
+		}
+		else if (STREQ(name, "bge_view_layer")) {
+			op->view_layer = glGetUniformLocation(program, name);
+			op->pass = true;
+		}
+		else if (STREQ(name, "bge_shadowpass")) {
+			op->shadowpass = glGetUniformLocation(program, name);
+			op->pass = true;
+		}
+		else if (STREQ(name, "bge_scenedepth_on")) {
+			op->scenedepth_on = glGetUniformLocation(program, name);
+			op->pass = true;
+		}
 	}
 }
 
@@ -788,6 +813,27 @@ void GPU_old_builtins(unsigned int program, const GPUClassicState *st)
 		return;
 	}
 	OldPlaces *op = old_places(program);
+
+	if (op->pass) {
+		int count = 0, layer = 0;
+		const float *mats = NULL;
+		gpu_lights_views_get(&count, &mats, &layer);
+		if (op->views >= 0) {
+			glProgramUniform1i(program, op->views, count);
+		}
+		if (count > 0 && op->view_m >= 0) {
+			glProgramUniformMatrix4fv(program, op->view_m, count, GL_FALSE, mats);
+		}
+		if (op->view_layer >= 0) {
+			glProgramUniform1i(program, op->view_layer, layer);
+		}
+		if (op->shadowpass >= 0) {
+			glProgramUniform1i(program, op->shadowpass, GPU_shadow_pass() ? 1 : 0);
+		}
+		if (op->scenedepth_on >= 0) {
+			glProgramUniform1f(program, op->scenedepth_on, gpu_scene_depth_is_on() ? 1.0f : 0.0f);
+		}
+	}
 
 	if (op->matrices) {
 		float mv[4][4], proj[4][4], m[4][4];

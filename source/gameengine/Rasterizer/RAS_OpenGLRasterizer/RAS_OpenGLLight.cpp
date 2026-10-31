@@ -45,6 +45,7 @@
 #include "DNA_scene_types.h"
 
 #include "GPU_material.h"
+#include "GPU_lights.h"
 
 extern "C" {
 #include "BKE_lamp_physical.h"
@@ -267,6 +268,22 @@ void RAS_OpenGLLight::BindShadowBuffer(RAS_ICanvas *canvas, KX_Camera *cam, MT_T
 
 	const int rect[4] = {0, 0, winsize, winsize};
 	SetupShadowCamera(canvas, cam, camtrans, viewmat, winmat, rect);
+}
+
+bool RAS_OpenGLLight::BindShadowBufferLayered(RAS_ICanvas *canvas, KX_Camera *cam, MT_Transform& camtrans)
+{
+	GPULamp *lamp = GetGPULamp();
+	float viewmat[4][4], winmat[4][4], cullmat[4][4];
+	if (!lamp || !GPU_lamp_shadow_buffer_bind_layered(lamp, viewmat, winmat, cullmat))
+		return false;
+
+	const int size = GPU_shadow_pool_size();
+	const int rect[4] = {0, 0, size, size};
+	SetupShadowCamera(canvas, cam, camtrans, viewmat, winmat, rect);
+	/* the camera culls with the box that holds every view (the drawing keeps
+	 * the first view's projection: the vertex stage moves it to each view) */
+	cam->SetProjectionMatrix(MT_Matrix4x4((float *)cullmat));
+	return true;
 }
 
 void RAS_OpenGLLight::SetShadowView(RAS_ICanvas *canvas, KX_Camera *cam, MT_Transform& camtrans, int view)

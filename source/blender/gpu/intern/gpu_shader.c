@@ -37,6 +37,8 @@
 #include "GPU_debug.h"
 #include "GPU_extensions.h"
 #include "GPU_glew.h"
+#include "GPU_glcheck.h"
+#include "GPU_lights.h"
 #include "GPU_shader.h"
 #include "GPU_layer.h"
 #include "GPU_texture.h"
@@ -356,10 +358,63 @@ static const char *gpu_frontend_frag_core =
         "out vec4 bge_fragcolor;\n";
 
 /* BGE-Remix P8.3: lamp and world values, read from shared storage buffers
- * (gpu_material.c fills them; the generated code indexes them) */
+ * (gpu_material.c fills them; the generated code indexes them).
+ * BGE-Remix P8 Part B (P8.16): the shadow pool and the scene's depth on
+ * their own units (GPU_lights.h); bge_shadowpass: a shadow map is being
+ * drawn (lighting is skipped) */
 static const char *gpu_frontend_shared =
         "layout(std430, binding = 6) readonly buffer BgeLampWords { float bge_lw[]; };\n"
         "layout(std430, binding = 7) readonly buffer BgeWorldWords { float bge_ww[]; };\n";
+
+/* every fragment stage with the material library (it reads them) */
+static const char *gpu_frontend_lights =
+        "uniform sampler2DArray bge_shadowpool;\n"
+        "uniform sampler2D bge_scenedepth;\n"
+        "uniform float bge_scenedepth_on;\n"
+        "uniform int bge_shadowpass;\n"
+        "#if __VERSION__ >= 400\n"
+        "#define BGE_GATHER(uvl) textureGather(bge_shadowpool, uvl, 0)\n"
+        "#else\n"
+        "#define BGE_GATHER(uvl) vec4(texture(bge_shadowpool, uvl).r)\n"
+        "#endif\n";
+
+/* BGE-Remix P8 Part B (P8.16): a lamp's shadow views in one pass. Each view
+ * is an instance; the vertex stage's position (the first view's clip space)
+ * is moved into the view's own, and the view picks its layer of the shadow
+ * pool. The shader's own main runs first, renamed. */
+static const char *gpu_views_vert_front =
+        "uniform int bge_views;\n"
+        "uniform int bge_view_layer;\n"
+        "uniform mat4 bge_view_m[6];\n"
+        "#define main bge_user_main\n";
+
+static const char *gpu_views_vert_suffix =
+        "\n#undef main\n"
+        "void main()\n"
+        "{\n"
+        "	bge_user_main();\n"
+        "	if (bge_views > 0) {\n"
+        "		gl_Position = bge_view_m[gl_InstanceID] * gl_Position;\n"
+        "#ifdef BGE_LAYERED\n"
+        "		gl_Layer = bge_view_layer + gl_InstanceID;\n"
+        "#endif\n"
+        "	}\n"
+        "}\n";
+
+const char *GPU_shader_views_vert_ext(void)
+{
+	return GPU_caps()->vs_layer ? "#extension GL_ARB_shader_viewport_layer_array : require\n#define BGE_LAYERED\n" : "";
+}
+
+const char *GPU_shader_views_vert_front(void)
+{
+	return gpu_views_vert_front;
+}
+
+const char *GPU_shader_views_vert_suffix(void)
+{
+	return gpu_views_vert_suffix;
+}
 
 static const char *gpu_shader_version_ex(int flags, bool use_opensubdiv)
 {
@@ -462,15 +517,19 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 	}
 
 	/* the pieces of each stage, in order */
-	const char *vsrc[8], *fsrc[10], *gsrc[6];
+	const char *vsrc[10], *fsrc[12], *gsrc[6];
+	const bool views = core && frontend;  /* P8.16: shadow views in one pass */
 	int nv = 0, nf = 0, ng = 0;
 	if (vertexcode) {
 		vsrc[nv++] = version;
 		vsrc[nv++] = standard_extensions;
+		if (views) vsrc[nv++] = GPU_shader_views_vert_ext();
 		vsrc[nv++] = standard_defines;
 		if (vert_front) vsrc[nv++] = vert_front;
+		if (views) vsrc[nv++] = gpu_views_vert_front;
 		if (defines) vsrc[nv++] = defines;
 		vsrc[nv++] = vertexcode;
+		if (views) vsrc[nv++] = gpu_views_vert_suffix;
 	}
 	if (fragcode) {
 		fsrc[nf++] = version;
@@ -489,6 +548,7 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 #endif
 		if (frag_front) fsrc[nf++] = frag_front;
 		if (shared) fsrc[nf++] = shared;
+		if (shared || libcode) fsrc[nf++] = gpu_frontend_lights;
 		if (defines) fsrc[nf++] = defines;
 		if (libcode) fsrc[nf++] = libcode;
 		fsrc[nf++] = fragcode;
@@ -516,6 +576,7 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 		for (int i = 0; i < nf; i++) all[na++] = fsrc[i];
 		cache_key = gpu_shader_cache_key(all, na);
 		if (gpu_shader_cache_load(shader->program, cache_key)) {
+			GPU_lights_program_samplers(shader->program);
 			return shader;
 		}
 	}
@@ -577,6 +638,9 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 
 	if (cacheable) {
 		gpu_shader_cache_save(shader->program, cache_key);
+	}
+	if (shared || libcode) {
+		GPU_lights_program_samplers(shader->program);
 	}
 
 #ifdef WITH_OPENSUBDIV

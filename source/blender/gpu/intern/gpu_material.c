@@ -31,6 +31,7 @@
  * Manages materials, lights and textures.
  */
 
+#include <float.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -71,6 +72,7 @@
 #include "GPU_extensions.h"
 #include "GPU_glew.h"
 #include "GPU_framebuffer.h"
+#include "GPU_lights.h"
 #include "GPU_material.h"
 #include "GPU_shader.h"
 #include "GPU_texture.h"
@@ -251,6 +253,13 @@ struct GPULamp {
 
 	/* BGE-Remix P8.3: the lamp's place in the shared lamp buffer */
 	int slot;
+
+	/* BGE-Remix P8 Part B (P8.16): the lamp's views in the shadow pool (-1:
+	 * none; Variance maps keep their own textures), the first one as a float
+	 * for the shaders, and a 2D texture of it for Python (shadowBindId) */
+	int pool_layer;
+	float shadow_layer;
+	unsigned int pool_view, pool_view_gen;
 };
 
 /* Forward declaration so shade_light_textures() can use this, while still keeping the code somewhat organized */
@@ -363,12 +372,16 @@ bool GPU_shared_uniform_expr(const float *ptr, int type, char *r_expr, size_t ma
 	return fits;
 }
 
+static unsigned int gpu_scene_depth_code(void);
+
 /* sends the lamps of this material that changed, and the world */
 static void gpu_shared_buffers_bind(GPUMaterial *material)
 {
 	if (!GLEW_VERSION_4_3) {
 		return;
 	}
+	/* BGE-Remix P8 Part B (P8.16): the shadow pool and the scene's depth */
+	GPU_lights_bind_textures(gpu_scene_depth_code());
 	const size_t lamp_bytes = sizeof(unsigned int) * GPU_LAMP_WORDS;
 
 	if (!gpu_shared.worldbuf) {
@@ -1581,6 +1594,16 @@ static void gpu_shadow_texture_raw(GPUTexture *tex)
 	glBindTexture(GL_TEXTURE_2D, 0);
 }
 
+static unsigned int gpu_scene_depth_code(void)
+{
+	return gpu_scene_depth_tex ? (unsigned int)GPU_texture_opengl_bindcode(gpu_scene_depth_tex) : 0;
+}
+
+bool gpu_scene_depth_is_on(void)
+{
+	return gpu_scene_depth_on > 0.5f;
+}
+
 static GPUTexture *gpu_scene_depth(void)
 {
 	if (!gpu_scene_depth_tex) {
@@ -1614,7 +1637,7 @@ static GPUNodeLink *gpu_lamp_shadow(GPUMaterial *mat, GPULamp *lamp, GPUNodeLink
 	else if (lamp->shadow_kind == GPU_LAMP_SHADOW_CUBE) {
 		GPU_link(mat, "shadow_cube_soft",
 		         GPU_builtin(GPU_VIEW_POSITION), vn, inp,
-		         GPU_dynamic_texture(lamp->tex, GPU_DYNAMIC_SAMPLER_2DSHADOW, lamp->ob),
+		         GPU_dynamic_uniform(&lamp->shadow_layer, GPU_DYNAMIC_LAMP_SHADOWPARAMS, lamp->ob),
 		         GPU_dynamic_uniform((float *)lamp->dyncube, GPU_DYNAMIC_LAMP_SHADOWMAT, lamp->ob),
 		         GPU_dynamic_uniform(lamp->shadow_params, GPU_DYNAMIC_LAMP_SHADOWPARAMS, lamp->ob),
 		         GPU_dynamic_uniform(lamp->shadow_clip, GPU_DYNAMIC_LAMP_SHADOWCLIP, lamp->ob), &shadfac);
@@ -1622,7 +1645,7 @@ static GPUNodeLink *gpu_lamp_shadow(GPUMaterial *mat, GPULamp *lamp, GPUNodeLink
 	else if (lamp->shadow_kind == GPU_LAMP_SHADOW_CASCADE) {
 		GPU_link(mat, "shadow_sun_soft",
 		         GPU_builtin(GPU_VIEW_POSITION), vn, inp,
-		         GPU_dynamic_texture(lamp->tex, GPU_DYNAMIC_SAMPLER_2DSHADOW, lamp->ob),
+		         GPU_dynamic_uniform(&lamp->shadow_layer, GPU_DYNAMIC_LAMP_SHADOWPARAMS, lamp->ob),
 		         GPU_dynamic_uniform((float *)lamp->dyncascade[0], GPU_DYNAMIC_LAMP_SHADOWMAT, lamp->ob),
 		         GPU_dynamic_uniform((float *)lamp->dyncascade[1], GPU_DYNAMIC_LAMP_SHADOWMAT, lamp->ob),
 		         GPU_dynamic_uniform((float *)lamp->dyncascade[2], GPU_DYNAMIC_LAMP_SHADOWMAT, lamp->ob),
@@ -1634,20 +1657,18 @@ static GPUNodeLink *gpu_lamp_shadow(GPUMaterial *mat, GPULamp *lamp, GPUNodeLink
 	else {
 		GPU_link(mat, "shadow_spot_soft",
 		         GPU_builtin(GPU_VIEW_POSITION), vn, inp,
-		         GPU_dynamic_texture(lamp->tex, GPU_DYNAMIC_SAMPLER_2DSHADOW, lamp->ob),
+		         GPU_dynamic_uniform(&lamp->shadow_layer, GPU_DYNAMIC_LAMP_SHADOWPARAMS, lamp->ob),
 		         GPU_dynamic_uniform((float *)lamp->dynpersmat, GPU_DYNAMIC_LAMP_DYNPERSMAT, lamp->ob),
 		         GPU_dynamic_uniform(lamp->shadow_params, GPU_DYNAMIC_LAMP_SHADOWPARAMS, lamp->ob),
 		         GPU_dynamic_uniform(lamp->shadow_clip, GPU_DYNAMIC_LAMP_SHADOWCLIP, lamp->ob), &shadfac);
 	}
 
-	/* contact shadows, where the scene's depth was drawn */
-	GPUTexture *depth = gpu_scene_depth();
-	if (depth) {
+	/* contact shadows, where the scene's depth was drawn (bge_scenedepth,
+	 * BGE-Remix P8 Part B: on its own unit) */
+	if (gpu_scene_depth()) {
 		GPU_link(mat, "shadow_contact",
 		         GPU_builtin(GPU_VIEW_POSITION), lv,
-		         GPU_dynamic_texture(depth, GPU_DYNAMIC_SAMPLER_2DBUFFER, NULL),
-		         GPU_dynamic_uniform(lamp->contact, GPU_DYNAMIC_LAMP_CONTACT, lamp->ob),
-		         GPU_dynamic_uniform(&gpu_scene_depth_on, GPU_DYNAMIC_LAMP_CONTACT, lamp->ob), shadfac, &shadfac);
+		         GPU_dynamic_uniform(lamp->contact, GPU_DYNAMIC_LAMP_CONTACT, lamp->ob), shadfac, &shadfac);
 	}
 
 	return shadfac;
@@ -3507,7 +3528,7 @@ void GPU_lamp_update_shadow(GPULamp *lamp, float bias, float bleedbias, const fl
 	/* as gpu_lamp_from_blender: initshadowbuf's 0.02 and a quarter */
 	lamp->bias = 0.02f * bias * 0.25f;
 	lamp->bleedbias = bleedbias;
-	if (lamp->tex && lamp->fb) {
+	if ((lamp->tex && lamp->fb) || lamp->pool_layer >= 0) {
 		copy_v3_v3(lamp->shadow_color, color);
 	}
 	/* BGE-Remix P8.10: the soft shadows' bias, contact shadows */
@@ -3640,6 +3661,14 @@ static void gpu_lamp_shadow_free(GPULamp *lamp)
 		GPU_framebuffer_free(lamp->depthfb);
 		lamp->depthfb = NULL;
 	}
+	if (lamp->pool_layer >= 0) {
+		GPU_shadow_pool_free(lamp->pool_layer, lamp->nviews);
+		lamp->pool_layer = -1;
+	}
+	if (lamp->pool_view) {
+		glDeleteTextures(1, &lamp->pool_view);
+		lamp->pool_view = 0;
+	}
 	lamp->shadow_kind = GPU_LAMP_SHADOW_NONE;
 }
 
@@ -3665,7 +3694,17 @@ static bool gpu_lamp_shadow_create(GPULamp *lamp)
 	lamp->size = min_ii(max_ii(lamp->size, 16), GPU_SHADOW_MAX_ATLAS / lamp->tiles_x);
 	lamp->shadow_params[3] = 1.0f / (float)lamp->size;
 
-	const int w = lamp->size * lamp->tiles_x, h = lamp->size * lamp->tiles_y;
+	/* BGE-Remix P8 Part B (P8.16): every map but Variance in the shadow pool */
+	if (!(kind == GPU_LAMP_SHADOW_SPOT && la->shadowmap_type == LA_SHADMAP_VARIANCE)) {
+		lamp->pool_layer = GPU_shadow_pool_alloc(lamp->nviews, lamp->size);
+		if (lamp->pool_layer < 0) {
+			lamp->shadow_kind = GPU_LAMP_SHADOW_NONE;
+			return false;
+		}
+		lamp->shadow_layer = (float)lamp->pool_layer;
+		lamp->shadow_params[3] = 1.0f / (float)GPU_shadow_pool_size();
+		return true;
+	}
 
 	lamp->fb = GPU_framebuffer_create();
 	if (!lamp->fb) {
@@ -3673,7 +3712,7 @@ static bool gpu_lamp_shadow_create(GPULamp *lamp)
 		return false;
 	}
 
-	if (kind == GPU_LAMP_SHADOW_SPOT && la->shadowmap_type == LA_SHADMAP_VARIANCE) {
+	{
 		/* the depth, drawn first */
 		lamp->depthfb = GPU_framebuffer_create();
 		lamp->depthtex = GPU_texture_create_depth(lamp->size, lamp->size, NULL);
@@ -3714,16 +3753,6 @@ static bool gpu_lamp_shadow_create(GPULamp *lamp)
 		}
 		GPU_framebuffer_texture_unbind(lamp->blurfb, lamp->blurtex);
 	}
-	else {
-		lamp->tex = GPU_texture_create_depth(w, h, NULL);
-		if (!lamp->tex || !GPU_framebuffer_texture_attach(lamp->fb, lamp->tex, 0, NULL) ||
-		    !GPU_framebuffer_check_valid(lamp->fb, NULL))
-		{
-			gpu_lamp_shadow_free(lamp);
-			return false;
-		}
-		gpu_shadow_texture_raw(lamp->tex);
-	}
 
 	GPU_framebuffer_restore();
 	return true;
@@ -3743,6 +3772,8 @@ GPULamp *GPU_lamp_from_blender(Scene *scene, Object *ob, Object *par)
 	}
 
 	lamp = MEM_callocN(sizeof(GPULamp), "GPULamp");
+	lamp->pool_layer = -1;
+	lamp->shadow_layer = -1.0f;
 	gpu_shared_slot_add(lamp);
 
 	link = MEM_callocN(sizeof(LinkData), "GPULampLink");
@@ -3799,7 +3830,7 @@ bool GPU_lamp_has_shadow_buffer(GPULamp *lamp)
 {
 	return (!(lamp->scene->gm.flag & GAME_GLSL_NO_SHADOWS) &&
 	        !(lamp->scene->gm.flag & GAME_GLSL_NO_LIGHTS) &&
-	        lamp->tex && lamp->fb);
+	        ((lamp->tex && lamp->fb) || lamp->pool_layer >= 0));
 }
 
 /* BGE-Remix P8.10: a cube face's camera, from the lamp's own axes: it looks
@@ -3819,6 +3850,13 @@ static void gpu_lamp_cube_face(int face, float r_mat[4][4])
 		r_mat[k][1] = u[k];
 		r_mat[k][2] = -f[k];
 	}
+}
+
+/* BGE-Remix P8 Part B (P8.16): a view's side in texels (the pool's, or a
+ * Variance map's own) */
+static int gpu_lamp_map_size(GPULamp *lamp)
+{
+	return (lamp->pool_layer >= 0) ? max_ii(GPU_shadow_pool_size(), 1) : lamp->size;
 }
 
 /* BGE-Remix P8.10: the sun's cascades: the camera's view up to the lamp's
@@ -3885,7 +3923,7 @@ static void gpu_lamp_cascades(GPULamp *lamp)
 			/* in the sun's axes, moved in whole texels */
 			float lc[3];
 			mul_v3_m4v3(lc, rot, center);
-			const float texel = 2.0f * radius / (float)lamp->size;
+			const float texel = 2.0f * radius / (float)gpu_lamp_map_size(lamp);
 			lc[0] = floorf(lc[0] / texel) * texel;
 			lc[1] = floorf(lc[1] / texel) * texel;
 
@@ -3933,6 +3971,10 @@ void GPU_lamp_update_buffer_mats(GPULamp *lamp)
 	rangemat[3][2] = 0.5f;
 
 	mul_m4_m4m4(lamp->persmat, rangemat, persmat);
+
+	/* BGE-Remix P8 Part B (P8.16): one texel of the pool (it may have grown) */
+	lamp->shadow_params[3] = 1.0f / (float)gpu_lamp_map_size(lamp);
+	lamp->shadow_layer = (float)lamp->pool_layer;
 
 	/* BGE-Remix P8.10: each view of the shadow buffer, and what the shaders
 	 * read: the light's width (sun: its spread) and the views' depths */
@@ -3997,6 +4039,11 @@ unsigned int GPU_lamp_shadow_signature(GPULamp *lamp)
 	HASH_BYTES(lamp->view_winmat, sizeof(float[16]) * lamp->nviews);
 	HASH_BYTES(&lamp->size, sizeof(lamp->size));
 	HASH_BYTES(&lamp->lay, sizeof(lamp->lay));
+	/* BGE-Remix P8 Part B (P8.16): the pool made again (its maps are gone) */
+	const unsigned int gen = GPU_shadow_pool_generation();
+	const int poolsize = GPU_shadow_pool_size();
+	HASH_BYTES(&gen, sizeof(gen));
+	HASH_BYTES(&poolsize, sizeof(poolsize));
 #undef HASH_BYTES
 	return h;
 }
@@ -4004,6 +4051,14 @@ unsigned int GPU_lamp_shadow_signature(GPULamp *lamp)
 void GPU_lamp_shadow_buffer_bind(GPULamp *lamp, float viewmat[4][4], int *winsize, float winmat[4][4])
 {
 	GPU_lamp_update_buffer_mats(lamp);
+
+	/* BGE-Remix P8 Part B (P8.16): the pool, one view at a time */
+	if (lamp->pool_layer >= 0) {
+		GPU_shadow_pool_begin(lamp->pool_layer, lamp->nviews, false, lamp->shadow_kind == GPU_LAMP_SHADOW_CASCADE);
+		GPU_lamp_shadow_buffer_view(lamp, 0, viewmat, winmat, NULL);
+		*winsize = GPU_shadow_pool_size();
+		return;
+	}
 
 	/* opengl */
 	/* BGE-Remix P8.10: the views move the scissor box over the atlas; the
@@ -4015,15 +4070,79 @@ void GPU_lamp_shadow_buffer_bind(GPULamp *lamp, float viewmat[4][4], int *winsiz
 	GPU_texture_bind_as_framebuffer(lamp->depthfb ? lamp->depthtex : lamp->tex);
 	glDepthMask(GL_TRUE);
 	glClear(GL_DEPTH_BUFFER_BIT);
+	GPU_shadow_pass_set(true);
 
 	/* set matrices */
 	GPU_lamp_shadow_buffer_view(lamp, 0, viewmat, winmat, NULL);
 	*winsize = lamp->size;
 }
 
+bool GPU_lamp_shadow_buffer_bind_layered(GPULamp *lamp, float viewmat[4][4], float winmat[4][4],
+                                         float cullwinmat[4][4])
+{
+	if (lamp->pool_layer < 0 || lamp->nviews < 2 || !GPU_shadow_layered()) {
+		return false;
+	}
+	GPU_lamp_update_buffer_mats(lamp);
+	GPU_shadow_pool_begin(lamp->pool_layer, lamp->nviews, true, lamp->shadow_kind == GPU_LAMP_SHADOW_CASCADE);
+
+	/* each view's clip space from the first's: (P_k V_k) (P_0 V_0)^-1 */
+	float first[4][4], firstinv[4][4], clip[6][4][4];
+	mul_m4_m4m4(first, lamp->view_winmat[0], lamp->view_viewmat[0]);
+	invert_m4_m4(firstinv, first);
+	for (int v = 0; v < lamp->nviews; v++) {
+		float pv[4][4];
+		mul_m4_m4m4(pv, lamp->view_winmat[v], lamp->view_viewmat[v]);
+		mul_m4_m4m4(clip[v], pv, firstinv);
+	}
+	GPU_shadow_views_set(lamp->nviews, (const float (*)[4][4])clip, lamp->pool_layer);
+
+	copy_m4_m4(viewmat, lamp->view_viewmat[0]);
+	copy_m4_m4(winmat, lamp->view_winmat[0]);
+
+	/* what the casters are culled with: every view at once, seen from the
+	 * first view's place (a cube: the box the lamp reaches; the sun: the box
+	 * around its cascades, which share their axes) */
+	if (lamp->shadow_kind == GPU_LAMP_SHADOW_CUBE) {
+		const float r = lamp->clipend;
+		orthographic_m4(cullwinmat, -r, r, -r, r, -r, r);
+	}
+	else {
+		float lo[3] = {FLT_MAX, FLT_MAX, FLT_MAX}, hi[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+		for (int v = 0; v < lamp->nviews; v++) {
+			/* an orthographic view's box: x, y in (-1..1 - m30) / m00, z likewise */
+			const float (*w)[4] = lamp->view_winmat[v];
+			const float x0 = (-1.0f - w[3][0]) / w[0][0], x1 = (1.0f - w[3][0]) / w[0][0];
+			const float y0 = (-1.0f - w[3][1]) / w[1][1], y1 = (1.0f - w[3][1]) / w[1][1];
+			const float z0 = (-1.0f - w[3][2]) / w[2][2], z1 = (1.0f - w[3][2]) / w[2][2];
+			lo[0] = min_ff(lo[0], min_ff(x0, x1)); hi[0] = max_ff(hi[0], max_ff(x0, x1));
+			lo[1] = min_ff(lo[1], min_ff(y0, y1)); hi[1] = max_ff(hi[1], max_ff(y0, y1));
+			lo[2] = min_ff(lo[2], min_ff(z0, z1)); hi[2] = max_ff(hi[2], max_ff(z0, z1));
+		}
+		/* view z is negative ahead: near = -hi, far = -lo */
+		orthographic_m4(cullwinmat, lo[0], hi[0], lo[1], hi[1], -hi[2], -lo[2]);
+	}
+	return true;
+}
+
 void GPU_lamp_shadow_buffer_view(GPULamp *lamp, int view, float viewmat[4][4], float winmat[4][4], int r_rect[4])
 {
 	const int v = max_ii(0, min_ii(view, lamp->nviews - 1));
+
+	if (lamp->pool_layer >= 0) {
+		/* BGE-Remix P8 Part B (P8.16): the view's layer, all of it */
+		const int size = GPU_shadow_pool_size();
+		GPU_shadow_pool_view(lamp->pool_layer + v);
+		glViewport(0, 0, size, size);
+		copy_m4_m4(viewmat, lamp->view_viewmat[v]);
+		copy_m4_m4(winmat, lamp->view_winmat[v]);
+		if (r_rect) {
+			r_rect[0] = r_rect[1] = 0;
+			r_rect[2] = r_rect[3] = size;
+		}
+		return;
+	}
+
 	const int x = (v % lamp->tiles_x) * lamp->size, y = (v / lamp->tiles_x) * lamp->size;
 
 	/* the view's place in the atlas; its clears stay in it */
@@ -4107,21 +4226,30 @@ static void gpu_lamp_shadow_dump(GPULamp *lamp)
 {
 	const char *dir = getenv("BGE_REMIX_SHADOW_DUMP");
 	if (!dir || !dir[0] || lamp->dumped || lamp->depthfb ||
-	    (lamp->shadow_kind == GPU_LAMP_SHADOW_CASCADE && !lamp->has_cam))
+	    (lamp->shadow_kind == GPU_LAMP_SHADOW_CASCADE && !lamp->has_cam) || lamp->pool_layer < 0)
 	{
 		return;
 	}
 	lamp->dumped = true;
-	const int w = lamp->size * lamp->tiles_x, h = lamp->size * lamp->tiles_y;
+	/* BGE-Remix P8 Part B (P8.16): the pool's layers laid out as the atlas
+	 * was (a cube three by two, the cascades two by two) */
+	const int size = GPU_shadow_pool_size();
+	const int w = size * lamp->tiles_x, h = size * lamp->tiles_y;
 	float *depth = MEM_mallocN(sizeof(float) * w * h, "shadow dump");
-	glBindTexture(GL_TEXTURE_2D, GPU_texture_opengl_bindcode(lamp->tex));
-	glGetTexImage(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, GL_FLOAT, depth);
-	glBindTexture(GL_TEXTURE_2D, 0);
+	float *layer = MEM_mallocN(sizeof(float) * size * size, "shadow dump layer");
+	for (int v = 0; v < lamp->nviews; v++) {
+		GPU_shadow_pool_read(lamp->pool_layer + v, layer);
+		const int x0 = (v % lamp->tiles_x) * size, y0 = (v / lamp->tiles_x) * size;
+		for (int y = 0; y < size; y++) {
+			memcpy(depth + (size_t)(y0 + y) * w + x0, layer + (size_t)y * size, sizeof(float) * size);
+		}
+	}
+	MEM_freeN(layer);
 	char path[1024];
 	BLI_snprintf(path, sizeof(path), "%s/%s.depth", dir, lamp->ob->id.name + 2);
 	FILE *f = fopen(path, "wb");
 	if (f) {
-		const int head[5] = {w, h, lamp->nviews, lamp->size, lamp->has_cam ? 1 : 0};
+		const int head[5] = {w, h, lamp->nviews, size, lamp->has_cam ? 1 : 0};
 		fwrite(head, sizeof(int), 5, f);
 		fwrite(depth, sizeof(float), (size_t)w * h, f);
 		fwrite(lamp->view_viewmat, sizeof(float[16]), 6, f);
@@ -4140,6 +4268,14 @@ static void gpu_lamp_shadow_dump(GPULamp *lamp)
 
 void GPU_lamp_shadow_buffer_unbind(GPULamp *lamp)
 {
+	if (lamp->pool_layer >= 0) {
+		/* BGE-Remix P8 Part B (P8.16) */
+		GPU_shadow_views_set(0, NULL, 0);
+		GPU_shadow_pool_end();
+		gpu_lamp_shadow_dump(lamp);
+		return;
+	}
+	GPU_shadow_pass_set(false);
 	glDisable(GL_SCISSOR_TEST);
 	if (lamp->depthfb) {
 		GPU_framebuffer_texture_unbind(lamp->depthfb, lamp->depthtex);
@@ -4215,6 +4351,10 @@ void GPU_scene_depth_disable(void)
 
 int GPU_lamp_shadow_bind_code(GPULamp *lamp)
 {
+	/* BGE-Remix P8 Part B (P8.16): a 2D texture of the first view in the pool */
+	if (lamp->pool_layer >= 0) {
+		return GPU_shadow_pool_layer_texture(lamp->pool_layer, &lamp->pool_view, &lamp->pool_view_gen);
+	}
 	return lamp->tex ? GPU_texture_opengl_bindcode(lamp->tex) : -1;
 }
 
@@ -4225,7 +4365,7 @@ float *GPU_lamp_dynpersmat(GPULamp *lamp)
 
 int GPU_lamp_shadow_layer(GPULamp *lamp)
 {
-	if (lamp->fb && lamp->tex && (lamp->mode & (LA_LAYER | LA_LAYER_SHADOW)))
+	if (((lamp->fb && lamp->tex) || lamp->pool_layer >= 0) && (lamp->mode & (LA_LAYER | LA_LAYER_SHADOW)))
 		return lamp->lay;
 	else
 		return -1;

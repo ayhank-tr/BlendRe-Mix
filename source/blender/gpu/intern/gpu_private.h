@@ -57,4 +57,8 @@ bool GPU_codegen_selftest_core(void);
 /* the layer's self-test (gpu_selftest.c): the number of failed checks */
 int GPU_layer_selftest(const char *dir);
 
+/* gpu_lights.c, gpu_material.c (BGE-Remix P8 Part B, P8.16) */
+void gpu_lights_views_get(int *r_count, const float **r_mats, int *r_layer);
+bool gpu_scene_depth_is_on(void);
+
 #endif  /* __GPU_PRIVATE_H__ */

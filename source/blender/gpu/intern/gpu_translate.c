@@ -38,6 +38,7 @@
 
 #include "GPU_glew.h"
 #include "GPU_glcheck.h"
+#include "GPU_shader.h"
 #include "GPU_translate.h"
 
 /* ---- the front ends ---- */
@@ -444,6 +445,9 @@ char *GPU_glsl_translate(const char *source, int stage, bool core, const char *w
 	char *ext = BLI_dynstr_get_cstring(exts);
 	BLI_dynstr_append(out, ext);
 	MEM_freeN(ext);
+	if (core && !frag) {
+		BLI_dynstr_append(out, GPU_shader_views_vert_ext());
+	}
 	BLI_dynstr_append(out, core ? tfe_uniforms_core : tfe_uniforms_compat);
 	if (frag) {
 		BLI_dynstr_append(out, core ? tfe_frag_core : tfe_frag_compat);
@@ -458,11 +462,17 @@ char *GPU_glsl_translate(const char *source, int stage, bool core, const char *w
 	}
 	else {
 		BLI_dynstr_append(out, core ? tfe_vert_core : tfe_vert_compat);
+		if (core) {
+			BLI_dynstr_append(out, GPU_shader_views_vert_front());
+		}
 	}
 	BLI_dynstr_append(out, "#line 1\n");
 	char *text = BLI_dynstr_get_cstring(body);
 	BLI_dynstr_append(out, text);
 	MEM_freeN(text);
+	if (core && !frag) {
+		BLI_dynstr_append(out, GPU_shader_views_vert_suffix());
+	}
 	char *result = BLI_dynstr_get_cstring(out);
 	BLI_dynstr_free(out);
 	BLI_dynstr_free(body);

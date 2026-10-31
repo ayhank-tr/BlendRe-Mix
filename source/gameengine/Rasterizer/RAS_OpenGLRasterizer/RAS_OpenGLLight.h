@@ -58,6 +58,7 @@ public:
 	void UnbindShadowBuffer();
 	int ShadowViewCount();
 	void SetShadowView(RAS_ICanvas *canvas, KX_Camera *cam, MT_Transform& camtrans, int view);
+	bool BindShadowBufferLayered(RAS_ICanvas *canvas, KX_Camera *cam, MT_Transform& camtrans);
 	void SetShadowCamera(const float camtoworld[16], const float winmat[16]);
 	unsigned int ShadowSignature();
 	Image *GetTextureImage(short texslot);
