@@ -87,6 +87,7 @@ KX_FontObject::KX_FontObject(void* sgReplicationInfo,
 	m_rasterizer(rasterizer),
 	m_do_color_management(do_color_management)
 {
+	m_remix_mesh = NULL;  /* BGE-Remix P8 Part C */
 	Curve *text = static_cast<Curve *> (ob->data);
 	m_text = split_string(text->str);
 	m_fsize = text->fsize;

@@ -56,7 +56,12 @@ public:
 	virtual void ProcessReplica();
 	virtual int GetGameObjectType() { return OBJ_TEXT; }
 
+	/* BGE-Remix P8 Part C (P8.22): the text as geometry, for Remix */
+	void SetRemixMesh(class RAS_MeshObject *mesh) { m_remix_mesh = mesh; }
+	class RAS_MeshObject *GetRemixMesh() const { return m_remix_mesh; }
+
 protected:
+	class RAS_MeshObject *m_remix_mesh;
 	std::vector<STR_String>		m_text;
 	Object*			m_object;
 	int			m_fontid;

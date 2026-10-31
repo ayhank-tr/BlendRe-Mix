@@ -20,6 +20,7 @@
 import bpy
 from bpy.types import Menu, Panel
 from rna_prop_ui import PropertyPanel
+from .game_marks import is_game, mark, prop_marked, NOT_REMIX
 
 
 class LAMP_MT_sunsky_presets(Menu):
@@ -148,20 +149,29 @@ class DATA_PT_lamp(DataButtonsPanel, Panel):
 
             col.prop(lamp, "use_sphere")
 
+        game = is_game(context)
         if lamp.type == 'AREA':
             col.prop(lamp, "distance")
-            col.prop(lamp, "gamma")
+            if not game:  # BGE-Remix P8.25: F12 only
+                col.prop(lamp, "gamma")
 
         col = split.column()
-        col.prop(lamp, "use_negative")
-        col.prop(lamp, "use_own_layer", text="This Layer Only")
-        col.prop(lamp, "use_specular")
-        col.prop(lamp, "use_diffuse")
+        if game:
+            # BGE-Remix P8.25: Remix lights every surface fully, on every layer
+            prop_marked(col, lamp, "use_negative", NOT_REMIX)
+            prop_marked(col, lamp, "use_own_layer", NOT_REMIX, text="This Layer Only")
+            prop_marked(col, lamp, "use_specular", NOT_REMIX)
+            prop_marked(col, lamp, "use_diffuse", NOT_REMIX)
+        else:
+            col.prop(lamp, "use_negative")
+            col.prop(lamp, "use_own_layer", text="This Layer Only")
+            col.prop(lamp, "use_specular")
+            col.prop(lamp, "use_diffuse")
         # BGE-Remix P8.8: the light's size, which RTX Remix lights with
         # (Blender Internal's soft shadows use it too); area lamps have theirs
-        if context.scene.render.engine == 'BLENDER_GAME' and lamp.type in {'POINT', 'SPOT'}:
+        if game and lamp.type in {'POINT', 'SPOT'}:
             col.prop(lamp, "shadow_soft_size", text="Size")
-        elif context.scene.render.engine == 'BLENDER_GAME' and lamp.type == 'SUN':
+        elif game and lamp.type == 'SUN':
             col.prop(lamp, "bge_sun_angle")
 
 
@@ -409,7 +419,7 @@ class DATA_PT_spot(DataButtonsPanel, Panel):
         sub = col.column(align=True)
         sub.active = lamp.use_halo
         sub.prop(lamp, "halo_intensity", text="Intensity")
-        if lamp.shadow_method == 'BUFFER_SHADOW':
+        if lamp.shadow_method == 'BUFFER_SHADOW' and not is_game(context):
             sub.prop(lamp, "halo_step", text="Step")
 
 

@@ -46,6 +46,8 @@
 #include <stddef.h>
 #include <string>
 
+#include "RAS_ScreenEffects.h"
+
 struct Scene;
 struct GPUShader;
 
@@ -72,6 +74,15 @@ public:
 	bool Multisampled() const { return m_active && m_samples > 1; }
 	bool Modern() const { return m_active && m_modern; }
 
+	/* P8 Part C (P8.21): Modern scenes' transparent pass, order-independent
+	 * (weighted blended): true when it began (the target is the one drawn
+	 * into); End combines it over the picture */
+	bool BeginTransparency();
+	void EndTransparency();
+	bool TransparencyActive() const { return m_oit_on; }
+	/* the pass's blending again (after a material set its own) */
+	void TransparencyBlend();
+
 	void Free();
 
 private:
@@ -82,6 +93,15 @@ private:
 	unsigned int m_prevfb;  /* the framebuffer bound before (End draws into it) */
 
 	unsigned int m_fbo, m_color, m_depth;
+	unsigned int m_oit_accum, m_oit_reveal;  /* P8.21 */
+	bool m_oit_on;
+	unsigned int m_oit_prog[2];              /* [multisampled] */
+	/* P8.23: screen effects, and a single-sampled copy of a multisampled
+	 * target for them */
+	RAS_ScreenEffects *m_effects;
+	const Scene *m_scene;
+	unsigned int m_rfbo, m_rcolor, m_rdepth;
+	int m_rsize[2];
 	int m_size[2], m_fbsamples;
 	bool m_fbmodern;
 
@@ -95,6 +115,7 @@ private:
 	float m_exposure, m_gamma;
 
 	bool MakeTarget(int width, int height, int samples, bool modern);
+	void ScreenEffectSettings(RAS_ScreenEffects::Settings &s) const;
 	void UpdateLUT(const Scene *scene);
 	GPUShader *Shader(bool multisampled);
 };

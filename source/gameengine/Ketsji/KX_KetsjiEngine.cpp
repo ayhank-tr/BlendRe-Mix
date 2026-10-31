@@ -86,9 +86,11 @@
 #include "GPU_material.h" /* BGE-Remix P8.5 */
 #include "GPU_glew.h"
 #include "GPU_glcheck.h" /* BGE-Remix P8.1 */
+#include "GPU_draw.h"    /* BGE-Remix P8.24: the shared texture cache */
 #include "GPU_layer.h"   /* BGE-Remix P8.2 */
 #include "GPU_probes.h"  /* BGE-Remix P8 Part B */
 #include "GPU_volumes.h"
+#include "KX_Sprites.h"  /* BGE-Remix P8 Part C (P8.20) */
 extern "C" {
 #include "BKE_scene.h"  /* BGE-Remix P8 Part B: the pipeline */
 #include "BKE_idprop.h"
@@ -116,6 +118,7 @@ extern "C" {
 
 #ifdef WITH_REMIX
 #  include "KX_RemixRenderer.h"
+#  include "BRMX_material.h"  /* P8.24: the shared texture cache */
 #endif
 
 #define DEFAULT_LOGIC_TIC_RATE 60.0
@@ -221,6 +224,7 @@ KX_KetsjiEngine::KX_KetsjiEngine(KX_ISystem* system)
 	m_probes_scene = NULL;  /* BGE-Remix P8 Part B (P8.18) */
 	m_probes_scan = 0;
 	m_mirror_drawing = false;
+	m_sprites = new KX_Sprites();  /* BGE-Remix P8 Part C (P8.20) */
 
 	// Initialize the time logger
 	m_logger = new KX_TimeCategoryLogger (25);
@@ -252,6 +256,7 @@ KX_KetsjiEngine::~KX_KetsjiEngine()
 	if (m_usedome)
 		delete m_dome;
 	delete m_gl_check;  /* BGE-Remix P8.1 */
+	delete m_sprites;
 
 #ifdef WITH_PYTHON
 	Py_CLEAR(m_pyprofiledict);
@@ -485,6 +490,9 @@ void KX_KetsjiEngine::StartEngine(bool clearIpo)
 	if (m_remix == NULL) {
 		m_remix = new KX_RemixRenderer(m_canvas, m_remixWindowModeAllowed);
 	}
+	/* P8.24: colour images drawn from the BC7 files RTX Remix reads, where
+	 * the cache has them */
+	brmx::install_gl_image_cache(true);
 #endif
 	// there is always one scene enabled at startup
 	Scene* scene = m_scenes[0]->GetBlenderScene();
@@ -1027,6 +1035,10 @@ void KX_KetsjiEngine::Render()
 			/* BGE-Remix P8 Part B (P8.18): reflection probes (the first scene's) */
 			if (scene == *m_scenes.begin())
 				RenderProbes(scene);
+			/* BGE-Remix P8 Part C (P8.20): the first scene's halos and
+			 * particles, moved to the game's time */
+			if (scene == *m_scenes.begin() && m_rasterizer->GetDrawingMode() == RAS_IRasterizer::KX_TEXTURED)
+				m_sprites->Update(scene, m_clockTime);
 		}
 
 		/* BGE-Remix P8 Part B (P8.12): the scene's pipeline target (not for
@@ -2089,7 +2101,7 @@ void KX_KetsjiEngine::RenderFrame(KX_Scene* scene, KX_Camera* cam)
 
 		/* BGE-Remix P8.10: the scene's depth first, for contact shadows */
 		const bool depth = m_rasterizer->GetDrawingMode() == RAS_IRasterizer::KX_TEXTURED &&
-		                   (scene_needs_depth(scene) || ssr || HasVolumes(scene));
+		                   (scene_needs_depth(scene) || ssr || HasVolumes(scene) || m_sprites->HasFlares(scene));
 		if (depth) {
 			const int drawmode = m_rasterizer->GetDrawingMode();
 			GPU_scene_depth_begin(viewport.GetWidth() + 1, viewport.GetHeight() + 1);
@@ -2106,9 +2118,24 @@ void KX_KetsjiEngine::RenderFrame(KX_Scene* scene, KX_Camera* cam)
 			scene->GetWorldInfo()->RenderBackground(m_rasterizer);
 
 		scene->RenderBuckets(camtrans, m_rasterizer);
+		/* BGE-Remix P8 Part C (P8.22): (a Wire material leaves lines on) */
+		if (m_rasterizer->GetDrawingMode() == RAS_IRasterizer::KX_TEXTURED)
+			glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
 		/* BGE-Remix P8 Part B (P8.19): volumes over the scene */
 		RenderVolumes(scene);
+
+		/* BGE-Remix P8 Part C (P8.20): halos and particles, then the halos'
+		 * flares (which read the scene's depth) */
+		if (!m_mirror_drawing && m_rasterizer->GetDrawingMode() == RAS_IRasterizer::KX_TEXTURED) {
+			/* (billboards through Modern scenes' order-independent pass) */
+			const bool oit = !m_sprites->Empty() && m_rasterizer->BeginTransparency();
+			m_sprites->Draw(scene, 0);
+			if (oit)
+				m_rasterizer->EndTransparency();
+			m_sprites->Draw(scene, 1);
+			m_sprites->Draw(scene, 2);
+		}
 
 		/* BGE-Remix P8.10: nothing else reads it (other cameras, the 3D view) */
 		if (depth)
@@ -2200,11 +2227,10 @@ void KX_KetsjiEngine::PostRenderScene(KX_Scene* scene)
 	m_rasterizer->FlushDebugShapes(scene);
 	GPU_pass_timer_end(GPU_PASS_OVERLAYS);
 #ifdef WITH_REMIX
-	if (m_remix && scene == m_remixScene && scene->Has2DFilters()) {
-		/* the filters would work on an empty depth buffer */
+	/* BGE-Remix P8 Part C (P8.23): 2D filters over Remix's picture (the
+	 * depth they read is empty: Remix's own depth does not reach OpenGL) */
+	if (m_remix && scene == m_remixScene && scene->Has2DFilters())
 		m_remix->NoteSkippedFilters();
-	}
-	else
 #endif
 	{
 		GPU_pass_timer_begin(GPU_PASS_FILTERS);
@@ -2237,12 +2263,17 @@ void KX_KetsjiEngine::StopEngine()
 		}
 
 		ReleaseProbes();  /* BGE-Remix P8 Part B (P8.18) */
+		m_sprites->Release();  /* BGE-Remix P8 Part C (P8.20) */
 
 #ifdef WITH_REMIX
 		/* the game's objects leave Remix (which keeps running for the next game) */
 		delete m_remix;
 		m_remix = NULL;
 		m_remixScene = NULL;
+		if (GPU_image_cache_loads() > 0) {
+			printf("BGE-Remix: %d images drawn from the shared texture cache\n", GPU_image_cache_loads());
+		}
+		brmx::install_gl_image_cache(false);
 		KX_RemixRenderer::Trace("game end: removing the scenes");
 #endif
 

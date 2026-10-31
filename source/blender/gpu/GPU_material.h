@@ -288,6 +288,10 @@ typedef enum GPUBakeChannel {
 	GPU_BAKE_METALLIC = 5,  /* a physical material's metallic value */
 } GPUBakeChannel;
 GPUMaterial *GPU_material_bake_create(struct Scene *scene, struct Material *ma, int channel, float scale);
+/* BGE-Remix P8.24: the channel a bake material draws (GPUBakeChannel), -1:
+ * not a bake. A node material's bake (Cycles nodes) asks its shader nodes
+ * for that channel's value instead of their shading. */
+int GPU_material_bake_channel(const GPUMaterial *mat);
 void GPU_material_bake_free(GPUMaterial *material);
 
 /* the Texture node of Blender Internal node materials, for a procedural

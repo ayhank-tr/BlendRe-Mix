@@ -664,6 +664,84 @@ static void gpu_verify_high_bit_srgb_buffer(float *srgb_frect,
 	}
 }
 
+/* BGE-Remix P8.24: the shared compressed texture cache */
+static GPUImageCacheLoad gpu_cache_load = NULL;
+static GPUImageCacheFree gpu_cache_free = NULL;
+static int gpu_cache_loads = 0;
+
+void GPU_set_image_cache(GPUImageCacheLoad load, GPUImageCacheFree free_fn)
+{
+	if (!load && gpu_cache_load && G.main) {
+		/* the editor uploads them again as it does (painting updates its
+		 * own textures, which a compressed one cannot take) */
+		for (Image *ima = G.main->image.first; ima; ima = ima->id.next) {
+			if (ima->tpageflag & IMA_GLBIND_CACHED) {
+				GPU_free_image(ima);
+				ima->tpageflag &= ~IMA_GLBIND_CACHED;
+			}
+		}
+	}
+	gpu_cache_load = load;
+	gpu_cache_free = free_fn;
+	gpu_cache_loads = 0;
+}
+
+int GPU_image_cache_loads(void)
+{
+	return gpu_cache_loads;
+}
+
+static bool gpu_image_from_cache(unsigned int *bind, Image *ima, ImBuf *ibuf, bool mipmap)
+{
+	GPUCompressedImage img;
+	int levels;
+	if (!gpu_cache_load || !GPU_speed_feature("texture_cache")) {
+		return false;
+	}
+	memset(&img, 0, sizeof(img));
+	if (!gpu_cache_load(ima, ibuf, &img) || img.levels < 1) {
+		return false;
+	}
+	/* without mipmaps only the first level; with them, the file's chain */
+	levels = mipmap ? min_ii(img.levels, 16) : 1;
+	while (glGetError() != GL_NO_ERROR) {
+		/* earlier errors are not this upload's */
+	}
+	glGenTextures(1, (GLuint *)bind);
+	glBindTexture(GL_TEXTURE_2D, *bind);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, levels - 1);
+	for (int i = 0, w = img.width, h = img.height; i < levels; i++) {
+		glCompressedTexImage2D(GL_TEXTURE_2D, i, img.format, w, h, 0, img.size[i], img.data[i]);
+		w = max_ii(w / 2, 1);
+		h = max_ii(h / 2, 1);
+	}
+	if (gpu_cache_free) {
+		gpu_cache_free(&img);
+	}
+	if (glGetError() != GL_NO_ERROR) {
+		/* the driver refused it: uncompressed, as before */
+		glDeleteTextures(1, (GLuint *)bind);
+		*bind = 0;
+		return false;
+	}
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, gpu_get_mipmap_filter(1));
+	if (mipmap && levels > 1) {
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, gpu_get_mipmap_filter(0));
+		ima->tpageflag |= IMA_MIPMAP_COMPLETE;
+	}
+	else {
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	}
+	if (GLEW_EXT_texture_filter_anisotropic) {
+		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, GPU_get_anisotropic());
+	}
+	gpu_cache_loads++;
+	ima->tpageflag |= IMA_GLBIND_CACHED;
+	(void)ibuf;
+	return true;
+}
+
 int GPU_verify_image(
         Image *ima, ImageUser *iuser,
         int textarget, int tftile, bool compare, bool mipmap, bool is_data)
@@ -852,11 +930,17 @@ int GPU_verify_image(
 		}
 	}
 
+	/* BGE-Remix P8.24: the shared compressed texture cache (8-bit colour images) */
+	if (!GTS.tilemode && textarget == GL_TEXTURE_2D && !use_high_bit_depth && !is_data && ibuf->rect &&
+	    gpu_image_from_cache(bind, ima, ibuf, mipmap))
+	{
+		/* drawn from the cache's file */
+	}
 #ifdef WITH_DDS
-	if (ibuf->ftype == IMB_FTYPE_DDS)
+	else if (ibuf->ftype == IMB_FTYPE_DDS)
 		GPU_create_gl_tex_compressed(bind, rect, rectw, recth, textarget, mipmap, ima, ibuf);
-	else
 #endif
+	else
 		GPU_create_gl_tex(bind, rect, frect, rectw, recth, textarget, mipmap, use_high_bit_depth, ima);
 	
 	/* mark as non-color data texture */

@@ -26,7 +26,9 @@
 #include <cstdlib>
 #include <cctype>
 #include <cstdio>
+#include <cstddef>
 #include <cstring>
+#include <vector>
 
 #include "BRMX_bake.h"
 #include "BRMX_material.h"
@@ -41,10 +43,12 @@ extern "C" {
 #include "DNA_material_types.h"
 #include "DNA_mesh_types.h"
 #include "DNA_meshdata_types.h"
+#include "DNA_node_types.h"
 #include "DNA_object_types.h"
 #include "DNA_scene_types.h"
 #include "DNA_texture_types.h"
 
+#include "BLI_listbase.h"
 #include "BLI_math.h"
 
 #include "BKE_cdderivedmesh.h"
@@ -52,6 +56,7 @@ extern "C" {
 #include "BKE_idprop.h"
 #include "BKE_material_physical.h"
 #include "BKE_mesh.h"
+#include "BKE_node.h"
 
 #include "BKE_customdata.h"
 
@@ -213,6 +218,7 @@ const char *PACK_SRC =
         "uniform int spec_zero;\n"
         "uniform int alpha_textured;\n"
         "uniform vec3 emission;\n"
+        "uniform int nodes;\n"
         "float byte_of(float v) { return round(clamp(v, 0.0, 1.0) * 255.0) / 255.0; }\n"
         "float to_linear(float c) { return (c < 0.04045) ? ((c < 0.0) ? 0.0 : c / 12.92) : pow((c + 0.055) / 1.055, 2.4); }\n"
         "float to_srgb(float c) { return (c < 0.0031308) ? ((c < 0.0) ? 0.0 : c * 12.92) : 1.055 * pow(c, 1.0 / 2.4) - 0.055; }\n"
@@ -242,6 +248,7 @@ const char *PACK_SRC =
         "			col = vec3(to_linear(c.r), to_linear(c.g), to_linear(c.b));\n"
         "		}\n"
         "		o.rgb = vec3(to_srgb(col.r * e), to_srgb(col.g * e), to_srgb(col.b * e));\n"
+        "		if (nodes != 0) o.rgb = imageLoad(v_emit, p).rgb;\n"
         "	}\n"
         "	else if (mode == 3) {\n"
         "		vec4 n = imageLoad(v_normal, p);\n"
@@ -428,7 +435,9 @@ void pad_on_card(CardBake &card, int channel)
 
 struct PackParams {
 	bool physical, spec_zero, alpha_textured;
+	bool nodes; /* P8.24: a node tree's bake: the emission channel is the colour (sRGB) */
 	float emission[3];
+	PackParams() : physical(false), spec_zero(false), alpha_textured(false), nodes(false) {}
 };
 
 std::shared_ptr<BakedImage> make_image(const std::string &name, int size);
@@ -446,6 +455,7 @@ std::shared_ptr<BakedImage> pack_on_card(const CardBake &card, int slot, const P
 	glUniform1i(glGetUniformLocation(g_pack, "spec_zero"), pp.spec_zero ? 1 : 0);
 	glUniform1i(glGetUniformLocation(g_pack, "alpha_textured"), pp.alpha_textured ? 1 : 0);
 	glUniform3fv(glGetUniformLocation(g_pack, "emission"), 1, pp.emission);
+	glUniform1i(glGetUniformLocation(g_pack, "nodes"), pp.nodes ? 1 : 0);
 	for (int c = 0; c < BAKE_CHANNELS; c++) {
 		if (card.chan[c]) {
 			glBindImageTexture((GLuint)c, card.chan[c], 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA8);
@@ -557,11 +567,98 @@ bool is_bakeable(const Material *ma)
 	return true;
 }
 
+/* P8.24: a node material baked whole (nodes_need_bake): which shader nodes
+ * it has (emission, see-through) */
+bool is_node_bake(const Material *ma)
+{
+	return ma && ma->use_nodes && ma->nodetree && nodes_need_bake(ma);
+}
+
+void node_kinds(const Material *ma, bool &r_emission, bool &r_transparent)
+{
+	r_emission = r_transparent = false;
+	for (const bNode *n = (const bNode *)ma->nodetree->nodes.first; n; n = n->next) {
+		r_emission = r_emission || n->type == SH_NODE_EMISSION;
+		r_transparent = r_transparent || n->type == SH_NODE_BSDF_TRANSPARENT || n->type == SH_NODE_HOLDOUT;
+	}
+}
+
+/* P8.24: everything a node tree's bake reads (names, not addresses) */
+uint64_t node_signature(const bNodeTree *tree, uint64_t h, int depth)
+{
+	if (!tree || depth > 4) {
+		return h;
+	}
+	for (const bNode *n = (const bNode *)tree->nodes.first; n; n = n->next) {
+		h = fnv(n->name, strlen(n->name), h);
+		h = fnv_v(n->type, h);
+		h = fnv_v(n->custom1, h);
+		h = fnv_v(n->custom2, h);
+		h = fnv_v(n->flag & NODE_MUTED, h);
+		if (n->id) {
+			h = fnv(n->id->name, strlen(n->id->name), h);
+			if (GS(n->id->name) == ID_NT) {
+				h = node_signature((const bNodeTree *)n->id, h, depth + 1);
+			}
+		}
+		for (const bNodeSocket *sock = (const bNodeSocket *)n->inputs.first; sock; sock = sock->next) {
+			if (!sock->default_value) {
+				continue;
+			}
+			switch (sock->type) {
+				case SOCK_FLOAT: h = fnv_v(((const bNodeSocketValueFloat *)sock->default_value)->value, h); break;
+				case SOCK_INT: h = fnv_v(((const bNodeSocketValueInt *)sock->default_value)->value, h); break;
+				case SOCK_BOOLEAN: h = fnv_v(((const bNodeSocketValueBoolean *)sock->default_value)->value, h); break;
+				case SOCK_RGBA:
+					h = fnv(((const bNodeSocketValueRGBA *)sock->default_value)->value, sizeof(float) * 4, h);
+					break;
+				case SOCK_VECTOR:
+					h = fnv(((const bNodeSocketValueVector *)sock->default_value)->value, sizeof(float) * 3, h);
+					break;
+			}
+		}
+		/* the node's own settings (texture mappings, colour ramps...): its
+		 * storage, where it is plain data */
+		if (n->storage && (n->type == SH_NODE_VALTORGB || n->type == SH_NODE_TEX_NOISE ||
+		                   n->type == SH_NODE_TEX_VORONOI || n->type == SH_NODE_TEX_WAVE ||
+		                   n->type == SH_NODE_TEX_MUSGRAVE || n->type == SH_NODE_TEX_GRADIENT ||
+		                   n->type == SH_NODE_TEX_MAGIC || n->type == SH_NODE_TEX_CHECKER ||
+		                   n->type == SH_NODE_TEX_BRICK))
+		{
+			/* its bytes, the mapping's object pointer zeroed (an address
+			 * differs from run to run; the key must not) */
+			std::vector<unsigned char> bytes((const unsigned char *)n->storage,
+			                                 (const unsigned char *)n->storage + MEM_allocN_len(n->storage));
+			if (n->type != SH_NODE_VALTORGB && bytes.size() >= sizeof(NodeTexBase)) {
+				memset(&bytes[offsetof(NodeTexBase, tex_mapping) + offsetof(TexMapping, ob)], 0, sizeof(void *));
+			}
+			h = fnv(bytes.data(), bytes.size(), h);
+		}
+	}
+	for (const bNodeLink *l = (const bNodeLink *)tree->links.first; l; l = l->next) {
+		h = fnv(l->fromnode->name, strlen(l->fromnode->name), h);
+		h = fnv(l->fromsock->identifier, strlen(l->fromsock->identifier), h);
+		h = fnv(l->tonode->name, strlen(l->tonode->name), h);
+		h = fnv(l->tosock->identifier, strlen(l->tosock->identifier), h);
+	}
+	return h;
+}
+
 }  /* namespace */
 
 unsigned bake_slots(const Material *ma)
 {
 	unsigned slots = 0;
+	if (is_node_bake(ma)) {
+		/* P8.24: the whole node tree, into Remix's channels */
+		bool emission, transparent;
+		node_kinds(ma, emission, transparent);
+		slots = (1u << BAKE_ALBEDO) | (1u << BAKE_ROUGHNESS) | (1u << BAKE_METALLIC) | (1u << BAKE_NORMAL);
+		if (emission) {
+			slots |= 1u << BAKE_EMISSIVE;
+		}
+		return slots;
+	}
 	if (!is_bakeable(ma)) {
 		return 0;
 	}
@@ -607,6 +704,12 @@ uint64_t bake_signature(const Material *ma)
 	h = fnv_v(ma->har, h);
 	h = fnv_v(ma->mode, h);
 	h = fnv_v(ma->septex, h);
+	if (is_node_bake(ma)) {
+		/* P8.24 */
+		h = node_signature(ma->nodetree, h, 0);
+		h = fnv_v(bake_size(ma), h);
+		return h;
+	}
 	{
 		/* P8.7: the physical values */
 		MaterialPhysical ph;
@@ -808,11 +911,14 @@ bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const 
 	if (!slots || !dm) {
 		return false;
 	}
-	const bool physical = BKE_material_is_physical(ma);
+	/* P8.24: a node tree is baked as a physical material, its emission in colour */
+	const bool nodes = is_node_bake(ma);
+	const bool physical = nodes || BKE_material_is_physical(ma);
 	MaterialPhysical ph;
 	BKE_material_physical_get(ma, &ph);
 	if (!CustomData_has_layer(&dm->loopData, CD_MLOOPUV) && !CustomData_has_layer(&dm->faceData, CD_MTFACE)) {
-		r.error = "the mesh has no UV map, so its procedural textures cannot be baked";
+		r.error = nodes ? "the mesh has no UV map, so its node material cannot be baked" :
+		                  "the mesh has no UV map, so its procedural textures cannot be baked";
 		return false;
 	}
 	const int size = bake_size(ma);
@@ -825,8 +931,25 @@ bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const 
 		                                    (mtex->mapto & MAP_ALPHA));
 	}
 	alpha_textured = alpha_textured && (slots & (1u << BAKE_ALBEDO));
+	bool node_emission = false;
+	if (nodes) {
+		node_kinds(ma, node_emission, alpha_textured);
+	}
 	/* the most emit can reach: the material's, plus every emit slot's */
 	float emit_scale = std::max(physical ? ph.emission_strength : ma->emit, 0.0f);
+	if (nodes) {
+		/* the strongest Emission node's strength (unlinked), at least 1 */
+		emit_scale = 1.0f;
+		for (const bNode *n = (const bNode *)ma->nodetree->nodes.first; n; n = n->next) {
+			if (n->type != SH_NODE_EMISSION) {
+				continue;
+			}
+			const bNodeSocket *st = (const bNodeSocket *)BLI_findlink(&n->inputs, 1);
+			if (st && st->default_value && st->type == SOCK_FLOAT) {
+				emit_scale = std::max(emit_scale, ((const bNodeSocketValueFloat *)st->default_value)->value);
+			}
+		}
+	}
 	for (int i = 0; i < MAX_MTEX; i++) {
 		const MTex *mtex = ma->mtex[i];
 		if (mtex && mtex->tex && !(ma->septex & (1 << i)) && (mtex->mapto & MAP_EMIT)) {
@@ -871,6 +994,7 @@ bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const 
 
 	/* which values to draw */
 	const bool want_color = (slots & (1u << BAKE_ALBEDO)) || ((slots & (1u << BAKE_EMISSIVE)) && !physical);
+	(void)node_emission;
 	bool want[BAKE_CHANNELS] = {false};
 	want[GPU_BAKE_COLOR] = want_color;
 	want[GPU_BAKE_ALPHA] = alpha_textured;
@@ -908,6 +1032,7 @@ bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const 
 		pp.physical = physical;
 		pp.spec_zero = ma->spec < 0.01f;
 		pp.alpha_textured = alpha_textured;
+		pp.nodes = nodes;
 		copy_v3_v3(pp.emission, ph.emission);
 		for (int s = 0; s < BAKE_SLOTS; s++) {
 			if (slots & (1u << s)) {
@@ -980,7 +1105,8 @@ bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const 
 				const float e = value[i * 4] / 255.0f;
 				for (int c = 0; c < 3; c++) {
 					const float col = physical ? ph.emission[c] : srgb_to_linear(px[i * 4 + c] / 255.0f);
-					img->rgba[i * 4 + c] = to_byte(linear_to_srgb(col * e));
+					/* P8.24: a node tree's emission is its colour already */
+					img->rgba[i * 4 + c] = nodes ? value[i * 4 + c] : to_byte(linear_to_srgb(col * e));
 				}
 			}
 			r.images[BAKE_EMISSIVE] = img;
@@ -1015,8 +1141,11 @@ bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const 
 void apply_bake(const BakeResult &r, MaterialSpec &s)
 {
 	brb_material_desc &d = s.desc;
+	/* P8.24: the slots the Remix block set keep its values */
+	static const int tex_of[BAKE_SLOTS] = {TEX_ALBEDO, TEX_ROUGHNESS, TEX_EMISSIVE, TEX_NORMAL, TEX_METALLIC};
+	s.nodes_baked = s.source == MaterialSpec::NODES;
 	for (int slot = 0; slot < BAKE_SLOTS; slot++) {
-		if (!r.images[slot]) {
+		if (!r.images[slot] || (s.locked & (1u << tex_of[slot]))) {
 			continue;
 		}
 		TextureRequest t = slot_request(slot);

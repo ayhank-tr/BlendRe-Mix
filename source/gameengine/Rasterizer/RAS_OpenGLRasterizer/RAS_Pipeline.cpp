@@ -28,12 +28,18 @@
 #include <vector>
 
 #include "RAS_Pipeline.h"
+#include "RAS_ScreenEffects.h"
 
 #include "GPU_glew.h"
 
 extern "C" {
 #include "DNA_color_types.h"
 #include "DNA_scene_types.h"
+#include "DNA_world_types.h"
+#include "DNA_camera_types.h"
+#include "DNA_object_types.h"
+#include "BLI_math.h"
+#include "PIL_time.h"
 #include "BKE_scene.h"
 #include "IMB_colormanagement.h"
 #include "GPU_glcheck.h"
@@ -65,6 +71,10 @@ static const char *comp_frag =
         "uniform int bge_modern;\n"
         "uniform float bge_exposure;\n"   /* a multiplier */
         "uniform float bge_gamma;\n"      /* the exponent (1 / gamma) */
+        /* P8.23: auto exposure (a 1x1 texture) and vignette */
+        "uniform int bge_autoexp;\n"
+        "uniform sampler2D bge_expo;\n"
+        "uniform float bge_vignette;\n"
         /* P8.17: the volumetric fog (GPU_fog_grid) */
         "uniform int bge_fog;\n"
         "uniform sampler3D bge_fogvol;\n"
@@ -77,7 +87,13 @@ static const char *comp_frag =
         "const float LUT_HI = " "8.0" ";\n"
         "vec3 view(vec3 c)\n"
         "{\n"
-        "	c = max(c * bge_exposure, vec3(0.0));\n"
+        "	float e = bge_exposure;\n"
+        "	if (bge_autoexp != 0) e *= texelFetch(bge_expo, ivec2(0), 0).r;\n"
+        "	if (bge_vignette > 0.0) {\n"
+        "		vec2 q = (gl_FragCoord.xy - bge_fogarea.xy) / max(bge_fogarea.zw, vec2(1.0)) * 2.0 - 1.0;\n"
+        "		e *= max(1.0 - bge_vignette * pow(dot(q, q) * 0.5, 1.5), 0.0);\n"
+        "	}\n"
+        "	c = max(c * e, vec3(0.0));\n"
         "	vec3 s = clamp((log2(max(c, vec3(1e-30))) - LUT_LO) / (LUT_HI - LUT_LO), 0.0, 1.0);\n"
         "	s = mix(vec3(0.0), s, step(vec3(1e-30), c));\n"
         "	vec3 d = texture(bge_lut, s * ((LUT_N - 1.0) / LUT_N) + 0.5 / LUT_N).rgb;\n"
@@ -125,6 +141,14 @@ RAS_Pipeline::RAS_Pipeline()
     m_fbo(0),
     m_color(0),
     m_depth(0),
+    m_oit_accum(0),
+    m_oit_reveal(0),
+    m_oit_on(false),
+    m_effects(NULL),
+    m_scene(NULL),
+    m_rfbo(0),
+    m_rcolor(0),
+    m_rdepth(0),
     m_fbsamples(0),
     m_fbmodern(false),
     m_lut(0),
@@ -135,6 +159,8 @@ RAS_Pipeline::RAS_Pipeline()
 	m_size[0] = m_size[1] = 0;
 	m_shader[0] = m_shader[1] = NULL;
 	m_shader_failed[0] = m_shader_failed[1] = false;
+	m_oit_prog[0] = m_oit_prog[1] = 0;
+	m_rsize[0] = m_rsize[1] = 0;
 }
 
 RAS_Pipeline::~RAS_Pipeline()
@@ -157,9 +183,26 @@ void RAS_Pipeline::Free()
 		glDeleteTextures(1, &m_color);
 	if (m_depth)
 		glDeleteTextures(1, &m_depth);
-	m_fbo = m_color = m_depth = 0;
+	if (m_oit_accum)
+		glDeleteTextures(1, &m_oit_accum);
+	if (m_oit_reveal)
+		glDeleteTextures(1, &m_oit_reveal);
+	m_fbo = m_color = m_depth = m_oit_accum = m_oit_reveal = 0;
 	m_size[0] = m_size[1] = 0;
+	delete m_effects;
+	m_effects = NULL;
+	if (m_rfbo)
+		glDeleteFramebuffers(1, &m_rfbo);
+	if (m_rcolor)
+		glDeleteTextures(1, &m_rcolor);
+	if (m_rdepth)
+		glDeleteTextures(1, &m_rdepth);
+	m_rfbo = m_rcolor = m_rdepth = 0;
+	m_rsize[0] = m_rsize[1] = 0;
 	for (int i = 0; i < 2; i++) {
+		if (m_oit_prog[i])
+			glDeleteProgram(m_oit_prog[i]);
+		m_oit_prog[i] = 0;
 		if (m_shader[i])
 			GPU_shader_free(m_shader[i]);
 		m_shader[i] = NULL;
@@ -183,9 +226,27 @@ bool RAS_Pipeline::MakeTarget(int width, int height, int samples, bool modern)
 		glDeleteTextures(1, &m_color);
 	if (m_depth)
 		glDeleteTextures(1, &m_depth);
-	m_fbo = m_color = m_depth = 0;
+	if (m_oit_accum)
+		glDeleteTextures(1, &m_oit_accum);
+	if (m_oit_reveal)
+		glDeleteTextures(1, &m_oit_reveal);
+	m_fbo = m_color = m_depth = m_oit_accum = m_oit_reveal = 0;
 
 	const GLenum format = modern ? GL_RGBA16F : GL_RGBA8;
+	/* P8.21: Modern targets' transparency targets (weighted colour, cover) */
+	if (modern) {
+		const GLenum target = (samples > 1) ? GL_TEXTURE_2D_MULTISAMPLE : GL_TEXTURE_2D;
+		glCreateTextures(target, 1, &m_oit_accum);
+		glCreateTextures(target, 1, &m_oit_reveal);
+		if (samples > 1) {
+			glTextureStorage2DMultisample(m_oit_accum, samples, GL_RGBA16F, width, height, GL_TRUE);
+			glTextureStorage2DMultisample(m_oit_reveal, samples, GL_R8, width, height, GL_TRUE);
+		}
+		else {
+			glTextureStorage2D(m_oit_accum, 1, GL_RGBA16F, width, height);
+			glTextureStorage2D(m_oit_reveal, 1, GL_R8, width, height);
+		}
+	}
 	if (samples > 1) {
 		glCreateTextures(GL_TEXTURE_2D_MULTISAMPLE, 1, &m_color);
 		glTextureStorage2DMultisample(m_color, samples, format, width, height, GL_TRUE);
@@ -206,6 +267,11 @@ bool RAS_Pipeline::MakeTarget(int width, int height, int samples, bool modern)
 	glCreateFramebuffers(1, &m_fbo);
 	glNamedFramebufferTexture(m_fbo, GL_COLOR_ATTACHMENT0, m_color, 0);
 	glNamedFramebufferTexture(m_fbo, GL_DEPTH_ATTACHMENT, m_depth, 0);
+	if (m_oit_accum) {
+		glNamedFramebufferTexture(m_fbo, GL_COLOR_ATTACHMENT1, m_oit_accum, 0);
+		glNamedFramebufferTexture(m_fbo, GL_COLOR_ATTACHMENT2, m_oit_reveal, 0);
+		glNamedFramebufferDrawBuffer(m_fbo, GL_COLOR_ATTACHMENT0);
+	}
 	GPU_debug_label(GL_FRAMEBUFFER, m_fbo, modern ? "BGE-Remix Modern target" : "BGE-Remix Classic target");
 
 	if (glCheckNamedFramebufferStatus(m_fbo, GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
@@ -323,6 +389,7 @@ bool RAS_Pipeline::Begin(const Scene *scene, bool first, const float background[
 
 	memcpy(m_area, area, sizeof(m_area));
 	m_active = true;
+	m_scene = scene;
 
 	GLint prev = 0;
 	glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev);
@@ -382,8 +449,57 @@ void RAS_Pipeline::End(const float *view, const float *proj, const int *viewport
 	if (m_modern && GPU_ssr_wanted())
 		GPU_ssr_history_store(m_fbo, m_size[0], m_size[1]);
 
+	/* P8.23: Modern scenes' screen effects, on a single-sampled picture */
+	unsigned int fx_color = 0, fx_depth = 0, fx_expo = 0;
+	float vignette = 0.0f;
+	if (m_modern && view && proj && m_scene && GPU_speed_feature("screen_effects")) {
+		RAS_ScreenEffects::Settings s;
+		ScreenEffectSettings(s);
+		vignette = s.vignette;
+		if (s.Any()) {
+			unsigned int color = m_color, depth = m_depth;
+			if (m_fbsamples > 1) {
+				if (!m_rfbo || m_rsize[0] != m_size[0] || m_rsize[1] != m_size[1]) {
+					if (m_rfbo) {
+						glDeleteFramebuffers(1, &m_rfbo);
+						glDeleteTextures(1, &m_rcolor);
+						glDeleteTextures(1, &m_rdepth);
+					}
+					glCreateTextures(GL_TEXTURE_2D, 1, &m_rcolor);
+					glTextureStorage2D(m_rcolor, 1, GL_RGBA16F, m_size[0], m_size[1]);
+					glCreateTextures(GL_TEXTURE_2D, 1, &m_rdepth);
+					glTextureStorage2D(m_rdepth, 1, GL_DEPTH_COMPONENT24, m_size[0], m_size[1]);
+					glCreateFramebuffers(1, &m_rfbo);
+					glNamedFramebufferTexture(m_rfbo, GL_COLOR_ATTACHMENT0, m_rcolor, 0);
+					glNamedFramebufferTexture(m_rfbo, GL_DEPTH_ATTACHMENT, m_rdepth, 0);
+					m_rsize[0] = m_size[0];
+					m_rsize[1] = m_size[1];
+				}
+				glNamedFramebufferReadBuffer(m_fbo, GL_COLOR_ATTACHMENT0);
+				glBlitNamedFramebuffer(m_fbo, m_rfbo, 0, 0, m_size[0], m_size[1], 0, 0, m_size[0], m_size[1],
+				                       GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+				color = m_rcolor;
+				depth = m_rdepth;
+			}
+			if (!m_effects)
+				m_effects = new RAS_ScreenEffects();
+			fx_color = m_effects->Run(color, depth, m_size[0], m_size[1], view, proj, s, PIL_check_seconds_timer());
+			if (fx_color) {
+				fx_depth = depth;
+				fx_expo = m_effects->Exposure();
+			}
+			static int said = 0;
+			if (said < 1) {
+				said++;
+				printf("BGE-Remix screen effects:%s%s%s%s%s%s\n", s.ao ? " ambient occlusion" : "",
+				       s.dof ? " depth of field" : "", s.mblur ? " motion blur" : "", s.bloom ? " bloom" : "",
+				       s.autoexp ? " auto exposure" : "", s.vignette > 0.0f ? " vignette" : "");
+			}
+		}
+	}
+
 	glBindFramebuffer(GL_FRAMEBUFFER, m_prevfb);
-	GPUShader *shader = Shader(m_samples > 1);
+	GPUShader *shader = Shader(m_samples > 1 && !fx_color);
 	if (!shader)
 		return;
 
@@ -406,8 +522,8 @@ void RAS_Pipeline::End(const float *view, const float *proj, const int *viewport
 
 	const GLuint program = GPU_shader_program(shader);
 	GPU_shader_bind(shader);
-	glBindTextureUnit(0, m_color);
-	glBindTextureUnit(1, m_depth);
+	glBindTextureUnit(0, fx_color ? fx_color : m_color);
+	glBindTextureUnit(1, fx_color ? fx_depth : m_depth);
 	glUniform1i(glGetUniformLocation(program, "bge_color"), 0);
 	glUniform1i(glGetUniformLocation(program, "bge_depth"), 1);
 	GLint loc;
@@ -417,10 +533,23 @@ void RAS_Pipeline::End(const float *view, const float *proj, const int *viewport
 		glUniform1i(loc, 2);
 	if ((loc = glGetUniformLocation(program, "bge_fogvol")) >= 0)
 		glUniform1i(loc, 3);
+	if ((loc = glGetUniformLocation(program, "bge_expo")) >= 0)
+		glUniform1i(loc, 4);
+	if ((loc = glGetUniformLocation(program, "bge_autoexp")) >= 0)
+		glUniform1i(loc, fx_expo ? 1 : 0);
+	if ((loc = glGetUniformLocation(program, "bge_vignette")) >= 0)
+		glUniform1f(loc, vignette);
+	if (fx_expo)
+		glBindTextureUnit(4, fx_expo);
+	{
+		const int *vp = viewport ? viewport : m_area;
+		if ((loc = glGetUniformLocation(program, "bge_fogarea")) >= 0)
+			glUniform4f(loc, (float)vp[0], (float)vp[1], (float)vp[2], (float)vp[3]);
+	}
 	if (m_modern && m_lut)
 		glBindTextureUnit(2, m_lut);
 	if ((loc = glGetUniformLocation(program, "bge_samples")) >= 0)
-		glUniform1i(loc, m_samples);
+		glUniform1i(loc, fx_color ? 1 : m_samples);
 	if ((loc = glGetUniformLocation(program, "bge_modern")) >= 0)
 		glUniform1i(loc, (m_modern && m_lut) ? 1 : 0);
 	if ((loc = glGetUniformLocation(program, "bge_exposure")) >= 0)
@@ -442,6 +571,201 @@ void RAS_Pipeline::End(const float *view, const float *proj, const int *viewport
 	glBindTextureUnit(1, 0);
 	glBindTextureUnit(2, 0);
 	glBindTextureUnit(3, 0);
+	glBindTextureUnit(4, 0);
 	glDepthFunc(GL_LEQUAL);
 	GPU_state_scope_end(&scope);
+}
+
+/* ------------------------------------------------------------------------- */
+/* P8 Part C (P8.21): order-independent transparency (weighted blended) */
+
+static const char *oit_vert =
+        "#version 450 core\n"
+        "void main()\n"
+        "{\n"
+        "	vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
+        "	gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n"
+        "}\n";
+
+/* the weighted average of the transparent surfaces over the picture by
+ * what they leave of it (per sample when multisampled) */
+static const char *oit_frag[2] = {
+        "#version 450 core\n"
+        "uniform sampler2D accum;\n"
+        "uniform sampler2D reveal;\n"
+        "out vec4 color;\n"
+        "void main()\n"
+        "{\n"
+        "	ivec2 p = ivec2(gl_FragCoord.xy);\n"
+        "	float r = texelFetch(reveal, p, 0).r;\n"
+        "	if (r >= 0.9999) discard;\n"
+        "	vec4 a = texelFetch(accum, p, 0);\n"
+        "	color = vec4(a.rgb / clamp(a.a, 1e-4, 5e4), r);\n"
+        "}\n",
+        "#version 450 core\n"
+        "uniform sampler2DMS accum;\n"
+        "uniform sampler2DMS reveal;\n"
+        "out vec4 color;\n"
+        "void main()\n"
+        "{\n"
+        "	ivec2 p = ivec2(gl_FragCoord.xy);\n"
+        "	float r = texelFetch(reveal, p, gl_SampleID).r;\n"
+        "	if (r >= 0.9999) discard;\n"
+        "	vec4 a = texelFetch(accum, p, gl_SampleID);\n"
+        "	color = vec4(a.rgb / clamp(a.a, 1e-4, 5e4), r);\n"
+        "}\n"};
+
+static GLuint oit_program(int ms)
+{
+	GLuint p = glCreateProgram();
+	const char *srcs[2] = {oit_vert, oit_frag[ms]};
+	const GLenum types[2] = {GL_VERTEX_SHADER, GL_FRAGMENT_SHADER};
+	for (int i = 0; i < 2; i++) {
+		GLuint sh = glCreateShader(types[i]);
+		glShaderSource(sh, 1, &srcs[i], NULL);
+		glCompileShader(sh);
+		GLint ok = 0;
+		glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+		if (!ok) {
+			char log[1024];
+			glGetShaderInfoLog(sh, sizeof(log), NULL, log);
+			printf("BGE-Remix: the transparency pass does not build:\n%s\n", log);
+			glDeleteShader(sh);
+			glDeleteProgram(p);
+			return 0;
+		}
+		glAttachShader(p, sh);
+		glDeleteShader(sh);
+	}
+	glLinkProgram(p);
+	GLint ok = 0;
+	glGetProgramiv(p, GL_LINK_STATUS, &ok);
+	if (!ok) {
+		glDeleteProgram(p);
+		return 0;
+	}
+	GPU_debug_label(GL_PROGRAM, p, "BGE-Remix transparency");
+	return p;
+}
+
+void RAS_Pipeline::TransparencyBlend()
+{
+	glEnablei(GL_BLEND, 0);
+	glEnablei(GL_BLEND, 1);
+	glBlendEquationi(0, GL_FUNC_ADD);
+	glBlendEquationi(1, GL_FUNC_ADD);
+	glBlendFunci(0, GL_ONE, GL_ONE);
+	glBlendFunci(1, GL_ZERO, GL_ONE_MINUS_SRC_COLOR);
+}
+
+bool RAS_Pipeline::BeginTransparency()
+{
+	m_oit_on = false;
+	if (!m_active || !m_modern || !m_oit_accum || !GPU_speed_feature("oit"))
+		return false;
+	/* only the scene's own picture (not a mirror or probe drawn meanwhile) */
+	GLint bound = 0;
+	glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &bound);
+	if ((GLuint)bound != m_fbo)
+		return false;
+	const int ms = (m_fbsamples > 1) ? 1 : 0;
+	if (!m_oit_prog[ms])
+		m_oit_prog[ms] = oit_program(ms);
+	if (!m_oit_prog[ms])
+		return false;
+	const GLenum bufs[2] = {GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2};
+	glNamedFramebufferDrawBuffers(m_fbo, 2, bufs);
+	const float zero[4] = {0.0f, 0.0f, 0.0f, 0.0f}, one[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+	GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
+	glDisable(GL_SCISSOR_TEST);
+	glClearNamedFramebufferfv(m_fbo, GL_COLOR, 0, zero);
+	glClearNamedFramebufferfv(m_fbo, GL_COLOR, 1, one);
+	if (scissor)
+		glEnable(GL_SCISSOR_TEST);
+	TransparencyBlend();
+	GPU_oit_set(1);
+	m_oit_on = true;
+	return true;
+}
+
+void RAS_Pipeline::EndTransparency()
+{
+	if (!m_oit_on)
+		return;
+	m_oit_on = false;
+	GPU_oit_set(0);
+	glNamedFramebufferDrawBuffer(m_fbo, GL_COLOR_ATTACHMENT0);
+	const int ms = (m_fbsamples > 1) ? 1 : 0;
+	GPUStateScope scope;
+	GPU_state_scope_begin(&scope);
+	GLint prog = 0;
+	glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
+	glDisable(GL_DEPTH_TEST);
+	glDepthMask(GL_FALSE);
+	glDisable(GL_CULL_FACE);
+	glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+	glEnable(GL_BLEND);
+	glBlendEquation(GL_FUNC_ADD);
+	/* the average where the surfaces cover, what is behind as they leave it */
+	glBlendFunc(GL_ONE_MINUS_SRC_ALPHA, GL_SRC_ALPHA);
+	glUseProgram(m_oit_prog[ms]);
+	glBindTextureUnit(0, m_oit_accum);
+	glBindTextureUnit(1, m_oit_reveal);
+	glUniform1i(glGetUniformLocation(m_oit_prog[ms], "accum"), 0);
+	glUniform1i(glGetUniformLocation(m_oit_prog[ms], "reveal"), 1);
+	GLuint vao = 0;
+	glGenVertexArrays(1, &vao);
+	glBindVertexArray(vao);
+	glDrawArrays(GL_TRIANGLES, 0, 3);
+	glBindVertexArray(0);
+	glDeleteVertexArrays(1, &vao);
+	glBindTextureUnit(0, 0);
+	glBindTextureUnit(1, 0);
+	glUseProgram((GLuint)prog);
+	GPU_state_scope_end(&scope);
+}
+
+/* P8.23: the effects' settings: the World's ambient occlusion, the scene
+ * camera's depth of field, the Render tab's motion blur, the Modern panel's
+ * bloom, auto exposure and vignette */
+void RAS_Pipeline::ScreenEffectSettings(RAS_ScreenEffects::Settings &s) const
+{
+	memset(&s, 0, sizeof(s));
+	const Scene *sc = m_scene;
+	const World *wo = sc->world;
+	s.ao = wo && (wo->mode & WO_AMB_OCC);
+	s.ao_distance = wo ? wo->aodist : 1.0f;
+	s.ao_energy = wo ? wo->aoenergy : 1.0f;
+	s.dof = BKE_scene_game_fx(sc, "depth_of_field", 0.0f) != 0.0f;
+	const Object *camob = sc->camera;
+	if (s.dof && camob && camob->type == OB_CAMERA && camob->data) {
+		const Camera *ca = (const Camera *)camob->data;
+		s.fstop = ca->gpu_dof.fstop;
+		s.focal_mm = ca->lens;
+		s.sensor_mm = (ca->sensor_fit == CAMERA_SENSOR_FIT_VERT) ? ca->sensor_y : ca->sensor_x;
+		if (ca->dof_ob) {
+			float d[3];
+			sub_v3_v3v3(d, ca->dof_ob->obmat[3], camob->obmat[3]);
+			float axis[3] = {-camob->obmat[2][0], -camob->obmat[2][1], -camob->obmat[2][2]};
+			normalize_v3(axis);
+			s.focus = fabsf(dot_v3v3(d, axis));
+		}
+		else {
+			s.focus = (ca->YF_dofdist > 0.0f) ? ca->YF_dofdist : ca->gpu_dof.focus_distance;  /* (the Focus distance) */
+		}
+		if (s.focus <= 0.0f)
+			s.dof = false;
+	}
+	else {
+		s.dof = false;
+	}
+	s.mblur = (sc->r.mode & R_MBLUR) != 0;
+	s.shutter = sc->r.blurfac;
+	s.bloom = BKE_scene_game_fx(sc, "bloom", 0.0f) != 0.0f;
+	s.bloom_intensity = BKE_scene_game_fx(sc, "bloom_intensity", 0.05f);
+	s.bloom_threshold = BKE_scene_game_fx(sc, "bloom_threshold", 1.0f);
+	s.bloom_radius = BKE_scene_game_fx(sc, "bloom_radius", 6.5f);
+	s.autoexp = BKE_scene_game_fx(sc, "auto_exposure", 0.0f) != 0.0f;
+	s.exposure_speed = BKE_scene_game_fx(sc, "exposure_speed", 1.0f);
+	s.vignette = BKE_scene_game_fx(sc, "vignette", 0.0f);
 }

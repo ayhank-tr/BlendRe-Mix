@@ -150,6 +150,10 @@ void BKE_scene_disable_color_management(struct Scene *scene);
 enum { BKE_SCENE_GAME_PIPELINE_CLASSIC = 0, BKE_SCENE_GAME_PIPELINE_MODERN = 1 };
 int BKE_scene_game_pipeline(const struct Scene *scene);
 void BKE_scene_game_pipeline_set(struct Scene *scene, int pipeline);
+/* BGE-Remix P8 Part C (P8.23): the Modern pipeline's screen effects, hidden
+ * ID properties of the scene ("bge_fx_<name>"), with their defaults */
+float BKE_scene_game_fx(const struct Scene *scene, const char *name, float def);
+void BKE_scene_game_fx_set(struct Scene *scene, const char *name, float value);
 bool BKE_scene_check_color_management_enabled(const struct Scene *scene);
 bool BKE_scene_check_rigidbody_active(const struct Scene *scene);
 

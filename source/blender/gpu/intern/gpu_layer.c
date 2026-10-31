@@ -1155,9 +1155,13 @@ void gpu_layer_init(void)
 
 /* BGE-Remix P8 Part B: the speed features' switches */
 static const char *gpu_speed_names[] = {"instancing", "gpu_culling", "gpu_skinning", "layered_shadows",
-                                        "clustered_lights"};
-#define SPEED_COUNT 5
-static int gpu_speed_on[SPEED_COUNT] = {-1, -1, -1, -1, -1};
+                                        "clustered_lights",
+                                        /* P8 Part C: switches of the new techniques */
+                                        "oit", "tessellation", "screen_effects",
+                                        /* P8.24: images from the shared compressed texture cache */
+                                        "texture_cache"};
+#define SPEED_COUNT 9
+static int gpu_speed_on[SPEED_COUNT] = {-1, -1, -1, -1, -1, -1, -1, -1, -1};
 
 static int speed_index(const char *name)
 {

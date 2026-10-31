@@ -630,6 +630,9 @@ bool RAS_MaterialBucket::ActivateMaterial(const MT_Transform& cameratrans, RAS_I
 	/* BGE-Remix P8 Part B (P8.19): volumes are drawn by their own pass */
 	if (m_material->IsVolume())
 		return false;
+	/* BGE-Remix P8 Part C (P8.20): halos are drawn as sprites */
+	if (m_material->IsHalo())
+		return false;
 
 	if (!rasty->SetMaterial(*m_material))
 		return false;

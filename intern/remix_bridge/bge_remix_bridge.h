@@ -54,8 +54,10 @@ extern "C" {
  * 4: P4 (skinning, draw categories, picking, particle systems).
  * 5: P4.8 (direct presentation: brb_frame_vk).
  * 8: P8.9 (disk lights, lights' volumetric strength).
- * 9: P8 Part B (a dome light's own sky picture). */
-#define BRB_ABI_VERSION 9
+ * 9: P8 Part B (a dome light's own sky picture).
+ * 10: P8.24 (every field of Remix's materials; DDS rows from the bottom,
+ *     texture coordinates no longer flipped). */
+#define BRB_ABI_VERSION 10
 
 typedef enum brb_status {
 	BRB_STATUS_NOT_LOADED = 0,           /* nothing tried yet */
@@ -175,6 +177,32 @@ typedef struct brb_material_desc {
 	float subsurface_radius[3];  /* mean free path per channel, Blender units */
 	/* interface 7 (P8.8) */
 	int additive;                /* 1: added to what is behind (Blender's Add blending) */
+
+	/* interface 10 (P8.24): the rest of Remix's material. Zero (memset) is
+	 * Remix's default for each, except where a field says otherwise. */
+	const wchar_t *height_texture;   /* BRB_TEXTURE_SCALAR: height, 0..1 */
+	const wchar_t *tangent_texture;  /* the anisotropy's direction (Remix's tangent map) */
+	const wchar_t *transmittance_texture;          /* glass: sRGB colour */
+	const wchar_t *subsurface_transmittance_texture; /* sRGB colour */
+	const wchar_t *subsurface_thickness_texture;   /* BRB_TEXTURE_SCALAR */
+	const wchar_t *subsurface_albedo_texture;      /* sRGB colour: single-scattering albedo */
+	const wchar_t *subsurface_radius_texture;      /* sRGB colour: radius per channel, times subsurface_radius */
+	float anisotropy;            /* -1..1 */
+	int thin_film;               /* 1: a thin film of thin_film_thickness */
+	float thin_film_thickness;   /* nanometres */
+	int alpha_is_thin_film;      /* 1: the albedo texture's alpha is the film's thickness */
+	float displace_in;           /* height map depth inwards (Blender units) */
+	float displace_out;          /* and outwards */
+	int blend_type;              /* 0: from the fields above; -1: none (opaque); else Remix's BlendType + 1 */
+	int inverted_blend;
+	int alpha_test_type;         /* 0: from alpha_test; else Remix's AlphaTestType + 1 */
+	int wrap_u, wrap_v;          /* 0: from clamp; else Remix's wrap mode + 1 (clamp, repeat, mirrored, clip) */
+	float thin_wall_thickness;   /* glass with thin_walled: 0 = 0.001 */
+	int use_diffuse_layer;       /* glass: a diffuse layer under it */
+	int subsurface_volumetric;   /* 1: Remix's volumetric subsurface (measurement distance) instead of the diffusion profile */
+	float subsurface_distance;   /* volumetric: the transmittance colour's measurement distance */
+	float subsurface_anisotropy; /* -1..1 */
+	float subsurface_radius_scale; /* 0 = 1 */
 } brb_material_desc;
 
 /* interface 4 (P4): bone weights of a skinned surface, bones_per_vertex
@@ -325,6 +353,16 @@ BRB_API void brb_reset_stats(void);
 /* What Remix should treat a draw as (brb_draw_desc.categories) */
 #define BRB_CATEGORY_PARTICLE 1          /* a sprite or particle (Remix's particle handling) */
 #define BRB_CATEGORY_PARTICLE_EMITTER 2  /* spawns Remix GPU particles (brb_draw_desc.particles) */
+/* P8 Part C (P8.22, P8.24): Remix's other categories a draw can take */
+#define BRB_CATEGORY_HAIR_CARDS 4        /* hair ribbons */
+#define BRB_CATEGORY_ANIMATED_WATER 8    /* water whose surface moves */
+#define BRB_CATEGORY_TERRAIN 16
+#define BRB_CATEGORY_DECAL_STATIC 32     /* a decal over a surface that does not move */
+#define BRB_CATEGORY_DECAL_DYNAMIC 64
+#define BRB_CATEGORY_SKY 128
+#define BRB_CATEGORY_WORLD_UI 256
+#define BRB_CATEGORY_BEAM 512
+#define BRB_CATEGORY_IGNORE 1024         /* not drawn by Remix */
 
 /* Remix's own GPU particles, spawned from the draw's triangles. Lengths
  * in Blender units (metres), times in seconds; colours linear RGBA. "start"
@@ -396,6 +434,10 @@ typedef enum brb_texture_kind {
 #define BRB_TEXTURE_NO_GPU 1 /* compress on the CPU even when a GPU is there */
 #define BRB_TEXTURE_LINEAR 2 /* COLOR: the bytes are linear, not sRGB (encoded to sRGB) */
 #define BRB_TEXTURE_INVERT 4 /* SCALAR: store 1 - value */
+/* interface 10: the file's rows from the image's top (for pictures Remix
+ * samples with its own coordinates: particles, the sky); the others keep
+ * Blender's order, rows from the bottom */
+#define BRB_TEXTURE_TOP_FIRST 8
 
 typedef struct brb_texture_desc {
 	const wchar_t *path;         /* the .dds to write; its folder must exist */

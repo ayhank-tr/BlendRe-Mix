@@ -574,6 +574,8 @@ protected:
 		float smin[3], smax[3];
 	};
 	std::vector<VolumeEntry> m_volumes;
+	/* BGE-Remix P8 Part C (P8.20): halos and particles */
+	class KX_Sprites *m_sprites;
 	void RenderVolumes(KX_Scene *scene);
 	bool m_mirror_drawing;
 	void ScanProbes(KX_Scene *scene);

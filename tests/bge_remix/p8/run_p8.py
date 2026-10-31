@@ -56,6 +56,26 @@ T8.24 volumes: the fog cube and glowing sphere as F12, the baked smoke,
 B8.7-B8.9, B8.11, B8.12 reported (B8.6, B8.10 with Part A's); their targets
       are for the RTX run
 
+Part C (P8.20-P8.25):
+T8.25 hair, halos, particles: hair cards and halos as F12's strands and halo
+      maths (region colours); Remix gets hair cards, halo sprites and the GPU
+      emitters (fake runtime's log); None systems are not sent
+T8.26 transparency: Modern blends the same in two drawing orders (weighted
+      blended OIT); Classic's sorting too
+T8.27 left-out objects: curve, surface, metaball, text, wire, displaced
+      plane, vertex colours, ocean in the game and in Remix (log); the
+      displaced mesh the same in both
+T8.28 camera and colour: each effect changes the game's picture where it
+      should; Remix gets the matching settings (log); a 2D filter over Remix
+T8.29 Remix match: remix_extras' fields reach Remix (log); the node material
+      Remix mode cannot read is baked; the match report; the game draws from
+      the compressed files Remix reads
+T8.30 panels: the game scene hides Blender Internal's own options and marks
+      the ones that work in only some renderers (drawn into a stand-in
+      layout); whether each shown option changes a picture is judged on the
+      picture sheet
+B8.13, B8.14 reported; their targets are for the RTX run
+
 The first build's tests, renumbered (P8 plan v2):
 T8.4  one mode (was T8.1)            T8.5  Multitexture's features (T8.2)
 T8.6  GLSL unchanged (T8.3)          T8.7  fallback (T8.4)
@@ -1497,6 +1517,8 @@ def run(args, out):
 
     # P8 v2 Part B: the game on OpenGL 4.5
     B = partb_runs(args, out, S, expected)
+    # P8 v2 Part C
+    C = partc_runs(args, out, S, expected)
 
     tests = {}
     plan = [("T8.4 One mode", lambda: t81(args, out, scenes, mt_ours, api)),
@@ -1524,7 +1546,13 @@ def run(args, out):
             ("T8.21 Shadows: crowd", lambda: t821_crowd_shadows(B, expected)),
             ("T8.22 Sky and mist", lambda: t822_sky(B, expected)),
             ("T8.23 Reflections", lambda: t823_reflections(B, expected)),
-            ("T8.24 Volumes", lambda: t824_volumes(B, expected))]
+            ("T8.24 Volumes", lambda: t824_volumes(B, expected)),
+            ("T8.25 Hair, halos, particles", lambda: t825_hair(C, expected)),
+            ("T8.26 Transparency", lambda: t826_transparency(C, expected)),
+            ("T8.27 Left-out objects", lambda: t827_left_out(C, expected)),
+            ("T8.28 Camera and colour", lambda: t828_camera(C, expected)),
+            ("T8.29 Remix match", lambda: t829_match(C, expected)),
+            ("T8.30 Panels", lambda: t830_panels(C, expected))]
     needs_official = ("T8.4", "T8.5", "T8.6", "T8.3", "Meshes", "T8.14")
     for name, fn in plan:
         if not args.official and name.split()[0] in needs_official:
@@ -1546,11 +1574,12 @@ def run(args, out):
         import traceback
         c, d = {"the test ran": False}, {"error": traceback.format_exc()}
     tests["T8.1 OpenGL 4.5"] = {"ok": bool(c) and all(bool(v) for v in c.values()), "checks": c, "detail": d}
-    ran = {k: bool(r.get("ran")) for k, r in list(runs.items()) + list(B["runs"].items())}
+    ran = {k: bool(r.get("ran")) for k, r in list(runs.items()) + list(B["runs"].items()) + list(C["runs"].items())}
     tests["The game ran (every scene)"] = {"ok": all(ran.values()), "checks": ran, "detail": {}}
 
     bench = benchmarks(args, out, scenes, runs)
     bench.update(partb_benchmarks(args, out, S, expected))
+    bench.update(partc_benchmarks(args, out, S))
     res = {"tests": tests, "bench": bench, "all_ok": all(t["ok"] for t in tests.values())}
     # the self-test picture as PNG for the sheet
     try:
@@ -1598,10 +1627,23 @@ def run(args, out):
              ("reflections at frame 40", B["runs"].get("b_reflections", {}).get("shots", {}).get(40)),
              ("reflections, Modern with SSR", B["runs"].get("b_reflections_modern", {}).get("shots", {}).get(40)),
              ("volumes: game", B["runs"].get("b_volumes", {}).get("screenshot")),
-             ("volumes (no smoke): F12", B["f12"].get("b_f12_volumes"))]
+             ("volumes (no smoke): F12", B["f12"].get("b_f12_volumes")),
+             ("hair_particles: game", C["runs"].get("c_hair_particles", {}).get("screenshot")),
+             ("hair_particles: F12", C["f12"].get("c_f12_hair_particles")),
+             ("hair_particles: Modern", C["runs"].get("c_hair_particles_modern", {}).get("screenshot")),
+             ("transparency: Modern", C["runs"].get("c_transparency_modern", {}).get("screenshot")),
+             ("transparency: Modern, other order",
+              C["runs"].get("c_transparency_modern_shuffled", {}).get("screenshot")),
+             ("left_out: game (Modern)", C["runs"].get("c_left_out", {}).get("screenshot")),
+             ("camera_fx: none", C["runs"].get("c_camera_fx_none", {}).get("screenshot")),
+             ("camera_fx: every effect", C["runs"].get("c_camera_fx_all", {}).get("screenshot")),
+             ("camera_fx: 2D filter over Remix (fake runtime)",
+              C["runs"].get("c_camera_fx_filter_remix", {}).get("screenshot")),
+             ("remix_extras: game (shared texture cache)",
+              C["runs"].get("c_remix_extras_shared", {}).get("screenshot"))]
     res["sheet"] = p2.contact_sheet(sheet, os.path.join(out, "sheet_p8a.png"))
 
-    lines = ["BGE-Remix P8 tests, plan v2: Parts A and B (CI)", "=" * 70, ""]
+    lines = ["BGE-Remix P8 tests, plan v2: Parts A, B and C (CI)", "=" * 70, ""]
     for name, t in tests.items():
         lines.append("%-34s %s" % (name, p2.mark(t["ok"])))
         for check, ok in t["checks"].items():
@@ -2255,6 +2297,405 @@ def benchmarks(args, out, scenes, runs):
         r_stock = play(args.official, out, "b86_room_stock", room, frames=600, gl_debug=False) if args.official else {}
         b6["p2_room"] = {"ours": ms(r_ours), "stock": ms(r_stock) if r_stock else None}
     b["B8.6 game drawing (ms, early reading)"] = b6
+    return b
+
+
+# ---------------------------------------------------------------------------
+# P8 v2 Part C (P8.20-P8.25): T8.25-T8.30, B8.13, B8.14
+
+TOL_STRANDS = 40.0  # hair cards and halos against F12's strands and halo maths (region mean colour)
+TOL_ORDER = 3.0     # Modern: the same scene made in two orders (weighted blended transparency)
+TOL_SORTED = 6.0    # Classic: sorted blending in two orders
+C_FRAMES = 110      # Part C runs: the probe's screenshot at frame 100
+C_DRAWS_FRAME = "60"
+CAT_HAIR = 1 << 25
+CAT_EMITTER = 1 << 23
+
+# every material's Remix match (bge_remix.material_match)
+MATCH_CHECK = r'''
+import bpy, json
+r = {}
+try:
+    import bge_remix
+    for ma in bpy.data.materials:
+        r[ma.name] = bge_remix.material_match(ma)
+except Exception as ex:
+    r["error"] = str(ex)
+print("P8-MATCH " + json.dumps(r))
+'''
+
+# T8.30: which options the panels show in a game scene and in a Blender
+# Render one, recorded by drawing them into a stand-in layout
+PANELS_CHECK = r'''
+import bpy, json
+
+class Rec:
+    def __init__(self, log):
+        self.log = log
+        self.active = True
+        self.enabled = True
+        self.alignment = 'EXPAND'
+        self.scale_x = self.scale_y = 1.0
+        self.operator_context = 'EXEC_DEFAULT'
+    def _sub(self, *a, **k):
+        return Rec(self.log)
+    row = column = split = box = column_flow = _sub
+    def prop(self, data, name, **k):
+        self.log.append(("prop", name))
+    def label(self, text="", **k):
+        self.log.append(("label", text))
+    def __getattr__(self, name):
+        def any_call(*a, **k):
+            return Rec(self.log)
+        return any_call
+
+class Ctx:
+    pass
+
+def drawn(panel, ctx):
+    log = []
+    p = panel.__new__(panel)
+    p.layout = Rec(log)
+    try:
+        if hasattr(panel, "poll") and not panel.poll(ctx):
+            return None
+        if hasattr(panel, "draw_header"):
+            panel.draw_header(p, ctx)
+        panel.draw(p, ctx)
+    except Exception as ex:
+        log.append(("error", repr(ex)))
+    return log
+
+sc = bpy.context.scene
+ma = bpy.data.materials.get("RX_wall")
+la = next((l for l in bpy.data.lamps if l.type == 'SUN'), None)
+names = ("MATERIAL_PT_options", "MATERIAL_PT_shadow", "MATERIAL_PT_shading", "MATERIAL_PT_mirror",
+         "MATERIAL_PT_sss", "MATERIAL_PT_pipeline", "MATERIAL_PT_remix_fields", "MATERIAL_PT_remix_options",
+         "DATA_PT_lamp", "TEXTURE_PT_voxeldata", "TEXTURE_PT_ocean", "RENDER_PT_game_effects")
+r = {}
+for engine in ("BLENDER_GAME", "BLENDER_RENDER"):
+    sc.render.engine = engine
+    ctx = Ctx()
+    ctx.scene = sc
+    ctx.material = ma
+    ctx.lamp = la
+    ctx.texture = None
+    ctx.object = None
+    ctx.space_data = None
+    out = {}
+    for n in names:
+        cls = getattr(bpy.types, n, None)
+        if cls is None:
+            out[n] = "missing"
+            continue
+        log = drawn(cls, ctx) if engine in getattr(cls, "COMPAT_ENGINES", {engine}) else None
+        out[n] = log
+    r[engine] = out
+print("P8-PANELS " + json.dumps(r))
+'''
+
+
+def rect_rgb(a, rect):
+    """a region's mean colour (r, g, b)"""
+    if a is None:
+        return None
+    return crop(a, rect).reshape(-1, a.shape[-1])[:, :3].mean(axis=0)
+
+
+def partc_runs(args, out, S, expected):
+    """every Part C run; the pictures and logs the tests read"""
+    C = {"runs": {}, "f12": {}, "remix": {}}
+    R = C["runs"]
+    have = lambda n: os.path.isfile(S(n))  # noqa: E731
+
+    def ours(tag, name, env=None, frames=C_FRAMES):
+        if not have(name):
+            return {}
+        R[tag] = play(args.ours, out, tag, S(name), env, frames=frames)
+        return R[tag]
+
+    def remix(tag, name, frames=C_FRAMES, cache=None, extra=None):
+        if not have(name):
+            return {}
+        cache = cache or p3.fresh(os.path.join(out, "cache_" + tag))
+        log, env = mock_env(args, out, tag, cache)
+        env["BGE_REMIX_MOCK_DRAWS_FRAME"] = C_DRAWS_FRAME
+        env.update(extra or {})
+        R[tag] = play(args.ours, out, tag, S(name), env, frames=frames)
+        C["remix"][tag] = mock_lines(log)
+        return R[tag]
+
+    def f12(tag, name):
+        if not have(name):
+            return None
+        path = os.path.join(out, tag + ".png")
+        blender_script(args.ours, out, tag, RENDER, [path], blend=S(name), timeout=1800)
+        C["f12"][tag] = path if os.path.isfile(path) else None
+        return C["f12"][tag]
+
+    # T8.25: hair, halos, particles
+    ours("c_hair_particles", "hair_particles")
+    ours("c_hair_particles_modern", "hair_particles_modern")
+    f12("c_f12_hair_particles", "hair_particles")
+    remix("c_hair_particles_remix", "hair_particles_remix")
+    # T8.26: transparency in two orders
+    for f in expected.get("transparency", {}).get("files", []):
+        ours("c_" + f, f)
+    # T8.27: left-out objects
+    ours("c_left_out", "left_out")
+    remix("c_left_out_remix", "left_out_remix")
+    # T8.28: camera effects
+    for f in expected.get("camera_fx", {}).get("files", []):
+        if f.endswith("_remix"):
+            remix("c_" + f, f)
+        else:
+            ours("c_" + f, f)
+    # T8.29: Remix's fields; the shared texture cache (Remix fills it, the
+    # game alone then reads it)
+    shared = p3.fresh(os.path.join(out, "cache_c_shared"))
+    remix("c_remix_extras_remix", "remix_extras_remix", cache=shared)
+    ours("c_remix_extras_shared", "remix_extras", {"BGE_REMIX_CACHE_DIR": shared})
+    if have("remix_extras"):
+        code, text, _ = blender_script(args.ours, out, "c_match", MATCH_CHECK, blend=S("remix_extras"))
+        C["match"] = tagged(text, "P8-MATCH")
+        code, text, _ = blender_script(args.ours, out, "c_panels", PANELS_CHECK, blend=S("remix_extras"))
+        C["panels"] = tagged(text, "P8-PANELS")
+    return C
+
+
+def draws_at(lines, frame=C_DRAWS_FRAME):
+    """the fake runtime's Draw lines of one frame: their category flags"""
+    cats = []
+    for l in lines:
+        if l.startswith("Draw frame=%s " % frame):
+            m = re.search(r" cats=(\d+)", l)
+            if m:
+                cats.append(int(m.group(1)))
+    return cats
+
+
+def material_lines(lines):
+    return [l for l in lines if l.startswith("CreateMaterial ")]
+
+
+def field(line, key):
+    m = re.search(r"(?:^| )%s=(\S*)" % re.escape(key), line)
+    return m.group(1) if m else None
+
+
+def t825_hair(C, expected):
+    """hair cards and halos as F12's strands and halos; Remix gets the hair
+    cards, halo sprites and the GPU emitters; None systems not sent"""
+    c, d = {}, {}
+    E = expected.get("hair_particles")
+    if not E:
+        return {"the hair_particles scene was made": False}, {}
+    R = C["runs"]
+    game, f12 = shot_of(R.get("c_hair_particles")), picture(C["f12"].get("c_f12_hair_particles"))
+    for k in ("ball", "patch", "halo"):
+        a = rect_rgb(game, E["rects"][k]) if game is not None else None
+        b = rect_rgb(f12, E["rects"][k]) if f12 is not None else None
+        diff = None if a is None or b is None else round(float(abs(a - b).mean()), 2)
+        d[k] = {"game": None if a is None else [round(float(x), 1) for x in a],
+                "f12": None if b is None else [round(float(x), 1) for x in b], "diff": diff}
+        c["%s: the game as F12 (within %.0f)" % (k, TOL_STRANDS)] = diff is not None and diff <= TOL_STRANDS
+    text = R.get("c_hair_particles", {}).get("text", "")
+    c["the hair ball's hair became ribbons"] = "BGE-Remix hair HP_ball:" in text
+    c["the grass became ribbons"] = "BGE-Remix hair HP_patch:" in text
+    m = re.search(r"BGE-Remix sprites: (\d+) halo objects \((\d+) halos\), (\d+) particle systems", text)
+    d["sprites"] = m.group(0) if m else None
+    c["the game draws the halo and the particle systems"] = bool(m) and int(m.group(1)) >= 1 and int(m.group(3)) >= 3
+    bg = rect_rgb(game, E["columns"]["none"]) if game is not None else None
+    for k in ("halo", "billboard", "line", "object", "group"):
+        col = rect_rgb(game, E["columns"][k]) if game is not None else None
+        diff = None if col is None or bg is None else round(float(abs(col - bg).mean()), 2)
+        d["column_" + k] = diff
+        c["%s particles show in the game" % k] = diff is not None and diff > 2.0
+    lines = C["remix"].get("c_hair_particles_remix", [])
+    cats = draws_at(lines)
+    d["remix_draw_categories"] = cats
+    c["Remix gets hair cards (2 objects)"] = sum(1 for x in cats if x & CAT_HAIR) >= 2
+    em = [l for l in lines if l.startswith("Emitter ")]
+    d["remix_emitters"] = em
+    c["Remix gets the halo, billboard and line emitters, not None (3)"] = len({field(l, "mesh") for l in em}) == 3
+    c["their particles: a count and a rate"] = bool(em) and all(int(field(l, "max") or 0) > 0 and
+                                                               float(field(l, "rate") or 0) > 0 for l in em)
+    rtext = R.get("c_hair_particles_remix", {}).get("text", "")
+    c["Remix gets the halo as a sprite"] = "halo_k" in rtext or any("halo_k" in l for l in lines)
+    return c, d
+
+
+def t826_transparency(C, expected):
+    """Modern blends the same whatever the drawing order; Classic's sorting too"""
+    c, d = {}, {}
+    E = expected.get("transparency")
+    if not E:
+        return {"the transparency scene was made": False}, {}
+    R = C["runs"]
+    for mode, a, b, tol in (("Modern", "c_transparency_modern", "c_transparency_modern_shuffled", TOL_ORDER),
+                            ("Classic", "c_transparency", "c_transparency_shuffled", TOL_SORTED)):
+        pa, pb = shot_of(R.get(a)), shot_of(R.get(b))
+        for k, rect in E["rects"].items():
+            md = region_diff(pa, pb, rect)
+            d["%s %s" % (mode, k)] = md
+            c["%s: %s the same in both orders (within %.0f)" % (mode, k, tol)] = md is not None and md <= tol
+    return c, d
+
+
+def t827_left_out(C, expected):
+    """each left-out object in the game and in Remix; the displaced plane the
+    same mesh in both"""
+    c, d = {}, {}
+    E = expected.get("left_out")
+    if not E:
+        return {"the left_out scene was made": False}, {}
+    R = C["runs"]
+    a = shot_of(R.get("c_left_out"))
+    for k in E["items"]:
+        v = rect_rgb(a, E["rects"][k]) if a is not None else None
+        d[k] = None if v is None else [round(float(x), 1) for x in v]
+        c["%s shows in the game" % k] = v is not None and float(v.mean()) > 25.0
+    text = R.get("c_left_out", {}).get("text", "")
+    for name in E["as_mesh"]:
+        c["%s drawn as a mesh" % name] = ('"%s" drawn as a mesh' % name) in text
+    disp = re.findall(r"BGE-Remix displacement %s: (\d+) levels, (\d+) faces" % E["displaced"], text)
+    rtext = R.get("c_left_out_remix", {}).get("text", "")
+    rdisp = re.findall(r"BGE-Remix displacement %s: (\d+) levels, (\d+) faces" % E["displaced"], rtext)
+    d["displacement"] = {"game": disp, "remix": rdisp}
+    c["the displaced plane is made finer"] = bool(disp) and int(disp[0][1]) > 1
+    c["Remix gets the same displaced mesh"] = bool(disp) and disp == rdisp
+    lines = C["remix"].get("c_left_out_remix", [])
+    meshes = [l for l in lines if l.startswith("CreateMesh ")]
+    d["remix_meshes"] = len(meshes)
+    c["Remix gets every left-out object (%d meshes or more)" % len(E["items"])] = len(meshes) >= len(E["items"])
+    return c, d
+
+
+def t828_camera(C, expected):
+    """each effect changes the game's picture where it should; Remix gets the
+    matching settings; a 2D filter works over Remix's picture"""
+    c, d = {}, {}
+    E = expected.get("camera_fx")
+    if not E:
+        return {"the camera_fx scene was made": False}, {}
+    R = C["runs"]
+    none = shot_of(R.get("c_camera_fx_none"))
+    where = {"bloom": "glow_ring", "auto_exposure": "whole", "vignette": "corner_tl", "depth_of_field": "far",
+             "motion_blur": "whole", "ao": "contact", "filmic": "whole"}
+    for k in E["effects"]:
+        md = region_diff(none, shot_of(R.get("c_camera_fx_" + k)), E["rects"][where[k]])
+        d[k] = md
+        c["%s changes the picture (%s)" % (k, where[k])] = md is not None and md > 1.0
+    v_none = rect_rgb(none, E["rects"]["corner_tl"]) if none is not None else None
+    vig = shot_of(R.get("c_camera_fx_vignette"))
+    v_on = rect_rgb(vig, E["rects"]["corner_tl"]) if vig is not None else None
+    c["the vignette darkens the corner"] = v_none is not None and v_on is not None and v_on.mean() < v_none.mean()
+    md = region_diff(none, shot_of(R.get("c_camera_fx_all")), E["rects"]["whole"])
+    d["all"] = md
+    c["every effect at once"] = md is not None and md > 1.0
+    lines = C["remix"].get("c_camera_fx_all_remix", [])
+    want = {"rtx.dof.enable": "True", "rtx.postfx.enableMotionBlur": "True", "rtx.bloom.enable": "True",
+            "rtx.autoExposure.enabled": "True", "rtx.postfx.enableVignette": "True"}
+    got = {k: config_values(lines, k) for k in want}
+    d["remix_config"] = got
+    for k, v in want.items():
+        c["Remix gets %s=%s" % (k, v)] = v in got[k]
+    plain, inverted = shot_of(R.get("c_camera_fx_remix")), shot_of(R.get("c_camera_fx_filter_remix"))
+    md = region_diff(plain, inverted, E["rects"]["whole"])
+    d["filter_over_remix"] = md
+    c["the 2D filter works over Remix's picture"] = md is not None and md > 20.0
+    return c, d
+
+
+def t829_match(C, expected):
+    """every field of remix_extras reaches Remix; the node material Remix mode
+    cannot read is baked; the game reads the files Remix reads"""
+    c, d = {}, {}
+    E = expected.get("remix_extras")
+    if not E:
+        return {"the remix_extras scene was made": False}, {}
+    lines = C["remix"].get("c_remix_extras_remix", [])
+    mats = material_lines(lines)
+    d["materials"] = mats
+    any_with = lambda key, test: any(test(field(l, key)) for l in mats)  # noqa: E731
+    c["the height map and displacement reach Remix"] = any_with("height_tex", lambda v: bool(v) and v not in ("-", "none", "")) and \
+        any_with("displace_in", lambda v: v is not None and abs(float(v) - 0.05) < 1e-3)
+    c["the anisotropy reaches Remix"] = any_with("anisotropy", lambda v: v is not None and abs(float(v) - 0.8) < 1e-3)
+    c["the thin film reaches Remix"] = any_with("thinfilm_nm", lambda v: v is not None and abs(float(v) - 450.0) < 0.1)
+    c["the glass's image reaches Remix"] = any(field(l, "type") == "translucent" and
+                                               (field(l, "transmittance_tex") or "-") not in ("-", "none", "")
+                                               for l in mats)
+    cats = draws_at(lines)
+    d["draw_categories"] = cats
+    for k, bit in E["categories"].items():
+        c["the %s's category reaches Remix" % k] = any(x & bit for x in cats)
+    rtext = C["runs"].get("c_remix_extras_remix", {}).get("text", "")
+    c["the node material is baked"] = 'material "RX_nodes"' in rtext and ("baked" in rtext or "from the cache" in rtext)
+    m = C.get("match") or {}
+    d["match_RX_nodes"] = (m.get("RX_nodes") or {}).get("fields")
+    nodes = m.get("RX_nodes") or {}
+    c["the match report says the node material is baked"] = bool(nodes.get("baked"))
+    brushed = {f["field"]: f for f in (m.get("RX_brushed") or {}).get("fields", [])}
+    c["the match report: the brushed metal's anisotropy exactly"] = \
+        brushed.get("anisotropy", {}).get("level") == 0 and "panel" in brushed.get("anisotropy", {}).get("note", "")
+    gtext = C["runs"].get("c_remix_extras_shared", {}).get("text", "")
+    mm = re.search(r"BGE-Remix: (\d+) images drawn from the shared texture cache", gtext)
+    d["shared"] = mm.group(0) if mm else None
+    c["the game draws images from the files Remix reads"] = bool(mm) and int(mm.group(1)) >= 1
+    return c, d
+
+
+GAME_HIDDEN = {"MATERIAL_PT_options": ("use_raytrace", "use_full_oversampling", "offset_z", "pass_index",
+                                       "use_light_group_exclusive", "use_light_group_local", "use_uv_project"),
+               "MATERIAL_PT_shadow": ("use_ray_shadow_bias", "shadow_buffer_bias", "use_cast_approximate",
+                                      "use_transparent_shadows"),
+               "MATERIAL_PT_shading": ("translucency", "use_cubic")}
+GAME_MARKED = {"MATERIAL_PT_mirror": "F12 and Remix only", "MATERIAL_PT_sss": "F12 and Remix only",
+               "MATERIAL_PT_remix_fields": "Remix only", "DATA_PT_lamp": "Not in Remix"}
+
+
+def t830_panels(C, expected):
+    """in a game scene the options that do nothing are hidden, the ones that
+    work in some renderers marked; Blender Render shows them all"""
+    c, d = {}, {}
+    p = C.get("panels") or {}
+    if not p:
+        return {"the panels were drawn": False}, {}
+    game, render = p.get("BLENDER_GAME", {}), p.get("BLENDER_RENDER", {})
+    props = lambda log: {x[1] for x in (log or []) if x[0] == "prop"}  # noqa: E731
+    labels = lambda log: [x[1] for x in (log or []) if x[0] == "label"]  # noqa: E731
+    errors = {k: [x for x in (v or []) if x[0] == "error"] for k, v in list(game.items()) + list(render.items())}
+    d["errors"] = {k: v for k, v in errors.items() if v}
+    c["every panel draws without an error"] = not d["errors"]
+    for panel, hidden in GAME_HIDDEN.items():
+        shown = props(game.get(panel)) & set(hidden)
+        d[panel] = sorted(shown)
+        c["%s hides %d options in a game scene" % (panel, len(hidden))] = game.get(panel) is not None and not shown
+        c["%s shows them in Blender Render" % panel] = bool(props(render.get(panel)) & set(hidden))
+    for panel, text in GAME_MARKED.items():
+        c["%s carries the mark \"%s\"" % (panel, text)] = text in labels(game.get(panel))
+    c["Blender Internal's pipeline panel is hidden in a game scene"] = game.get("MATERIAL_PT_pipeline") is None
+    c["Voxel Data and Ocean panels are hidden in a game scene"] = \
+        game.get("TEXTURE_PT_voxeldata") is None and game.get("TEXTURE_PT_ocean") is None
+    c["the Render tab has the camera effects"] = "fx_bloom" in props(game.get("RENDER_PT_game_effects"))
+    return c, d
+
+
+def partc_benchmarks(args, out, S):
+    """B8.13 and B8.14"""
+    b = {}
+    have = lambda n: os.path.isfile(S(n))  # noqa: E731
+
+    def ms(name, tag, env=None, frames=300):
+        if not have(name):
+            return None
+        r = play(args.ours, out, tag, S(name), env, frames=frames, gl_debug=False)
+        return r.get("probe", {}).get("frame_ms_median")
+
+    b["B8.13 hair and particles (ms)"] = {"hair_particles": ms("hair_particles_modern", "b813_hair"),
+                                         "transparency": ms("transparency_modern", "b813_transparency")}
+    b["B8.14 screen effects (ms)"] = {"none": ms("camera_fx_none", "b814_none"),
+                                      "all": ms("camera_fx_all", "b814_all")}
     return b
 
 

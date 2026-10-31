@@ -147,6 +147,7 @@ private:
 		bool double_sided;
 		bool blend;
 		bool particle;
+		unsigned categories; /* P8.24: the materials' Remix categories */
 		int billboard;     /* 0 no, 1 Halo (faces the camera), 2 Billboard (turns around Z) */
 		int shadow_faces;  /* surfaces left out (Shadow face orientation) */
 		uint64_t content;  /* hash of the positions and normals */
@@ -161,6 +162,7 @@ private:
 		bool double_sided;
 		bool blend;        /* has alpha-blended surfaces */
 		bool particle;
+		unsigned categories; /* P8.24: the materials' Remix categories */
 		int billboard;
 	};
 	/* a mesh skinned by Remix: one per mesh and armature */
@@ -173,6 +175,7 @@ private:
 		bool double_sided;
 		bool blend;
 		bool particle;
+		unsigned categories; /* P8.24: the materials' Remix categories */
 	};
 	/* an object deformed on the CPU: its own Remix mesh */
 	struct DeformEntry {
@@ -184,6 +187,7 @@ private:
 		bool double_sided;
 		bool blend;
 		bool particle;
+		unsigned categories; /* P8.24: the materials' Remix categories */
 	};
 	struct PickEntry {
 		uint32_t id;
@@ -230,6 +234,11 @@ private:
 	bool DrawSkinned(KX_Scene *scene, KX_GameObject *obj, RAS_Deformer *def, const float model[16], uint32_t pick);
 	bool DrawDeformed(KX_Scene *scene, KX_GameObject *obj, RAS_Deformer *def, const float model[16], uint32_t pick);
 	bool DrawEmitters(KX_Scene *scene, KX_GameObject *obj, struct Object *ob, const float model[16], uint32_t pick);
+	/* P8.20: a halo material's vertices as glowing sprites facing the camera */
+	bool DrawHalos(KX_Scene *scene, KX_GameObject *obj, struct Object *ob, const float model[16],
+	               const MT_Matrix3x3 &camori, uint32_t pick);
+	uint64_t HaloMaterial(struct Material *ma);
+	std::map<const void *, uint64_t> m_halo_materials;
 	void SkinCheck(KX_GameObject *obj, BL_SkinDeformer *skin, uint64_t mesh, const float model[16], uint32_t pick);
 	void ReleaseSkinning(KX_Scene *scene);
 	void PruneDynamic(KX_Scene *scene);
@@ -306,6 +315,10 @@ private:
 	int m_volume_scan;
 	const wchar_t *SkyTexture(KX_Scene *scene, uint64_t *r_key);
 	void UpdateFog(KX_Scene *scene);
+	/* P8.23: the camera and screen effects' settings as Remix's options
+	 * (sent when they change) */
+	void UpdateCameraEffects(KX_Scene *scene, KX_Camera *cam);
+	std::string m_fx_sent;
 	int m_materials_waiting;   /* entries with waiting set */
 	int m_materials_swapped;   /* sent again with their textures */
 	int m_material_notes;      /* lines the translator could not represent */

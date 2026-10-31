@@ -1163,12 +1163,28 @@ void RAS_OpenGLRasterizer::DisableMotionBlur()
 	m_motionblurvalue = -1.0f;
 }
 
+/* BGE-Remix P8 Part C (P8.21) */
+bool RAS_OpenGLRasterizer::BeginTransparency()
+{
+	if (m_drawingmode != KX_TEXTURED)
+		return false;
+	return m_pipeline->BeginTransparency();
+}
+
+void RAS_OpenGLRasterizer::EndTransparency()
+{
+	m_pipeline->EndTransparency();
+}
+
 void RAS_OpenGLRasterizer::SetAlphaBlend(int alphablend)
 {
 	/* Variance shadow maps don't handle alpha well, best to not allow it for now  */
 	if (m_drawingmode == KX_SHADOW && m_usingoverrideshader)
 		alphablend = GPU_BLEND_SOLID;
 	GPU_set_material_alpha_blend(alphablend);
+	/* BGE-Remix P8 Part C (P8.21): the transparent pass blends its own way */
+	if (m_pipeline->TransparencyActive())
+		m_pipeline->TransparencyBlend();
 	/* BGE-Remix P8 Part B: the alpha test is the shaders' (the storage sets
 	 * the old one only for drawing that is still fixed-function) */
 	GPU_material_alpha_test(alphablend, &m_state.alpha_test, &m_state.alpha_ref);

@@ -713,6 +713,13 @@ void KX_BlenderMaterial::ActivatGLMaterials( RAS_IRasterizer* rasty )const
 
 	if (mMaterial->material)
 		rasty->SetPolygonOffset(-mMaterial->material->zoffs, 0.0f);
+
+	/* BGE-Remix P8 Part C (P8.22): a Wire material draws its edges (in the
+	 * picture, not in shadow maps) */
+	if (rasty->GetDrawingMode() == RAS_IRasterizer::KX_TEXTURED) {
+		const bool wire = mMaterial->material && mMaterial->material->material_type == MA_TYPE_WIRE;
+		glPolygonMode(GL_FRONT_AND_BACK, wire ? GL_LINE : GL_FILL);
+	}
 }
 
 

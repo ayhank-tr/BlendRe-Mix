@@ -190,6 +190,11 @@ KX_BlenderSceneConverter::~KX_BlenderSceneConverter()
 	}
 	m_meshobjects.clear();
 
+	/* BGE-Remix P8 Part C: Blender data made for the game */
+	for (size_t i = 0; i < m_temp_ids.size(); i++)
+		BKE_libblock_free(m_maggie, m_temp_ids[i]);
+	m_temp_ids.clear();
+
 	/* free any data that was dynamically loaded */
 	while (m_DynamicMaggie.size() != 0) {
 		FreeBlendFile(m_DynamicMaggie[0]);

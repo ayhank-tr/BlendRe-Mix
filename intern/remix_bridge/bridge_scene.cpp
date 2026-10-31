@@ -198,6 +198,22 @@ static uint32_t to_categories(uint32_t c)
 	if (c & BRB_CATEGORY_PARTICLE_EMITTER) {
 		r |= REMIXAPI_INSTANCE_CATEGORY_BIT_PARTICLE_EMITTER;
 	}
+	const struct { uint32_t ours, remix; } more[] = {
+	    {BRB_CATEGORY_HAIR_CARDS, REMIXAPI_INSTANCE_CATEGORY_BIT_HAIR_CARDS},
+	    {BRB_CATEGORY_ANIMATED_WATER, REMIXAPI_INSTANCE_CATEGORY_BIT_ANIMATED_WATER},
+	    {BRB_CATEGORY_TERRAIN, REMIXAPI_INSTANCE_CATEGORY_BIT_TERRAIN},
+	    {BRB_CATEGORY_DECAL_STATIC, REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_STATIC},
+	    {BRB_CATEGORY_DECAL_DYNAMIC, REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_DYNAMIC},
+	    {BRB_CATEGORY_SKY, REMIXAPI_INSTANCE_CATEGORY_BIT_SKY},
+	    {BRB_CATEGORY_WORLD_UI, REMIXAPI_INSTANCE_CATEGORY_BIT_WORLD_UI},
+	    {BRB_CATEGORY_BEAM, REMIXAPI_INSTANCE_CATEGORY_BIT_BEAM},
+	    {BRB_CATEGORY_IGNORE, REMIXAPI_INSTANCE_CATEGORY_BIT_IGNORE},
+	};
+	for (size_t i = 0; i < sizeof(more) / sizeof(more[0]); i++) {
+		if (c & more[i].ours) {
+			r |= more[i].remix;
+		}
+	}
 	return r;
 }
 
@@ -367,8 +383,9 @@ BRB_API int brb_material_create(const brb_material_desc *d)
 		/* Remix's glass rejects a zero distance; Blender's glass tints per surface */
 		glass.transmittanceMeasurementDistance = std::max(d->transmittance_distance, 0.001f);
 		glass.thinWallThickness_hasvalue = d->thin_walled ? TRUE : FALSE;
-		glass.thinWallThickness_value = 0.001f;
-		glass.useDiffuseLayer = FALSE;
+		glass.thinWallThickness_value = d->thin_wall_thickness > 0.0f ? d->thin_wall_thickness : 0.001f;
+		glass.useDiffuseLayer = d->use_diffuse_layer ? TRUE : FALSE;
+		glass.transmittanceTexture = tex(d->transmittance_texture); /* interface 10 */
 		ext = &glass;
 	}
 	else {
@@ -378,6 +395,14 @@ BRB_API int brb_material_create(const brb_material_desc *d)
 		opaque.metallicConstant = clamp01(d->metallic);
 		opaque.roughnessTexture = tex(d->roughness_texture);
 		opaque.metallicTexture = tex(d->metallic_texture);
+		/* interface 10 */
+		opaque.anisotropy = std::min(std::max(d->anisotropy, -1.0f), 1.0f);
+		opaque.thinFilmThickness_hasvalue = d->thin_film ? TRUE : FALSE;
+		opaque.thinFilmThickness_value = std::max(d->thin_film_thickness, 0.0f);
+		opaque.alphaIsThinFilmThickness = d->alpha_is_thin_film ? TRUE : FALSE;
+		opaque.heightTexture = tex(d->height_texture);
+		opaque.displaceIn = std::max(d->displace_in, 0.0f);
+		opaque.displaceOut = std::max(d->displace_out, 0.0f);
 		if (d->additive) {
 			/* P8.8: Blender's Add blending is Remix's emissive blending (one,
 			 * one: dxvk-remix BlendType::kEmissive) */
@@ -399,17 +424,38 @@ BRB_API int brb_material_create(const brb_material_desc *d)
 			opaque.alphaTestType = 4; /* AlphaTestType::kGreater */
 			opaque.alphaReferenceValue = (uint8_t)std::lround(clamp01(d->alpha_cutoff) * 255.0f);
 		}
+		/* interface 10: the material's own Remix settings, over the above */
+		if (d->blend_type > 0) {
+			opaque.useDrawCallAlphaState = FALSE;
+			opaque.blendType_hasvalue = TRUE;
+			opaque.blendType_value = d->blend_type - 1;
+		}
+		else if (d->blend_type < 0) {
+			/* no blending at all */
+			opaque.blendType_hasvalue = FALSE;
+		}
+		opaque.invertedBlend = d->inverted_blend ? TRUE : FALSE;
+		if (d->alpha_test_type > 0) {
+			opaque.useDrawCallAlphaState = FALSE;
+			opaque.alphaTestType = d->alpha_test_type - 1;
+			opaque.alphaReferenceValue = (uint8_t)std::lround(clamp01(d->alpha_cutoff) * 255.0f);
+		}
 		if (d->subsurface) {
 			/* Remix's diffusion profile, as Blender's Christensen-Burley:
 			 * radius per channel in scene units (here Blender units) */
 			sss.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_SUBSURFACE_EXT;
 			sss.subsurfaceTransmittanceColor = srgb3(d->subsurface_color);
 			sss.subsurfaceSingleScatteringAlbedo = f3(d->subsurface_color);
-			sss.subsurfaceMeasurementDistance = 0.0f;
-			sss.subsurfaceVolumetricAnisotropy = 0.0f;
-			sss.subsurfaceDiffusionProfile = TRUE;
+			sss.subsurfaceMeasurementDistance = d->subsurface_volumetric ? std::max(d->subsurface_distance, 0.0f) : 0.0f;
+			sss.subsurfaceVolumetricAnisotropy = std::min(std::max(d->subsurface_anisotropy, -1.0f), 1.0f);
+			sss.subsurfaceDiffusionProfile = d->subsurface_volumetric ? FALSE : TRUE;
 			sss.subsurfaceRadius = f3(d->subsurface_radius);
-			sss.subsurfaceRadiusScale = 1.0f;
+			sss.subsurfaceRadiusScale = d->subsurface_radius_scale > 0.0f ? d->subsurface_radius_scale : 1.0f;
+			/* interface 10 */
+			sss.subsurfaceTransmittanceTexture = tex(d->subsurface_transmittance_texture);
+			sss.subsurfaceThicknessTexture = tex(d->subsurface_thickness_texture);
+			sss.subsurfaceSingleScatteringAlbedoTexture = tex(d->subsurface_albedo_texture);
+			sss.subsurfaceRadiusTexture = tex(d->subsurface_radius_texture);
 			const float rmax = std::max(std::max(d->subsurface_radius[0], d->subsurface_radius[1]), d->subsurface_radius[2]);
 			sss.subsurfaceMaxSampleRadius = std::max(rmax * 3.0f, 0.001f);
 			opaque.pNext = &sss;
@@ -425,6 +471,13 @@ BRB_API int brb_material_create(const brb_material_desc *d)
 	info.emissiveTexture = tex(d->emissive_texture);
 	info.filterMode = d->filter_nearest ? 0 : 1;   /* MDL filter: nearest, linear */
 	info.wrapModeU = info.wrapModeV = d->clamp ? 0 : 1; /* MDL wrap: clamp, repeat */
+	if (d->wrap_u > 0) {
+		info.wrapModeU = (uint8_t)std::min(d->wrap_u - 1, 3); /* interface 10 */
+	}
+	if (d->wrap_v > 0) {
+		info.wrapModeV = (uint8_t)std::min(d->wrap_v - 1, 3);
+	}
+	info.tangentTexture = tex(d->tangent_texture);
 
 	remixapi_MaterialHandle h = nullptr;
 	remixapi_ErrorCode r = guarded("CreateMaterial", [&] { return g_remix.CreateMaterial(&info, &h); });
@@ -511,9 +564,10 @@ BRB_API int brb_mesh_create(uint64_t hash, const brb_surface_desc *surfaces, uin
 			o.normal[0] = v.normal[0];
 			o.normal[1] = v.normal[1];
 			o.normal[2] = v.normal[2];
-			/* Remix samples textures with the origin at the top left (D3D) */
+			/* interface 10: Blender's coordinates as they are; the DDS files'
+			 * rows start at the bottom, as Blender's images (bridge_texture.cpp) */
 			o.texcoord[0] = v.uv[0];
-			o.texcoord[1] = 1.0f - v.uv[1];
+			o.texcoord[1] = v.uv[1];
 			o.color = v.color;
 			if (skin) {
 				const size_t at = (size_t)i * spacing;

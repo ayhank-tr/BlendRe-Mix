@@ -238,7 +238,8 @@ class PARTICLE_PT_context_particles(ParticleButtonsPanel, Panel):
 
 class PARTICLE_PT_emission(ParticleButtonsPanel, Panel):
     bl_label = "Emission"
-    COMPAT_ENGINES = {'BLENDER_RENDER'}
+    # BGE-Remix P8.25: the game's particles (P8.20) and Remix's read these
+    COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_GAME'}
 
     @classmethod
     def poll(cls, context):
@@ -442,7 +443,8 @@ class PARTICLE_PT_cache(ParticleButtonsPanel, Panel):
 
 class PARTICLE_PT_velocity(ParticleButtonsPanel, Panel):
     bl_label = "Velocity"
-    COMPAT_ENGINES = {'BLENDER_RENDER'}
+    # BGE-Remix P8.25: the game's particles (P8.20) and Remix's read these
+    COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_GAME'}
 
     @classmethod
     def poll(cls, context):
@@ -493,7 +495,8 @@ class PARTICLE_PT_velocity(ParticleButtonsPanel, Panel):
 class PARTICLE_PT_rotation(ParticleButtonsPanel, Panel):
     bl_label = "Rotation"
     bl_options = {'DEFAULT_CLOSED'}
-    COMPAT_ENGINES = {'BLENDER_RENDER'}
+    # BGE-Remix P8.25: the game's particles (P8.20) and Remix's read these
+    COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_GAME'}
 
     @classmethod
     def poll(cls, context):
@@ -556,7 +559,8 @@ class PARTICLE_PT_rotation(ParticleButtonsPanel, Panel):
 
 class PARTICLE_PT_physics(ParticleButtonsPanel, Panel):
     bl_label = "Physics"
-    COMPAT_ENGINES = {'BLENDER_RENDER'}
+    # BGE-Remix P8.25: the game's particles (P8.20) and Remix's read these
+    COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_GAME'}
 
     @classmethod
     def poll(cls, context):
@@ -572,6 +576,13 @@ class PARTICLE_PT_physics(ParticleButtonsPanel, Panel):
 
     def draw(self, context):
         layout = self.layout
+        from .game_marks import is_game, mark
+        if is_game(context):  # BGE-Remix P8.25
+            part = particle_get_settings(context)
+            if part and part.physics_type not in {'NEWTON', 'NO'}:
+                layout.label(text="The game and RTX Remix move particles by Newtonian physics only", icon='INFO')
+            else:
+                mark(layout, "Game and Remix: gravity, drag and size; collisions with Deflection")
 
         psys = context.particle_system
         part = particle_get_settings(context)
@@ -895,7 +906,8 @@ class PARTICLE_PT_boidbrain(ParticleButtonsPanel, Panel):
 
 class PARTICLE_PT_render(ParticleButtonsPanel, Panel):
     bl_label = "Render"
-    COMPAT_ENGINES = {'BLENDER_RENDER'}
+    # BGE-Remix P8.25: the game's particles (P8.20) and Remix's read these
+    COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_GAME'}
 
     @classmethod
     def poll(cls, context):
@@ -1095,7 +1107,8 @@ class PARTICLE_PT_render(ParticleButtonsPanel, Panel):
 class PARTICLE_PT_draw(ParticleButtonsPanel, Panel):
     bl_label = "Display"
     bl_options = {'DEFAULT_CLOSED'}
-    COMPAT_ENGINES = {'BLENDER_RENDER'}
+    # BGE-Remix P8.25: the game's particles (P8.20) and Remix's read these
+    COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_GAME'}
 
     @classmethod
     def poll(cls, context):
@@ -1158,7 +1171,8 @@ class PARTICLE_PT_draw(ParticleButtonsPanel, Panel):
 class PARTICLE_PT_children(ParticleButtonsPanel, Panel):
     bl_label = "Children"
     bl_options = {'DEFAULT_CLOSED'}
-    COMPAT_ENGINES = {'BLENDER_RENDER'}
+    # BGE-Remix P8.25: the game's particles (P8.20) and Remix's read these
+    COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_GAME'}
 
     @classmethod
     def poll(cls, context):

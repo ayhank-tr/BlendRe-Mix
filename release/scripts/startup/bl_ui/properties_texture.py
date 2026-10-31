@@ -19,6 +19,7 @@
 # <pep8 compliant>
 import bpy
 from bpy.types import Menu, Panel, UIList
+from .game_marks import is_game, mark, GAME_NO_TEXTURE_TYPES
 
 from bpy.types import (
     Brush,
@@ -226,6 +227,11 @@ class TEXTURE_PT_context_texture(TextureButtonsPanel, Panel):
             else:
                 split.label(text="Type:")
                 split.prop(tex, "type", text="")
+                # BGE-Remix P8.25: texture types the game cannot draw
+                if is_game(context) and tex.type in GAME_NO_TEXTURE_TYPES:
+                    layout.label(text="The game and RTX Remix do not draw this texture type (F12 only)", icon='ERROR')
+                elif is_game(context) and tex.type == 'ENVIRONMENT_MAP':
+                    mark(layout, "OpenGL and F12; Remix traces reflections itself")
 
 
 class TEXTURE_PT_preview(TextureButtonsPanel, Panel):
@@ -751,7 +757,8 @@ class TEXTURE_PT_distortednoise(TextureTypePanel, Panel):
 
 class TEXTURE_PT_voxeldata(TextureButtonsPanel, Panel):
     bl_label = "Voxel Data"
-    COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_GAME'}
+    # BGE-Remix P8.25: not drawn by the game or Remix: hidden in game scenes
+    COMPAT_ENGINES = {'BLENDER_RENDER'}
 
     @classmethod
     def poll(cls, context):
@@ -794,7 +801,8 @@ class TEXTURE_PT_voxeldata(TextureButtonsPanel, Panel):
 
 class TEXTURE_PT_pointdensity(TextureButtonsPanel, Panel):
     bl_label = "Point Density"
-    COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_GAME'}
+    # BGE-Remix P8.25: not drawn by the game or Remix: hidden in game scenes
+    COMPAT_ENGINES = {'BLENDER_RENDER'}
 
     @classmethod
     def poll(cls, context):
@@ -869,7 +877,8 @@ class TEXTURE_PT_pointdensity(TextureButtonsPanel, Panel):
 
 class TEXTURE_PT_pointdensity_turbulence(TextureButtonsPanel, Panel):
     bl_label = "Turbulence"
-    COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_GAME'}
+    # BGE-Remix P8.25: not drawn by the game or Remix: hidden in game scenes
+    COMPAT_ENGINES = {'BLENDER_RENDER'}
 
     @classmethod
     def poll(cls, context):
@@ -907,7 +916,8 @@ class TEXTURE_PT_pointdensity_turbulence(TextureButtonsPanel, Panel):
 class TEXTURE_PT_ocean(TextureTypePanel, Panel):
     bl_label = "Ocean"
     tex_type = 'OCEAN'
-    COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_GAME'}
+    # BGE-Remix P8.25: not drawn by the game or Remix: hidden in game scenes
+    COMPAT_ENGINES = {'BLENDER_RENDER'}
 
     def draw(self, context):
         layout = self.layout

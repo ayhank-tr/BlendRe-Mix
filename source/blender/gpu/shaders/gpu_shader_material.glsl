@@ -4215,6 +4215,61 @@ void bake_out_normal(vec3 vn, vec3 nor, vec4 tangent, vec3 uv, out vec4 result)
 	result = vec4(ts * 0.5 + vec3(0.5), 1.0);
 }
 
+/* BGE-Remix P8.24: a node material baked for Remix (node_shader_gpu_bake):
+ * each shader node's (value * w, w) for one channel */
+void node_bake_value(vec4 value, float w, out vec4 result)
+{
+	result = vec4(value.rgb * w, w);
+}
+
+void node_bake_scalar(float value, float w, out vec4 result)
+{
+	result = vec4(vec3(value) * w, w);
+}
+
+void node_bake_emission(vec4 color, float strength, out vec4 result)
+{
+	result = vec4(color.rgb * strength, 0.0);
+}
+
+/* N: the node's normal, nor: the surface's (view space, outwards) */
+void node_bake_normal(vec3 N, vec3 nor, vec4 tangent, float w, out vec4 result)
+{
+	vec3 Ns = normalize(nor);
+	vec3 n = normalize(N);
+	vec3 T = tangent.xyz - Ns * dot(Ns, tangent.xyz);
+	T = (dot(T, T) > 0.0) ? normalize(T) : vec3(1.0, 0.0, 0.0);
+	vec3 B = ((tangent.w < 0.0) ? -1.0 : 1.0) * cross(Ns, T);
+	result = vec4(vec3(dot(n, T), dot(n, B), dot(n, Ns)) * w, w);
+}
+
+/* the channel's value from the mixed pairs. mode 0: a colour (sRGB when
+ * srgb), 1: a value (def where no node has the channel), 2: a tangent-space
+ * normal, 3: emission (the sum, times scale, as sRGB) */
+void bake_out_nodes(vec4 c, float mode, float srgb, float scale, vec3 uv, out vec4 result)
+{
+	vec3 v = (c.a > 1e-6) ? c.rgb / c.a : vec3(0.0);
+	if (mode == 0.0) {
+		vec4 col = vec4(v, 1.0);
+		if (srgb != 0.0)
+			linearrgb_to_srgb(col, col);
+		result = vec4(clamp(col.rgb, 0.0, 1.0), 1.0);
+	}
+	else if (mode == 2.0) {
+		vec3 n = (c.a > 1e-6 && dot(v, v) > 0.0) ? normalize(v) : vec3(0.0, 0.0, 1.0);
+		result = vec4(n * 0.5 + vec3(0.5), 1.0);
+	}
+	else if (mode == 3.0) {
+		vec4 e = vec4(clamp(c.rgb * scale, 0.0, 1.0), 1.0);
+		linearrgb_to_srgb(e, e);
+		result = vec4(e.rgb, 1.0);
+	}
+	else {
+		float x = (c.a > 1e-6) ? v.r : scale;
+		result = vec4(vec3(clamp(x, 0.0, 1.0)), 1.0);
+	}
+}
+
 /* BGE-Remix P8.7: physically based shading (metal, roughness, Fresnel: the
  * model RTX Remix shades with). Blender's vectors: vn points into the
  * surface, lv from the lamp, view from the eye. Light units are Blender

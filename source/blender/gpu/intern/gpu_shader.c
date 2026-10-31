@@ -355,7 +355,11 @@ static const char *gpu_frontend_frag_core =
         "#define BGE_VCOL2 bge_vcol2_v\n"
         "#define BGE_TEXCOORD(n) vec4(0.0)\n"
         "uniform vec2 bge_alphatest;\n"
-        "out vec4 bge_fragcolor;\n";
+        /* P8 Part C (P8.21): Modern scenes' order-independent transparency:
+         * bge_oit 1 writes the weighted colour and the cover */
+        "layout(location = 0) out vec4 bge_fragcolor;\n"
+        "layout(location = 1) out vec4 bge_oitreveal;\n"
+        "uniform int bge_oit;\n";
 
 /* BGE-Remix P8.3: lamp and world values, read from shared storage buffers
  * (gpu_material.c fills them; the generated code indexes them).

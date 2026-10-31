@@ -186,6 +186,10 @@ public:
 	/* BGE-Remix P8 Part B (P8.19): a volume material (drawn by the volume
 	 * pass, not as a surface) */
 	bool				IsVolume() const;
+	/* BGE-Remix P8 Part C (P8.20): a halo material (its vertices are halos) */
+	bool				IsHalo() const;
+	/* BGE-Remix P8 Part C (P8.21): its blending (GPU_BLEND_*) */
+	int					GetAlphaBlendMode() const { return m_alphablend; }
 
 	virtual void		Replace_IScene(SCA_IScene *val) {} /* overridden by KX_BlenderMaterial */
 

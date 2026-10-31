@@ -21,6 +21,7 @@ import bpy
 from bpy.types import Menu, Panel, UIList
 from rna_prop_ui import PropertyPanel
 from bpy.app.translations import pgettext_iface as iface_
+from .game_marks import is_game, mark, prop_marked, OPENGL_ONLY, REMIX_ONLY, NOT_REMIX, F12_REMIX
 
 
 def active_node_mat(mat):
@@ -203,7 +204,9 @@ class MATERIAL_PT_pipeline(MaterialButtonsPanel, Panel):
     def poll(cls, context):
         mat = context.material
         engine = context.scene.render.engine
-        return mat and (not simple_material(mat)) and (mat.type in {'SURFACE', 'WIRE', 'VOLUME'}) and (engine in cls.COMPAT_ENGINES)
+        # BGE-Remix P8.25: Blender Internal's render pipeline: not in game scenes
+        return (mat and (not simple_material(mat)) and (mat.type in {'SURFACE', 'WIRE', 'VOLUME'}) and
+                (engine in cls.COMPAT_ENGINES) and not is_game(context))
 
     def draw(self, context):
         layout = self. layout
@@ -384,15 +387,18 @@ class MATERIAL_PT_shading(MaterialButtonsPanel, Panel):
             sub.active = not mat.use_shadeless
             sub.prop(mat, "emit")
             sub.prop(mat, "ambient")
-            sub = col.column()
-            sub.prop(mat, "translucency")
+            game = is_game(context)
+            if not game:  # BGE-Remix P8.25: F12 only, hidden in game scenes
+                sub = col.column()
+                sub.prop(mat, "translucency")
 
             col = split.column()
             col.prop(mat, "use_shadeless")
             sub = col.column()
             sub.active = not mat.use_shadeless
             sub.prop(mat, "use_tangent_shading")
-            sub.prop(mat, "use_cubic")
+            if not game:
+                sub.prop(mat, "use_cubic")
 
 
 class MATERIAL_PT_transp(MaterialButtonsPanel, Panel):
@@ -464,7 +470,8 @@ class MATERIAL_PT_transp(MaterialButtonsPanel, Panel):
 class MATERIAL_PT_mirror(MaterialButtonsPanel, Panel):
     bl_label = "Mirror"
     bl_options = {'DEFAULT_CLOSED'}
-    COMPAT_ENGINES = {'BLENDER_RENDER'}
+    # BGE-Remix P8.25: Remix reads a Classic ray mirror (P8.9)
+    COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_GAME'}
 
     @classmethod
     def poll(cls, context):
@@ -480,6 +487,8 @@ class MATERIAL_PT_mirror(MaterialButtonsPanel, Panel):
 
     def draw(self, context):
         layout = self.layout
+        if is_game(context):  # BGE-Remix P8.25
+            mark(layout, F12_REMIX)
 
         mat = active_node_mat(context.material)
         raym = mat.raytrace_mirror
@@ -523,7 +532,8 @@ class MATERIAL_PT_mirror(MaterialButtonsPanel, Panel):
 class MATERIAL_PT_sss(MaterialButtonsPanel, Panel):
     bl_label = "Subsurface Scattering"
     bl_options = {'DEFAULT_CLOSED'}
-    COMPAT_ENGINES = {'BLENDER_RENDER'}
+    # BGE-Remix P8.25: Remix reads Classic subsurface scattering (P8.9)
+    COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_GAME'}
 
     @classmethod
     def poll(cls, context):
@@ -541,6 +551,8 @@ class MATERIAL_PT_sss(MaterialButtonsPanel, Panel):
 
     def draw(self, context):
         layout = self.layout
+        if is_game(context):  # BGE-Remix P8.25
+            mark(layout, F12_REMIX)
 
         mat = active_node_mat(context.material)
         sss = mat.subsurface_scattering
@@ -628,7 +640,8 @@ class MATERIAL_PT_halo(MaterialButtonsPanel, Panel):
 
 class MATERIAL_PT_flare(MaterialButtonsPanel, Panel):
     bl_label = "Flare"
-    COMPAT_ENGINES = {'BLENDER_RENDER'}
+    # BGE-Remix P8.25: the game draws flares (P8.20); Remix leaves them to its bloom
+    COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_GAME'}
 
     @classmethod
     def poll(cls, context):
@@ -643,6 +656,8 @@ class MATERIAL_PT_flare(MaterialButtonsPanel, Panel):
 
     def draw(self, context):
         layout = self.layout
+        if is_game(context):  # BGE-Remix P8.25
+            mark(layout, OPENGL_ONLY)
 
         mat = context.material  # don't use node material
         halo = mat.halo
@@ -786,24 +801,31 @@ class MATERIAL_PT_options(MaterialButtonsPanel, Panel):
 
         split = layout.split()
 
+        # BGE-Remix P8.25: in a game scene, Blender Internal's own options are
+        # hidden (raytrace, full oversampling, sky, Z invert and offset,
+        # exclusive and local light groups, UV project, pass index)
+        game = is_game(context)
         col = split.column()
-        if simple_material(base_mat):
+        if simple_material(base_mat) and not game:
             col.prop(mat, "use_raytrace")
             col.prop(mat, "use_full_oversampling")
             col.prop(mat, "use_sky")
         col.prop(mat, "use_mist")
-        if simple_material(base_mat):
+        if simple_material(base_mat) and not game:
             col.prop(mat, "invert_z")
             sub = col.row()
             sub.prop(mat, "offset_z")
             sub.active = mat.use_transparency and mat.transparency_method == 'Z_TRANSPARENCY'
         sub = col.column(align=True)
         sub.label(text="Light Group:")
-        sub.prop(mat, "light_group", text="")
-        row = sub.row(align=True)
-        row.active = bool(mat.light_group)
-        row.prop(mat, "use_light_group_exclusive", text="Exclusive")
-        row.prop(mat, "use_light_group_local", text="Local")
+        if game:
+            prop_marked(sub, mat, "light_group", NOT_REMIX, text="")
+        else:
+            sub.prop(mat, "light_group", text="")
+            row = sub.row(align=True)
+            row.active = bool(mat.light_group)
+            row.prop(mat, "use_light_group_exclusive", text="Exclusive")
+            row.prop(mat, "use_light_group_local", text="Local")
 
         col = split.column()
         col.prop(mat, "use_face_texture")
@@ -812,10 +834,14 @@ class MATERIAL_PT_options(MaterialButtonsPanel, Panel):
         sub.prop(mat, "use_face_texture_alpha")
         col.separator()
         col.prop(mat, "use_vertex_color_paint")
-        col.prop(mat, "use_vertex_color_light")
+        if game:
+            prop_marked(col, mat, "use_vertex_color_light", NOT_REMIX)
+        else:
+            col.prop(mat, "use_vertex_color_light")
         col.prop(mat, "use_object_color")
-        col.prop(mat, "use_uv_project")
-        if simple_material(base_mat):
+        if not game:
+            col.prop(mat, "use_uv_project")
+        if simple_material(base_mat) and not game:
             col.prop(mat, "pass_index")
 
 
@@ -835,6 +861,20 @@ class MATERIAL_PT_shadow(MaterialButtonsPanel, Panel):
 
         base_mat = context.material
         mat = active_node_mat(base_mat)
+
+        if is_game(context):
+            # BGE-Remix P8.25: the game's shadow maps read these; Remix
+            # traces real shadows for everything; Blender Internal's ray and
+            # buffer settings are hidden
+            mark(layout, "OpenGL and F12; Remix: always real shadows")
+            split = layout.split()
+            col = split.column()
+            col.prop(mat, "use_shadows", text="Receive")
+            col.prop(mat, "use_only_shadow", text="Shadows Only")
+            col = split.column()
+            col.prop(mat, "use_cast_shadows", text="Cast")
+            col.prop(mat, "use_cast_shadows_only", text="Cast Only")
+            return
 
         split = layout.split()
 
@@ -920,6 +960,8 @@ class MATERIAL_PT_volume_density(VolumeButtonsPanel, Panel):
 
     def draw(self, context):
         layout = self.layout
+        if is_game(context):  # BGE-Remix P8.25
+            mark(layout, NOT_REMIX)
 
         vol = context.material.volume  # don't use node material
 
@@ -1229,12 +1271,319 @@ class MATERIAL_PT_game_remix(MaterialButtonsPanel, Panel):
         del M.bge_remix_particle
         del M.bge_remix_bake_size
 
+    @classmethod
+    def poll(cls, context):
+        # BGE-Remix P8.24: every material, node materials too
+        return context.material is not None and context.scene.render.engine in cls.COMPAT_ENGINES
+
     def draw(self, context):
         layout = self.layout
         mat = context.material
         row = layout.row()
         row.prop(mat, "bge_remix_particle")
         row.prop(mat, "bge_remix_bake_size")
+        # P8.24: the Remix block's categories and node bake (in force without
+        # its Remix Settings switch)
+        layout.prop(mat.bge_remix, "categories")
+        if mat.use_nodes:
+            layout.prop(mat.bge_remix, "bake_nodes")
+
+
+# BGE-Remix P8.24: the material's Remix block, every field of RTX Remix's
+# materials. Stored in the material as the ID property group "bge_remix",
+# which stock Blender 2.79b keeps and ignores; the C side reads it in
+# source/blender/remix/intern/remix_material.cc (apply_remix_block), with
+# the same defaults as here. Unset fields are not stored: older files open
+# with the block empty and off.
+
+# (name, label, value: 0 none / 1 number / 3 colour, default value, default
+# colour, the Remix field's texture: True / False)
+REMIX_SLOTS = (
+    ("albedo", "Albedo", 3, 0.0, (0.8, 0.8, 0.8), True),
+    ("opacity", "Opacity", 1, 1.0, (0.0, 0.0, 0.0), False),
+    ("roughness", "Roughness", 1, 0.5, (0.0, 0.0, 0.0), True),
+    ("metallic", "Metallic", 1, 0.0, (0.0, 0.0, 0.0), True),
+    ("normal", "Normal Map", 0, 0.0, (0.0, 0.0, 0.0), True),
+    ("tangent", "Tangent Map", 0, 0.0, (0.0, 0.0, 0.0), True),
+    ("emissive", "Emission", 3, 0.0, (1.0, 1.0, 1.0), True),
+    ("height", "Height Map", 0, 0.0, (0.0, 0.0, 0.0), True),
+    ("transmittance", "Glass Transmittance", 3, 0.0, (1.0, 1.0, 1.0), True),
+    ("sss_transmittance", "Subsurface Transmittance", 3, 0.0, (0.8, 0.8, 0.8), True),
+    ("sss_thickness", "Subsurface Thickness", 0, 0.0, (0.0, 0.0, 0.0), True),
+    ("sss_albedo", "Subsurface Albedo", 0, 0.0, (0.0, 0.0, 0.0), True),
+    ("sss_radius", "Subsurface Radius", 3, 0.0, (1.0, 0.2, 0.1), True),
+)
+
+# the Remix categories (bge_remix_bridge.h BRB_CATEGORY_*; flags)
+REMIX_CATEGORIES = (
+    ('PARTICLE', "Particle", "Remix's particle handling (sprites)", 1),
+    ('HAIR', "Hair", "Hair cards", 4),
+    ('WATER', "Animated Water", "Water whose surface moves", 8),
+    ('TERRAIN', "Terrain", "Ground that Remix's terrain baker covers", 16),
+    ('DECAL_STATIC', "Decal (Static)", "A decal over a surface that does not move", 32),
+    ('DECAL_DYNAMIC', "Decal (Dynamic)", "A decal over a moving surface", 64),
+    ('SKY', "Sky", "Part of the sky", 128),
+    ('WORLD_UI', "World UI", "A screen or sign in the world, shown as it is", 256),
+    ('BEAM', "Beam", "A light beam or laser", 512),
+    ('IGNORE', "Ignore", "Not drawn by Remix", 1024),
+)
+
+
+def _remix_slot_class(name, value_default, color_default):
+    from bpy.props import BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, IntProperty, PointerProperty
+    attrs = {
+        "use": BoolProperty(name="Use", default=False,
+                            description="RTX Remix takes this field from here instead of the material's settings"),
+        "color": FloatVectorProperty(name="Color", subtype='COLOR', size=3, min=0.0, soft_max=1.0,
+                                     default=color_default,
+                                     description="The field's colour (without an image; with one, the image is it)"),
+        "value": FloatProperty(name="Value", min=0.0, max=1.0, default=value_default,
+                               description="The field's value (without an image)"),
+        "image": PointerProperty(name="Image", type=bpy.types.Image,
+                                 description="The field's image (UV mapped, as the material's)"),
+        "channel": EnumProperty(name="Channel", default='AUTO',
+                                description="The image's channel a one-value field reads",
+                                items=(('AUTO', "Automatic", "Red", 0), ('R', "Red", "", 1), ('G', "Green", "", 2),
+                                       ('B', "Blue", "", 3), ('A', "Alpha", "", 4))),
+        "colorspace": EnumProperty(name="Color Space", default='AUTO',
+                                   description="How the image's colours are read",
+                                   items=(('AUTO', "Image's Own", "As the image's Color Space setting says", 0),
+                                          ('SRGB', "sRGB", "Colours (gamma)", 1),
+                                          ('LINEAR', "Linear", "Data or linear colours", 2))),
+        "compression": EnumProperty(name="Compression", default='AUTO',
+                                    description="The format of the image in the texture cache",
+                                    items=(('AUTO', "Automatic", "The format Remix reads this field in", 0),
+                                           ('BC7', "BC7", "Colour and alpha, 8 bits", 1),
+                                           ('BC6H', "BC6H", "Bright (HDR) colour", 2),
+                                           ('BC4', "BC4", "One channel", 3),
+                                           ('BC5', "BC5", "Normal map", 4))),
+        "max_size": IntProperty(name="Largest Size", min=0, max=16384, default=0,
+                                description="Made smaller until neither side is above this (0: as it is)"),
+    }
+    return type("BGERemixSlot_" + name, (bpy.types.PropertyGroup,), attrs)
+
+
+_REMIX_SLOT_CLASSES = []
+
+
+class BGERemixMaterial(bpy.types.PropertyGroup):
+    """BGE-Remix P8.24: RTX Remix's own settings of a material (its Remix block)"""
+
+    @classmethod
+    def register(cls):
+        from bpy.props import BoolProperty, EnumProperty, FloatProperty, PointerProperty
+        for name, label, value, value_default, color_default, has_image in REMIX_SLOTS:
+            slot = _remix_slot_class(name, value_default, color_default)
+            bpy.utils.register_class(slot)
+            _REMIX_SLOT_CLASSES.append(slot)
+            setattr(cls, name, PointerProperty(type=slot, name=label))
+        cls.use = BoolProperty(name="Remix Settings", default=False,
+                               description="RTX Remix takes the fields set here instead of the translated ones")
+        cls.categories = EnumProperty(name="Categories", options={'ENUM_FLAG'}, items=REMIX_CATEGORIES,
+                                      description="How RTX Remix treats surfaces with this material")
+        cls.bake_nodes = EnumProperty(
+            name="Bake Nodes", default='AUTO',
+            description="Bake a Cycles node material into Remix's images",
+            items=(('AUTO', "Automatic", "When Remix mode cannot follow the node tree", 0),
+                   ('ALWAYS', "Always", "Always bake the node tree", 1),
+                   ('NEVER', "Never", "Never bake; the translated values", 2)))
+        cls.blend = EnumProperty(name="Blending", default='AUTO',
+                                 items=(('AUTO', "Automatic", "From the material's transparency", 0),
+                                        ('OPAQUE', "Opaque", "Not blended", 1),
+                                        ('ALPHA', "Alpha", "Blended by its opacity", 2),
+                                        ('ADDITIVE', "Additive", "Added to what is behind", 3)))
+        cls.inverted_blend = BoolProperty(name="Inverted", default=False, description="Remix's inverted blending")
+        cls.alpha_test = EnumProperty(name="Alpha Test", default='AUTO',
+                                      items=(('AUTO', "Automatic", "From the material's Clip setting", 0),
+                                             ('NEVER', "Never", "", 1), ('LESS', "Less", "", 2),
+                                             ('EQUAL', "Equal", "", 3), ('LEQUAL', "Less or Equal", "", 4),
+                                             ('GREATER', "Greater", "", 5), ('NOTEQUAL', "Not Equal", "", 6),
+                                             ('GEQUAL', "Greater or Equal", "", 7), ('ALWAYS', "Always", "", 8)))
+        cls.alpha_cutoff = FloatProperty(name="Cutoff", min=0.0, max=1.0, default=0.5)
+        cls.filter = EnumProperty(name="Filtering", default='AUTO',
+                                  items=(('AUTO', "Automatic", "From the textures' Interpolation", 0),
+                                         ('NEAREST', "Nearest", "", 1), ('LINEAR', "Linear", "", 2)))
+        wraps = (('AUTO', "Automatic", "From the textures' Extension", 0), ('CLAMP', "Clamp", "", 1),
+                 ('REPEAT', "Repeat", "", 2), ('MIRROR', "Mirror", "", 3), ('CLIP', "Clip", "", 4))
+        cls.wrap_u = EnumProperty(name="Wrap U", default='AUTO', items=wraps)
+        cls.wrap_v = EnumProperty(name="Wrap V", default='AUTO', items=wraps)
+        cls.use_glass = BoolProperty(name="Glass", default=False, description="Remix's translucent material")
+        cls.ior = FloatProperty(name="IOR", min=1.0, max=3.0, default=1.5)
+        cls.transmittance_distance = FloatProperty(
+            name="Distance", min=0.001, soft_max=10.0, default=0.5,
+            description="How far inside the glass the transmittance colour is reached (Blender units)")
+        cls.thin_walled = BoolProperty(name="Thin Walled", default=False)
+        cls.thin_wall_thickness = FloatProperty(name="Thickness", min=0.0, soft_max=0.1, default=0.001)
+        cls.diffuse_layer = BoolProperty(name="Diffuse Layer", default=False)
+        cls.use_subsurface = BoolProperty(name="Subsurface", default=False)
+        cls.subsurface_volumetric = BoolProperty(
+            name="Volumetric", default=False,
+            description="Remix's volumetric subsurface (a measurement distance) instead of the diffusion profile")
+        cls.subsurface_distance = FloatProperty(name="Measurement Distance", min=0.0, soft_max=10.0, default=1.0)
+        cls.subsurface_anisotropy = FloatProperty(name="Anisotropy", min=-1.0, max=1.0, default=0.0)
+        cls.subsurface_radius_scale = FloatProperty(name="Radius Scale", min=0.0, soft_max=10.0, default=1.0)
+        cls.use_anisotropy = BoolProperty(name="Anisotropy", default=False)
+        cls.anisotropy = FloatProperty(name="Anisotropy", min=-1.0, max=1.0, default=0.0)
+        cls.use_thin_film = BoolProperty(name="Thin Film", default=False)
+        cls.thin_film_thickness = FloatProperty(name="Thickness (nm)", min=0.0, soft_max=1500.0, default=400.0)
+        cls.alpha_is_thin_film = BoolProperty(name="From Albedo Alpha", default=False,
+                                              description="The albedo image's alpha is the film's thickness")
+        cls.use_displacement = BoolProperty(name="Displacement", default=False,
+                                            description="The height map displaces the surface in Remix")
+        cls.displace_in = FloatProperty(name="Inwards", min=0.0, soft_max=1.0, default=0.05)
+        cls.displace_out = FloatProperty(name="Outwards", min=0.0, soft_max=1.0, default=0.0)
+        cls.emissive_intensity = FloatProperty(name="Intensity", min=0.0, soft_max=100.0, default=1.0)
+        bpy.types.Material.bge_remix = PointerProperty(type=cls, name="RTX Remix")
+
+    @classmethod
+    def unregister(cls):
+        del bpy.types.Material.bge_remix
+        for slot in reversed(_REMIX_SLOT_CLASSES):
+            bpy.utils.unregister_class(slot)
+        del _REMIX_SLOT_CLASSES[:]
+
+
+class RemixMaterialPanel:
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'WINDOW'
+    bl_context = "material"
+    bl_options = {'DEFAULT_CLOSED'}
+    COMPAT_ENGINES = {'BLENDER_GAME'}
+
+    @classmethod
+    def poll(cls, context):
+        # every material, node materials too
+        return context.material is not None and context.scene.render.engine in cls.COMPAT_ENGINES
+
+
+class MATERIAL_PT_remix_fields(RemixMaterialPanel, Panel):
+    """BGE-Remix P8.24: every field of Remix's material, each with a value
+    and an image and the image's settings"""
+    bl_label = "RTX Remix Fields"
+
+    def draw_header(self, context):
+        self.layout.prop(context.material.bge_remix, "use", text="")
+
+    def draw(self, context):
+        layout = self.layout
+        if is_game(context):  # BGE-Remix P8.25
+            mark(layout, REMIX_ONLY)
+        block = context.material.bge_remix
+        layout.active = block.use
+        for name, label, value, value_default, color_default, has_image in REMIX_SLOTS:
+            slot = getattr(block, name)
+            row = layout.row(align=True)
+            row.prop(slot, "use", text=label)
+            sub = row.row(align=True)
+            sub.active = slot.use
+            if value == 3:
+                sub.prop(slot, "color", text="")
+            elif value == 1:
+                sub.prop(slot, "value", text="")
+            if has_image:
+                sub.prop(slot, "image", text="")
+            if name == "emissive":
+                sub.prop(block, "emissive_intensity", text="")
+            if slot.use and has_image and slot.image:
+                box = layout.box()
+                split = box.split()
+                col = split.column()
+                col.prop(slot, "channel")
+                col.prop(slot, "colorspace")
+                col = split.column()
+                col.prop(slot, "compression")
+                col.prop(slot, "max_size")
+        layout.label("Opacity's image is the albedo image's alpha", icon='INFO')
+
+
+class MATERIAL_PT_remix_options(RemixMaterialPanel, Panel):
+    """BGE-Remix P8.24: Remix's glass, subsurface, anisotropy, thin film,
+    displacement, blending, alpha test, filtering and wrapping"""
+    bl_label = "RTX Remix Options"
+
+    def draw(self, context):
+        layout = self.layout
+        if is_game(context):  # BGE-Remix P8.25
+            mark(layout, REMIX_ONLY)
+        block = context.material.bge_remix
+        layout.active = block.use
+        split = layout.split()
+        col = split.column()
+        col.prop(block, "use_glass")
+        sub = col.column()
+        sub.active = block.use_glass
+        sub.prop(block, "ior")
+        sub.prop(block, "transmittance_distance")
+        sub.prop(block, "thin_walled")
+        sub.prop(block, "thin_wall_thickness")
+        sub.prop(block, "diffuse_layer")
+        col = split.column()
+        col.prop(block, "use_subsurface")
+        sub = col.column()
+        sub.active = block.use_subsurface
+        sub.prop(block, "subsurface_volumetric")
+        sub.prop(block, "subsurface_distance")
+        sub.prop(block, "subsurface_anisotropy")
+        sub.prop(block, "subsurface_radius_scale")
+        split = layout.split()
+        col = split.column()
+        col.prop(block, "use_anisotropy")
+        sub = col.column()
+        sub.active = block.use_anisotropy
+        sub.prop(block, "anisotropy", text="")
+        col.prop(block, "use_thin_film")
+        sub = col.column()
+        sub.active = block.use_thin_film
+        sub.prop(block, "thin_film_thickness")
+        sub.prop(block, "alpha_is_thin_film")
+        col = split.column()
+        col.prop(block, "use_displacement")
+        sub = col.column()
+        sub.active = block.use_displacement
+        sub.prop(block, "displace_in")
+        sub.prop(block, "displace_out")
+        layout.separator()
+        split = layout.split()
+        col = split.column()
+        col.prop(block, "blend")
+        col.prop(block, "inverted_blend")
+        col.prop(block, "alpha_test")
+        sub = col.column()
+        sub.active = block.alpha_test != 'AUTO'
+        sub.prop(block, "alpha_cutoff")
+        col = split.column()
+        col.prop(block, "filter")
+        col.prop(block, "wrap_u")
+        col.prop(block, "wrap_v")
+
+
+class MATERIAL_PT_remix_match(RemixMaterialPanel, Panel):
+    """BGE-Remix P8.24: how the material reaches Remix, field by field"""
+    bl_label = "RTX Remix Match"
+
+    def draw(self, context):
+        layout = self.layout
+        try:
+            import bge_remix
+            match = bge_remix.material_match(context.material)
+        except Exception:
+            match = None
+        if not match:
+            layout.label("Needs a build with RTX Remix", icon='INFO')
+            return
+        icons = ('FILE_TICK', 'ERROR', 'CANCEL')
+        words = ("Exactly", "Approximately", "Not at all")
+        col = layout.column(align=True)
+        for f in match["fields"]:
+            row = col.row()
+            split = row.split(percentage=0.35)
+            split.label(f["field"].replace("_", " ").capitalize(), icon=icons[f["level"]])
+            split.label(words[f["level"]] + (": " + f["note"] if f["note"] else ""))
+        if match["notes"]:
+            layout.label("From the translator:")
+            box = layout.box().column(align=True)
+            for note in match["notes"]:
+                box.label(note)
 
 
 class MATERIAL_PT_custom_props(MaterialButtonsPanel, PropertyPanel, Panel):
@@ -1244,6 +1593,7 @@ class MATERIAL_PT_custom_props(MaterialButtonsPanel, PropertyPanel, Panel):
 
 
 classes = (
+    BGERemixMaterial,
     MATERIAL_MT_sss_presets,
     MATERIAL_MT_specials,
     MATERIAL_UL_matslots,
@@ -1269,6 +1619,9 @@ classes = (
     MATERIAL_PT_shadow,
     MATERIAL_PT_transp_game,
     MATERIAL_PT_game_remix,
+    MATERIAL_PT_remix_fields,
+    MATERIAL_PT_remix_options,
+    MATERIAL_PT_remix_match,
     MATERIAL_PT_volume_density,
     MATERIAL_PT_volume_shading,
     MATERIAL_PT_volume_lighting,

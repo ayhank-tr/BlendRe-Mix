@@ -30,6 +30,7 @@ set(INC
 	../windowmanager
 	../../../intern/glew-mx
 	../../../intern/guardedalloc
+	../../../intern/opencolorio
 	../../../intern/remix_bridge
 )
 

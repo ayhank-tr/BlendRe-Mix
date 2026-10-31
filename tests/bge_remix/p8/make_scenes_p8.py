@@ -48,6 +48,23 @@
 #                          Maps (and copies for SSR and B8.11)
 #   volumes*.blend         a fog cube, a glowing sphere, baked smoke and fire, a
 #                          camera moving into the fog cube (a Remix copy)
+# Part C (P8 v2) adds:
+#   hair_particles*.blend  a hair ball and a grass patch, a halo with rings and
+#                          a flare, an emitter of each render type (and Modern
+#                          and Remix copies)
+#   transparency*.blend    overlapping coloured glass panes, a smoke column of
+#                          particles, hair cards and a cut-out fence, made in
+#                          two orders (Classic and Modern)
+#   left_out*.blend        a curve, a NURBS surface, a metaball, text, a wire
+#                          material, a displaced plane, vertex colours, an
+#                          ocean (and a Remix copy)
+#   camera_fx_*.blend      depth of field, motion blur (a turning camera),
+#                          bloom, vignette, ambient occlusion, auto exposure
+#                          and Filmic, each alone, all, all with Remix; a 2D
+#                          filter over Remix's picture
+#   remix_extras*.blend    a height-mapped wall, brushed metal, a thin-film
+#                          bubble, textured glass, a decal, water, terrain and
+#                          a node material Remix mode cannot read
 # New scenes start Modern; the earlier ones are saved Classic.
 #
 # Every scene has the P2 probe (frames, frame times, a screenshot) and an
@@ -2535,6 +2552,445 @@ def make_volumes(folder, E):
                     "fog": {"object": "VO_fogcube", "distance": round(1.0 / 0.6, 4)}}
 
 
+# ---------------------------------------------------------------------------
+# P8 v2 Part C (P8.20-P8.25): hair, halos and particles; transparency;
+# left-out objects; camera effects; Remix's extra material fields
+
+def emitter_plane(scene, name, x, z, ma, size=0.4):
+    """a small square facing up (+Z): particles leave it upwards"""
+    return p2.plane(scene, name, size, (x, 0.0, z), (0.0, 0.0, 0.0), ma)
+
+
+def particle_settings(ob, name, kind='EMITTER', count=200, render='HALO'):
+    mod = ob.modifiers.new(name, 'PARTICLE_SYSTEM')
+    psys = ob.particle_systems[-1]
+    part = psys.settings
+    part.name = name
+    part.type = kind
+    part.count = count
+    part.render_type = render
+    part.use_render_emitter = kind != 'EMITTER'
+    return mod, psys, part
+
+
+HP_TYPES = ("HALO", "BILLBOARD", "LINE", "OBJECT", "GROUP", "NONE")
+
+
+def make_hair_particles(folder, E):
+    scene = base("HairParticles")
+    scene.render.use_antialiasing = False
+    # a hair ball and a grass patch: Hair systems, drawn as ribbons
+    hair_ma = classic("HP_hair", (0.55, 0.35, 0.15))
+    hair_ma.strand.root_size = 3.0
+    hair_ma.strand.tip_size = 1.0
+    ball = p3.sphere(scene, "HP_ball", (-4.0, 0.0, 1.5), classic("HP_skin", (0.9, 0.7, 0.6)), radius=0.6)
+    ball.data.materials.append(hair_ma)
+    _, _, part = particle_settings(ball, "HP_ball_hair", 'HAIR', 400, 'PATH')
+    part.hair_length = 0.45
+    part.material = 2
+    grass_ma = classic("HP_grass", (0.2, 0.6, 0.15))
+    grass_ma.strand.root_size = 2.0
+    grass_ma.strand.tip_size = 0.5
+    patch = p2.plane(scene, "HP_patch", 1.6, (-1.5, 0.0, 1.0), (math.radians(90.0), 0.0, 0.0),
+                     classic("HP_ground", (0.3, 0.2, 0.1)))
+    patch.data.materials.append(grass_ma)
+    _, _, part = particle_settings(patch, "HP_grass", 'HAIR', 600, 'PATH')
+    part.hair_length = 0.3
+    part.material = 2
+    # a halo with rings and a flare
+    me = bpy.data.meshes.new("HP_halo")
+    me.from_pydata([(0.0, 0.0, 0.0)], [], [])
+    me.update()
+    halo_ma = bpy.data.materials.new("HP_halo")
+    halo_ma.type = 'HALO'
+    halo_ma.diffuse_color = (1.0, 0.8, 0.4)
+    halo_ma.halo.size = 0.8
+    halo_ma.halo.hardness = 40
+    halo_ma.halo.use_ring = True
+    halo_ma.halo.ring_count = 3
+    halo_ma.halo.use_flare_mode = True
+    halo_ma.halo.flare_size = 1.2
+    me.materials.append(halo_ma)
+    halo = bpy.data.objects.new("HP_halo", me)
+    halo.location = (2.0, 0.0, 1.5)
+    scene.objects.link(halo)
+    # one emitter per render type, along the bottom
+    dupli = p2.cube(scene, "HP_dupli", 0.12, (0.0, 0.0, -30.0), classic("HP_dupli", (0.9, 0.9, 0.2)))
+    group = bpy.data.groups.new("HP_group")
+    gsph = p3.sphere(scene, "HP_gsphere", (0.0, 0.0, -32.0), classic("HP_gsph", (0.2, 0.8, 0.9)), radius=0.06)
+    group.objects.link(gsph)
+    em_ma = classic("HP_emit", (0.9, 0.5, 0.2))
+    em_ma.halo.size = 0.08
+    columns = {}
+    for i, kind in enumerate(HP_TYPES):
+        x = -4.5 + 1.8 * i
+        ob = emitter_plane(scene, "HP_em_" + kind.lower(), x, -2.4, em_ma)
+        _, psys, part = particle_settings(ob, "HP_" + kind.lower(), 'EMITTER', 300, kind)
+        part.frame_start = 1
+        part.frame_end = 300
+        part.lifetime = 40
+        part.normal_factor = 2.0
+        part.effector_weights.gravity = 0.0
+        part.particle_size = 0.08
+        if kind == "OBJECT":
+            part.dupli_object = dupli
+        elif kind == "GROUP":
+            part.dupli_group = group
+        columns[kind.lower()] = layout_rect(x, -1.2, 0.5)
+    for ob in list(scene.objects):
+        no_physics(ob)
+    p2.lamp(scene, "HP_sun", 'SUN', (0.0, -8.0, 6.0), (math.radians(50.0), 0.0, math.radians(15.0)))
+    E["hair_particles"] = {"rects": {"ball": layout_rect(-4.0, 1.5, 0.9), "patch": layout_rect(-1.5, 1.2, 0.6),
+                                     "halo": layout_rect(2.0, 1.5, 0.5)},
+                           "columns": columns, "emitters": [k.lower() for k in HP_TYPES],
+                           "gpu_kinds": ["halo", "billboard", "line"]}
+    save(scene, os.path.join(folder, "hair_particles.blend"), physical=False)
+    files = [copy_save(folder, "hair_particles", modern=False)]
+    files.append(copy_save(folder, "hair_particles_modern", modern=True))
+    scene["bge_remix"] = 1
+    files.append(copy_save(folder, "hair_particles_remix", modern=False))
+    scene["bge_remix"] = 0
+    E["hair_particles"]["files"] = files
+
+
+TR_PANES = (("red", (1.0, 0.2, 0.2), -1.0, -0.3, 0.6), ("green", (0.2, 1.0, 0.2), 0.0, 0.0, 0.2),
+            ("blue", (0.2, 0.3, 1.0), 1.0, 0.3, -0.2), ("yellow", (1.0, 0.9, 0.1), 0.2, 0.6, -0.6))
+
+
+def make_transparency_scene(folder, name, order, modern):
+    bpy.ops.wm.read_factory_settings(use_empty=False)
+    scene = base("Transparency")
+    bg = p2.plane(scene, "TR_back", 12.0, (0.0, 4.0, 0.0), (math.radians(90.0), 0.0, 0.0),
+                  classic("TR_back", (0.6, 0.6, 0.6)))
+    no_physics(bg)
+    made = {}
+
+    def pane(k):
+        tag, col, x, y, z = TR_PANES[k]
+        ma = classic("TR_" + tag, col)
+        ma.alpha = 0.5
+        ma.use_transparency = True
+        ma.game_settings.alpha_blend = 'ALPHA'
+        ob = p2.plane(scene, "TR_" + tag, 2.4, (x, y, z), (math.radians(90.0), 0.0, 0.0), ma)
+        no_physics(ob)
+        made[tag] = ob
+
+    def smoke():
+        ma = classic("TR_smoke", (0.8, 0.8, 0.85))
+        ma.alpha = 0.3
+        ma.use_transparency = True
+        ma.game_settings.alpha_blend = 'ALPHA'
+        ob = emitter_plane(scene, "TR_smoke", 3.5, -2.2, ma)
+        _, _, part = particle_settings(ob, "TR_smoke", 'EMITTER', 200, 'BILLBOARD')
+        part.frame_start = 1
+        part.frame_end = 300
+        part.lifetime = 60
+        part.normal_factor = 1.0
+        part.effector_weights.gravity = 0.0
+        part.particle_size = 0.3
+        no_physics(ob)
+
+    def hair():
+        ma = classic("TR_hair", (0.9, 0.8, 0.5))
+        ma.alpha = 0.6
+        ma.use_transparency = True
+        ma.game_settings.alpha_blend = 'ALPHA'
+        ob = p2.plane(scene, "TR_hairbase", 1.2, (-3.5, 0.0, -1.5), (math.radians(90.0), 0.0, 0.0),
+                      classic("TR_hairbase", (0.4, 0.3, 0.2)))
+        ob.data.materials.append(ma)
+        _, _, part = particle_settings(ob, "TR_hair", 'HAIR', 300, 'PATH')
+        part.hair_length = 0.6
+        part.material = 2
+        no_physics(ob)
+
+    def fence():
+        img = p3.image("TR_fence", lambda x, y: (0.3, 0.2, 0.1, 1.0 if (int(x * 8) + int(y * 8)) % 2 else 0.0))
+        ma = classic("TR_fence", (1.0, 1.0, 1.0))
+        p3.bi_slot(ma, img, color=True).use_map_alpha = True
+        ma.use_transparency = True
+        ma.alpha = 0.0
+        ma.game_settings.alpha_blend = 'CLIP'
+        ob = p3.uv_plane(scene, "TR_fence", 2.0, (-3.5, -0.5, 1.6), (math.radians(90.0), 0.0, 0.0), ma)
+        no_physics(ob)
+
+    parts = [lambda k=k: pane(k) for k in range(len(TR_PANES))] + [smoke, hair, fence]
+    for i in order:
+        parts[i]()
+    p2.lamp(scene, "TR_sun", 'SUN', (0.0, -8.0, 6.0), (math.radians(50.0), 0.0, math.radians(15.0)))
+    save(scene, os.path.join(folder, name + ".blend"), physical=False, modern=modern)
+    return name
+
+
+def make_transparency(folder, E):
+    order = list(range(7))
+    shuffled = [6, 3, 1, 5, 0, 4, 2]
+    files = [make_transparency_scene(folder, "transparency", order, False),
+             make_transparency_scene(folder, "transparency_shuffled", shuffled, False),
+             make_transparency_scene(folder, "transparency_modern", order, True),
+             make_transparency_scene(folder, "transparency_modern_shuffled", shuffled, True)]
+    rects = {"panes": layout_rect(0.0, 0.0, 1.6), "smoke": layout_rect(3.5, -0.8, 0.6),
+             "hair": layout_rect(-3.5, -1.3, 0.6), "fence": layout_rect(-3.5, 1.6, 0.9)}
+    E["transparency"] = {"files": files, "rects": rects}
+
+
+LO_ITEMS = ("curve", "surface", "metaball", "text", "wire", "displaced", "vcolor", "ocean")
+
+
+def make_left_out(folder, E):
+    scene = base("LeftOut")
+    rects = {}
+    pos = {k: (-4.5 + 3.0 * (i % 4), 1.3 - 2.6 * (i // 4)) for i, k in enumerate(LO_ITEMS)}
+
+    def place(ob, k):
+        ob.location = (pos[k][0], 0.0, pos[k][1])
+        no_physics(ob)
+        rects[k] = layout_rect(pos[k][0], pos[k][1], 0.6)
+
+    # a bevelled curve (a ring)
+    cu = bpy.data.curves.new("LO_curve", 'CURVE')
+    cu.dimensions = '3D'
+    cu.bevel_depth = 0.12
+    sp = cu.splines.new('BEZIER')
+    sp.bezier_points.add(3)
+    for p, (x, z) in zip(sp.bezier_points, ((-0.7, 0.0), (0.0, 0.7), (0.7, 0.0), (0.0, -0.7))):
+        p.co = (x, 0.0, z)
+        p.handle_left_type = p.handle_right_type = 'AUTO'
+    sp.use_cyclic_u = True
+    cu.materials.append(classic("LO_curve", (0.9, 0.3, 0.2)))
+    ob = bpy.data.objects.new("LO_curve", cu)
+    scene.objects.link(ob)
+    place(ob, "curve")
+    # a NURBS surface patch, turned to face the camera
+    bpy.ops.surface.primitive_nurbs_surface_surface_add(radius=0.6, location=(0.0, 0.0, 0.0))
+    ob = bpy.context.object
+    ob.name = "LO_surface"
+    ob.data.name = "LO_surface"
+    ob.rotation_euler = (math.radians(90.0), 0.0, 0.0)
+    ob.data.materials.append(classic("LO_surface", (0.2, 0.7, 0.9)))
+    place(ob, "surface")
+    # a metaball of two balls
+    mb = bpy.data.metaballs.new("LO_metaball")
+    for dx in (-0.25, 0.25):
+        el = mb.elements.new()
+        el.co = (dx, 0.0, 0.0)
+        el.radius = 0.5
+    mb.materials.append(classic("LO_metaball", (0.9, 0.8, 0.2)))
+    ob = bpy.data.objects.new("LO_metaball", mb)
+    scene.objects.link(ob)
+    place(ob, "metaball")
+    # text
+    ft = bpy.data.curves.new("LO_text", 'FONT')
+    ft.body = "Ab"
+    ft.size = 1.0
+    ft.align_x = 'CENTER'
+    ft.materials.append(classic("LO_text", (1.0, 1.0, 1.0)))
+    ob = bpy.data.objects.new("LO_text", ft)
+    ob.rotation_euler = (math.radians(90.0), 0.0, 0.0)
+    scene.objects.link(ob)
+    place(ob, "text")
+    ob.location.z -= 0.35
+    # a wire material
+    wire = classic("LO_wire", (0.3, 1.0, 0.3))
+    wire.type = 'WIRE'
+    ob = p3.sphere(scene, "LO_wire", (0.0, 0.0, 0.0), wire, radius=0.6)
+    place(ob, "wire")
+    # a plane displaced by a texture (Modern: made finer and moved; Remix the same mesh)
+    disp = classic("LO_displaced", (0.8, 0.8, 0.8))
+    tex = bpy.data.textures.new("LO_clouds", 'CLOUDS')
+    tex.noise_scale = 0.3
+    slot = disp.texture_slots.add()
+    slot.texture = tex
+    slot.texture_coords = 'ORCO'
+    slot.use_map_color_diffuse = False
+    slot.use_map_displacement = True
+    slot.displacement_factor = 0.4
+    ob = p2.plane(scene, "LO_displaced", 1.4, (0.0, 0.0, 0.0), (math.radians(70.0), 0.0, 0.0), disp)
+    place(ob, "displaced")
+    # vertex colours
+    me = bpy.data.meshes.new("LO_vcolor")
+    me.from_pydata([(-0.6, 0, -0.6), (0.6, 0, -0.6), (0.6, 0, 0.6), (-0.6, 0, 0.6)], [], [(0, 1, 2, 3)])
+    me.update()
+    vc = me.vertex_colors.new("Col")
+    for loop, c in zip(vc.data, ((1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0))):
+        loop.color = c
+    vma = classic("LO_vcolor", (1.0, 1.0, 1.0), shadeless=True)
+    vma.use_vertex_color_paint = True
+    me.materials.append(vma)
+    ob = bpy.data.objects.new("LO_vcolor", me)
+    scene.objects.link(ob)
+    place(ob, "vcolor")
+    # an ocean
+    ob = p2.plane(scene, "LO_ocean", 1.4, (0.0, 0.0, 0.0), (math.radians(70.0), 0.0, 0.0),
+                  classic("LO_ocean", (0.1, 0.3, 0.6)))
+    oc = ob.modifiers.new("Ocean", 'OCEAN')
+    oc.geometry_mode = 'GENERATE'
+    oc.resolution = 7
+    oc.spatial_size = 2
+    oc.size = 0.7
+    place(ob, "ocean")
+    p2.lamp(scene, "LO_sun", 'SUN', (0.0, -8.0, 6.0), (math.radians(50.0), 0.0, math.radians(15.0)))
+    save(scene, os.path.join(folder, "left_out.blend"), physical=False, modern=True)
+    files = ["left_out"]
+    scene["bge_remix"] = 1
+    files.append(copy_save(folder, "left_out_remix", modern=True))
+    scene["bge_remix"] = 0
+    E["left_out"] = {"files": files, "rects": rects, "items": list(LO_ITEMS),
+                     "as_mesh": ["LO_curve", "LO_surface", "LO_metaball"], "displaced": "LO_displaced"}
+
+
+CF_EFFECTS = ("bloom", "auto_exposure", "vignette", "depth_of_field", "motion_blur", "ao", "filmic")
+
+CFX_SCRIPT = r'''
+# BGE-Remix P8 Part C: the camera turns (motion blur needs a moving camera)
+import bge
+g = bge.logic.globalDict
+n = g.get("p8_cfx", 0) + 1
+g["p8_cfx"] = n
+cam = bge.logic.getCurrentScene().active_camera
+cam.applyRotation((0.0, 0.0, 0.004 if (n // 50) % 2 == 0 else -0.004), False)
+'''
+
+
+def make_camera_fx(folder, E):
+    scene = persp_base("CameraFX", (0.0, -9.0, 1.6), (0.0, 0.0, 1.0), lens=35.0)
+    scene.world.horizon_color = (0.25, 0.3, 0.4)
+    scene.world.zenith_color = (0.25, 0.3, 0.4)
+    scene.world.light_settings.distance = 1.5
+    scene.world.light_settings.ao_factor = 1.0
+    floor = p2.plane(scene, "CF_floor", 30.0, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), classic("CF_floor", (0.7, 0.7, 0.7)))
+    near = box(scene, "CF_near", (-1.6, -3.0, 0.6), (0.8, 0.8, 1.2), classic("CF_near", (0.8, 0.2, 0.2)))
+    focus = box(scene, "CF_focus", (0.0, 0.0, 0.8), (1.0, 1.0, 1.6), classic("CF_focus", (0.2, 0.7, 0.2)))
+    far_ma = classic("CF_far", (0.2, 0.3, 0.9))
+    stripes = p3.image("CF_stripes", lambda x, y: p3.stripes(x, y, n=10))
+    p3.bi_slot(far_ma, stripes, color=True)
+    far = p3.uv_plane(scene, "CF_far", 1.0, (1.5, 12.0, 2.5), (math.radians(90.0), 0.0, 0.0), far_ma)
+    far.scale = (5.0, 5.0, 1.0)
+    glow_ma = classic("CF_glow", (1.0, 0.95, 0.8))
+    glow_ma.emit = 4.0
+    glow = p3.sphere(scene, "CF_glow", (2.2, -1.0, 1.8), glow_ma, radius=0.35)
+    corner = box(scene, "CF_corner", (-2.5, 1.0, 0.4), (0.8, 0.8, 0.8), classic("CF_corner", (0.8, 0.8, 0.8)))
+    for ob in (floor, near, focus, far, glow, corner):
+        no_physics(ob)
+    cam = scene.camera
+    cam.data.dof_object = focus
+    cam.data.gpu_dof.fstop = 1.4
+    p2.lamp(scene, "CF_sun", 'SUN', (0.0, -8.0, 6.0), (math.radians(50.0), 0.0, math.radians(15.0)))
+    driver = bpy.data.objects.new("CF_driver", None)
+    scene.objects.link(driver)
+    logic(scene, driver, "p8_camera_fx.py", CFX_SCRIPT)
+    rects = {"glow_ring": screen_rect(scene, (1.6, -1.0, 1.2), (2.8, -1.0, 2.4), shrink=1.0),
+             "corner_tl": [0, 0, WIDTH // 8, HEIGHT // 8],
+             "far": screen_rect(scene, (-1.0, 12.0, 0.5), (4.0, 12.0, 4.5), shrink=0.6),
+             "focus": screen_rect(scene, (-0.5, 0.0, 0.0), (0.5, 0.0, 1.6), shrink=0.6),
+             "contact": screen_rect(scene, (-3.0, 0.6, 0.0), (-2.0, 1.4, 0.15), shrink=1.0),
+             "whole": [0, 0, WIDTH, HEIGHT]}
+
+    def fx(on):
+        for k in ("bloom", "auto_exposure", "vignette", "depth_of_field"):
+            scene["bge_fx_" + k] = 1 if k in on else 0
+        scene["bge_fx_vignette"] = 0.6 if "vignette" in on else 0.0
+        scene.render.use_motion_blur = "motion_blur" in on
+        scene.render.motion_blur_shutter = 1.0
+        scene.world.light_settings.use_ambient_occlusion = "ao" in on
+        scene.view_settings.view_transform = 'Filmic' if "filmic" in on else 'Default'
+
+    save(scene, os.path.join(folder, "camera_fx.blend"), physical=False, modern=True)
+    files = []
+    fx(())
+    files.append(copy_save(folder, "camera_fx_none", modern=True))
+    for k in CF_EFFECTS:
+        fx((k,))
+        files.append(copy_save(folder, "camera_fx_" + k, modern=True))
+    fx(CF_EFFECTS)
+    files.append(copy_save(folder, "camera_fx_all", modern=True))
+    scene["bge_remix"] = 1
+    files.append(copy_save(folder, "camera_fx_all_remix", modern=True))
+    # a 2D filter (invert) over Remix's picture, and the same without it
+    fx(())
+    files.append(copy_save(folder, "camera_fx_remix", modern=True))
+    bpy.ops.logic.actuator_add(type='FILTER_2D', name="CF_invert", object=driver.name)
+    act = driver.game.actuators[-1]
+    act.mode = 'INVERT'
+    driver.game.controllers[-1].link(actuator=act)
+    files.append(copy_save(folder, "camera_fx_filter_remix", modern=True))
+    scene["bge_remix"] = 0
+    E["camera_fx"] = {"files": files, "rects": rects, "effects": list(CF_EFFECTS)}
+
+
+def remix_block(ma, **values):
+    """the material's Remix block (properties_material.py BGERemixMaterial);
+    slots as dicts {use, color, value, image, ...}"""
+    block = ma.bge_remix
+    block.use = True
+    for k, v in values.items():
+        if isinstance(v, dict):
+            slot = getattr(block, k)
+            for sk, sv in v.items():
+                setattr(slot, sk, sv)
+        else:
+            setattr(block, k, v)
+
+
+def make_remix_extras(folder, E):
+    scene = base("RemixExtras")
+    def bump_height(x, y):
+        fx, fy = (x * 6) % 1.0 - 0.5, (y * 6) % 1.0 - 0.5
+        v = max(0.0, 1.0 - 2.5 * math.sqrt(fx * fx + fy * fy))
+        return (v, v, v, 1.0)
+
+    height = p3.image("RX_height", bump_height, non_color=True)
+    tint = p3.image("RX_tint", lambda x, y: p3.stripes(x, y, n=6))
+    colour = p3.image("RX_colour", p3.checker)
+    mats = {}
+
+    def item(k, x, z, ma, shape="plane"):
+        if shape == "sphere":
+            ob = p3.sphere(scene, "RX_" + k, (x, 0.0, z), ma, radius=0.6)
+        else:
+            ob = p3.uv_plane(scene, "RX_" + k, 1.4, (x, 0.0, z), (math.radians(90.0), 0.0, 0.0), ma)
+        no_physics(ob)
+        mats[k] = ma.name
+        return ob
+
+    ma = classic("RX_wall", (0.8, 0.8, 0.8))
+    p3.bi_slot(ma, colour, color=True)
+    remix_block(ma, use_displacement=True, displace_in=0.05, height={"use": True, "image": height})
+    item("wall", -4.5, 1.3, ma)
+    ma = physical("RX_brushed", (0.8, 0.8, 0.85), metallic=1.0, roughness=0.3)
+    remix_block(ma, use_anisotropy=True, anisotropy=0.8)
+    item("brushed", -1.5, 1.3, ma, "sphere")
+    ma = physical("RX_bubble", (0.9, 0.9, 0.9), roughness=0.05)
+    remix_block(ma, use_thin_film=True, thin_film_thickness=450.0)
+    item("bubble", 1.5, 1.3, ma, "sphere")
+    ma = physical("RX_glass", (1.0, 1.0, 1.0), roughness=0.0, transmission=1.0)
+    remix_block(ma, use_glass=True, ior=1.5, transmittance={"use": True, "image": tint})
+    item("glass", 4.5, 1.3, ma, "sphere")
+    ma = classic("RX_decal", (0.9, 0.2, 0.2))
+    p3.bi_slot(ma, colour, color=True)
+    ma.bge_remix.categories = {'DECAL_STATIC'}
+    item("decal", -4.5, -1.3, ma)
+    ma = classic("RX_water", (0.1, 0.3, 0.6))
+    ma.bge_remix.categories = {'WATER'}
+    item("water", -1.5, -1.3, ma)
+    ma = classic("RX_terrain", (0.4, 0.35, 0.2))
+    ma.bge_remix.categories = {'TERRAIN'}
+    item("terrain", 1.5, -1.3, ma)
+    # a node material Remix mode cannot read: a Noise Texture into the colour
+    ma, nt, p = p3.principled("RX_nodes", (0.5, 0.5, 0.5), roughness=0.4)
+    noise = nt.nodes.new("ShaderNodeTexNoise")
+    noise.inputs["Scale"].default_value = 6.0
+    nt.links.new(noise.outputs["Color"], p.inputs["Base Color"])
+    item("nodes", 4.5, -1.3, ma)
+    p2.lamp(scene, "RX_sun", 'SUN', (0.0, -8.0, 6.0), (math.radians(50.0), 0.0, math.radians(15.0)))
+    save(scene, os.path.join(folder, "remix_extras.blend"), physical=None)
+    files = ["remix_extras"]
+    scene["bge_remix"] = 1
+    files.append(copy_save(folder, "remix_extras_remix"))
+    scene["bge_remix"] = 0
+    E["remix_extras"] = {"files": files, "materials": mats, "colour_image": "RX_colour",
+                         "categories": {"decal": 1 << 11, "water": 1 << 17, "terrain": 1 << 16}}
+
+
 def main():
     folder = out_dir()
     E = {"width": WIDTH, "height": HEIGHT, "failed": {}}
@@ -2568,7 +3024,13 @@ def main():
                   ("many_lamps", lambda: make_many_lamps(folder, E)),
                   ("world_sky", lambda: make_world_sky(folder, E)),
                   ("reflections", lambda: make_reflections(folder, E)),
-                  ("volumes", lambda: make_volumes(folder, E))]
+                  ("volumes", lambda: make_volumes(folder, E)),
+                  # P8 v2 Part C
+                  ("hair_particles", lambda: make_hair_particles(folder, E)),
+                  ("transparency", lambda: make_transparency(folder, E)),
+                  ("left_out", lambda: make_left_out(folder, E)),
+                  ("camera_fx", lambda: make_camera_fx(folder, E)),
+                  ("remix_extras", lambda: make_remix_extras(folder, E))]
         target = os.path.join(folder, "p8_expected.json")
     for name, make in makers:
         try:

@@ -80,6 +80,13 @@ void BRMX_render_free(struct RenderEngine *engine);
 /* For the tests (BGE_REMIX_STATS): counters of the view and F12, as JSON. */
 const char *BRMX_view_stats_json(void);
 
+/* BGE-Remix P8.24: how a material reaches Remix, field by field (JSON:
+ * {"fields": [{"field", "level" (0 exactly, 1 approximately, 2 not at
+ * all), "note"}], "notes": [...], "baked": bool}), for the RTX Remix Match
+ * panel and the tests. Main thread. */
+struct Material;
+const char *BRMX_material_match_json(struct Material *ma);
+
 #ifdef __cplusplus
 }
 #endif

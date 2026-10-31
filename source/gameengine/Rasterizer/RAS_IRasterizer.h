@@ -425,6 +425,10 @@ public:
 	virtual void SetMotionBlurState(int newstate) = 0;
 
 	virtual void SetAlphaBlend(int alphablend) = 0;
+	/* BGE-Remix P8 Part C (P8.21): the order-independent transparent pass
+	 * (Modern scenes); false: transparent surfaces are drawn sorted */
+	virtual bool BeginTransparency() { return false; }
+	virtual void EndTransparency() {}
 	virtual void SetFrontFace(bool ccw) = 0;
 
 	virtual void SetAnisotropicFiltering(short level) = 0;

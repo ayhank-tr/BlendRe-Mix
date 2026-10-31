@@ -144,6 +144,23 @@ int GPU_update_image_time(struct Image *ima, double time);
 int GPU_verify_image(
         struct Image *ima, struct ImageUser *iuser,
         int textarget, int tftile, bool compare, bool mipmap, bool is_data);
+
+/* BGE-Remix P8.24: the shared compressed texture cache. The game engine
+ * sets a loader: an 8-bit colour image whose BC7 file RTX Remix also reads
+ * is drawn from that file (every mip level, rows from the bottom) instead of
+ * being uploaded uncompressed. The "texture_cache" speed switch turns it off. */
+typedef struct GPUCompressedImage {
+	unsigned int format;            /* the OpenGL compressed format */
+	int width, height, levels;
+	const unsigned char *data[16];  /* each mip level */
+	int size[16];                   /* its bytes */
+	void *owner;                    /* the loader's, given back to free */
+} GPUCompressedImage;
+typedef bool (*GPUImageCacheLoad)(struct Image *ima, struct ImBuf *ibuf, GPUCompressedImage *r_img);
+typedef void (*GPUImageCacheFree)(GPUCompressedImage *img);
+void GPU_set_image_cache(GPUImageCacheLoad load, GPUImageCacheFree free_fn);
+/* images drawn from the cache since the loader was set */
+int GPU_image_cache_loads(void);
 void GPU_create_gl_tex(
         unsigned int *bind, unsigned int *rect, float *frect, int rectw, int recth,
         int textarget, bool mipmap, bool use_hight_bit_depth, struct Image *ima);

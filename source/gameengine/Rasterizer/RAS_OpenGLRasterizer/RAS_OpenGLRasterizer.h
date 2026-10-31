@@ -330,6 +330,8 @@ public:
 	}
 
 	virtual void SetAlphaBlend(int alphablend);
+	virtual bool BeginTransparency();
+	virtual void EndTransparency();
 	virtual void SetFrontFace(bool ccw);
 	
 	virtual void SetAnisotropicFiltering(short level);

@@ -61,6 +61,7 @@ set(SRC
 	intern/gpu_lights.c
 	intern/gpu_probes.c
 	intern/gpu_volumes.c
+	intern/gpu_sprites.c
 	intern/gpu_material.c
 	intern/gpu_select.c
 	intern/gpu_select_pick.c
@@ -108,6 +109,7 @@ set(SRC
 	GPU_lights.h
 	GPU_probes.h
 	GPU_volumes.h
+	GPU_sprites.h
 	GPU_material.h
 	GPU_select.h
 	GPU_shader.h

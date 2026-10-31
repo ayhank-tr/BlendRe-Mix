@@ -160,15 +160,21 @@ def bridge_checks(ours, out):
                         "error": r.error.decode("utf-8", "replace")}
         return rc == 0, d.path
 
-    # a vertical gradient: the top row of the DDS must be Blender's top row
+    # a vertical gradient. P8.24 (interface 10): the DDS's first row is
+    # Blender's first row (the bottom), as the game's OpenGL wants it; top-first
+    # files (flag 8: what Remix samples with its own coordinates) keep the top
     grad = []
     for y in range(H):
         for x in range(W):
             grad += [x * 255 // W, y * 255 // (H - 1), 128, 255]
     ok, path = write("grad_g.dds", 2, data8=grad, channel=1)
-    top = dds_check.first_block(path) if ok else None
-    checks["scalar map: BC4, full mips, top row first"] = ok and dds_check.read_header(path)["dxgi"] == 80 and \
-        dds_check.read_header(path)["mips"] == dds_check.full_mips(W, H) and top is not None and min(top[:4]) > 0.9
+    first = dds_check.first_block(path) if ok else None
+    checks["scalar map: BC4, full mips, bottom row first"] = ok and dds_check.read_header(path)["dxgi"] == 80 and \
+        dds_check.read_header(path)["mips"] == dds_check.full_mips(W, H) and first is not None and \
+        max(first[:4]) < 0.1
+    ok, path = write("grad_g_top.dds", 2, data8=grad, channel=1, flags=8)
+    first = dds_check.first_block(path) if ok else None
+    checks["scalar map, top first: top row first"] = ok and first is not None and min(first[:4]) > 0.9
     # a constant tilted normal (OpenGL: +x right, +y up the image)
     nx, ny = 0.5, 0.2
     nz = math.sqrt(1 - nx * nx - ny * ny)
@@ -176,11 +182,17 @@ def bridge_checks(ours, out):
     ok, path = write("tilt_n.dds", 1, data8=px * (W * H))
     blk = dds_check.first_block(path) if ok else None
     n = dds_check.octahedral_to_normal(*blk[0]) if blk else (0, 0, 1)
-    err = dds_check.angle_deg(n, (nx, -ny, nz))  # Remix's v runs down the image
+    # Remix's v grows with the file's rows: up the image since interface 10
+    err = dds_check.angle_deg(n, (nx, ny, nz))
     detail["tilt_n.dds"]["decoded"] = n
     detail["tilt_n.dds"]["error_deg"] = err
-    checks["normal map: BC5, octahedral, within 2 degrees (green flipped for Remix)"] = \
+    checks["normal map: BC5, octahedral, within 2 degrees (green as Blender's)"] = \
         ok and dds_check.read_header(path)["dxgi"] == 83 and err < 2.0
+    ok, path = write("tilt_n_top.dds", 1, data8=px * (W * H), flags=8)
+    blk = dds_check.first_block(path) if ok else None
+    n = dds_check.octahedral_to_normal(*blk[0]) if blk else (0, 0, 1)
+    err = dds_check.angle_deg(n, (nx, -ny, nz))
+    checks["normal map, top first: green flipped"] = ok and err < 2.0
     ok, path = write("grad_c.dds", 0, data8=grad)
     # BC7_UNORM holding sRGB values: Remix decodes colour maps from gamma
     # itself, an _SRGB format (99) would be decoded twice

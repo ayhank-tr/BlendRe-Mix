@@ -38,7 +38,16 @@
  *      shadeless, game transparency, and image texture slots (Color,
  *      Normal, Emit, Hardness)
  *
- * Procedural texture slots are baked per mesh (P8.6, BRMX_bake.h).
+ * Procedural texture slots are baked per mesh (P8.6, BRMX_bake.h), and so
+ * are node materials the translator cannot follow (P8.24).
+ *
+ * P8.24: the material's Remix block (ID properties "bge_remix", the RTX
+ * Remix panel) sets any of Remix's fields over the translation: each slot
+ * a value and an optional image, with its colour space, channel, compression
+ * and largest size; glass, subsurface, anisotropy, thin film, height map,
+ * blending, alpha test, filtering, wrapping and the Remix categories. Every
+ * field is reported as reaching Remix exactly, approximately or not at all
+ * (material_match).
  *
  * The texture cache turns the images these refer to into DDS files (Remix
  * reads nothing else), next to the .blend in remix_cache/, encoded once and
@@ -72,10 +81,29 @@ enum TextureSlot {
 	TEX_ROUGHNESS,
 	TEX_METALLIC,
 	TEX_EMISSIVE,
+	/* P8.24 */
+	TEX_HEIGHT,
+	TEX_TANGENT,
+	TEX_TRANSMITTANCE,
+	TEX_SSS_TRANSMITTANCE,
+	TEX_SSS_THICKNESS,
+	TEX_SSS_ALBEDO,
+	TEX_SSS_RADIUS,
 	TEX_COUNT
 };
 
 const char *texture_slot_name(int slot);
+
+/* P8.24: the desc's file path field of a slot */
+const wchar_t **texture_field(brb_material_desc &d, int slot);
+
+/* P8.24: how well each of Remix's fields carries the Blender material */
+enum MatchLevel { MATCH_EXACT = 0, MATCH_APPROX = 1, MATCH_NONE = 2 };
+struct FieldMatch {
+	std::string field; /* Remix's name for it */
+	int level;         /* MatchLevel */
+	std::string note;  /* where the value comes from, or what is lost */
+};
 
 /* An image wanted in a material slot, before it is a DDS file. */
 struct TextureRequest {
@@ -85,7 +113,8 @@ struct TextureRequest {
 	int kind;     /* brb_texture_kind */
 	int channel;  /* scalar maps: 0 = R .. 3 = A */
 	int flags;    /* BRB_TEXTURE_INVERT, BRB_TEXTURE_LINEAR */
-	TextureRequest() : image(NULL), kind(0), channel(0), flags(0) {}
+	int max_size; /* P8.24: the largest width or height (0: as the image is) */
+	TextureRequest() : image(NULL), kind(0), channel(0), flags(0), max_size(0) {}
 	bool wanted() const { return image != NULL || baked; }
 };
 
@@ -102,7 +131,26 @@ struct MaterialSpec {
 	/* P8.6: values that come from procedural textures, to bake (bits of
 	 * 1 << BakeSlot, BRMX_bake.h); the caller bakes them per mesh */
 	unsigned bake_slots;
+	/* P8.24: the Remix categories the material asks for (BRB_CATEGORY_*) */
+	unsigned categories;
+	/* P8.24: slots (1 << TextureSlot) the Remix block set: a bake leaves them */
+	unsigned locked;
+	/* P8.24: fields the translation carried approximately or not at all, by
+	 * Remix's field name (see material_match) */
+	std::map<std::string, std::pair<int, std::string> > marks;
+	/* P8.24: node material baked into Remix's channels */
+	bool nodes_baked;
 };
+
+/* P8.24: every Remix field of the material and how it gets there */
+void material_match(const Material *ma, const MaterialSpec &spec, std::vector<FieldMatch> &r);
+
+/* P8.24: the material's Remix block, read (whether it is in force) */
+bool remix_block_used(const Material *ma);
+
+/* P8.24: a node material the translator cannot follow, to bake: its Remix
+ * block's Bake Nodes (Automatic: when the translation left something out) */
+bool nodes_need_bake(const Material *ma);
 
 /* The Remix version of a material (NULL: Blender's default material).
  * desc.hash is left 0 for the caller. */
@@ -156,6 +204,11 @@ private:
 	std::map<Key, Entry> m_entries;
 	int m_waiting;
 };
+
+/* P8.24: the game's OpenGL draws 8-bit colour images from the BC7 files of
+ * this cache when they are there (GPU_set_image_cache); on at the game's
+ * start, off at its end. */
+void install_gl_image_cache(bool on);
 
 }  /* namespace brmx */
 

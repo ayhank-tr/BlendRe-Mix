@@ -32,8 +32,9 @@
  *   normal    -> BC5, Remix's unsigned hemisphere-octahedral encoding (the
  *                opaque material shader decodes every normal map with
  *                unsignedOctahedralToHemisphereDirection), in Direct3D's
- *                tangent convention (green down, as Remix samples with v
- *                flipped)
+ *                tangent convention for its v (rows from the bottom, as
+ *                Blender's, since interface 10: green up; top-first files:
+ *                green down)
  *   scalar    -> BC4
  *   HDR       -> BC6H (unsigned)
  *
@@ -79,6 +80,8 @@ struct Pixels {
 	/* a copy of the caller's pixels or a view of them */
 	const unsigned char *rgba8 = nullptr;
 	const float *rgbaf = nullptr;
+	/* interface 10: the file's first row is the image's top (BRB_TEXTURE_TOP_FIRST) */
+	bool top_first = false;
 };
 
 double seconds_since(std::chrono::steady_clock::time_point t0)
@@ -111,11 +114,15 @@ unsigned char to_byte(float v)
 	return (unsigned char)std::lround(std::min(std::max(v, 0.0f), 1.0f) * 255.0f);
 }
 
-/* Value of texel (x, y) counted from the top, channel c, in 0..1 (bytes) or
- * as stored (floats). Blender's rows start at the bottom. */
+/* Value of texel (x, y) in the file's row order, channel c, in 0..1 (bytes)
+ * or as stored (floats). Blender's rows start at the bottom; interface 10:
+ * so do the files' (the same files serve the game's OpenGL and Remix, which
+ * gets Blender's texture coordinates unflipped), except for top-first files
+ * (pictures Remix samples with its own coordinates: particles, the sky). */
 inline float texel(const Pixels &p, int w, int h, int x, int y, int c)
 {
-	const size_t i = ((size_t)(h - 1 - y) * (size_t)w + (size_t)x) * 4 + (size_t)c;
+	const size_t row = p.top_first ? (size_t)(h - 1 - y) : (size_t)y;
+	const size_t i = (row * (size_t)w + (size_t)x) * 4 + (size_t)c;
 	return p.rgba8 ? p.rgba8[i] / 255.0f : p.rgbaf[i];
 }
 
@@ -164,9 +171,12 @@ HRESULT build_normal_mips(const Job &job, const Pixels &px, DirectX::ScratchImag
 				/* stored 0..1 in bytes and floats alike (16-bit PNG, EXR) */
 				n[c] = texel(px, w0, h0, x, y, c) * 2.0f - 1.0f;
 			}
-			/* Blender's maps are OpenGL style (green: up the image); Remix
-			 * samples with v flipped, so up the image is -v for it */
-			n[1] = -n[1];
+			/* Blender's maps are OpenGL style (green: up the image). Remix's
+			 * v grows with the file's rows: down the image in a top-first
+			 * file, so green flips there; up it in the others */
+			if (px.top_first) {
+				n[1] = -n[1];
+			}
 			normalize3(n);
 			memcpy(&level[((size_t)y * w0 + x) * 3], n, sizeof(n));
 		}
@@ -555,6 +565,7 @@ struct Worker {
 			Pixels px;
 			px.rgba8 = job->rgba8.empty() ? nullptr : job->rgba8.data();
 			px.rgbaf = job->rgbaf.empty() ? nullptr : job->rgbaf.data();
+			px.top_first = (job->flags & BRB_TEXTURE_TOP_FIRST) != 0;
 			brb_texture_result r;
 			encode(*job, px, r);
 			log_result(*job, r);
@@ -609,6 +620,7 @@ BRB_API int brb_texture_write(const brb_texture_desc *d, brb_texture_result *r_r
 	Pixels px;
 	px.rgba8 = d->rgba8;
 	px.rgbaf = d->rgba8 ? nullptr : d->rgbaf;
+	px.top_first = (d->flags & BRB_TEXTURE_TOP_FIRST) != 0;
 	encode(job, px, r);
 	log_result(job, r);
 	if (r_result) {

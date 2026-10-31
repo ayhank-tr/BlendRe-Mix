@@ -597,12 +597,28 @@ typedef struct OldPlaces {
 	/* BGE-Remix P8 Part B (P8.16): shadow views in one pass, the shadow
 	 * pass, contact shadows' depth */
 	int views, view_m, view_layer, shadowpass, scenedepth_on;
+	/* (P8.21) order-independent transparency */
+	int oit;
 	/* (P8.18) reflections */
 	int clipplane, mirror_on, mirror_size, sky_on, ssr_on;
 	bool pass;
 } OldPlaces;
 
 #define OLD_PLACES 512  /* a power of two */
+
+/* BGE-Remix P8 Part C (P8.21): materials write order-independent
+ * transparency (the pipeline's transparent pass) */
+static int gpu_oit_on = 0;
+
+void GPU_oit_set(int on)
+{
+	gpu_oit_on = on;
+}
+
+int GPU_oit_get(void)
+{
+	return gpu_oit_on;
+}
 
 static struct {
 	OldPlaces *table;
@@ -766,6 +782,10 @@ static void old_find(OldPlaces *op, unsigned int program)
 			op->scenedepth_on = glGetUniformLocation(program, name);
 			op->pass = true;
 		}
+		else if (STREQ(name, "bge_oit")) {
+			op->oit = glGetUniformLocation(program, name);
+			op->pass = true;
+		}
 		else if (STREQ(name, "bge_clipplane") || STREQ(name, "bge_mirror_on") || STREQ(name, "bge_mirror_size") ||
 		         STREQ(name, "bge_sky_on") || STREQ(name, "bge_ssr_on"))
 		{
@@ -860,6 +880,9 @@ void GPU_old_builtins(unsigned int program, const GPUClassicState *st)
 		}
 		if (op->scenedepth_on >= 0) {
 			glProgramUniform1f(program, op->scenedepth_on, gpu_scene_depth_is_on() ? 1.0f : 0.0f);
+		}
+		if (op->oit >= 0) {
+			glProgramUniform1i(program, op->oit, gpu_oit_on);
 		}
 		if (op->clipplane >= 0 || op->mirror_on >= 0 || op->sky_on >= 0 || op->ssr_on >= 0) {
 			int mirror, sky, ssr;

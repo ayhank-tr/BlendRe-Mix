@@ -43,6 +43,7 @@
 #include "RAS_BucketManager.h"
 
 #include "GPU_layer.h"
+#include "GPU_material.h"  /* GPU_BLEND_* */
 
 #include <algorithm>
 #include <map>
@@ -153,16 +154,28 @@ void RAS_BucketManager::RenderAlphaBuckets(const MT_Transform& cameratrans, RAS_
 		rasty->SetDepthMask(RAS_IRasterizer::KX_DEPTHMASK_DISABLED);
 
 	OrderBuckets(cameratrans, m_AlphaBuckets, slots, true);
-	
-	for (sit=slots.begin(); sit!=slots.end(); ++sit) {
-		rasty->SetClientObject(sit->m_ms->m_clientObj);
 
-		while (sit->m_bucket->ActivateMaterial(cameratrans, rasty))
-			sit->m_bucket->RenderMeshSlot(cameratrans, rasty, *(sit->m_ms));
+	/* BGE-Remix P8 Part C (P8.21): in Modern scenes, alpha-blended surfaces
+	 * go through the order-independent pass; additive and the other ones
+	 * are drawn after it, in their order */
+	const bool oit = !slots.empty() && rasty->BeginTransparency();
+	for (int pass = oit ? 0 : 1; pass < 2; pass++) {
+		for (sit=slots.begin(); sit!=slots.end(); ++sit) {
+			const int blend = sit->m_bucket->GetPolyMaterial()->GetAlphaBlendMode();
+			const bool blended = (blend == GPU_BLEND_ALPHA || blend == GPU_BLEND_ALPHA_SORT);
+			if (oit && (pass == 0) != blended)
+				continue;
+			rasty->SetClientObject(sit->m_ms->m_clientObj);
 
-		// make this mesh slot culled automatically for next frame
-		// it will be culled out by frustum culling
-		sit->m_ms->SetCulled(true);
+			while (sit->m_bucket->ActivateMaterial(cameratrans, rasty))
+				sit->m_bucket->RenderMeshSlot(cameratrans, rasty, *(sit->m_ms));
+
+			// make this mesh slot culled automatically for next frame
+			// it will be culled out by frustum culling
+			sit->m_ms->SetCulled(true);
+		}
+		if (pass == 0)
+			rasty->EndTransparency();
 	}
 
 	rasty->SetDepthMask(RAS_IRasterizer::KX_DEPTHMASK_ENABLED);

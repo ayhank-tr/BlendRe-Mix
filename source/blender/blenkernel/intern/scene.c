@@ -2316,6 +2316,39 @@ void BKE_scene_game_pipeline_set(Scene *scene, int pipeline)
 	IDP_Int(prop) = pipeline;
 }
 
+float BKE_scene_game_fx(const Scene *scene, const char *name, float def)
+{
+	char key[MAX_IDPROP_NAME];
+	BLI_snprintf(key, sizeof(key), "bge_fx_%s", name);
+	IDProperty *group = scene ? scene->id.properties : NULL;
+	IDProperty *prop = group ? IDP_GetPropertyFromGroup(group, key) : NULL;
+	if (prop && prop->type == IDP_FLOAT)
+		return IDP_Float(prop);
+	if (prop && prop->type == IDP_DOUBLE)
+		return (float)IDP_Double(prop);
+	if (prop && prop->type == IDP_INT)
+		return (float)IDP_Int(prop);
+	return def;
+}
+
+void BKE_scene_game_fx_set(Scene *scene, const char *name, float value)
+{
+	char key[MAX_IDPROP_NAME];
+	BLI_snprintf(key, sizeof(key), "bge_fx_%s", name);
+	IDProperty *group = IDP_GetProperties(&scene->id, true);
+	IDProperty *prop = IDP_GetPropertyFromGroup(group, key);
+	if (prop && prop->type != IDP_FLOAT) {
+		IDP_FreeFromGroup(group, prop);
+		prop = NULL;
+	}
+	if (!prop) {
+		IDPropertyTemplate val = {0};
+		prop = IDP_New(IDP_FLOAT, &val, key);
+		IDP_AddToGroup(group, prop);
+	}
+	IDP_Float(prop) = value;
+}
+
 bool BKE_scene_check_color_management_enabled(const Scene *scene)
 {
 	return !STREQ(scene->display_settings.display_device, "None");

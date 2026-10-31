@@ -37,10 +37,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <set>
 
 #include "glew-mx.h"
 
 #include "KX_RemixRenderer.h"
+#include "KX_Sprites.h"
+#include "KX_FontObject.h"  /* P8.20: the particle description */
 
 #include "KX_Scene.h"
 #include "KX_GameObject.h"
@@ -80,6 +83,11 @@ extern "C" {
 #  include "DNA_object_types.h"
 #  include "DNA_object_force.h"
 #  include "DNA_particle_types.h"
+#  include "DNA_modifier_types.h"
+#  include "DNA_userdef_types.h"
+#  include "BKE_scene.h"
+#  include "DNA_camera_types.h"
+#  include "BKE_modifier.h"
 #  include "DNA_scene_types.h"
 #  include "DNA_world_types.h"
 #  include "DNA_texture_types.h"
@@ -432,7 +440,7 @@ void KX_RemixRenderer::NoteSkippedFilters()
 {
 	if (!m_filters_noted) {
 		m_filters_noted = true;
-		SetNotice("2D filters are off while RTX Remix renders this scene.");
+		SetNotice("2D filters work on RTX Remix's picture; filters that read depth see none.");
 	}
 }
 
@@ -522,6 +530,13 @@ bool KX_RemixRenderer::Start(KX_Scene *scene, int width, int height, const Setti
 		BRMX_Quality quality;
 		BRMX_quality_from_scene(scene->GetBlenderScene(), &quality);
 		BRMX_quality_apply(&quality);
+	}
+	{
+		/* P8.22: Blender's anisotropic filtering (User Preferences) */
+		char value[32];
+		snprintf(value, sizeof(value), "%.1f", std::max(1.0f, (float)U.anisotropic_filter));
+		m_bridge->set_config("rtx.useAnisotropicFiltering", U.anisotropic_filter > 1 ? "True" : "False");
+		m_bridge->set_config("rtx.maxAnisotropySamples", value);
 	}
 	BRMX_unlock();
 	m_running = true;
@@ -897,10 +912,8 @@ void KX_RemixRenderer::SendMaterial(MaterialEntry &e)
 			waiting = waiting || st == brmx::TextureCache::WAITING;
 		}
 	}
-	const wchar_t **slots[brmx::TEX_COUNT] = {&d.albedo_texture, &d.normal_texture, &d.roughness_texture,
-	                                         &d.metallic_texture, &d.emissive_texture};
 	for (int i = 0; i < brmx::TEX_COUNT; i++) {
-		*slots[i] = paths[i].empty() ? NULL : paths[i].c_str();
+		*brmx::texture_field(d, i) = paths[i].empty() ? NULL : paths[i].c_str();
 	}
 	m_bridge->material_create(&d);
 	if (waiting != e.waiting) {
@@ -950,6 +963,7 @@ KX_RemixRenderer::Geometry::Geometry()
       double_sided(false),
       blend(false),
       particle(false),
+      categories(0),
       billboard(0),
       shadow_faces(0),
       content(1469598103934665603ull),
@@ -1042,12 +1056,74 @@ void KX_RemixRenderer::Collect(KX_Scene *scene, RAS_MeshObject *mesh, void *clie
 		if (!ma || !(ma->game.flag & GEMAT_BACKCULL)) {
 			g.double_sided = true;
 		}
+		/* P8.22: a Wire material as thin tubes along the edges (Remix draws
+		 * no lines) */
+		if (ma && ma->material_type == MA_TYPE_WIRE && !weights) {
+			const float radius = 0.004f;
+			std::set<std::pair<uint32_t, uint32_t> > edges;
+			for (size_t t = 0; t + 2 < idx.size(); t += 3) {
+				for (int k = 0; k < 3; k++) {
+					uint32_t a = idx[t + k], b = idx[t + (k + 1) % 3];
+					/* the same corner may be several vertices (split normals) */
+					for (uint32_t *e : {&a, &b}) {
+						for (uint32_t j = 0; j < *e; j++) {
+							if (memcmp(v[j].position, v[*e].position, sizeof(v[j].position)) == 0) {
+								*e = j;
+								break;
+							}
+						}
+					}
+					if (a != b) {
+						edges.insert(std::make_pair(std::min(a, b), std::max(a, b)));
+					}
+				}
+			}
+			std::vector<brb_vertex> tv;
+			std::vector<uint32_t> ti;
+			for (std::set<std::pair<uint32_t, uint32_t> >::const_iterator e = edges.begin(); e != edges.end(); ++e) {
+				const float *pa = v[e->first].position, *pb = v[e->second].position;
+				float d[3], s1[3], s2[3];
+				sub_v3_v3v3(d, pb, pa);
+				if (normalize_v3(d) < 1e-8f) {
+					continue;
+				}
+				ortho_basis_v3v3_v3(s1, s2, d);
+				const uint32_t base = (uint32_t)tv.size();
+				for (int k = 0; k < 4; k++) {
+					const float ang = (float)k * (float)M_PI_2;
+					float n[3];
+					for (int c = 0; c < 3; c++) {
+						n[c] = cosf(ang) * s1[c] + sinf(ang) * s2[c];
+					}
+					for (int end = 0; end < 2; end++) {
+						brb_vertex o = v[end ? e->second : e->first];
+						const float *p = end ? pb : pa;
+						for (int c = 0; c < 3; c++) {
+							o.position[c] = p[c] + n[c] * radius;
+						}
+						copy_v3_v3(o.normal, n);
+						tv.push_back(o);
+					}
+				}
+				for (int k = 0; k < 4; k++) {
+					const uint32_t a0 = base + 2 * k, a1 = a0 + 1, b0 = base + 2 * ((k + 1) % 4), b1 = b0 + 1;
+					const uint32_t q[6] = {a0, b0, b1, a0, b1, a1};
+					ti.insert(ti.end(), q, q + 6);
+				}
+			}
+			if (!ti.empty()) {
+				v.swap(tv);
+				idx.swap(ti);
+				g.double_sided = true;
+			}
+		}
 		/* see-through as the translator decided (game settings, Cycles'
 		 * Transparent BSDF, the RTX Remix panel) */
 		const MaterialEntry &me = EnsureMaterial(scene, pm, mesh);
 		g.materials.push_back(me.hash);
 		g.blend = g.blend || me.blend;
 		g.particle = g.particle || me.particle;
+		g.categories |= me.spec ? me.spec->categories : 0u;
 		if (mode & RAS_IPolyMaterial::BILLBOARD_SCREENALIGNED) {
 			g.billboard = 1;
 		}
@@ -1191,6 +1267,7 @@ void KX_RemixRenderer::CollectDerived(KX_Scene *scene, RAS_MeshObject *mesh, Der
 		g.materials.push_back(me.hash);
 		g.blend = g.blend || me.blend;
 		g.particle = g.particle || me.particle;
+		g.categories |= me.spec ? me.spec->categories : 0u;
 		g.verts.push_back(v);
 		g.indices.push_back(idx);
 	}
@@ -1251,6 +1328,7 @@ bool KX_RemixRenderer::EnsureMesh(KX_Scene *scene, RAS_MeshObject *mesh, MeshEnt
 	e.double_sided = g.double_sided;
 	e.blend = g.blend;
 	e.particle = g.particle;
+	e.categories = g.categories;
 	e.billboard = g.billboard;
 	if (!SendGeometry(e.hash, g)) {
 		/* nothing to draw; remembered so it is not tried every frame */
@@ -1328,6 +1406,7 @@ bool KX_RemixRenderer::DrawSkinned(KX_Scene *scene, KX_GameObject *obj, RAS_Defo
 		e.double_sided = g.double_sided;
 		e.blend = g.blend;
 		e.particle = g.particle;
+		e.categories = g.categories;
 		if (g.max_influences > 4) {
 			NoteOnce("mesh \"" + name + "\": vertices with more than 4 bones keep their strongest 4");
 		}
@@ -1350,7 +1429,7 @@ bool KX_RemixRenderer::DrawSkinned(KX_Scene *scene, KX_GameObject *obj, RAS_Defo
 	d.mesh = e.hash;
 	memcpy(d.model, model, sizeof(d.model));
 	d.flags = (e.double_sided ? BRB_DRAW_DOUBLE_SIDED : 0) | (e.blend ? BRB_DRAW_BLEND : 0);
-	d.categories = e.particle ? BRB_CATEGORY_PARTICLE : 0;
+	d.categories = (e.particle ? BRB_CATEGORY_PARTICLE : 0) | e.categories;
 	d.pick_id = pick;
 	d.bones = bones.data();
 	d.bone_count = (uint32_t)(bones.size() / 16);
@@ -1506,6 +1585,7 @@ bool KX_RemixRenderer::DrawDeformed(KX_Scene *scene, KX_GameObject *obj, RAS_Def
 			e.double_sided = g.double_sided;
 			e.blend = g.blend;
 			e.particle = g.particle;
+			e.categories = g.categories;
 			m_deform_uploads++;
 		}
 	}
@@ -1514,7 +1594,13 @@ bool KX_RemixRenderer::DrawDeformed(KX_Scene *scene, KX_GameObject *obj, RAS_Def
 	d.mesh = e.hash;
 	memcpy(d.model, m, sizeof(d.model));
 	d.flags = (e.double_sided ? BRB_DRAW_DOUBLE_SIDED : 0) | (e.blend ? BRB_DRAW_BLEND : 0);
-	d.categories = e.particle ? BRB_CATEGORY_PARTICLE : 0;
+	d.categories = (e.particle ? BRB_CATEGORY_PARTICLE : 0) | e.categories;
+	/* P8.22: an Ocean surface is Remix's animated water */
+	if (Object *bob = obj->GetBlenderObject()) {
+		if (modifiers_findByType(bob, eModifierType_Ocean)) {
+			d.categories |= BRB_CATEGORY_ANIMATED_WATER;
+		}
+	}
 	d.pick_id = pick;
 	m_bridge->frame_draw_ex(&d);
 	m_deformed_objects++;
@@ -1563,6 +1649,165 @@ void KX_RemixRenderer::PruneDynamic(KX_Scene *scene)
 }
 
 /* ------------------------------------------------------------------------- */
+/* Halo materials (P8.20): each vertex a sprite facing the camera, its
+ * picture Blender Internal's halo (rings, lines, stars) as emitted light
+ * added to what is behind; flares are left to Remix's bloom */
+
+static Material *halo_material_of(Object *ob)
+{
+	for (int c = 1; ob && c <= ob->totcol; c++) {
+		Material *ma = give_current_material(ob, c);
+		if (ma && ma->material_type == MA_TYPE_HALO) {
+			return ma;
+		}
+	}
+	return NULL;
+}
+
+uint64_t KX_RemixRenderer::HaloMaterial(Material *ma)
+{
+	GPUHaloStyle style;
+	KX_HaloStyle(ma, &style);
+	style.flares = 0;
+	const uint64_t key = hash_bytes(&style, sizeof(style), 1469598103934665603ull);
+	std::map<const void *, uint64_t>::iterator it = m_halo_materials.find(ma);
+	const uint64_t hash = UniqueHash("halo", ma->id.name + 2, ma);
+	if (it != m_halo_materials.end() && it->second == key) {
+		return hash;
+	}
+	const int size = 128;
+	wchar_t hex[24];
+	swprintf(hex, 24, L"%016llx", (unsigned long long)key);
+	const std::wstring folder = brmx::TextureCache::folder();
+	CreateDirectoryW(folder.c_str(), NULL);
+	const std::wstring path = folder + L"\\halo_k" + hex + L".dds";
+	if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+		std::vector<float> rgba((size_t)size * size * 4);
+		KX_HaloPicture(&style, size, &rgba[0]);
+		/* 8-bit sRGB, as colour textures are written */
+		std::vector<unsigned char> px(rgba.size());
+		for (size_t i = 0; i < rgba.size(); i++) {
+			float v = std::min(std::max(rgba[i], 0.0f), 1.0f);
+			if ((i & 3) != 3) {
+				v = (v <= 0.0031308f) ? v * 12.92f : 1.055f * powf(v, 1.0f / 2.4f) - 0.055f;
+			}
+			px[i] = (unsigned char)(v * 255.0f + 0.5f);
+		}
+		brb_texture_desc desc;
+		memset(&desc, 0, sizeof(desc));
+		desc.path = path.c_str();
+		desc.kind = BRB_TEXTURE_COLOR;
+		desc.width = size;
+		desc.height = size;
+		desc.rgba8 = &px[0];
+		if (m_bridge->texture_write(&desc, NULL) != 0) {
+			return 0;
+		}
+	}
+	brb_material_desc d;
+	memset(&d, 0, sizeof(d));
+	d.hash = hash;
+	d.opacity = 1.0f;
+	d.roughness = 1.0f;
+	d.emissive[0] = d.emissive[1] = d.emissive[2] = 1.0f;
+	d.emissive_intensity = 1.0f;
+	d.emissive_texture = path.c_str();
+	d.type = BRB_MATERIAL_OPAQUE;
+	d.alpha_blend = 1;
+	d.additive = 1;
+	d.clamp = 1;
+	m_bridge->material_create(&d);
+	m_halo_materials[ma] = key;
+	return hash;
+}
+
+bool KX_RemixRenderer::DrawHalos(KX_Scene *scene, KX_GameObject *obj, Object *ob, const float model[16],
+                                 const MT_Matrix3x3 &camori, uint32_t pick)
+{
+	Material *ma = halo_material_of(ob);
+	Mesh *me = (ob && ob->type == OB_MESH) ? (Mesh *)ob->data : NULL;
+	if (!ma || !me || me->totvert <= 0) {
+		return false;
+	}
+	const uint64_t mat = HaloMaterial(ma);
+	if (!mat) {
+		return false;
+	}
+	/* the camera's right and up in the object's space (so the sprites keep
+	 * Halo Size in world units) */
+	float m[4][4], inv[4][4];
+	memcpy(m, model, sizeof(m));
+	invert_m4_m4(inv, m);
+	float right[3], up[3], back[3];
+	for (int k = 0; k < 3; k++) {
+		const float r[3] = {(float)camori[0][0], (float)camori[1][0], (float)camori[2][0]};
+		const float u[3] = {(float)camori[0][1], (float)camori[1][1], (float)camori[2][1]};
+		const float b[3] = {(float)camori[0][2], (float)camori[1][2], (float)camori[2][2]};
+		right[k] = inv[0][k] * r[0] + inv[1][k] * r[1] + inv[2][k] * r[2];
+		up[k] = inv[0][k] * u[0] + inv[1][k] * u[1] + inv[2][k] * u[2];
+		back[k] = inv[0][k] * b[0] + inv[1][k] * b[1] + inv[2][k] * b[2];
+	}
+	normalize_v3(back);
+	Geometry g;
+	g.verts.resize(1);
+	g.indices.resize(1);
+	g.materials.push_back(mat);
+	const float s = ma->hasize;
+	const float corner[4][2] = {{-1.0f, -1.0f}, {1.0f, -1.0f}, {1.0f, 1.0f}, {-1.0f, 1.0f}};
+	for (int v = 0; v < me->totvert; v++) {
+		const uint32_t base = (uint32_t)g.verts[0].size();
+		for (int c = 0; c < 4; c++) {
+			brb_vertex bv;
+			memset(&bv, 0, sizeof(bv));
+			for (int k = 0; k < 3; k++) {
+				bv.position[k] = me->mvert[v].co[k] + (right[k] * corner[c][0] + up[k] * corner[c][1]) * s;
+				bv.normal[k] = back[k];
+			}
+			bv.uv[0] = 0.5f + 0.5f * corner[c][0];
+			bv.uv[1] = 0.5f - 0.5f * corner[c][1];
+			bv.color = 0xffffffffu;
+			g.verts[0].push_back(bv);
+		}
+		const uint32_t idx[6] = {0, 1, 2, 0, 2, 3};
+		for (int k = 0; k < 6; k++) {
+			g.indices[0].push_back(base + idx[k]);
+		}
+	}
+	g.content = hash_bytes(&g.verts[0][0], g.verts[0].size() * sizeof(brb_vertex), 1469598103934665603ull);
+	g.double_sided = true;
+	g.blend = true;
+
+	DeformEntry &e = m_deformed[(const char *)obj + 1];
+	const std::string name = obj->GetName().ReadPtr();
+	if (e.hash == 0 || e.name != name || e.scene != scene) {
+		if (e.hash) {
+			m_bridge->mesh_destroy(e.hash);
+			m_hashes.erase(e.hash);
+		}
+		e.hash = UniqueHash("halos", name, (const char *)obj + 1);
+		e.scene = scene;
+		e.name = name;
+		e.content = 0;
+	}
+	e.last_seen = m_frames;
+	if (e.content != g.content) {
+		if (!SendGeometry(e.hash, g)) {
+			e.content = 0;
+			return false;
+		}
+		e.content = g.content;
+	}
+	brb_draw_desc d;
+	memset(&d, 0, sizeof(d));
+	d.mesh = e.hash;
+	memcpy(d.model, model, sizeof(d.model));
+	d.flags = BRB_DRAW_DOUBLE_SIDED | BRB_DRAW_BLEND;
+	d.pick_id = pick;
+	m_bridge->frame_draw_ex(&d);
+	return true;
+}
+
+/* ------------------------------------------------------------------------- */
 /* Blender particle systems as Remix GPU particles (P4.6) */
 
 bool KX_RemixRenderer::DrawEmitters(KX_Scene *scene, KX_GameObject *obj, Object *ob, const float model[16],
@@ -1574,39 +1819,45 @@ bool KX_RemixRenderer::DrawEmitters(KX_Scene *scene, KX_GameObject *obj, Object 
 		return false;
 	}
 	Scene *bscene = scene->GetBlenderScene();
-	const float fps = (bscene && bscene->r.frs_sec > 0) ?
-	                      (float)bscene->r.frs_sec / std::max(bscene->r.frs_sec_base, 0.001f) : 24.0f;
 	bool any = false, hide = true;
 	for (ParticleSystem *psys = (ParticleSystem *)ob->particlesystem.first; psys; psys = psys->next) {
 		ParticleSettings *part = psys->part;
 		if (!part || part->type != PART_EMITTER || (psys->flag & PSYS_DISABLED) || part->totpart <= 0) {
 			continue;
 		}
+		/* BGE-Remix P8 Part C (P8.20): None and Path systems draw nothing;
+		 * Object and Group particles are the game's own objects (KX_Sprites),
+		 * which Remix draws as such */
+		if (part->ren_as == PART_DRAW_NOT || part->ren_as == PART_DRAW_PATH || part->ren_as == PART_DRAW_OB ||
+		    part->ren_as == PART_DRAW_GR)
+		{
+			if (part->draw & PART_DRAW_EMITTER) {
+				hide = false;
+			}
+			continue;
+		}
+		/* the description the game's own simulation uses too */
+		GPUParticleDesc gd;
+		KX_ParticleDescription(bscene, psys, m_gravity, m_colliders, m_collider_bounce, &gd);
 		brb_particle_desc p;
 		memset(&p, 0, sizeof(p));
-		/* emission: totpart over the emission frames, again and again */
-		const float frames = std::max(part->end - part->sta, 1.0f);
-		p.spawn_rate = (float)part->totpart / frames * fps;
-		p.lifetime_max = std::max(part->lifetime, 1.0f) / fps;
-		p.lifetime_min = p.lifetime_max * (1.0f - std::min(std::max(part->randlife, 0.0f), 1.0f));
-		p.max_particles = (uint32_t)std::max<float>((float)part->totpart, p.spawn_rate * p.lifetime_max * 1.1f + 16.0f);
-		p.speed_normal = part->normfac;
-		p.cone_angle_deg = (float)(std::atan2((double)part->randfac, (double)std::max(std::fabs(part->normfac), 0.001f)) *
-		                           180.0 / PI);
-		p.cone_angle_deg = std::min(p.cone_angle_deg, 90.0f);
-		p.speed_from_motion = part->obfac;
-		const float gweight = part->effector_weights ? part->effector_weights->global_gravity : 1.0f;
-		p.gravity = m_gravity * gweight;
-		p.drag = part->dragfac;
-		p.size_max = std::max(part->size, 0.001f);
-		p.size_min = p.size_max * (1.0f - std::min(std::max(part->randsize, 0.0f), 1.0f));
-		p.size_end_scale = 1.0f;
-		const float start[4] = {1.0f, 1.0f, 1.0f, 1.0f}, end[4] = {1.0f, 1.0f, 1.0f, 0.0f};
-		memcpy(p.color_start, start, sizeof(start));
-		memcpy(p.color_end, end, sizeof(end)); /* fade out at the end of life */
-		p.rotation_speed = part->avemode ? (float)(part->avefac / (2.0 * PI)) : 0.0f;
-		p.collide = m_colliders ? 1 : 0;
-		p.restitution = m_collider_bounce;
+		p.max_particles = (uint32_t)gd.max_particles;
+		p.spawn_rate = gd.spawn_rate;
+		p.lifetime_min = gd.lifetime_min;
+		p.lifetime_max = gd.lifetime_max;
+		p.speed_normal = gd.speed_normal;
+		p.cone_angle_deg = gd.cone_angle_deg;
+		p.speed_from_motion = gd.speed_from_motion;
+		p.gravity = gd.gravity;
+		p.drag = gd.drag;
+		p.size_min = gd.size_min;
+		p.size_max = gd.size_max;
+		p.size_end_scale = gd.size_end_scale;
+		memcpy(p.color_start, gd.color_start, sizeof(p.color_start));
+		memcpy(p.color_end, gd.color_end, sizeof(p.color_end));
+		p.rotation_speed = gd.rotation_speed;
+		p.collide = gd.collide;
+		p.restitution = gd.restitution;
 		p.hide_emitter = 1; /* the emitter itself is drawn by the normal draw (or not) */
 		p.billboard = 0;
 		if (part->ren_as == PART_DRAW_BB) {
@@ -1618,7 +1869,7 @@ bool KX_RemixRenderer::DrawEmitters(KX_Scene *scene, KX_GameObject *obj, Object 
 			}
 		}
 		else if (part->ren_as != PART_DRAW_HALO) {
-			NoteOnce(std::string("particle system \"") + psys->name + "\": shown as sprites (Halo or Billboard rendering)");
+			NoteOnce(std::string("particle system \"") + psys->name + "\": shown as sprites (Line rendering)");
 		}
 		if (part->draw & PART_DRAW_EMITTER) {
 			hide = false;
@@ -1835,6 +2086,7 @@ void KX_RemixRenderer::UpdateLights(KX_Scene *scene, float light_scale)
 		SendLight(scene, world, d);
 	}
 	UpdateFog(scene);
+	UpdateCameraEffects(scene, scene->GetActiveCamera());
 
 	/* BGE-Remix P8.9: lights of this scene not sent this frame (lamp objects
 	 * removed, turned Only Shadow...) are destroyed, not kept alive */
@@ -1937,6 +2189,9 @@ const wchar_t *KX_RemixRenderer::SkyTexture(KX_Scene *scene, uint64_t *r_key)
 		desc.width = width;
 		desc.height = height;
 		desc.rgbaf = &pixels[0];
+		/* P8.24: Remix samples the sky by direction, in the order this
+		 * file always had (interface 10's files otherwise start at the bottom) */
+		desc.flags = BRB_TEXTURE_TOP_FIRST;
 		if (m_bridge->texture_write(&desc, NULL) != 0) {
 			return NULL;
 		}
@@ -1946,6 +2201,66 @@ const wchar_t *KX_RemixRenderer::SkyTexture(KX_Scene *scene, uint64_t *r_key)
 	m_skypath = path;
 	*r_key = h;
 	return m_skypath.c_str();
+}
+
+/* BGE-Remix P8 Part C (P8.23): the scene's depth of field (the camera's
+ * focus and f-stop), motion blur (the Render tab's), bloom, auto exposure
+ * and vignette (the Modern panel's) drive Remix's own */
+void KX_RemixRenderer::UpdateCameraEffects(KX_Scene *scene, KX_Camera *cam)
+{
+	Scene *sc = scene->GetBlenderScene();
+	if (!sc) {
+		return;
+	}
+	const bool dof = BKE_scene_game_fx(sc, "depth_of_field", 0.0f) != 0.0f;
+	float fstop = 2.8f, focus = 10.0f;
+	Object *camob = cam ? cam->GetBlenderObject() : sc->camera;
+	if (camob && camob->type == OB_CAMERA && camob->data) {
+		const Camera *ca = (const Camera *)camob->data;
+		fstop = ca->gpu_dof.fstop;
+		focus = (ca->YF_dofdist > 0.0f) ? ca->YF_dofdist : ca->gpu_dof.focus_distance;
+		if (ca->dof_ob) {
+			/* the focus object's distance along the view, as the game's
+			 * depth of field (RAS_Pipeline::ScreenEffectSettings) */
+			float d[3];
+			sub_v3_v3v3(d, ca->dof_ob->obmat[3], camob->obmat[3]);
+			float axis[3] = {-camob->obmat[2][0], -camob->obmat[2][1], -camob->obmat[2][2]};
+			normalize_v3(axis);
+			focus = std::max(dot_v3v3(d, axis), 0.01f);
+		}
+	}
+	const bool mblur = (sc->r.mode & R_MBLUR) != 0;
+	const bool bloom = BKE_scene_game_fx(sc, "bloom", 0.0f) != 0.0f;
+	const float bloom_intensity = BKE_scene_game_fx(sc, "bloom_intensity", 0.05f);
+	const bool autoexp = BKE_scene_game_fx(sc, "auto_exposure", 0.0f) != 0.0f;
+	const float vignette = BKE_scene_game_fx(sc, "vignette", 0.0f);
+	char buf[512];
+	snprintf(buf, sizeof(buf), "%d %.3f %.3f %d %.3f %d %.3f %d %.3f", dof, fstop, focus, mblur, sc->r.blurfac, bloom,
+	         bloom_intensity, autoexp, vignette);
+	if (m_fx_sent == buf) {
+		return;
+	}
+	m_fx_sent = buf;
+	const char *on[2] = {"False", "True"};
+	char v[64];
+	m_bridge->set_config("rtx.dof.enable", on[dof]);
+	snprintf(v, sizeof(v), "%.3f", std::max(fstop, 0.1f));
+	m_bridge->set_config("rtx.dof.fNumber", v);
+	snprintf(v, sizeof(v), "%.3f", std::max(focus, 0.01f));
+	m_bridge->set_config("rtx.dof.focusDistance", v);
+	m_bridge->set_config("rtx.postfx.enable", on[mblur || vignette > 0.0f]);
+	m_bridge->set_config("rtx.postfx.enableMotionBlur", on[mblur]);
+	snprintf(v, sizeof(v), "%.3f", sc->r.blurfac);
+	m_bridge->set_config("rtx.postfx.exposureFraction", v);
+	m_bridge->set_config("rtx.postfx.enableVignette", on[vignette > 0.0f]);
+	snprintf(v, sizeof(v), "%.3f", vignette);
+	m_bridge->set_config("rtx.postfx.vignetteIntensity", v);
+	m_bridge->set_config("rtx.bloom.enable", on[bloom]);
+	snprintf(v, sizeof(v), "%.3f", bloom_intensity * 20.0f);
+	m_bridge->set_config("rtx.bloom.burnIntensity", v);
+	m_bridge->set_config("rtx.autoExposure.enabled", on[autoexp]);
+	printf("BGE-Remix: camera effects to Remix: depth of field %s, motion blur %s, bloom %s, auto exposure %s, "
+	       "vignette %.2f\n", on[dof], on[mblur], on[bloom], on[autoexp], vignette);
 }
 
 /* BGE-Remix P8 Part B (P8.17): the world's mist as Remix's fog (its
@@ -2098,7 +2413,23 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 
 	for (int i = 0; i < objects->GetCount(); i++) {
 		KX_GameObject *obj = (KX_GameObject *)objects->GetValue(i);
-		if (!obj->GetVisible() || obj->GetMeshCount() == 0 || obj->GetGameObjectType() == SCA_IObject::OBJ_TEXT) {
+		/* P8.22: text objects as their text's geometry */
+		if (obj->GetVisible() && obj->GetGameObjectType() == SCA_IObject::OBJ_TEXT) {
+			RAS_MeshObject *tm = static_cast<KX_FontObject *>(obj)->GetRemixMesh();
+			MeshEntry *te = NULL;
+			if (tm && EnsureMesh(scene, tm, te) && te) {
+				brb_draw_desc d;
+				memset(&d, 0, sizeof(d));
+				d.mesh = te->hash;
+				object_matrix(obj, d.model);
+				d.flags = (te->double_sided ? BRB_DRAW_DOUBLE_SIDED : 0) | (te->blend ? BRB_DRAW_BLEND : 0);
+				d.pick_id = PickId(obj);
+				m_bridge->frame_draw_ex(&d);
+				draws++;
+			}
+			continue;
+		}
+		if (!obj->GetVisible() || obj->GetMeshCount() == 0) {
 			continue;
 		}
 		float model[16];
@@ -2115,9 +2446,21 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 			}
 			dynamic_s += now_seconds() - t;
 		}
+		Object *ob = obj->GetBlenderObject();
+		/* P8.20: halo materials as sprites (their faces are not drawn) */
+		if (ob && ob->type == OB_MESH && halo_material_of(ob)) {
+			MT_Matrix3x3 camori;
+			camori.setIdentity();
+			if (cam) {
+				camori = cam->NodeGetWorldOrientation();
+			}
+			if (DrawHalos(scene, obj, ob, model, camori, pick)) {
+				draws++;
+			}
+			continue;
+		}
 		/* Blender particle systems */
 		bool hide_emitter = false;
-		Object *ob = obj->GetBlenderObject();
 		if (ob && ob->particlesystem.first) {
 			hide_emitter = DrawEmitters(scene, obj, ob, model, pick);
 		}
@@ -2140,8 +2483,12 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 				memcpy(d.model, model, sizeof(d.model));
 			}
 			d.flags = (e->double_sided ? BRB_DRAW_DOUBLE_SIDED : 0) | (e->blend ? BRB_DRAW_BLEND : 0);
-			d.categories = e->particle ? BRB_CATEGORY_PARTICLE : 0;
+			d.categories = (e->particle ? BRB_CATEGORY_PARTICLE : 0) | e->categories;
 			m_particle_draws += e->particle ? 1 : 0;
+			/* P8.20: hair ribbons (BL_HairCards) */
+			if (strncmp(obj->GetMesh(m)->GetName().ReadPtr(), "BGE-Remix hair", 14) == 0) {
+				d.categories |= BRB_CATEGORY_HAIR_CARDS;
+			}
 			d.pick_id = pick;
 			m_bridge->frame_draw_ex(&d);
 			draws++;

@@ -165,6 +165,7 @@ static const GVKind g_kinds[] = {
 	KS("lod", RENDERING, "MOD_DECIM"),
 	K("world", RENDERING, "WORLD"),
 	K("mist", RENDERING, "MOD_SMOKE"),
+	K("render:PARTICLES", RENDERING, "PARTICLES"),  /* P8.20 */
 	KS("filter2d", RENDERING, "SEQ_PREVIEW"),
 
 	/* physics (physics_type, collision_bounds_type, pivot_type, engines) */

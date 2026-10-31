@@ -186,6 +186,10 @@ struct GPUShader *GPU_builtin_game_depth(void);
  * alpha test from "state" (NULL: matrices only). Uniform places are found
  * once per program and frame. */
 void GPU_old_builtins(unsigned int program, const GPUClassicState *state);
+/* BGE-Remix P8 Part C (P8.21): material shaders bound from now on write
+ * order-independent transparency (bge_oit) */
+void GPU_oit_set(int on);
+int GPU_oit_get(void);
 /* programs may be made again under the same name: places found anew */
 void GPU_old_builtins_frame(void);
 /* a program is going (its name may be given again) */

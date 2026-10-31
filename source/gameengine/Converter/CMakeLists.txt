@@ -70,6 +70,7 @@ set(SRC
 	BL_ArmatureConstraint.cpp
 	BL_ArmatureObject.cpp
 	BL_BlenderDataConversion.cpp
+	BL_HairCards.cpp
 	BL_DeformableGameObject.cpp
 	BL_MeshDeformer.cpp
 	BL_ModifierDeformer.cpp
@@ -91,6 +92,7 @@ set(SRC
 	BL_ArmatureConstraint.h
 	BL_ArmatureObject.h
 	BL_BlenderDataConversion.h
+	BL_HairCards.h
 	BL_DeformableGameObject.h
 	BL_MeshDeformer.h
 	BL_ModifierDeformer.h

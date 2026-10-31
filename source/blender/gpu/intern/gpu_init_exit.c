@@ -39,6 +39,7 @@
 #include "GPU_lights.h"
 #include "GPU_probes.h"
 #include "GPU_volumes.h"
+#include "GPU_sprites.h"
 #include "GPU_material.h"
 #include "GPU_shader.h"
 
@@ -97,6 +98,7 @@ void GPU_exit(void)
 	GPU_lights_exit();  /* P8 Part B */
 	GPU_probes_exit();
 	GPU_volumes_exit();
+	GPU_sprites_exit();  /* BGE-Remix P8 Part C (P8.20) */
 	gpu_glcheck_exit();
 
 	gpu_codegen_exit();

@@ -51,6 +51,7 @@
 #include <vector>
 #include <algorithm>
 
+#include "BL_HairCards.h"  /* BGE-Remix P8 Part C (P8.20) */
 #include "BL_BlenderDataConversion.h"
 
 #include "MT_Transform.h"
@@ -1744,6 +1745,15 @@ static KX_GameObject *gameobject_from_blenderobject(
 		Mesh* mesh = static_cast<Mesh*>(ob->data);
 		float center[3], extents[3];
 		float radius = my_boundbox_mesh((Mesh*) ob->data, center, extents);
+		/* BGE-Remix P8 Part C (P8.22): a texture mapped to Displace, in a
+		 * Modern scene, moves a finer copy of a still mesh (no modifiers,
+		 * shape keys or armature) */
+		if (BKE_scene_game_pipeline(blenderscene) == BKE_SCENE_GAME_PIPELINE_MODERN && !ob->modifiers.first &&
+		    !mesh->key && ob->partype != PARSKEL)
+		{
+			if (Mesh *displaced = BL_DisplacedMesh(ob, mesh, blenderscene, converter))
+				mesh = displaced;
+		}
 		RAS_MeshObject* meshobj = BL_ConvertMesh(mesh,ob,kxscene,converter, libloading);
 		
 		// needed for python scripting
@@ -1760,6 +1770,10 @@ static KX_GameObject *gameobject_from_blenderobject(
 	
 		// set transformation
 		gameobj->AddMesh(meshobj);
+
+		/* BGE-Remix P8 Part C (P8.20): its hair, as ribbons (a second mesh) */
+		if (RAS_MeshObject *hair = BL_ConvertHairCards(ob, kxscene, converter, libloading))
+			gameobj->AddMesh(hair);
 
 		// gather levels of detail
 		if (BLI_listbase_count_ex(&ob->lodlevels, 2) > 1) {
@@ -1881,17 +1895,47 @@ static KX_GameObject *gameobject_from_blenderobject(
 		/* add to the list only the visible fonts */
 		if ((ob->lay & kxscene->GetBlenderScene()->lay) != 0)
 			kxscene->AddFont(static_cast<KX_FontObject*>(gameobj));
+
+		/* BGE-Remix P8 Part C (P8.22): its text as geometry, for Remix (the
+		 * game draws it as text) */
+		if (Mesh *me = BKE_mesh_new_from_object(G.main, blenderscene, ob, true, 1, true, false)) {
+			converter->RegisterTemporaryID(&me->id);
+			if (me->totpoly > 0)
+				static_cast<KX_FontObject*>(gameobj)->SetRemixMesh(BL_ConvertMesh(me, ob, kxscene, converter, libloading));
+		}
 		break;
 	}
 
-#ifdef THREADED_DAG_WORKAROUND
+	/* BGE-Remix P8 Part C (P8.22): curves, surfaces and metaballs as meshes
+	 * (their viewport resolution, modifiers applied) */
 	case OB_CURVE:
+	case OB_SURF:
+	case OB_MBALL:
 	{
-		if (ob->curve_cache == NULL) {
+#ifdef THREADED_DAG_WORKAROUND
+		if (ob->type == OB_CURVE && ob->curve_cache == NULL) {
 			BKE_displist_make_curveTypes(blenderscene, ob, false);
 		}
-	}
 #endif
+		Mesh *me = BKE_mesh_new_from_object(G.main, blenderscene, ob, true, 1, true, false);
+		if (!me)
+			break;
+		converter->RegisterTemporaryID(&me->id);
+		if (me->totpoly == 0)
+			break;
+		RAS_MeshObject *meshobj = BL_ConvertMesh(me, ob, kxscene, converter, libloading);
+		kxscene->GetLogicManager()->RegisterMeshName(meshobj->GetName(), meshobj);
+		gameobj = new KX_GameObject(kxscene, KX_Scene::m_callbacks);
+		gameobj->AddMesh(meshobj);
+		static int said = 0;
+		if (said < 8) {
+			said++;
+			printf("BGE-Remix: %s \"%s\" drawn as a mesh (%d faces)\n",
+			       ob->type == OB_CURVE ? "curve" : ob->type == OB_SURF ? "surface" : "metaball", ob->id.name + 2,
+			       me->totpoly);
+		}
+		break;
+	}
 
 	}
 	if (gameobj) 

@@ -52,6 +52,7 @@
 #include <vector>
 
 #include "GPU_glew.h"
+#include "GPU_sprites.h"  /* P8.20: the particle description */
 
 extern "C" {
 #include "MEM_guardedalloc.h"
@@ -88,6 +89,8 @@ int BLI_thread_is_main(void);
 #include "BKE_mesh.h"
 #include "BKE_scene.h"
 #include "BLI_threads.h"
+
+#include "ocio_capi.h"  /* P8.23: F12 undoes the view transform */
 
 #include "RE_engine.h"
 #include "RE_pipeline.h"
@@ -212,6 +215,7 @@ struct Stats {
 	int bakes = 0;             /* P8.6: procedural texture bakes */
 	int width = 0, height = 0; /* the last view frame's size */
 	int render_syncs = 0, render_frames = 0, render_reads = 0, render_width = 0, render_height = 0;
+	int render_view_inverse = 0; /* P8.23: 1 when the last F12 undid the view transform */
 	double render_seconds = 0.0; /* the last F12, from sync to result */
 	double first_frame_ms = 0.0; /* the last full sync's time */
 	std::string last_note;
@@ -227,13 +231,14 @@ struct MeshRec {
 	uint64_t hash;
 	unsigned gen;         /* the update that last used it */
 	bool double_sided, blend, particle, edit;
+	unsigned categories;  /* P8.24: its materials' Remix categories */
 	uint64_t materials;   /* the materials it was made with */
 	/* P8.4: its parts, (material slot, face image or NULL), for the
 	 * materials it keeps alive */
 	std::vector<std::pair<int, Image *>> parts;
 	uint64_t bakes;       /* P8.6: bake_signature() of its materials with procedural textures */
 	MeshRec() : known(false), geometry(false), hash(0), gen(0), double_sided(false), blend(false), particle(false),
-	            edit(false), materials(0), bakes(0) {}
+	            edit(false), categories(0), materials(0), bakes(0) {}
 };
 
 struct MaterialRec {
@@ -336,6 +341,10 @@ struct DrawItem {
 	float model[16];
 	int flags;
 	uint32_t pick;
+	unsigned categories;  /* P8.24: the materials' Remix categories */
+	/* P8.20: an emitter of Remix's GPU particles */
+	bool emitter;
+	brb_particle_desc particles;
 };
 
 class Sync {
@@ -540,6 +549,11 @@ public:
 			memcpy(d.model, it.model, sizeof(d.model));
 			d.flags = it.flags;
 			d.pick_id = it.pick;
+			d.categories = it.categories;
+			if (it.emitter) {
+				d.categories = BRB_CATEGORY_PARTICLE_EMITTER;
+				d.particles = &it.particles;
+			}
 			b->frame_draw_ex(&d);
 		}
 		for (uint64_t h : m_frame_lights) {
@@ -724,10 +738,8 @@ private:
 				waiting = waiting || st == brmx::TextureCache::WAITING;
 			}
 		}
-		const wchar_t **slots[brmx::TEX_COUNT] = {&d.albedo_texture, &d.normal_texture, &d.roughness_texture,
-		                                         &d.metallic_texture, &d.emissive_texture};
 		for (int i = 0; i < brmx::TEX_COUNT; i++) {
-			*slots[i] = paths[i].empty() ? NULL : paths[i].c_str();
+			*brmx::texture_field(d, i) = paths[i].empty() ? NULL : paths[i].c_str();
 		}
 		m_bridge->material_create(&d);
 		g_stats.materials_sent++;
@@ -805,6 +817,7 @@ private:
 			/* the materials it uses stay alive (and go again when Blender tagged
 			 * them); their blending decides the draw's */
 			r.double_sided = r.blend = r.particle = false;
+			r.categories = 0;
 			for (size_t p = 0; p < r.parts.size(); p++) {
 				Material *ma = give_current_material(ob, (short)(r.parts[p].first + 1));
 				Image *ima = r.parts[p].second;
@@ -815,6 +828,7 @@ private:
 				r.double_sided = r.double_sided || !ma || !(ma->game.flag & GEMAT_BACKCULL);
 				r.blend = r.blend || mr.blend;
 				r.particle = r.particle || mr.particle;
+				r.categories |= mr.spec ? mr.spec->categories : 0u;
 			}
 		}
 		r.gen = m_gen;
@@ -822,11 +836,49 @@ private:
 			return;
 		}
 		DrawItem item;
+		memset(&item, 0, sizeof(item));
 		item.mesh = r.hash;
 		memcpy(item.model, mat, sizeof(item.model));
 		item.flags = (r.double_sided ? BRB_DRAW_DOUBLE_SIDED : 0) | (r.blend ? BRB_DRAW_BLEND : 0);
 		item.pick = pick;
+		item.categories = r.categories;
 		m_draws.push_back(item);
+		/* P8.20: its particle systems as Remix's GPU particles (as the game
+		 * sends them; Object and Group particles come as duplis) */
+		for (ParticleSystem *psys = (ParticleSystem *)ob->particlesystem.first; psys; psys = psys->next) {
+			ParticleSettings *part = psys->part;
+			if (!part || part->type != PART_EMITTER || (psys->flag & PSYS_DISABLED) || part->totpart <= 0 ||
+			    !ELEM(part->ren_as, PART_DRAW_HALO, PART_DRAW_BB, PART_DRAW_LINE))
+			{
+				continue;
+			}
+			GPUParticleDesc gd;
+			GPU_particle_description(m_scene, psys, m_scene ? fabsf(m_scene->gm.gravity) : 9.81f, false, 0.5f, &gd);
+			DrawItem e = item;
+			e.emitter = true;
+			brb_particle_desc &p = e.particles;
+			p.max_particles = (uint32_t)gd.max_particles;
+			p.spawn_rate = gd.spawn_rate;
+			p.lifetime_min = gd.lifetime_min;
+			p.lifetime_max = gd.lifetime_max;
+			p.speed_normal = gd.speed_normal;
+			p.cone_angle_deg = gd.cone_angle_deg;
+			p.speed_from_motion = gd.speed_from_motion;
+			p.gravity = gd.gravity;
+			p.drag = gd.drag;
+			p.size_min = gd.size_min;
+			p.size_max = gd.size_max;
+			p.size_end_scale = gd.size_end_scale;
+			memcpy(p.color_start, gd.color_start, sizeof(p.color_start));
+			memcpy(p.color_end, gd.color_end, sizeof(p.color_end));
+			p.rotation_speed = gd.rotation_speed;
+			p.hide_emitter = (part->draw & PART_DRAW_EMITTER) ? 0 : 1;
+			if (part->ren_as == PART_DRAW_BB) {
+				p.billboard = (part->bb_align == PART_BB_Z) ? 1 : 0;
+				p.align_to_velocity = (part->bb_align == PART_BB_VEL) ? 1 : 0;
+			}
+			m_draws.push_back(e);
+		}
 	}
 
 	/* The mesh as the view shows it (modifiers, edit mode), by material:
@@ -847,12 +899,20 @@ private:
 			editbmesh_get_derived_cage_and_final(m_scene, ob, em, mask, &final);
 			dm = final;
 		}
+		else if (m_for_render) {
+			/* P8.22: F12 with Remix: the modifiers' render settings */
+			dm = mesh_create_derived_render(m_scene, ob, mask);
+		}
 		else {
 			dm = mesh_get_derived_final(m_scene, ob, mask);
 		}
 		if (!dm) {
 			return false;
 		}
+		struct DMRelease {
+			DerivedMesh *dm;
+			~DMRelease() { if (dm) dm->release(dm); }
+		} release_render = {(m_for_render && !em) ? dm : NULL};
 		/* loop triangles: every kind of derived mesh has them (a subdivided one
 		 * from the GPU may have no tessellated faces) */
 		const MLoopTri *tris = dm->getLoopTriArray(dm);
@@ -919,6 +979,7 @@ private:
 		}
 		std::vector<brb_surface_desc> surfaces;
 		r.double_sided = r.blend = r.particle = false;
+		r.categories = 0;
 		r.parts.clear();
 		for (std::map<PartKey, std::vector<uint32_t>>::iterator it = indices.begin(); it != indices.end(); ++it) {
 			if (it->second.empty()) {
@@ -939,6 +1000,7 @@ private:
 			r.parts.push_back(part);
 			r.blend = r.blend || mr.blend;
 			r.particle = r.particle || mr.particle;
+			r.categories |= mr.spec ? mr.spec->categories : 0u;
 			std::vector<brb_vertex> &pv = verts[part];
 			brb_surface_desc sd;
 			memset(&sd, 0, sizeof(sd));
@@ -1552,6 +1614,85 @@ int BRMX_render_sync(RenderEngine *engine, Main *bmain, Scene *scene, const char
 	return 1;
 }
 
+/* P8.23: for each 8-bit display value, the scene-linear value the scene's
+ * view transform (its exposure, view and gamma) shows as it, per channel,
+ * so an F12 picture Remix has already tone mapped is not tone mapped again.
+ * The view is run forwards on a grey ramp through OpenColorIO and the ramp
+ * is looked up backwards, which undoes any view that keeps grey grey (Default,
+ * Filmic, Log, Raw, ...); Looks and curves are not undone. False (the plain
+ * sRGB curve) when OpenColorIO cannot give the view. */
+static bool view_inverse_table(const Scene *scene, float table[3][256])
+{
+	for (int i = 0; i < 256; i++) {
+		table[0][i] = table[1][i] = table[2][i] = srgb_to_linearrgb(i / 255.0f);
+	}
+	OCIO_ConstConfigRcPtr *config = OCIO_getCurrentConfig();
+	if (!config) {
+		return false;
+	}
+	const char *cs = OCIO_configGetDisplayColorSpaceName(config, scene->display_settings.display_device,
+	                                                     scene->view_settings.view_transform);
+	OCIO_ConstProcessorRcPtr *proc = cs ? OCIO_configGetProcessorWithNames(config, "scene_linear", cs) : NULL;
+	if (!proc) {
+		OCIO_configRelease(config);
+		return false;
+	}
+	const int N = 2048;
+	const float lo = -14.0f, hi = 12.0f; /* stops */
+	const float scale = powf(2.0f, scene->view_settings.exposure);
+	const float gamma = scene->view_settings.gamma > 1e-3f ? scene->view_settings.gamma : 1.0f;
+	std::vector<float> lin(N + 1), disp[3];
+	for (int c = 0; c < 3; c++) {
+		disp[c].resize(N + 1);
+	}
+	lin[0] = 0.0f;
+	for (int k = 0; k <= N; k++) {
+		if (k > 0) {
+			lin[k] = powf(2.0f, lo + (hi - lo) * (float)(k - 1) / (float)(N - 1));
+		}
+		float rgb[3] = {lin[k] * scale, lin[k] * scale, lin[k] * scale};
+		OCIO_processorApplyRGB(proc, rgb);
+		for (int c = 0; c < 3; c++) {
+			float d = rgb[c];
+			if (gamma != 1.0f) {
+				d = powf(std::max(d, 0.0f), 1.0f / gamma);
+			}
+			/* keep the ramp rising so the lookup is well defined */
+			disp[c][k] = (k > 0) ? std::max(d, disp[c][k - 1]) : d;
+		}
+	}
+	OCIO_processorRelease(proc);
+	OCIO_configRelease(config);
+	if (!(disp[1][N] > disp[1][0] + 1e-4f)) {
+		/* the view does not rise with brightness: keep the sRGB curve */
+		for (int i = 0; i < 256; i++) {
+			table[0][i] = table[1][i] = table[2][i] = srgb_to_linearrgb(i / 255.0f);
+		}
+		return false;
+	}
+	for (int c = 0; c < 3; c++) {
+		int k = 0;
+		for (int i = 0; i < 256; i++) {
+			const float t = i / 255.0f;
+			if (t <= disp[c][0]) {
+				table[c][i] = 0.0f;
+				continue;
+			}
+			while (k < N && disp[c][k + 1] < t) {
+				k++;
+			}
+			if (k >= N) {
+				table[c][i] = lin[N];
+				continue;
+			}
+			const float d0 = disp[c][k], d1 = disp[c][k + 1];
+			const float f = (d1 > d0) ? (t - d0) / (d1 - d0) : 0.0f;
+			table[c][i] = lin[k] + (lin[k + 1] - lin[k]) * std::min(std::max(f, 0.0f), 1.0f);
+		}
+	}
+	return true;
+}
+
 int BRMX_render_frame(RenderEngine *engine, Scene *scene, const char **r_message)
 {
 	static std::string message;
@@ -1649,15 +1790,22 @@ int BRMX_render_frame(RenderEngine *engine, Scene *scene, const char **r_message
 		RenderLayer *rl = rr ? (RenderLayer *)rr->layers.first : NULL;
 		RenderPass *rp = rl ? RE_pass_find_by_name(rl, RE_PASSNAME_COMBINED, RE_engine_active_view_get(engine)) : NULL;
 		if (rp && rp->rect && rr->rectx == w && rr->recty == h) {
-			/* Remix's picture is display (sRGB) values, rows from the top;
-			 * Blender's result is linear, rows from the bottom */
+			/* Remix's picture is display values, already tone mapped, rows
+			 * from the top; Blender's result is scene linear, rows from the
+			 * bottom, and Blender shows it through the scene's view transform.
+			 * P8.23: each display value is turned back into the linear value
+			 * the view transform shows as it (so the Image Editor and saved
+			 * files show Remix's picture once, not tone mapped twice). */
+			float table[3][256];
+			const bool undone = view_inverse_table(scene, table);
+			g_stats.render_view_inverse = undone ? 1 : 0;
 			for (int y = 0; y < h; y++) {
 				const unsigned char *src = pixels.data() + (size_t)(h - 1 - y) * w * 4;
 				float *dst = rp->rect + (size_t)y * w * 4;
 				for (int x = 0; x < w; x++) {
-					dst[x * 4 + 0] = srgb_to_linearrgb(src[x * 4 + 0] / 255.0f);
-					dst[x * 4 + 1] = srgb_to_linearrgb(src[x * 4 + 1] / 255.0f);
-					dst[x * 4 + 2] = srgb_to_linearrgb(src[x * 4 + 2] / 255.0f);
+					dst[x * 4 + 0] = table[0][src[x * 4 + 0]];
+					dst[x * 4 + 1] = table[1][src[x * 4 + 1]];
+					dst[x * 4 + 2] = table[2][src[x * 4 + 2]];
 					dst[x * 4 + 3] = 1.0f;
 				}
 			}
@@ -1701,6 +1849,70 @@ void BRMX_render_free(RenderEngine *engine)
 	g_renders.erase(it);
 }
 
+static void json_string(std::string &out, const std::string &text)
+{
+	out += '"';
+	for (char c : text) {
+		if (c == '"' || c == '\\') {
+			out += '\\';
+			out += c;
+		}
+		else if ((unsigned char)c < 0x20) {
+			out += ' ';
+		}
+		else {
+			out += c;
+		}
+	}
+	out += '"';
+}
+
+const char *BRMX_material_match_json(Material *ma)
+{
+	static std::string json;
+	brmx::MaterialSpec spec;
+	brmx::translate_material(ma, spec);
+	/* what a bake would bring (it runs per mesh, when the material is used) */
+	const unsigned baked = brmx::bake_slots(ma);
+	static const char *bake_fields[brmx::BAKE_SLOTS] = {"albedo", "roughness", "emissive", "normal", "metallic"};
+	static const int bake_tex[brmx::BAKE_SLOTS] = {brmx::TEX_ALBEDO, brmx::TEX_ROUGHNESS, brmx::TEX_EMISSIVE,
+	                                              brmx::TEX_NORMAL, brmx::TEX_METALLIC};
+	const bool nodes = spec.source == brmx::MaterialSpec::NODES;
+	char size[64];
+	snprintf(size, sizeof(size), " (%d px)", brmx::bake_size(ma));
+	for (int i = 0; i < brmx::BAKE_SLOTS; i++) {
+		if ((baked & (1u << i)) && !(spec.locked & (1u << bake_tex[i]))) {
+			spec.marks[bake_fields[i]] = std::make_pair(
+			    (int)brmx::MATCH_APPROX,
+			    std::string(nodes ? "the node tree, baked into an image" : "procedural textures, baked into an image") +
+			        size);
+		}
+	}
+	if (baked && nodes) {
+		spec.marks.erase("surface");
+	}
+	std::vector<brmx::FieldMatch> rows;
+	brmx::material_match(ma, spec, rows);
+	json = "{\"fields\": [";
+	for (size_t i = 0; i < rows.size(); i++) {
+		json += i ? ", {\"field\": " : "{\"field\": ";
+		json_string(json, rows[i].field);
+		json += ", \"level\": " + std::to_string(rows[i].level) + ", \"note\": ";
+		json_string(json, rows[i].note);
+		json += "}";
+	}
+	json += "], \"notes\": [";
+	for (size_t i = 0; i < spec.notes.size(); i++) {
+		if (i) {
+			json += ", ";
+		}
+		json_string(json, spec.notes[i]);
+	}
+	json += std::string("], \"baked\": ") + (baked ? "true" : "false") + ", \"categories\": " +
+	        std::to_string(spec.categories) + "}";
+	return json.c_str();
+}
+
 const char *BRMX_view_stats_json(void)
 {
 	static std::string json;
@@ -1713,14 +1925,14 @@ const char *BRMX_view_stats_json(void)
 	         "\"last_draws\": %d, \"highlighted\": %d, \"gl_differences\": %d, \"resized_frames\": %d, "
 	         "\"width\": %d, \"height\": %d, \"render_syncs\": %d, \"render_frames\": %d, \"render_reads\": %d, "
 	         "\"render_width\": %d, \"render_height\": %d, \"render_seconds\": %.3f, \"full_sync_ms\": %.2f, "
-	         "\"owner\": %d, \"main_reloads\": %d, \"bakes\": %d, ",
+	         "\"owner\": %d, \"main_reloads\": %d, \"bakes\": %d, \"render_view_inverse\": %d, ",
 	         g_stats.view_updates, g_stats.view_draws, g_stats.view_frames, g_stats.view_fallbacks,
 	         g_stats.view_full_syncs, g_stats.meshes_sent, g_stats.materials_sent, g_stats.lights_sent,
 	         g_stats.meshes_removed, g_stats.last_meshes, g_stats.last_materials, g_stats.last_lights,
 	         g_stats.last_draws, g_stats.highlighted, g_stats.gl_differences, g_stats.resized_frames, g_stats.width,
 	         g_stats.height, g_stats.render_syncs, g_stats.render_frames, g_stats.render_reads, g_stats.render_width,
 	         g_stats.render_height, g_stats.render_seconds, g_stats.first_frame_ms, BRMX_owner_kind(),
-	         g_stats.main_reloads, g_stats.bakes);
+	         g_stats.main_reloads, g_stats.bakes, g_stats.render_view_inverse);
 	json = buf;
 	std::string note;
 	for (char c : g_stats.last_note) {

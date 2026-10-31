@@ -747,6 +747,18 @@ static char *code_generate_fragment(ListBase *nodes, GPUOutput *output)
 	BLI_dynstr_append(ds, "#ifdef BGE_CORE\n"
 	                      "\tif (bge_alphatest.x > 0.5 && !(bge_fragcolor.a > bge_alphatest.y)) discard;\n"
 	                      "#endif\n");
+	/* BGE-Remix P8 Part C (P8.21): order-independent transparency (weighted
+	 * blended: McGuire and Bavoil 2013), the colour times its cover and a
+	 * weight that falls with depth; the cover alone into the second target */
+	BLI_dynstr_append(ds, "#ifdef BGE_CORE\n"
+	                      "\tif (bge_oit != 0) {\n"
+	                      "\t\tfloat oa = clamp(bge_fragcolor.a, 0.0, 1.0);\n"
+	                      "\t\tfloat ow = clamp(pow(min(1.0, oa * 10.0) + 0.01, 3.0) * 1e8 *\n"
+	                      "\t\t                 pow(1.0 - gl_FragCoord.z * 0.9, 3.0), 1e-2, 3e3);\n"
+	                      "\t\tbge_fragcolor = vec4(bge_fragcolor.rgb * oa, oa) * ow;\n"
+	                      "\t\tbge_oitreveal = vec4(oa);\n"
+	                      "\t}\n"
+	                      "#endif\n");
 
 	BLI_dynstr_append(ds, "}\n");
 

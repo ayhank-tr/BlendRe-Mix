@@ -178,7 +178,8 @@ const char *ob_type_name(short type)
 /* the game makes objects of these types */
 bool game_type(short type)
 {
-	return ELEM(type, OB_MESH, OB_EMPTY, OB_ARMATURE, OB_CAMERA, OB_LAMP, OB_FONT);
+	/* P8.22: curves, surfaces and metaballs become meshes */
+	return ELEM(type, OB_MESH, OB_EMPTY, OB_ARMATURE, OB_CAMERA, OB_LAMP, OB_FONT, OB_CURVE, OB_SURF, OB_MBALL);
 }
 
 /* World > Physics type, as the Physics panel shows it (rna_object.c) */
@@ -2415,8 +2416,22 @@ void GVBuilder::Remix()
 	for (Object *ob : m_objects) {
 		if (!game_type(ob->type) || !InGame(ob)) continue;
 		if (ob->type == OB_LAMP) {
-			Add("remix:LIGHT", name_of(ob), ob, "a Remix light");
+			const int lel = Add("remix:LIGHT", name_of(ob), ob, "a Remix light");
 			lamps++;
+			/* P8.22: what Remix's API cannot take, marked "not in Remix" */
+			const Lamp *la = (const Lamp *)ob->data;
+			if (la) {
+				bool textured = false;
+				for (int t = 0; t < MAX_MTEX; t++)
+					textured = textured || (la->mtex[t] && la->mtex[t]->tex);
+				if (textured)
+					Warn(lel, "RMX_NOT_LIGHT_TEXTURE", GV_WARN_NOTE, "not in Remix: its texture (light textures)", true);
+				if (!(la->mode & (LA_SHAD_BUF | LA_SHAD_RAY)))
+					Warn(lel, "RMX_NOT_SHADOW_SWITCH", GV_WARN_NOTE,
+					     "not in Remix: shadows off for this lamp (Remix lamps always cast shadows)", true);
+				if (la->mode & LA_LAYER)
+					Warn(lel, "RMX_NOT_LAYER", GV_WARN_NOTE, "not in Remix: This Layer Only (light linking)", true);
+			}
 		}
 		if (ob->type != OB_MESH) continue;
 		const int me = Add("remix:MESH", name_of(ob), ob, fmt("%d triangles", ob_triangles(ob)).c_str());
@@ -2437,6 +2452,11 @@ void GVBuilder::Remix()
 			brmx::MaterialSpec spec;
 			brmx::translate_material(ma, spec);
 			const int mel = Add("remix:MATERIAL", ma->id.name + 2, ob, fmt("%d notes from the translator", (int)spec.notes.size()).c_str());
+			if (ma->material_type == MA_TYPE_VOLUME)
+				Warn(mel, "RMX_NOT_VOLUME", GV_WARN_NOTE,
+				     "not in Remix: a volume of its own (Remix uses the camera's fog while the camera is inside)", true);
+			if (ma->group)
+				Warn(mel, "RMX_NOT_LIGHT_GROUP", GV_WARN_NOTE, "not in Remix: its Light Group (light linking)", true);
 			for (const std::string &note : spec.notes) {
 				const bool uv = note.find("not mapped by UV") != std::string::npos;
 				Warn(mel, uv ? "RMX_NO_UV" : "RMX_NOTE", uv ? GV_WARN_BLACK : GV_WARN_NOTE, note.c_str(), true);
@@ -2598,14 +2618,32 @@ void GVBuilder::LeftOut()
 			Warn(el, "LEFT_NOT_MADE", GV_WARN_RED, "the converter made no game object for it", true);
 		}
 		for (ParticleSystem *psys = (ParticleSystem *)ob->particlesystem.first; psys; psys = psys->next) {
-			if (m_remix) {
-				/* P4: RTX Remix draws Blender's particle systems as its GPU particles */
-				Add("remix:PARTICLES", psys->name, ob, "drawn by RTX Remix as GPU particles (no game logic)");
+			/* P8.20: the game draws hair as ribbons and emitters by their
+			 * render type; Remix gets the ribbons as meshes and emitters as
+			 * its GPU particles (Object and Group particles as objects) */
+			ParticleSettings *part = psys->part;
+			if (!part || (psys->flag & PSYS_DISABLED))
+				continue;
+			if (part->type == PART_HAIR) {
+				if (part->ren_as == PART_DRAW_PATH) {
+					Add(m_remix ? "remix:PARTICLES" : "render:PARTICLES", psys->name, ob,
+					    "hair, drawn as ribbons in the game and in RTX Remix (no hair dynamics)");
+				}
+				else {
+					const int el = Add("leftout:PARTICLES", psys->name, ob, "hair not rendered as Path");
+					Warn(el, "LEFT_PARTICLES", GV_WARN_RED, "only hair rendered as Path is drawn", true);
+				}
 				continue;
 			}
-			const int el = Add("leftout:PARTICLES", psys->name, ob, "a particle system");
-			Warn(el, "LEFT_PARTICLES", GV_WARN_RED, "the game engine has no particle systems (RTX Remix draws them)",
-			     true);
+			if (part->type != PART_EMITTER || part->ren_as == PART_DRAW_NOT || part->ren_as == PART_DRAW_PATH) {
+				const int el = Add("leftout:PARTICLES", psys->name, ob, "a particle system that draws nothing");
+				Warn(el, "LEFT_PARTICLES", GV_WARN_NOTE,
+				     "its type or Render setting (None, Path) draws nothing in the game or in RTX Remix", true);
+				continue;
+			}
+			Add(m_remix ? "remix:PARTICLES" : "render:PARTICLES", psys->name, ob,
+			    m_remix ? "particles: RTX Remix's GPU particles (Object and Group: game objects)" :
+			              "particles simulated on the graphics card (no game logic)");
 		}
 		if (ob->pd && ob->pd->forcefield) {
 			const int el = Add("leftout:FORCE_FIELD", name_of(ob), ob, "a force field");

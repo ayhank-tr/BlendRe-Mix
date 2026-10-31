@@ -413,6 +413,70 @@ class RENDER_PT_game_shading(RenderButtonsPanel, Panel):
         col.prop(gs, "use_glsl_color_management", text="Color Management")
 
 
+class RENDER_PT_game_effects(RenderButtonsPanel, Panel):
+    """BGE-Remix P8.23/P8.25: the Modern pipeline's camera and screen effects
+    (the game's own picture; RTX Remix gets the matching settings)"""
+    bl_label = "Camera Effects"
+    bl_options = {'DEFAULT_CLOSED'}
+    COMPAT_ENGINES = {'BLENDER_GAME'}
+
+    def draw(self, context):
+        from .game_marks import mark
+        layout = self.layout
+        scene = context.scene
+        gs = scene.game_settings
+        modern = gs.render_pipeline == 'MODERN'
+        if not modern:
+            layout.label(text="The game draws these in the Modern pipeline (Shading above)", icon='INFO')
+        col = layout.column()
+        col.active = modern
+
+        split = col.split()
+        sub = split.column()
+        sub.prop(gs, "fx_bloom")
+        sub2 = sub.column(align=True)
+        sub2.active = gs.fx_bloom
+        sub2.prop(gs, "fx_bloom_intensity", text="Intensity")
+        sub2.prop(gs, "fx_bloom_threshold", text="Threshold")
+        sub2.prop(gs, "fx_bloom_radius", text="Radius")
+        sub = split.column()
+        sub.prop(gs, "fx_auto_exposure")
+        sub2 = sub.column()
+        sub2.active = gs.fx_auto_exposure
+        sub2.prop(gs, "fx_exposure_speed", text="Speed")
+        sub.prop(gs, "fx_vignette")
+
+        col.separator()
+        split = col.split()
+        sub = split.column()
+        sub.prop(gs, "fx_depth_of_field")
+        cam = scene.camera.data if scene.camera and scene.camera.type == 'CAMERA' else None
+        if cam is not None:
+            sub2 = sub.column(align=True)
+            sub2.active = gs.fx_depth_of_field
+            sub2.prop(cam.gpu_dof, "fstop", text="F-stop")
+            sub2.prop(cam, "dof_object", text="")
+            sub2.prop(cam, "dof_distance", text="Distance")
+        sub = split.column()
+        sub.prop(scene.render, "use_motion_blur", text="Motion Blur")
+        sub2 = sub.column()
+        sub2.active = scene.render.use_motion_blur
+        sub2.prop(scene.render, "motion_blur_shutter", text="Shutter")
+        mark(sub, "The camera's motion")
+        world = scene.world
+        if world is not None:
+            col.separator()
+            light = world.light_settings
+            row = col.row()
+            row.prop(light, "use_ambient_occlusion", text="Ambient Occlusion")
+            sub = row.row(align=True)
+            sub.active = light.use_ambient_occlusion
+            sub.prop(light, "ao_factor", text="Factor")
+            sub.prop(light, "distance", text="Distance")
+        col.separator()
+        mark(col, "2D filters run over RTX Remix's picture too")
+
+
 class RENDER_PT_game_remix(RenderButtonsPanel, Panel):
     """BGE-Remix: render the game through NVIDIA RTX Remix (path tracing).
 
@@ -1104,6 +1168,7 @@ classes = (
     RENDER_PT_game_player,
     RENDER_PT_game_stereo,
     RENDER_PT_game_shading,
+    RENDER_PT_game_effects,
     RENDER_PT_game_remix,
     RENDER_PT_game_system,
     RENDER_PT_game_display,

@@ -190,6 +190,11 @@ struct GPUMaterial {
 	struct Object *envsky_ob;  /* its sky in the environment light */
 	bool world_linear;         /* a world without the display transform (Remix's sky) */
 
+	/* BGE-Remix P8.24: a node material baked for Remix: the channel + 1
+	 * (GPUBakeChannel; 0: not a bake). Shader nodes give the channel's value
+	 * instead of shading (node_shader_gpu_bake). */
+	int bake_channel;
+
 	/* BGE-Remix P8.5: the texture slots that take Object coordinates from
 	 * an object, and the objects' inverse matrices (refreshed on every
 	 * bind; the slot is kept, not the object, which may be deleted) */
@@ -4098,6 +4103,49 @@ static bool gpu_material_texture_alpha(Material *ma)
 }
 
 /* BGE-Remix P8.6: the material in UV space, one value per pixel */
+int GPU_material_bake_channel(const GPUMaterial *mat)
+{
+	return mat ? mat->bake_channel - 1 : -1;
+}
+
+/* BGE-Remix P8.24: a Cycles node tree's value for one channel: every shader
+ * node gives (value * w, w) for it, Mix and Add Shader mix those as they mix
+ * shading, and the sum is divided by its weight here */
+static GPUMaterial *gpu_material_bake_nodes(Scene *scene, Material *ma, int channel, float scale)
+{
+	GPUMaterial *mat = GPU_material_construct_begin(ma);
+	GPUNodeLink *uv, *out = NULL;
+	float srgb, mode;
+	mat->scene = scene;
+	mat->type = GPU_MATERIAL_TYPE_MESH_BAKE;
+	mat->is_opensubdiv = false;
+	mat->alpha = 1;
+	mat->bake_channel = channel + 1;
+
+	ntreeGPUMaterialNodes(ma->nodetree, mat, NODE_NEW_SHADING);
+	if (!mat->outlink) {
+		GPU_material_bake_free(mat);
+		return NULL;
+	}
+	GPU_link(mat, "texco_uv", GPU_attribute(CD_MTFACE, ""), &uv);
+	/* 0 colour (sRGB when colour managed), 1 a value, 2 a normal, 3 a colour times the scale */
+	mode = (channel == GPU_BAKE_COLOR) ? 0.0f : (channel == GPU_BAKE_NORMAL) ? 2.0f :
+	       (channel == GPU_BAKE_EMIT) ? 3.0f : 1.0f;
+	srgb = GPU_material_do_color_management(mat) ? 1.0f : 0.0f;
+	/* emission: its scale; values: what is left where no node has the
+	 * channel (rough, not metal) */
+	scale = (channel == GPU_BAKE_EMIT) ? ((scale > 0.0f) ? 1.0f / scale : 1.0f) :
+	        (channel == GPU_BAKE_METALLIC) ? 0.0f : 1.0f;
+	GPU_link(mat, "bake_out_nodes", mat->outlink, GPU_uniform(&mode), GPU_uniform(&srgb), GPU_uniform(&scale), uv,
+	         &out);
+	mat->outlink = out;
+	if (!gpu_material_construct_end(mat, "bake nodes")) {
+		GPU_material_bake_free(mat);
+		return NULL;
+	}
+	return mat;
+}
+
 GPUMaterial *GPU_material_bake_create(Scene *scene, Material *ma, int channel, float scale)
 {
 	GPUMaterial *mat;
@@ -4105,8 +4153,11 @@ GPUMaterial *GPU_material_bake_create(Scene *scene, Material *ma, int channel, f
 	GPUNodeLink *uv, *out = NULL, *value;
 	float srgb, one = 1.0f;
 
-	if (!ma || (ma->use_nodes && ma->nodetree)) {
+	if (!ma) {
 		return NULL;
+	}
+	if (ma->use_nodes && ma->nodetree) {
+		return gpu_material_bake_nodes(scene, ma, channel, scale);
 	}
 	mat = GPU_material_construct_begin(ma);
 	mat->scene = scene;

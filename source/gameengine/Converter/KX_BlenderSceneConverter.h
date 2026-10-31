@@ -62,6 +62,7 @@ typedef map<KX_Scene*, map<Material*, RAS_IPolyMaterial*> > PolyMaterialCache;
 
 class KX_BlenderSceneConverter : public KX_ISceneConverter
 {
+	vector<struct ID *> m_temp_ids;  /* BGE-Remix P8 Part C */
 	// Use vector of pairs to allow removal of entities between scene switch
 	vector<pair<KX_Scene*,KX_WorldInfo*> >	m_worldinfos;
 	vector<pair<KX_Scene*,RAS_IPolyMaterial*> > m_polymaterials;
@@ -134,6 +135,9 @@ public:
 	KX_GameObject *FindGameObject(struct Object *for_blenderobject);
 
 	void RegisterGameMesh(RAS_MeshObject *gamemesh, struct Mesh *for_blendermesh);
+	/* BGE-Remix P8 Part C: Blender data made for the game (hair ribbons,
+	 * curves as meshes), freed with the converter */
+	void RegisterTemporaryID(struct ID *id) { m_temp_ids.push_back(id); }
 	RAS_MeshObject *FindGameMesh(struct Mesh *for_blendermesh/*, unsigned int onlayer*/);
 
 	void RegisterPolyMaterial(RAS_IPolyMaterial *polymat);
