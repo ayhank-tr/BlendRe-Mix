@@ -177,6 +177,8 @@ static const char *vert_classic =
         "out vec4 v_col;\n"
         "out vec2 v_texco;\n"
         "out float v_fogz;\n"
+        "out float v_fogh;\n"
+        "uniform vec4 bge_cl_fog_hrow;\n"
         "void main()\n"
         "{\n"
         "	vec4 eye = bge_mv * bge_pos;\n"
@@ -221,6 +223,7 @@ static const char *vert_classic =
         "	v_col = c;\n"
         "	v_texco = (bge_cl_texmat * vec4(bge_texco, 0.0, 1.0)).xy;\n"
         "	v_fogz = abs(eye.z);\n"
+        "	v_fogh = dot(bge_cl_fog_hrow, vec4(eye.xyz, 1.0));\n"
         "	gl_Position = bge_proj * eye;\n"
         "}\n";
 
@@ -228,6 +231,8 @@ static const char *frag_classic =
         "in vec4 v_col;\n"
         "in vec2 v_texco;\n"
         "in float v_fogz;\n"
+        "in float v_fogh;\n"
+        "uniform float bge_cl_fog_height;\n"
         "uniform sampler2D bge_tex;\n"
         "uniform int bge_cl_texturing;\n"
         "uniform int bge_cl_texenv;\n"
@@ -255,6 +260,13 @@ static const char *frag_classic =
         "		if (bge_cl_fog == 1) f = (bge_cl_fog_params.y - v_fogz) / max(bge_cl_fog_params.y - bge_cl_fog_params.x, 1e-8);\n"
         "		else if (bge_cl_fog == 2) f = exp(-bge_cl_fog_params.z * v_fogz);\n"
         "		else f = exp(-(bge_cl_fog_params.z * v_fogz) * (bge_cl_fog_params.z * v_fogz));\n"
+        /* BGE-Remix P8 Part B (P8.17): none above the mist's height */
+        "		if (bge_cl_fog_height != 0.0) {\n"
+        "			float a = 1.0 - clamp(f, 0.0, 1.0);\n"
+        "			if (v_fogh > bge_cl_fog_height) a = 0.0;\n"
+        "			else if (v_fogh > 0.0) { float h = (bge_cl_fog_height - v_fogh) / bge_cl_fog_height; a *= h * h; }\n"
+        "			f = 1.0 - a;\n"
+        "		}\n"
         "		c.rgb = mix(bge_cl_fog_color.rgb, c.rgb, clamp(f, 0.0, 1.0));\n"
         "	}\n"
         "	bge_fragcolor = clamp(c, 0.0, 1.0);\n"
@@ -461,6 +473,8 @@ void GPU_classic_uniforms(struct GPUShader *shader, const GPUClassicState *st)
 		}
 	}
 	uniform_v4(program, "bge_cl_fog_color", st->fog_color);
+	uniform_f(program, "bge_cl_fog_height", st->fog_height);
+	uniform_v4(program, "bge_cl_fog_hrow", st->fog_hrow);
 	uniform_f(program, "bge_cl_alpha_ref", st->alpha_ref);
 	uniform_i(program, "bge_cl_alpha_test", st->alpha_test ? 1 : 0);
 	{

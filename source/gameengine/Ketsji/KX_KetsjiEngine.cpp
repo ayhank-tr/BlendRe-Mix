@@ -1584,6 +1584,10 @@ void KX_KetsjiEngine::RenderFrame(KX_Scene* scene, KX_Camera* cam)
 			scene->CalculateVisibleMeshes(m_rasterizer, cam);
 		}
 
+		/* BGE-Remix P8 Part B (P8.17): the world's sky behind the first scene */
+		if (scene == *m_scenes.begin())
+			scene->GetWorldInfo()->RenderBackground(m_rasterizer);
+
 		scene->RenderBuckets(camtrans, m_rasterizer);
 
 		/* BGE-Remix P8.10: nothing else reads it (other cameras, the 3D view) */

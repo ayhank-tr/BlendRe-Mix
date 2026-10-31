@@ -164,6 +164,10 @@ typedef struct GPUClassicState {
 	/* BGE-Remix P8 Part B: what else the old built-ins held */
 	bool alpha_test;         /* alpha test on (fragments pass when alpha > alpha_ref) */
 	float current_color[4];  /* the colour drawn with (colour material follows it) */
+	/* BGE-Remix P8 Part B (P8.17): the mist's height (0: none) and the row of
+	 * the inverse view matrix that gives a point's height */
+	float fog_height;
+	float fog_hrow[4];
 } GPUClassicState;
 
 void GPU_classic_state_default(GPUClassicState *state);

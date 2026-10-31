@@ -2621,8 +2621,8 @@ void shade_exposure_correct(vec3 col, float linfac, float logfac, out vec3 outco
 }
 
 void shade_mist_factor(
-        vec3 co, float enable, float miststa, float mistdist, float misttype, float misi,
-        out float outfac)
+        vec3 co, float enable, float miststa, float mistdist, float misttype, float misi, float misthi,
+        mat4 viewinv, out float outfac)
 {
 	if (enable == 1.0) {
 		float fac, zcor;
@@ -2633,6 +2633,18 @@ void shade_mist_factor(
 		if (misttype == 0.0) fac *= fac;
 		else if (misttype == 1.0) ;
 		else fac = sqrt(fac);
+
+		/* BGE-Remix P8 Part B (P8.17): the mist's height, as F12 (none at
+		 * and above it, fading in below) */
+		if (misthi != 0.0 && fac != 0.0) {
+			float hi = (viewinv * vec4(co, 1.0)).z;
+			if (hi > misthi)
+				fac = 0.0;
+			else if (hi > 0.0) {
+				hi = (misthi - hi) / misthi;
+				fac *= hi * hi;
+			}
+		}
 
 		outfac = 1.0 - (1.0 - fac) * (1.0 - misi);
 	}
@@ -4296,17 +4308,7 @@ void shade_pbr_alpha(vec3 vn, vec3 view, vec3 f0, float transmission, float alph
 #define BGE_LF_DIFFUSE 64
 #define BGE_LF_SPECULAR 128
 
-#ifdef BGE_CLUSTERED
-
-uint bge_cluster_index(vec3 co)
-{
-	vec2 f = (gl_FragCoord.xy - bge_cl_viewport.xy) / max(bge_cl_viewport.zw, vec2(1.0));
-	uvec2 t = uvec2(clamp(f, vec2(0.0), vec2(0.99999)) * vec2(16.0, 9.0));
-	float z = max(-co.z, bge_cl_depth.x);
-	uint k = uint(clamp(log(z / bge_cl_depth.x) * bge_cl_depth.z, 0.0, 23.0));
-	return (k * 9u + t.y) * 16u + t.x;
-}
-
+/* a ramp blend by type (MA_RAMP_*: the mix_* functions) */
 void bge_ramp_blend(float type, float fac, vec4 col1, vec4 col2, out vec4 outcol)
 {
 	int t = int(type + 0.5);
@@ -4329,6 +4331,18 @@ void bge_ramp_blend(float type, float fac, vec4 col1, vec4 col2, out vec4 outcol
 	else if (t == 16) mix_soft(fac, col1, col2, outcol);
 	else mix_linear(fac, col1, col2, outcol);
 }
+
+#ifdef BGE_CLUSTERED
+
+uint bge_cluster_index(vec3 co)
+{
+	vec2 f = (gl_FragCoord.xy - bge_cl_viewport.xy) / max(bge_cl_viewport.zw, vec2(1.0));
+	uvec2 t = uvec2(clamp(f, vec2(0.0), vec2(0.99999)) * vec2(16.0, 9.0));
+	float z = max(-co.z, bge_cl_depth.x);
+	uint k = uint(clamp(log(z / bge_cl_depth.x) * bge_cl_depth.z, 0.0, 23.0));
+	return (k * 9u + t.y) * 16u + t.x;
+}
+
 
 /* do_colorband_blend */
 void bge_colorband_blend(sampler2D band, vec4 rp, float fac, vec4 incol, out vec4 outcol)
@@ -4633,4 +4647,106 @@ void shade_lights_clustered(
 	shade_lights_clustered_ex(co, vn, view, rgb, specrgb, spec, har, refl, matp, diffp, specp, matq, vec4(0.0),
 	                          vec4(0.0), bge_noramp, bge_noramp, viewmat, viewinv, diff_in, spec_in, diff_out,
 	                          spec_out);
+}
+
+/* ---- BGE-Remix P8 Part B (P8.17): Sky & Atmosphere ----
+ * Blender Internal's sun and sky (sunsky.c: the Preetham sky, its
+ * atmosphere) for a sun lamp's Sky and Atmosphere effects. s: the sun's
+ * direction (world, toward the sun), sky on; its theta, phi, the sky's
+ * exposure (negated), colour space; zenith Y, x, y, blend type; blend
+ * factor, atmosphere on, distance factor, sun intensity. p: the Perez
+ * coefficients of Y (0-4), x (5-9), y (10-14). a: the atmosphere's
+ * extinction (xyz), Henyey-Greenstein g; Rayleigh and Mie in-scattering
+ * with their factors; the attenuated sunlight. */
+
+float sunsky_perez(float l0, float l1, float l2, float l3, float l4, float theta, float gamma, float lvz,
+                   float suntheta)
+{
+	float den = (1.0 + l0 * exp(l1)) * (1.0 + l2 * exp(l3 * suntheta) + l4 * cos(suntheta) * cos(suntheta));
+	float num = (1.0 + l0 * exp(l1 / cos(theta))) * (1.0 + l2 * exp(l3 * gamma) + l4 * cos(gamma) * cos(gamma));
+	return lvz * num / den;
+}
+
+vec3 sunsky_xyz_to_rgb(vec3 c, float space)
+{
+	if (space < 0.5)
+		return vec3(3.50570 * c.x - 1.73964 * c.y - 0.544011 * c.z,
+		            -1.06906 * c.x + 1.97781 * c.y + 0.0351720 * c.z,
+		            0.0563117 * c.x - 0.196994 * c.y + 1.05005 * c.z);
+	if (space < 1.5)
+		return vec3(3.240476 * c.x - 1.537150 * c.y - 0.498535 * c.z,
+		            -0.969256 * c.x + 1.875992 * c.y + 0.041556 * c.z,
+		            0.055648 * c.x - 0.204043 * c.y + 1.057311 * c.z);
+	return vec3(2.28783848734076 * c.x - 0.833367677835217 * c.y - 0.454470795871421 * c.z,
+	            -0.511651380743862 * c.x + 1.42275837632178 * c.y + 0.0888930017552939 * c.z,
+	            0.00572040983140966 * c.x - 0.0159068485104036 * c.y + 1.0101864083734 * c.z);
+}
+
+/* the sky's colour toward v (world, normalized; GetSkyXYZRadiancef) */
+vec3 sunsky_radiance(vec3 v, mat4 s, mat4 p)
+{
+	if (v.z < 0.001)
+		v = normalize(vec3(v.xy, 0.001));
+	float theta = acos(clamp(v.z, -1.0, 1.0));
+	float phi = (abs(theta) < 1e-5) ? 0.0 : atan(v.y, v.x);
+	float suntheta = s[1].x, sunphi = s[1].y;
+	float hfade = 1.0, nfade = 1.0;
+	if (theta > 1.5707963) {
+		hfade = 1.0 - (theta * 0.31830989 - 0.5) * 2.0;
+		hfade = hfade * hfade * (3.0 - 2.0 * hfade);
+		theta = 1.5707963;
+	}
+	if (suntheta > 1.5707963 && theta <= 1.5707963) {
+		nfade = 1.0 - (0.5 - theta * 0.31830989) * 2.0;
+		nfade *= 1.0 - (suntheta * 0.31830989 - 0.5) * 2.0;
+		nfade = nfade * nfade * (3.0 - 2.0 * nfade);
+	}
+	float cospsi = sin(theta) * sin(suntheta) * cos(sunphi - phi) + cos(theta) * cos(suntheta);
+	float gamma = (cospsi > 1.0) ? 0.0 : (cospsi < -1.0) ? 3.14159265 : acos(cospsi);
+	float x = sunsky_perez(p[1].y, p[1].z, p[1].w, p[2].x, p[2].y, theta, gamma, s[2].y, suntheta);
+	float y = sunsky_perez(p[2].z, p[2].w, p[3].x, p[3].y, p[3].z, theta, gamma, s[2].z, suntheta);
+	float Y = 6.666666667e-5 * nfade * hfade *
+	          sunsky_perez(p[0].x, p[0].y, p[0].z, p[0].w, p[1].x, theta, gamma, s[2].x, suntheta);
+	if (s[1].z != 0.0)
+		Y = 1.0 - exp(Y * s[1].z);
+	vec3 xyz = vec3((x / y) * Y, Y, ((1.0 - x - y) / y) * Y);
+	return sunsky_xyz_to_rgb(xyz, s[1].w);
+}
+
+/* the world's colour with the sky blended over it (shadeSunView); view: from
+ * the camera into the world */
+void world_sunsky(vec3 view, mat4 s, mat4 p, vec3 col_in, out vec3 col_out)
+{
+	col_out = col_in;
+	if (s[0].w < 0.5)
+		return;
+	vec3 v = normalize(view);
+	v.z = max(v.z, 0.0);
+	v = normalize(v);
+	vec4 sky = vec4(sunsky_radiance(v, s, p), 1.0);
+	vec4 res;
+	bge_ramp_blend(s[2].w, s[3].x, vec4(col_in, 1.0), sky, res);
+	col_out = res.rgb;
+}
+
+/* aerial perspective on a surface (AtmospherePixleShader, as F12 calls it:
+ * the view vector in camera space, the distance its depth) */
+void shade_atmosphere(vec3 co, mat4 s, mat4 a, vec4 col_in, out vec4 col_out)
+{
+	col_out = col_in;
+	if (s[3].y < 0.5 || s[0].z < 0.0)
+		return;
+	vec3 view = normalize(co);
+	float dist = -co.z * s[3].z;
+	float costheta = dot(view, s[0].xyz);
+	float phase1 = 1.0 + costheta * costheta;
+	vec3 E1 = exp(a[0].xyz * (-dist / 0.69314718));
+	float g = a[0].w;
+	float t = 1.0 + g - 2.0 * g * costheta;
+	float phase2 = (1.0 - g * g) / (t * sqrt(t));
+	vec3 I = (a[1].xyz * phase1 + a[2].xyz * phase2) * (vec3(1.0) - E1) / a[0].xyz;
+	I *= a[1].w * s[3].w;
+	vec3 E = E1 * a[2].w * a[3].xyz;
+	/* (the colour is not premultiplied here) */
+	col_out = vec4(col_in.rgb * E + I, col_in.a);
 }

@@ -39,6 +39,10 @@
 #include "GPU_layer.h"
 #include "GPU_lights.h"
 
+#include "BKE_material.h"
+
+#include "gpu_private.h"
+
 /* the pool's largest side, and how much memory it may take */
 #define POOL_MAX_SIZE 4096
 #define POOL_MIN_SIZE 64
@@ -581,6 +585,13 @@ void GPU_lights_cluster(const void *records, int count, size_t record_size, unsi
 	glDispatchCompute((CL_COUNT + 63) / 64, 1, 1);
 	glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 	glUseProgram((GLuint)program);
+}
+
+/* Blender's ramp blend (gpu_material.c has a node-making function of that
+ * name) */
+void gpu_ramp_blend_rgb(int type, float r_col[3], float fac, const float col[3])
+{
+	ramp_blend(type, r_col, fac, col);
 }
 
 void GPU_lights_exit(void)

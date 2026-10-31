@@ -61,6 +61,13 @@ class KX_WorldInfo : public PyObjectPlus
 	float m_con_mistcolor[3];
 	float m_con_backgroundcolor[3];
 	float m_con_ambientcolor[3];
+	/* BGE-Remix P8 Part B (P8.17): the world drawn as the background (a
+	 * blend or textured sky, or a sun lamp's sky), the zenith, mist height */
+	struct Scene *m_blenderscene;
+	struct World *m_blenderworld;
+	bool m_drawsky;
+	float m_zenithcolor[3];
+	float m_misthi;
 
 public:
 	/**
@@ -90,6 +97,10 @@ public:
 	void setAmbientColor(float r, float g, float b);
 	void UpdateBackGround();
 	void UpdateWorldSettings();
+	/* BGE-Remix P8 Part B (P8.17): draws the sky (nothing when the clear
+	 * colour already is the world) */
+	void RenderBackground(class RAS_IRasterizer *rasty);
+	bool DrawsSky() const { return m_drawsky; }
 
 #ifdef WITH_PYTHON
 	/* attributes */

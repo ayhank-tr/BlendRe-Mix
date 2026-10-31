@@ -79,6 +79,7 @@
 #include "GPU_texture.h"
 
 #include "gpu_codegen.h"
+#include "gpu_private.h"
 
 #ifdef WITH_OPENSUBDIV
 #  include "BKE_DerivedMesh.h"
@@ -120,6 +121,13 @@ static struct GPUWorld {
 	float horicol[3];
 	float ambcol[4];
 	float zencol[3];
+	/* BGE-Remix P8 Part B (P8.17): the mist's height; a sun lamp's sky and
+	 * atmosphere (world_sunsky, shade_atmosphere in the shaders) */
+	float misthi;
+	float sunsky[3][4][4];
+	/* the environment light's horizon and zenith (the world's, or with a sun
+	 * lamp's sky blended over them) */
+	float envhor[4], envzen[4];
 } GPUWorld;
 
 struct GPUMaterial {
@@ -171,6 +179,11 @@ struct GPUMaterial {
 	bool use_face_image;
 	struct Image *face_image;
 	float face_image_on;
+
+	/* BGE-Remix P8 Part B (P8.17): the sun lamp whose sky (world) or
+	 * atmosphere (surfaces) the shader draws */
+	struct Object *sunsky_ob;
+	struct Object *envsky_ob;  /* its sky in the environment light */
 
 	/* BGE-Remix P8.5: the texture slots that take Object coordinates from
 	 * an object, and the objects' inverse matrices (refreshed on every
@@ -444,6 +457,8 @@ static void gpu_shared_buffers_bind(GPUMaterial *material)
 
 static void gpu_lamp_records_free(void);
 static void gpu_lights_cluster_bind(GPUMaterial *material, float viewmat[4][4], int viewlay);
+static void gpu_sunsky_bind(GPUMaterial *material);
+static Object *gpu_sunsky_find(Scene *scene, short effect);
 
 void GPU_shared_buffers_free(void)
 {
@@ -1028,6 +1043,9 @@ void GPU_material_bind(
 		for (int i = 0; i < material->tot_texco_ob; i++) {
 			gpu_texco_object_imat(material->texco_mtex[i]->object, material->texco_obimat[i]);
 		}
+
+		/* BGE-Remix P8 Part B (P8.17): a sun lamp's sky and atmosphere */
+		gpu_sunsky_bind(material);
 
 		/* BGE-Remix P8.3: the lamp and world values the shader reads */
 		gpu_shared_buffers_bind(material);
@@ -3007,6 +3025,205 @@ void GPU_shadeinput_set(GPUMaterial *mat, Material *ma, GPUShadeInput *shi)
 	}
 }
 
+void GPU_mist_update_height(float height)
+{
+	GPUWorld.misthi = height;
+}
+
+/* ------------------------------------------------------------------------ */
+/* BGE-Remix P8 Part B (P8.17): a sun lamp's sky and atmosphere, as Blender
+ * Internal makes them (sunsky.c: InitSunSky, InitAtmosphere,
+ * ComputeAttenuatedSunlight), packed for world_sunsky and shade_atmosphere */
+
+static Object *gpu_sunsky_find(Scene *scene, short effect)
+{
+	Scene *sce_iter;
+	Base *base;
+	for (SETLOOPER(scene, sce_iter, base)) {
+		Object *ob = base->object;
+		if (ob->type == OB_LAMP && ob->data && ((Lamp *)ob->data)->type == LA_SUN &&
+		    (((Lamp *)ob->data)->sun_effect_type & effect))
+		{
+			return ob;
+		}
+	}
+	return NULL;
+}
+
+static void gpu_sunsky_compute(Lamp *la, const float tosun_in[3], float s[4][4], float p[4][4], float a[4][4])
+{
+	float tosun[3];
+	normalize_v3_v3(tosun, tosun_in);
+	const float theta = acosf(clamp_f(tosun[2], -1.0f, 1.0f));
+	const float phi = (fabsf(theta) < 1e-5f) ? 0.0f : atan2f(tosun[1], tosun[0]);
+	const float T = la->atm_turbidity, T2 = T * T;
+	const float th2 = theta * theta, th3 = th2 * theta;
+	const float chi = (4.0f / 9.0f - T / 120.0f) * ((float)M_PI - 2.0f * theta);
+	float zY = ((4.0453f * T - 4.9710f) * tanf(chi) - 0.2155f * T + 2.4192f) * 1000.0f;
+	if (zY <= 0.0f) {
+		zY = 1e-6f;
+	}
+	const float zx = (0.00165f * th3 - 0.00374f * th2 + 0.00208f * theta) * T2 +
+	                 (-0.02902f * th3 + 0.06377f * th2 - 0.03202f * theta + 0.00394f) * T +
+	                 (0.11693f * th3 - 0.21196f * th2 + 0.06052f * theta + 0.25885f);
+	const float zy = (0.00275f * th3 - 0.00610f * th2 + 0.00316f * theta) * T2 +
+	                 (-0.04214f * th3 + 0.08970f * th2 - 0.04153f * theta + 0.00515f) * T +
+	                 (0.15346f * th3 - 0.26756f * th2 + 0.06669f * theta + 0.26688f);
+	float pY[5] = {0.17872f * T - 1.46303f, -0.35540f * T + 0.42749f, -0.02266f * T + 5.32505f,
+	               0.12064f * T - 2.57705f, -0.06696f * T + 0.37027f};
+	float px[5] = {-0.01925f * T - 0.25922f, -0.06651f * T + 0.00081f, -0.00041f * T + 0.21247f,
+	               -0.06409f * T - 0.89887f, -0.00325f * T + 0.04517f};
+	float py[5] = {-0.01669f * T - 0.26078f, -0.09495f * T + 0.00921f, -0.00792f * T + 0.21023f,
+	               -0.04405f * T - 1.65369f, -0.01092f * T + 0.05291f};
+	const float mult[5] = {la->horizon_brightness, la->spread, la->sun_brightness, la->sun_size,
+	                       la->backscattered_light};
+	for (int i = 0; i < 5; i++) {
+		pY[i] *= mult[i];
+		px[i] *= mult[i];
+		py[i] *= mult[i];
+	}
+	float *pf = &p[0][0];
+	memset(p, 0, sizeof(float[4][4]));
+	for (int i = 0; i < 5; i++) {
+		pf[i] = pY[i];
+		pf[5 + i] = px[i];
+		pf[10 + i] = py[i];
+	}
+
+	memset(s, 0, sizeof(float[4][4]));
+	copy_v3_v3(s[0], tosun);
+	s[0][3] = (la->sun_effect_type & LA_SUN_EFFECT_SKY) ? 1.0f : 0.0f;
+	s[1][0] = theta;
+	s[1][1] = phi;
+	s[1][2] = -la->sky_exposure;
+	s[1][3] = (float)la->sky_colorspace;
+	s[2][0] = zY;
+	s[2][1] = zx;
+	s[2][2] = zy;
+	s[2][3] = (float)la->skyblendtype;
+	s[3][0] = la->skyblendfac;
+	s[3][1] = (la->sun_effect_type & LA_SUN_EFFECT_AP) ? 1.0f : 0.0f;
+	s[3][2] = la->atm_distance_factor;
+	s[3][3] = la->sun_intensity;
+
+	/* the atmosphere (InitAtmosphere with Mie and Rayleigh factors 1) */
+	const double pi = M_PI, n = 1.003, N = 2.545e25, pn = 0.035, Tc = 2.0;
+	const double c = (6.544 * Tc - 6.51) * 1e-17;
+	const double K[3] = {0.685, 0.679, 0.670};
+	const double lam[3] = {1.0 / 650e-9, 1.0 / 570e-9, 1.0 / 475e-9};
+	const double temp = pi * pi * (n * n - 1.0) * (n * n - 1.0) * (6.0 + 3.0 * pn) / (6.0 - 7.0 * pn) / N;
+	const double beta = 8.0 * temp * pi / 3.0, betadash = temp / 2.0;
+	const double t2 = 0.434 * c * (2.0 * pi) * (2.0 * pi) * 0.5;
+	const double t3 = 0.434 * c * pi * (2.0 * pi) * (2.0 * pi);
+	memset(a, 0, sizeof(float[4][4]));
+	for (int i = 0; i < 3; i++) {
+		const double l2 = lam[i] * lam[i], l4 = l2 * l2;
+		a[0][i] = (float)(l4 * beta + K[i] * lam[i] * t3);   /* Rayleigh + Mie extinction */
+		a[1][i] = (float)(l4 * betadash);                    /* Rayleigh in-scattering */
+		a[2][i] = (float)(l2 * t2);                          /* Mie in-scattering */
+	}
+	a[0][3] = 0.8f;
+	a[1][3] = la->atm_inscattering_factor;
+	a[2][3] = la->atm_extinction_factor;
+	/* the sunlight through the atmosphere (ComputeAttenuatedSunlight; F12
+	 * passes the turbidity as an int) */
+	const float lambda[3] = {0.65f, 0.57f, 0.475f};
+	const int turb = (int)la->atm_turbidity;
+	const float fbeta = 0.04608365822050f * turb - 0.04586025928522f;
+	const float m = 1.0f / (cosf(theta) + 0.15f * powf(93.885f - theta / (float)M_PI * 180.0f, -1.253f));
+	for (int i = 0; i < 3; i++) {
+		const float tauR = expf(-m * 0.008735f * powf(lambda[i], -4.08f));
+		const float tauA = expf(-m * fbeta * powf(lambda[i], -1.3f));
+		a[3][i] = tauR * tauA;
+	}
+}
+
+/* the sky toward v (world, normalized), as sunsky_radiance in the shaders */
+static float gpu_sunsky_perez(const float *l, float theta, float gamma, float lvz, float suntheta)
+{
+	const float den = (1.0f + l[0] * expf(l[1])) * (1.0f + l[2] * expf(l[3] * suntheta) +
+	                                                 l[4] * cosf(suntheta) * cosf(suntheta));
+	const float num = (1.0f + l[0] * expf(l[1] / cosf(theta))) * (1.0f + l[2] * expf(l[3] * gamma) +
+	                                                               l[4] * cosf(gamma) * cosf(gamma));
+	return lvz * num / den;
+}
+
+static void gpu_sunsky_radiance(const float v_in[3], float s[4][4], float p[4][4], float r_rgb[3])
+{
+	float v[3];
+	copy_v3_v3(v, v_in);
+	if (v[2] < 0.001f) {
+		v[2] = 0.001f;
+		normalize_v3(v);
+	}
+	float theta = acosf(clamp_f(v[2], -1.0f, 1.0f));
+	const float phi = (fabsf(theta) < 1e-5f) ? 0.0f : atan2f(v[1], v[0]);
+	const float suntheta = s[1][0], sunphi = s[1][1];
+	float hfade = 1.0f, nfade = 1.0f;
+	if (theta > (float)M_PI_2) {
+		hfade = 1.0f - (theta * (float)M_1_PI - 0.5f) * 2.0f;
+		hfade = hfade * hfade * (3.0f - 2.0f * hfade);
+		theta = (float)M_PI_2;
+	}
+	if (suntheta > (float)M_PI_2 && theta <= (float)M_PI_2) {
+		nfade = 1.0f - (0.5f - theta * (float)M_1_PI) * 2.0f;
+		nfade *= 1.0f - (suntheta * (float)M_1_PI - 0.5f) * 2.0f;
+		nfade = nfade * nfade * (3.0f - 2.0f * nfade);
+	}
+	const float cospsi = sinf(theta) * sinf(suntheta) * cosf(sunphi - phi) + cosf(theta) * cosf(suntheta);
+	const float gamma = (cospsi > 1.0f) ? 0.0f : (cospsi < -1.0f) ? (float)M_PI : acosf(cospsi);
+	const float *pf = &p[0][0];
+	const float x = gpu_sunsky_perez(pf + 5, theta, gamma, s[2][1], suntheta);
+	const float y = gpu_sunsky_perez(pf + 10, theta, gamma, s[2][2], suntheta);
+	float Y = 6.666666667e-5f * nfade * hfade * gpu_sunsky_perez(pf, theta, gamma, s[2][0], suntheta);
+	if (s[1][2] != 0.0f) {
+		Y = 1.0f - expf(Y * s[1][2]);
+	}
+	xyz_to_rgb((x / y) * Y, Y, ((1.0f - x - y) / y) * Y, &r_rgb[0], &r_rgb[1], &r_rgb[2], (int)s[1][3]);
+}
+
+/* the sun's direction now (the game's lamp, or the object in the editor) */
+static void gpu_sunsky_bind(GPUMaterial *material)
+{
+	/* the environment light's colours: the world's... */
+	copy_v3_v3(GPUWorld.envhor, GPUWorld.horicol);
+	copy_v3_v3(GPUWorld.envzen, GPUWorld.zencol);
+	Object *ob = material->sunsky_ob ? material->sunsky_ob : material->envsky_ob;
+	if (!ob) {
+		return;
+	}
+	if (!material->is_game && BLI_findindex(&G.main->object, ob) < 0) {
+		material->sunsky_ob = NULL;
+		return;
+	}
+	float tosun[3];
+	if (material->is_game) {
+		GPULamp *lamp = GPU_lamp_from_blender(material->scene, ob, NULL);
+		copy_v3_v3(tosun, lamp ? lamp->vec : ob->obmat[2]);
+	}
+	else {
+		copy_v3_v3(tosun, ob->obmat[2]);
+	}
+	gpu_sunsky_compute((Lamp *)ob->data, tosun, GPUWorld.sunsky[0], GPUWorld.sunsky[1], GPUWorld.sunsky[2]);
+
+	/* ...with the sky blended over them (at the zenith, and around the
+	 * horizon) */
+	Lamp *la = (Lamp *)ob->data;
+	if (material->envsky_ob && (la->sun_effect_type & LA_SUN_EFFECT_SKY)) {
+		float zen[3], hor[3] = {0.0f, 0.0f, 0.0f}, c[3];
+		const float up[3] = {0.0f, 0.0f, 1.0f};
+		gpu_sunsky_radiance(up, GPUWorld.sunsky[0], GPUWorld.sunsky[1], zen);
+		for (int k = 0; k < 8; k++) {
+			const float a = (float)k * (float)M_PI / 4.0f;
+			const float d[3] = {cosf(a), sinf(a), 0.0f};
+			gpu_sunsky_radiance(d, GPUWorld.sunsky[0], GPUWorld.sunsky[1], c);
+			madd_v3_v3fl(hor, c, 1.0f / 8.0f);
+		}
+		gpu_ramp_blend_rgb(la->skyblendtype, GPUWorld.envzen, la->skyblendfac, zen);
+		gpu_ramp_blend_rgb(la->skyblendtype, GPUWorld.envhor, la->skyblendfac, hor);
+	}
+}
+
 void GPU_mist_update_enable(short enable)
 {
 	GPUWorld.mistenabled = (float)enable;
@@ -3193,9 +3410,13 @@ void GPU_shaderesult_set(GPUShadeInput *shi, GPUShadeResult *shr)
 							GPU_link(mat, "math_multiply", shi->amb, shi->refl, &f);
 							GPU_link(mat, "math_multiply", f, GPU_uniform(&world->ao_env_energy), &f);
 							GPU_link(mat, "shade_mul_value", f, shi->rgb, &fcol);
+							/* BGE-Remix P8 Part B (P8.17): a sun lamp's sky reaches it */
+							if (!mat->envsky_ob) {
+								mat->envsky_ob = gpu_sunsky_find(mat->scene, LA_SUN_EFFECT_SKY);
+							}
 							GPU_link(mat, "env_apply", shr->combined,
-							         GPU_dynamic_uniform(GPUWorld.horicol, GPU_DYNAMIC_HORIZON_COLOR, NULL),
-							         GPU_dynamic_uniform(GPUWorld.zencol, GPU_DYNAMIC_ZENITH_COLOR, NULL), fcol,
+							         GPU_dynamic_uniform(GPUWorld.envhor, GPU_DYNAMIC_HORIZON_COLOR, NULL),
+							         GPU_dynamic_uniform(GPUWorld.envzen, GPU_DYNAMIC_ZENITH_COLOR, NULL), fcol,
 							         GPU_builtin(GPU_VIEW_MATRIX), shi->vn, &shr->combined);
 						}
 					}
@@ -3244,10 +3465,23 @@ void GPU_shaderesult_set(GPUShadeInput *shi, GPUShadeResult *shr)
 		         GPU_dynamic_uniform(&GPUWorld.miststart, GPU_DYNAMIC_MIST_START, NULL),
 		         GPU_dynamic_uniform(&GPUWorld.mistdistance, GPU_DYNAMIC_MIST_DISTANCE, NULL),
 		         GPU_dynamic_uniform(&GPUWorld.mistype, GPU_DYNAMIC_MIST_TYPE, NULL),
-		         GPU_dynamic_uniform(&GPUWorld.mistintensity, GPU_DYNAMIC_MIST_INTENSITY, NULL), &mistfac);
+		         GPU_dynamic_uniform(&GPUWorld.mistintensity, GPU_DYNAMIC_MIST_INTENSITY, NULL),
+		         GPU_dynamic_uniform(&GPUWorld.misthi, GPU_DYNAMIC_MIST_INTENSITY, NULL),
+		         GPU_builtin(GPU_INVERSE_VIEW_MATRIX), &mistfac);
 
 		GPU_link(mat, "mix_blend", mistfac, shr->combined,
 		         GPU_dynamic_uniform(GPUWorld.mistcol, GPU_DYNAMIC_MIST_COLOR, NULL), &shr->combined);
+	}
+
+	/* BGE-Remix P8 Part B (P8.17): a sun lamp's Atmosphere effect (aerial
+	 * perspective, after the rest as F12 adds it) */
+	if (mat->type == GPU_MATERIAL_TYPE_MESH &&
+	    (mat->sunsky_ob || (mat->sunsky_ob = gpu_sunsky_find(mat->scene, LA_SUN_EFFECT_AP))))
+	{
+		GPU_link(mat, "shade_atmosphere", GPU_builtin(GPU_VIEW_POSITION),
+		         GPU_dynamic_uniform((float *)GPUWorld.sunsky[0], GPU_DYNAMIC_HORIZON_COLOR, NULL),
+		         GPU_dynamic_uniform((float *)GPUWorld.sunsky[2], GPU_DYNAMIC_HORIZON_COLOR, NULL),
+		         shr->combined, &shr->combined);
 	}
 
 	if (!mat->alpha) {
@@ -3360,6 +3594,21 @@ static void do_world_tex(GPUShadeInput *shi, struct World *wo, GPUNodeLink **hor
 		if (wo->mtex[tex_nr]) {
 			mtex = wo->mtex[tex_nr];
 			tex = mtex->tex;
+			/* BGE-Remix P8 Part B (P8.17): procedural textures too (View: the
+			 * view direction, Global and the maps: the world direction) */
+			if (tex && GPU_texture_is_procedural(tex)) {
+				int talpha = 0;
+				if (mtex->texco == TEXCO_VIEW)
+					texco = GPU_builtin(GPU_VIEW_POSITION);
+				else if (ELEM(mtex->texco, TEXCO_GLOB, TEXCO_EQUIRECTMAP, TEXCO_ANGMAP))
+					GPU_link(mat, "background_transform_to_world", GPU_builtin(GPU_VIEW_POSITION), &texco);
+				else
+					continue;
+				GPU_link(mat, "texco_norm", texco, &texco);
+				texco = gpu_procedural_mapping(mat, mtex, texco);
+				rgbnor = gpu_procedural_eval(mat, tex, texco, &tin, &trgb, &talpha) & TEX_RGB;
+				goto texture_output;
+			}
 			if (tex == NULL || !tex->ima || (tex->type != TEX_IMAGE && tex->type != TEX_ENVMAP))
 				continue;
 			/* which coords */
@@ -3416,6 +3665,7 @@ static void do_world_tex(GPUShadeInput *shi, struct World *wo, GPUNodeLink **hor
 			if (tex->type == TEX_IMAGE || tex->type == TEX_ENVMAP)
 				if (GPU_material_do_color_management(mat))
 					GPU_link(mat, "srgb_to_linearrgb", trgb, &trgb);
+texture_output:
 			/* texture output */
 			if ((rgbnor & TEX_RGB) && (mtex->texflag & MTEX_RGBTOINT)) {
 				GPU_link(mat, "mtex_rgbtoint", trgb, &tin);
@@ -3499,8 +3749,17 @@ static void gpu_material_old_world(struct GPUMaterial *mat, struct World *wo)
 			break;
 		}
 	}
+	/* BGE-Remix P8 Part B (P8.17): the game's world colours are the ones the
+	 * game sets (Python may change them); a sun lamp's sky over them */
+	float *horr = mat->is_game ? GPUWorld.horicol : &wo->horr;
+	float *zenr = mat->is_game ? GPUWorld.zencol : &wo->zenr;
+	mat->sunsky_ob = gpu_sunsky_find(mat->scene, LA_SUN_EFFECT_SKY);
+
 	if ((wo->skytype & (WO_SKYBLEND + WO_SKYTEX)) == 0) {
-		GPU_link(mat, "set_rgb", GPU_dynamic_uniform(&wo->horr, GPU_DYNAMIC_HORIZON_COLOR, NULL), &shr.combined);
+		GPU_link(mat, "set_rgb", GPU_dynamic_uniform(horr, GPU_DYNAMIC_HORIZON_COLOR, NULL), &shr.combined);
+		if (mat->sunsky_ob) {
+			GPU_link(mat, "background_transform_to_world", GPU_builtin(GPU_VIEW_POSITION), &ray);
+		}
 	}
 	else {
 		GPU_link(mat, "set_rgb_zero", &shi.rgb);
@@ -3526,8 +3785,8 @@ static void gpu_material_old_world(struct GPUMaterial *mat, struct World *wo)
 		else {
 			GPU_link(mat, "set_value_zero", &blend);
 		}
-		GPU_link(mat, "set_rgb", GPU_dynamic_uniform(&wo->horr, GPU_DYNAMIC_HORIZON_COLOR, NULL), &hor);
-		GPU_link(mat, "set_rgb", GPU_dynamic_uniform(&wo->zenr, GPU_DYNAMIC_ZENITH_COLOR, NULL), &zen);
+		GPU_link(mat, "set_rgb", GPU_dynamic_uniform(horr, GPU_DYNAMIC_HORIZON_COLOR, NULL), &hor);
+		GPU_link(mat, "set_rgb", GPU_dynamic_uniform(zenr, GPU_DYNAMIC_ZENITH_COLOR, NULL), &zen);
 		do_world_tex(&shi, wo, &hor, &zen, &blend);
 		if (wo->skytype & WO_SKYBLEND)
 			GPU_link(mat, "node_mix_shader", blend, hor, zen, &shi.rgb);
@@ -3535,22 +3794,29 @@ static void gpu_material_old_world(struct GPUMaterial *mat, struct World *wo)
 			GPU_link(mat, "set_rgb", hor, &shi.rgb);
 		GPU_link(mat, "set_rgb", shi.rgb, &shr.combined);
 	}
+	if (mat->sunsky_ob) {
+		GPU_link(mat, "world_sunsky", ray,
+		         GPU_dynamic_uniform((float *)GPUWorld.sunsky[0], GPU_DYNAMIC_HORIZON_COLOR, NULL),
+		         GPU_dynamic_uniform((float *)GPUWorld.sunsky[1], GPU_DYNAMIC_HORIZON_COLOR, NULL),
+		         shr.combined, &shr.combined);
+	}
 	GPU_material_output_link(mat, shr.combined);
 }
 
-GPUMaterial *GPU_material_world(struct Scene *scene, struct World *wo)
+static GPUMaterial *gpu_material_world_ex(struct Scene *scene, struct World *wo, bool for_game)
 {
 	LinkData *link;
 	GPUMaterial *mat;
 
 	for (link = wo->gpumaterial.first; link; link = link->next)
-		if (((GPUMaterial *)link->data)->scene == scene)
+		if (((GPUMaterial *)link->data)->scene == scene && ((GPUMaterial *)link->data)->is_game == for_game)
 			return link->data;
 
 	/* allocate material */
 	mat = GPU_material_construct_begin(NULL);
 	mat->scene = scene;
 	mat->type = GPU_MATERIAL_TYPE_WORLD;
+	mat->is_game = for_game;
 	
 	/* create nodes */
 	if (BKE_scene_use_new_shading_nodes(scene) && wo->nodetree && wo->use_nodes) {
@@ -3560,7 +3826,9 @@ GPUMaterial *GPU_material_world(struct Scene *scene, struct World *wo)
 		gpu_material_old_world(mat, wo);
 	}
 
-	if (GPU_material_do_color_management(mat))
+	/* BGE-Remix P8 Part B: Modern scenes stay linear (the pipeline's tone map) */
+	const bool modern = for_game && BKE_scene_game_pipeline(scene) == BKE_SCENE_GAME_PIPELINE_MODERN;
+	if (GPU_material_do_color_management(mat) && !modern)
 		if (mat->outlink)
 			GPU_link(mat, "linearrgb_to_srgb", mat->outlink, &mat->outlink);
 
@@ -3575,6 +3843,44 @@ GPUMaterial *GPU_material_world(struct Scene *scene, struct World *wo)
 	BLI_addtail(&wo->gpumaterial, link);
 
 	return mat;
+}
+
+GPUMaterial *GPU_material_world(struct Scene *scene, struct World *wo)
+{
+	return gpu_material_world_ex(scene, wo, false);
+}
+
+/* BGE-Remix P8 Part B (P8.17): the world drawn behind everything: bound with
+ * the current matrices (the view), drawn over the whole viewport without
+ * touching the depth */
+bool GPU_material_world_draw(GPUMaterial *mat, int viewlay, double time, float viewmat[4][4],
+                             float viewinv[4][4])
+{
+	GPU_material_bind(mat, ~0, viewlay, time, 1, viewmat, viewinv, NULL, false);
+	if (!GPU_material_bound(mat)) {
+		return false;
+	}
+	const unsigned int program = GPU_shader_program(GPU_pass_shader(mat->pass));
+	GPU_old_builtins(program, NULL);
+	GLboolean depthmask;
+	glGetBooleanv(GL_DEPTH_WRITEMASK, &depthmask);
+	const GLboolean depthtest = glIsEnabled(GL_DEPTH_TEST);
+	glDisable(GL_DEPTH_TEST);
+	glDepthMask(GL_FALSE);
+	GPU_draw_fullscreen_triangle();
+	glDepthMask(depthmask);
+	if (depthtest) {
+		glEnable(GL_DEPTH_TEST);
+	}
+	GPU_material_unbind(mat);
+	return true;
+}
+
+/* BGE-Remix P8 Part B (P8.17): the world for the game's background (the
+ * game's front end and colours) */
+GPUMaterial *GPU_material_world_game(struct Scene *scene, struct World *wo)
+{
+	return gpu_material_world_ex(scene, wo, true);
 }
 
 

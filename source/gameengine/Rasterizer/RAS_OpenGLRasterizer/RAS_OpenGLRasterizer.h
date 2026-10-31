@@ -245,6 +245,7 @@ public:
 	
 	virtual void SetFog(short type, float start, float dist, float intensity, float color[3]);
 	virtual void EnableFog(bool enable);
+	virtual void SetFogHeight(float height);
 	virtual void DisplayFog();
 
 	virtual void SetBackColor(float color[3]);

@@ -240,6 +240,10 @@ GPUBlendMode GPU_material_alpha_blend(GPUMaterial *material, float obcol[4]);
 
 /* High level functions to create and use GPU materials */
 GPUMaterial *GPU_material_world(struct Scene *scene, struct World *wo);
+/* BGE-Remix P8 Part B (P8.17): the world as the game's background */
+GPUMaterial *GPU_material_world_game(struct Scene *scene, struct World *wo);
+bool GPU_material_world_draw(GPUMaterial *mat, int viewlay, double time, float viewmat[4][4],
+                             float viewinv[4][4]);
 
 GPUMaterial *GPU_material_from_blender(struct Scene *scene, struct Material *ma, bool use_opensubdiv);
 /* BGE-Remix P8.4: for_game: the game's own material (its shader reads the
@@ -442,6 +446,8 @@ GPUNodeLink *GPU_lamp_get_data(
 
 /* World */
 void GPU_mist_update_enable(short enable);
+/* BGE-Remix P8 Part B (P8.17): the height above which there is no mist (0: none) */
+void GPU_mist_update_height(float height);
 void GPU_mist_update_values(int type, float start, float dist, float inten, float color[3]);
 void GPU_horizon_update_color(float color[3]);
 void GPU_ambient_update_color(float color[3]);

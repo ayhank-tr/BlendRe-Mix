@@ -226,6 +226,11 @@ void RAS_OpenGLRasterizer::SetBackColor(float color[3])
 	m_alphaback = 0.0f;
 }
 
+void RAS_OpenGLRasterizer::SetFogHeight(float height)
+{
+	m_state.fog_height = height;
+}
+
 void RAS_OpenGLRasterizer::SetFog(short type, float start, float dist, float intensity, float color[3])
 {
 	/* BGE-Remix P8 Part B: the game's state, not glFog */
@@ -1021,6 +1026,9 @@ void RAS_OpenGLRasterizer::SetViewMatrix(const MT_Matrix4x4 &mat,
 	}
 	m_viewinvmatrix = m_viewmatrix;
 	m_viewinvmatrix.invert();
+	/* BGE-Remix P8 Part B (P8.17): a point's height from its eye position */
+	for (int k = 0; k < 4; k++)
+		m_state.fog_hrow[k] = (float)m_viewinvmatrix[2][k];
 
 	// note: getValue gives back column major as needed by OpenGL
 	MT_Scalar glviewmat[16];

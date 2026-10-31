@@ -44,6 +44,9 @@
 /* This list includes only data type definitions */
 #include "DNA_scene_types.h"
 #include "DNA_world_types.h"
+#include "DNA_lamp_types.h"
+#include "DNA_object_types.h"
+#include "DNA_texture_types.h"
 
 #include "BLI_math.h"
 
@@ -68,10 +71,34 @@ KX_WorldInfo::KX_WorldInfo(Scene *blenderscene, World *blenderworld)
 		setMistColor(blenderworld->horr, blenderworld->horg, blenderworld->horb);
 		setBackColor(blenderworld->horr, blenderworld->horg, blenderworld->horb);
 		setAmbientColor(blenderworld->ambr, blenderworld->ambg, blenderworld->ambb);
+		/* BGE-Remix P8 Part B (P8.17) */
+		m_zenithcolor[0] = blenderworld->zenr;
+		m_zenithcolor[1] = blenderworld->zeng;
+		m_zenithcolor[2] = blenderworld->zenb;
+		m_misthi = blenderworld->misthi;
+		m_drawsky = (blenderworld->skytype & (WO_SKYBLEND | WO_SKYTEX)) != 0;
+		for (int i = 0; i < MAX_MTEX && !m_drawsky; i++) {
+			if (blenderworld->mtex[i] && blenderworld->mtex[i]->tex)
+				m_drawsky = true;
+		}
+		Scene *sce_iter;
+		Base *base;
+		for (SETLOOPER(blenderscene, sce_iter, base)) {
+			Object *ob = base->object;
+			if (ob->type == OB_LAMP && ob->data && ((Lamp *)ob->data)->type == LA_SUN &&
+			    (((Lamp *)ob->data)->sun_effect_type & LA_SUN_EFFECT_SKY))
+			{
+				m_drawsky = true;
+			}
+		}
 	}
 	else {
 		m_hasworld = false;
+		m_drawsky = false;
+		m_misthi = 0.0f;
 	}
+	m_blenderscene = blenderscene;
+	m_blenderworld = blenderworld;
 }
 
 KX_WorldInfo::~KX_WorldInfo()
@@ -167,6 +194,7 @@ void KX_WorldInfo::UpdateBackGround()
 		if (m_rasterizer->GetDrawingMode() >= RAS_IRasterizer::KX_SOLID) {
 			m_rasterizer->SetBackColor(m_con_backgroundcolor);
 			GPU_horizon_update_color(m_backgroundcolor);
+			GPU_zenith_update_color(m_zenithcolor);
 		}
 	}
 }
@@ -183,6 +211,8 @@ void KX_WorldInfo::UpdateWorldSettings()
 			if (m_hasmist) {
 				m_rasterizer->SetFog(m_misttype, m_miststart, m_mistdistance, m_mistintensity, m_con_mistcolor);
 				GPU_mist_update_values(m_misttype, m_miststart, m_mistdistance, m_mistintensity, m_mistcolor);
+				GPU_mist_update_height(m_misthi);
+				m_rasterizer->SetFogHeight(m_misthi);
 				m_rasterizer->EnableFog(true);
 				GPU_mist_update_enable(true);
 			}
@@ -192,6 +222,17 @@ void KX_WorldInfo::UpdateWorldSettings()
 			}
 		}
 	}
+}
+
+void KX_WorldInfo::RenderBackground(RAS_IRasterizer *rasty)
+{
+	if (!m_hasworld || !m_drawsky || !m_blenderworld || rasty->GetDrawingMode() != RAS_IRasterizer::KX_TEXTURED)
+		return;
+	GPUMaterial *mat = GPU_material_world_game(m_blenderscene, m_blenderworld);
+	float viewmat[4][4], viewinv[4][4];
+	rasty->GetViewMatrix().getValue(&viewmat[0][0]);
+	rasty->GetViewInvMatrix().getValue(&viewinv[0][0]);
+	GPU_material_world_draw(mat, m_blenderscene->lay, KX_GetActiveEngine()->GetClockTime(), viewmat, viewinv);
 }
 
 #ifdef WITH_PYTHON
@@ -238,6 +279,7 @@ PyAttributeDef KX_WorldInfo::Attributes[] = {
 	KX_PYATTRIBUTE_FLOAT_RW("mistStart", 0.0f, 10000.0f, KX_WorldInfo, m_miststart),
 	KX_PYATTRIBUTE_FLOAT_RW("mistDistance", 0.001f, 10000.0f, KX_WorldInfo, m_mistdistance),
 	KX_PYATTRIBUTE_FLOAT_RW("mistIntensity", 0.0f, 1.0f, KX_WorldInfo, m_mistintensity),
+	KX_PYATTRIBUTE_FLOAT_RW("mistHeight", 0.0f, 10000.0f, KX_WorldInfo, m_misthi),  /* BGE-Remix P8 Part B */
 	KX_PYATTRIBUTE_SHORT_RW("mistType", 0, 2, true, KX_WorldInfo, m_misttype),
 	KX_PYATTRIBUTE_RO_FUNCTION("KX_MIST_QUADRATIC", KX_WorldInfo, pyattr_get_mist_typeconst),
 	KX_PYATTRIBUTE_RO_FUNCTION("KX_MIST_LINEAR", KX_WorldInfo, pyattr_get_mist_typeconst),

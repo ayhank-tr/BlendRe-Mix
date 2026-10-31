@@ -315,6 +315,8 @@ public:
 	virtual void SetFog(short type, float start, float dist, float intensity, float color[3]) = 0;
 	virtual void DisplayFog() = 0;
 	virtual void EnableFog(bool enable) = 0;
+	/* BGE-Remix P8 Part B (P8.17): no mist above this height (0: none) */
+	virtual void SetFogHeight(float height) = 0;
 
 	virtual void SetBackColor(float color[3]) = 0;
 	
