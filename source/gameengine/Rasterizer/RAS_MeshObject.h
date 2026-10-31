@@ -59,6 +59,7 @@ private:
 
 	bool						m_bModified;
 	bool						m_bMeshModified;
+	bool						m_cpuVertices;  /* BGE-Remix P8 Part B (P8.13) */
 
 	STR_String					m_name;
 	static STR_String			s_emptyname;
@@ -102,6 +103,10 @@ public:
 	/* modification state */
 	bool				MeshModified();
 	void				SetMeshModified(bool v) { m_bMeshModified = v; }
+	/* BGE-Remix P8 Part B (P8.13): Python asked for the mesh's vertices, so
+	 * its deformed copies are made on the CPU, as stock 2.79 made them */
+	void				WantCPUVertices() { m_cpuVertices = true; }
+	bool				CPUVerticesWanted() const { return m_cpuVertices; }
 
 	/* original blender mesh */
 	Mesh*				GetMesh() { return m_mesh; }

@@ -184,6 +184,9 @@ PyObject *KX_MeshProxy::PyGetVertex(PyObject *args, PyObject *kwds)
 	if (!PyArg_ParseTuple(args,"ii:getVertex",&matindex,&vertexindex))
 		return NULL;
 	
+	/* BGE-Remix P8 Part B (P8.13): deformed copies of this mesh are made on
+	 * the CPU from now on (not by GPU skinning) */
+	m_meshobj->WantCPUVertices();
 	RAS_TexVert* vertex = m_meshobj->GetVertex(matindex,vertexindex);
 	
 	if (vertex==NULL) {

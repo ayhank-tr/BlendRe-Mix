@@ -126,7 +126,23 @@ public:
 		return false;
 	}
 
+	/* BGE-Remix P8 Part B (P8.13): the mesh deformed on the graphics card */
+	virtual struct RAS_GPUSkin *GetGPUSkin();
+
 protected:
+	struct RAS_GPUSkin *m_gpuskin;
+	int m_gpustate;  /* 0: not decided, 1: on the graphics card, -1: on the CPU */
+	/* whether this deformer deforms on the graphics card (made the first time) */
+	bool GPUSkinActive();
+	bool BuildGPUSkin();
+	/* the bone matrices and key values of this frame (true: changed) */
+	bool UpdateGPUSkin();
+	/* the shape keys (BL_ShapeDeformer): made (false: they need the CPU), and
+	 * this frame's values (true: changed) */
+	virtual bool GPUSkinKeys(bool build) { return build; }
+	/* a deformer of a derived mesh (modifiers) draws its own arrays */
+	virtual bool GPUSkinAllowed() { return true; }
+
 	BL_ArmatureObject*		m_armobj;	//	Our parent object
 	float					m_time;
 	double					m_lastArmaUpdate;

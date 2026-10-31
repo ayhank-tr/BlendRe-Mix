@@ -39,6 +39,7 @@
 #include "STR_HashedString.h"
 #include "RAS_IPolygonMaterial.h"
 #include "RAS_MeshObject.h"
+#include "RAS_GPUSkin.h"
 
 #include "DNA_anim_types.h"
 #include "DNA_armature_types.h"
@@ -177,6 +178,12 @@ bool BL_ShapeDeformer::Update(void)
 
 	ExecuteShapeDrivers();
 
+	/* BGE-Remix P8 Part B (P8.13): the keys and bones go to the graphics card */
+	if (GPUSkinActive()) {
+		UpdateGPUSkin();
+		return false;
+	}
+
 	/* See if the object shape has changed */
 	if (m_lastShapeUpdate != m_gameobj->GetLastFrame()) {
 		/* the key coefficient have been set already, we just need to blend the keys */
@@ -233,6 +240,67 @@ bool BL_ShapeDeformer::Update(void)
 	}
 
 	return bSkinUpdate;
+}
+
+/* BGE-Remix P8 Part B (P8.13): each key as its difference from the key it is
+ * relative to; the CPU keeps keys that a vertex group weights, and absolute
+ * keys. Each frame: the keys' values (true when they changed). */
+bool BL_ShapeDeformer::GPUSkinKeys(bool build)
+{
+	RAS_GPUSkin *skin = m_gpuskin;
+	if (!m_key || !skin)
+		return true;
+	if (build) {
+		if (m_key->type != KEY_RELATIVE || !m_key->refkey)
+			return false;
+		const int nverts = skin->nverts;
+		int n = 0;
+		for (KeyBlock *kb = (KeyBlock *)m_key->block.first; kb; kb = kb->next) {
+			if (kb == m_key->refkey)
+				continue;
+			if (kb->vgroup[0] || kb->totelem != nverts)
+				return false;
+			n++;
+		}
+		skin->nkeys = n;
+		skin->keys.assign((size_t)n * nverts * 4, 0.0f);
+		skin->keyvalues.assign((size_t)n, 0.0f);
+		int k = 0;
+		for (KeyBlock *kb = (KeyBlock *)m_key->block.first; kb; kb = kb->next) {
+			if (kb == m_key->refkey)
+				continue;
+			KeyBlock *rel = (KeyBlock *)BLI_findlink(&m_key->block, kb->relative);
+			if (!rel)
+				rel = m_key->refkey;
+			const float *to = (const float *)kb->data, *from = (const float *)rel->data;
+			for (int v = 0; v < nverts; v++) {
+				float *d = &skin->keys[((size_t)k * nverts + v) * 4];
+				if (to && from)
+					sub_v3_v3v3(d, &to[v * 3], &from[v * 3]);
+			}
+			k++;
+		}
+		/* the basis is the reference key's */
+		const float *basis = (const float *)m_key->refkey->data;
+		if (basis && m_key->refkey->totelem == nverts) {
+			for (int v = 0; v < nverts; v++)
+				copy_v3_v3(&skin->rest[(size_t)v * 8], &basis[v * 3]);
+		}
+		return true;
+	}
+	bool changed = false;
+	int k = 0;
+	for (KeyBlock *kb = (KeyBlock *)m_key->block.first; kb && k < skin->nkeys; kb = kb->next) {
+		if (kb == m_key->refkey)
+			continue;
+		const float value = (kb->flag & KEYBLOCK_MUTE) ? 0.0f : kb->curval;
+		if (skin->keyvalues[k] != value) {
+			skin->keyvalues[k] = value;
+			changed = true;
+		}
+		k++;
+	}
+	return changed;
 }
 
 Key *BL_ShapeDeformer::GetKey()

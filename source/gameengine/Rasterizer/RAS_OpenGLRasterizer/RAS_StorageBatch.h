@@ -37,6 +37,8 @@
  * solid modes, or a custom shader whose translation did not build) gets
  * the old arrays, and the old alpha test, while the compatibility context
  * lasts. A derived mesh (modifiers) is drawn from its slot's own arrays.
+ * BGE-Remix P8 Part B (P8.13): a mesh its deformer gives a RAS_GPUSkin is
+ * deformed by compute passes, which write its arrays' buffers on the card.
  */
 
 #ifndef __RAS_STORAGEBATCH_H__
@@ -116,6 +118,14 @@ protected:
 	int m_inst_draws, m_inst_objects;
 	void DrawArray(RAS_MeshSlot& ms, RAS_DisplayArray *array, unsigned short *index, size_t totindex,
 	               unsigned int program, const ProgramInfo& pi, bool own, bool modified, bool zsort);
+
+	/* GPU skinning (P8.13): the compute passes (0 untried, 1 made, -1 failed),
+	 * and the slot's arrays deformed on the card before they are drawn */
+	unsigned int m_skinprog[4];
+	int m_skinloc[4][17];
+	int m_skinstate;
+	bool SkinPrograms();
+	void SkinArrays(RAS_MeshSlot& ms, struct RAS_GPUSkin *skin, bool modified);
 
 #ifdef WITH_CXX_GUARDEDALLOC
 public:

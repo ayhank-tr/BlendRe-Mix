@@ -46,6 +46,11 @@
 #include "STR_HashedString.h"
 #include "RAS_IPolygonMaterial.h"
 #include "RAS_MeshObject.h"
+#include "RAS_GPUSkin.h"
+#include "GPU_glew.h"
+extern "C" {
+#include "GPU_layer.h"
+}
 
 //#include "BL_ArmatureController.h"
 #include "DNA_armature_types.h"
@@ -101,7 +106,9 @@ BL_SkinDeformer::BL_SkinDeformer(BL_DeformableGameObject *gameobj,
 							m_recalcNormal(true),
 							m_copyNormals(false),
 							m_dfnrToPC(NULL),
-							m_remixGPU(false)
+							m_remixGPU(false),
+							m_gpuskin(NULL),
+							m_gpustate(0)
 {
 	copy_m4_m4(m_obmat, bmeshobj->obmat);
 	m_deformflags = get_deformflags(bmeshobj);
@@ -124,7 +131,9 @@ BL_SkinDeformer::BL_SkinDeformer(
 		m_poseApplied(false),
 		m_copyNormals(false),
 		m_dfnrToPC(NULL),
-		m_remixGPU(false)
+		m_remixGPU(false),
+		m_gpuskin(NULL),
+		m_gpustate(0)
 	{
 		// this is needed to ensure correct deformation of mesh:
 		// the deformation is done with Blender's armature_deform_verts() function
@@ -141,6 +150,7 @@ BL_SkinDeformer::~BL_SkinDeformer()
 		m_armobj->Release();
 	if (m_dfnrToPC)
 		delete [] m_dfnrToPC;
+	delete m_gpuskin;
 }
 
 void BL_SkinDeformer::Relink(CTR_Map<class CTR_HashedPtr, void*>*map)
@@ -180,6 +190,9 @@ void BL_SkinDeformer::ProcessReplica()
 {
 	BL_MeshDeformer::ProcessReplica();
 	m_lastArmaUpdate = -1;
+	/* the copy has its own arrays: its own GPU skin */
+	m_gpuskin = NULL;
+	m_gpustate = 0;
 	m_releaseobject = false;
 	m_dfnrToPC = NULL;
 	m_remixGPU = false;
@@ -498,6 +511,11 @@ bool BL_SkinDeformer::UpdateInternal(bool shape_applied)
 	if (m_remixGPU && !shape_applied) {
 		return false;
 	}
+	/* BGE-Remix P8 Part B (P8.13): the graphics card deforms the mesh */
+	if (GPUSkinActive()) {
+		UpdateGPUSkin();
+		return false;
+	}
 	/* See if the armature has been updated for this frame */
 	if (PoseUpdated()) {
 
@@ -548,4 +566,188 @@ void BL_SkinDeformer::SetArmature(BL_ArmatureObject *armobj)
 {
 	// only used to set the object now
 	m_armobj = armobj;
+}
+
+/* ------------------------------------------------------------------------- */
+/* BGE-Remix P8 Part B (P8.13): GPU skinning */
+
+RAS_GPUSkin *BL_SkinDeformer::GetGPUSkin()
+{
+	return (m_gpustate == 1 && !m_remixGPU) ? m_gpuskin : NULL;
+}
+
+bool BL_SkinDeformer::GPUSkinActive()
+{
+	if (m_gpustate == 0) {
+		m_gpustate = BuildGPUSkin() ? 1 : -1;
+		if (m_gpustate == 1)
+			printf("BGE-Remix: %s is deformed on the graphics card (%d vertices, %d groups, %d keys)\n",
+			       m_objMesh->id.name + 2, m_gpuskin->nverts, m_gpuskin->ngroups, m_gpuskin->nkeys);
+	}
+	if (m_gpustate == 1 && (!GPU_speed_feature("gpu_skinning") || m_pMeshObject->CPUVerticesWanted())) {
+		/* on the CPU from now on (the arrays are made again this frame) */
+		m_gpustate = -1;
+		delete m_gpuskin;
+		m_gpuskin = NULL;
+		ForceUpdate();
+		m_poseApplied = false;
+	}
+	return m_gpustate == 1;
+}
+
+bool BL_SkinDeformer::BuildGPUSkin()
+{
+	if (!GPUSkinAllowed() || !GPU_speed_feature("gpu_skinning") || !m_bmesh || !m_pMeshObject ||
+	    m_pMeshObject->CPUVerticesWanted() || m_remixGPU)
+	{
+		return false;
+	}
+	/* the armature: what RemixCanSkin allows (vertex groups, linear blending) */
+	if (m_armobj) {
+		std::string why;
+		if (!RemixCanSkin(why))
+			return false;
+	}
+
+	/* alpha-sorted faces are sorted on the CPU, from the CPU's vertices */
+	for (list<RAS_MeshMaterial>::iterator mit = m_pMeshObject->GetFirstMaterial();
+	     mit != m_pMeshObject->GetLastMaterial(); ++mit)
+	{
+		if (mit->m_bucket && mit->m_bucket->IsZSort())
+			return false;
+	}
+
+	RAS_GPUSkin *skin = new RAS_GPUSkin();
+	m_gpuskin = skin;
+	const int nverts = m_bmesh->totvert;
+	skin->nverts = nverts;
+	skin->rest.resize((size_t)nverts * 8);
+	for (int v = 0; v < nverts; v++) {
+		float n[3];
+		normal_short_to_float_v3(n, m_bmesh->mvert[v].no);
+		float *r = &skin->rest[(size_t)v * 8];
+		copy_v3_v3(r, m_bmesh->mvert[v].co);
+		r[3] = 1.0f;
+		copy_v3_v3(r + 4, n);
+		r[7] = 0.0f;
+	}
+
+	/* every deforming vertex group weight */
+	skin->woffset.assign((size_t)nverts + 1, 0);
+	if (m_armobj && m_bmesh->dvert) {
+		m_armobj->ApplyPose();
+		InitGroupMap();
+		m_armobj->RestorePose();
+		const int groups = BLI_listbase_count(&m_objMesh->defbase);
+		skin->ngroups = groups;
+		MDeformVert *dv = m_bmesh->dvert;
+		for (int v = 0; v < nverts; v++, dv++) {
+			skin->woffset[v] = (unsigned int)(skin->weights.size() / 2);
+			MDeformWeight *dw = dv->dw;
+			for (int j = 0; j < dv->totweight; j++, dw++) {
+				if (dw->def_nr < groups && m_dfnrToPC[dw->def_nr] && dw->weight > 0.0f) {
+					unsigned int bits;
+					memcpy(&bits, &dw->weight, sizeof(bits));
+					skin->weights.push_back((unsigned int)dw->def_nr);
+					skin->weights.push_back(bits);
+				}
+			}
+		}
+		skin->woffset[nverts] = (unsigned int)(skin->weights.size() / 2);
+		skin->bones.assign((size_t)groups * 32, 0.0f);
+	}
+
+	if (!GPUSkinKeys(true)) {
+		delete skin;
+		m_gpuskin = NULL;
+		return false;
+	}
+
+	/* normals as the CPU makes them: the strongest bone's (BGE's own skinning),
+	 * made again from the faces (Blender's, and shape keys), or kept */
+	if (m_armobj && m_armobj->GetVertDeformType() == ARM_VDEF_BGE_CPU)
+		skin->normals = RAS_GPUSkin::NORMALS_BONE;
+	else if (m_recalcNormal)
+		skin->normals = RAS_GPUSkin::NORMALS_FACES;
+	else
+		skin->normals = RAS_GPUSkin::NORMALS_REST;
+
+	/* the faces of every material, and each array's vertices */
+	std::vector<std::vector<unsigned int> > vfaces((size_t)nverts);
+	for (list<RAS_MeshMaterial>::iterator mit = m_pMeshObject->GetFirstMaterial();
+	     mit != m_pMeshObject->GetLastMaterial(); ++mit)
+	{
+		if (!mit->m_slots[(void *)m_gameobj])
+			continue;
+		RAS_MeshSlot *slot = *mit->m_slots[(void *)m_gameobj];
+		RAS_MeshSlot::iterator it;
+		for (slot->begin(it); !slot->end(it); slot->next(it)) {
+			RAS_GPUSkin::Array &arr = skin->arrays[it.array];
+			if (arr.orig.empty()) {
+				arr.orig.resize(it.array->m_vertex.size());
+				arr.face.assign(it.array->m_vertex.size(), ~0u);
+				for (size_t i = 0; i < it.array->m_vertex.size(); i++)
+					arr.orig[i] = it.array->m_vertex[i].getOrigIndex();
+			}
+			const int nvert = (int)it.array->m_type;
+			if (nvert < 3)
+				continue;
+			for (size_t i = 0; i + nvert <= it.totindex; i += nvert) {
+				const unsigned int face = (unsigned int)(skin->faces.size() / 4);
+				for (int k = 0; k < 4; k++) {
+					if (k < nvert) {
+						const unsigned short di = it.index[i + k];
+						const unsigned int mv = it.array->m_vertex[di].getOrigIndex();
+						skin->faces.push_back(mv);
+						if (mv < (unsigned int)nverts)
+							vfaces[mv].push_back(face);
+						if (it.array->m_vertex[di].getFlag() & RAS_TexVert::FLAT)
+							arr.face[di] = face;
+					}
+					else {
+						skin->faces.push_back(~0u);
+					}
+				}
+			}
+		}
+	}
+	skin->vfoffset.resize((size_t)nverts + 1);
+	for (int v = 0; v < nverts; v++) {
+		skin->vfoffset[v] = (unsigned int)skin->vfaces.size();
+		skin->vfaces.insert(skin->vfaces.end(), vfaces[v].begin(), vfaces[v].end());
+	}
+	skin->vfoffset[nverts] = (unsigned int)skin->vfaces.size();
+
+	UpdateGPUSkin();
+	return true;
+}
+
+bool BL_SkinDeformer::UpdateGPUSkin()
+{
+	RAS_GPUSkin *skin = m_gpuskin;
+	bool changed = GPUSkinKeys(false);
+	if (m_armobj && skin->ngroups > 0 && PoseUpdated()) {
+		m_armobj->ApplyPose();
+		InitGroupMap();
+		/* as BGEDeformVerts: mesh space to armature space, the pose channel,
+		 * and back; and the channel's own matrix (BGE's normals) */
+		Eigen::Matrix4f post_mat = Eigen::Matrix4f::Map((float*)m_obmat).inverse() *
+		                           Eigen::Matrix4f::Map((float*)m_armobj->GetArmatureObject()->obmat);
+		Eigen::Matrix4f pre_mat = post_mat.inverse();
+		for (int i = 0; i < skin->ngroups; i++) {
+			Eigen::Matrix4f m = Eigen::Matrix4f::Identity(), c = Eigen::Matrix4f::Identity();
+			if (m_dfnrToPC[i]) {
+				c = Eigen::Matrix4f::Map((float*)m_dfnrToPC[i]->chan_mat);
+				m = post_mat * c * pre_mat;
+			}
+			memcpy(&skin->bones[(size_t)i * 32], m.data(), sizeof(float) * 16);
+			memcpy(&skin->bones[(size_t)i * 32 + 16], c.data(), sizeof(float) * 16);
+		}
+		m_armobj->RestorePose();
+		m_lastArmaUpdate = m_armobj->GetLastFrame();
+		changed = true;
+	}
+	if (changed)
+		skin->frame++;
+	return changed;
 }

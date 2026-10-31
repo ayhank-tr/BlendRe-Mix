@@ -90,6 +90,8 @@ public:
 	{
 		return false;
 	}
+	/* BGE-Remix P8 Part B: the derived mesh draws its own arrays */
+	virtual bool GPUSkinAllowed() { return false; }
 
 	bool Update (void);
 	bool Apply(RAS_IPolyMaterial *mat);

@@ -103,6 +103,7 @@ STR_String RAS_MeshObject::s_emptyname = "";
 RAS_MeshObject::RAS_MeshObject(Mesh* mesh)
 	: m_bModified(true),
 	m_bMeshModified(true),
+	m_cpuVertices(false),
 	m_mesh(mesh)
 {
 	if (m_mesh && m_mesh->key)

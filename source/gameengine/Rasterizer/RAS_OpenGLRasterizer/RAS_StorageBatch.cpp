@@ -26,9 +26,12 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <string>
 #include <vector>
 
 #include "RAS_StorageBatch.h"
+#include "RAS_Deformer.h"
+#include "RAS_GPUSkin.h"
 #include "RAS_GPUCulling.h"
 #include "RAS_MaterialBucket.h"
 #include "RAS_MeshObject.h"
@@ -69,6 +72,7 @@ struct RAS_BatchArray {
 	RAS_BatchLayout layouts[RAS_BATCH_VAOS];
 	int next;
 	float center[3], radius;  /* the vertices' bounding sphere (local) */
+	unsigned int skinned;     /* the GPU skin frame its buffer holds (0: the CPU's vertices) */
 };
 
 /* the offsets inside RAS_TexVert */
@@ -164,8 +168,11 @@ RAS_StorageBatch::RAS_StorageBatch(int *texco_num, RAS_IRasterizer::TexCoGen *te
     m_visused(0),
     m_culling(NULL),
     m_inst_draws(0),
-    m_inst_objects(0)
+    m_inst_objects(0),
+    m_skinstate(0)
 {
+	memset(m_skinprog, 0, sizeof(m_skinprog));
+	memset(m_skinloc, -1, sizeof(m_skinloc));
 	RAS_DisplayArray::s_storage_free = batch_array_free;
 }
 
@@ -195,6 +202,12 @@ void RAS_StorageBatch::Exit()
 			glDeleteBuffers(1, &bufs[i]);
 	}
 	m_instbuf = m_cmdbuf = m_visbuf = 0;
+	for (int i = 0; i < 4; i++) {
+		if (m_skinprog[i])
+			glDeleteProgram(m_skinprog[i]);
+		m_skinprog[i] = 0;
+	}
+	m_skinstate = 0;
 }
 
 void RAS_StorageBatch::BeginFrame()
@@ -278,6 +291,7 @@ RAS_BatchArray *RAS_StorageBatch::GetArray(RAS_DisplayArray *array)
 void RAS_StorageBatch::UploadVertices(RAS_BatchArray *ba)
 {
 	batch_copy_in(ba->vbo, 0, &ba->array->m_vertex[0], ba->nverts * sizeof(RAS_TexVert));
+	ba->skinned = 0;
 }
 
 void RAS_StorageBatch::UploadIndices(RAS_BatchArray *ba, size_t first, size_t count)
@@ -538,6 +552,11 @@ void RAS_StorageBatch::IndexPrimitives(RAS_MeshSlot& ms)
 	const bool modified = ms.m_mesh && ms.m_mesh->MeshModified();
 	const bool zsort = ms.m_bucket && ms.m_bucket->IsZSort() && m_drawingmode >= RAS_IRasterizer::KX_SOLID;
 
+	/* BGE-Remix P8 Part B (P8.13): a mesh deformed on the graphics card */
+	RAS_GPUSkin *skin = ms.m_pDeformer ? ms.m_pDeformer->GetGPUSkin() : NULL;
+	if (skin && !ms.m_pDerivedArrays)
+		SkinArrays(ms, skin, modified);
+
 	/* the shader: the bound one; with none, the built-in depth shader for
 	 * shadow maps, and the classic look for the rest (a material whose
 	 * shader could not be built, Multitexture materials, and the solid,
@@ -751,4 +770,370 @@ bool RAS_StorageBatch::IndexPrimitivesInstanced(std::vector<RAS_MeshSlot *>& slo
 	}
 	glProgramUniform1i((GLuint)bound, pi.instanced, 0);
 	return true;
+}
+
+/* ------------------------------------------------------------------------ */
+/* BGE-Remix P8 Part B (P8.13): GPU skinning */
+
+/* BGE-Remix P8 Part B (P8.13): GPU skinning's compute passes. Storage
+ * buffers: 0 the mesh's static data (uint words), 1 this frame's bones and
+ * key values (floats), 2 the scratch (per mesh vertex position and normal,
+ * per face normal), 3 the array's map (per array vertex: mesh vertex, flat
+ * face), 4 the array's vertex buffer (RAS_TexVert as floats). */
+static const char *skin_cs_common =
+        "layout(local_size_x = 64) in;\n"
+        "layout(std430, binding = 0) readonly buffer Static { uint st[]; };\n"
+        "layout(std430, binding = 1) readonly buffer Frame { float fr[]; };\n"
+        "layout(std430, binding = 2) buffer Scratch { vec4 sc[]; };\n"
+        "layout(std430, binding = 3) readonly buffer Map { uint mp[]; };\n"
+        "layout(std430, binding = 4) buffer Verts { float vb[]; };\n"
+        "uniform uint nverts, nfaces, ngroups, nkeys;\n"
+        "uniform uint o_rest, o_woff, o_w, o_keys, o_faces, o_vfoff, o_vfaces, o_keyvals;\n"
+        "uniform int normals;\n"
+        "uniform uint count, stride, posofs, norofs;\n"
+        "float sf(uint i) { return uintBitsToFloat(st[i]); }\n"
+        "vec3 sv3(uint i) { return vec3(sf(i), sf(i + 1u), sf(i + 2u)); }\n"
+        "mat4 bone(uint g, uint which)\n"
+        "{\n"
+        "	uint b = g * 32u + which * 16u;\n"
+        "	return mat4(fr[b], fr[b + 1u], fr[b + 2u], fr[b + 3u], fr[b + 4u], fr[b + 5u], fr[b + 6u], fr[b + 7u],\n"
+        "	            fr[b + 8u], fr[b + 9u], fr[b + 10u], fr[b + 11u], fr[b + 12u], fr[b + 13u], fr[b + 14u], fr[b + 15u]);\n"
+        "}\n";
+
+/* pass 1: per mesh vertex, the keys and the bones */
+static const char *skin_cs_deform =
+        "void main()\n"
+        "{\n"
+        "	uint v = gl_GlobalInvocationID.x;\n"
+        "	if (v >= nverts) return;\n"
+        "	vec3 p = sv3(o_rest + v * 8u);\n"
+        "	vec3 n = sv3(o_rest + v * 8u + 4u);\n"
+        "	for (uint k = 0u; k < nkeys; k++) {\n"
+        "		float w = fr[o_keyvals + k];\n"
+        "		if (w != 0.0) p += w * sv3(o_keys + (k * nverts + v) * 4u);\n"
+        "	}\n"
+        "	if (ngroups > 0u) {\n"
+        "		uint a = st[o_woff + v], b = st[o_woff + v + 1u];\n"
+        "		vec3 acc = vec3(0.0);\n"
+        "		float contrib = 0.0, maxw = -1.0;\n"
+        "		uint maxg = 0u;\n"
+        "		for (uint j = a; j < b; j++) {\n"
+        "			uint g = st[o_w + j * 2u];\n"
+        "			float w = sf(o_w + j * 2u + 1u);\n"
+        "			if (g >= ngroups || w <= 0.0) continue;\n"
+        "			acc += ((bone(g, 0u) * vec4(p, 1.0)).xyz - p) * w;\n"
+        "			contrib += w;\n"
+        "			if (w > maxw) { maxw = w; maxg = g; }\n"
+        "		}\n"
+        "		if (contrib > 0.0001) p += acc / contrib;\n"
+        "		if (normals == 1 && maxw > 0.0) n = mat3(bone(maxg, 1u)) * n;\n"
+        "	}\n"
+        "	sc[v] = vec4(p, 1.0);\n"
+        "	sc[nverts + v] = vec4(n, 0.0);\n"
+        "}\n";
+
+/* pass 2: per face, its normal (as BL_MeshDeformer::RecalcNormals) */
+static const char *skin_cs_facenormals =
+        "void main()\n"
+        "{\n"
+        "	uint f = gl_GlobalInvocationID.x;\n"
+        "	if (f >= nfaces) return;\n"
+        "	uint i0 = st[o_faces + f * 4u], i1 = st[o_faces + f * 4u + 1u];\n"
+        "	uint i2 = st[o_faces + f * 4u + 2u], i3 = st[o_faces + f * 4u + 3u];\n"
+        "	vec3 c1 = sc[i0].xyz, c2 = sc[i1].xyz, c3 = sc[i2].xyz;\n"
+        "	vec3 n1, n2;\n"
+        "	if (i3 != 0xFFFFFFFFu) { vec3 c4 = sc[i3].xyz; n1 = c1 - c3; n2 = c2 - c4; }\n"
+        "	else { n1 = c1 - c2; n2 = c2 - c3; }\n"
+        "	vec3 fn = cross(n1, n2);\n"
+        "	float l = length(fn);\n"
+        "	sc[2u * nverts + f] = vec4(l > 0.0 ? fn / l : fn, 0.0);\n"
+        "}\n";
+
+/* pass 3: per mesh vertex, the sum of its faces' normals */
+static const char *skin_cs_smooth =
+        "void main()\n"
+        "{\n"
+        "	uint v = gl_GlobalInvocationID.x;\n"
+        "	if (v >= nverts) return;\n"
+        "	vec3 n = vec3(0.0);\n"
+        "	for (uint j = st[o_vfoff + v]; j < st[o_vfoff + v + 1u]; j++)\n"
+        "		n += sc[2u * nverts + st[o_vfaces + j]].xyz;\n"
+        "	sc[nverts + v] = vec4(n, 0.0);\n"
+        "}\n";
+
+/* pass 4: per array vertex, into the vertex buffer */
+static const char *skin_cs_write =
+        "void main()\n"
+        "{\n"
+        "	uint i = gl_GlobalInvocationID.x;\n"
+        "	if (i >= count) return;\n"
+        "	uint v = mp[i * 2u], face = mp[i * 2u + 1u];\n"
+        "	if (v >= nverts) return;\n"
+        "	vec3 p = sc[v].xyz;\n"
+        "	vec3 n = (normals == 2 && face != 0xFFFFFFFFu) ? sc[2u * nverts + face].xyz : sc[nverts + v].xyz;\n"
+        "	float l = length(n);\n"
+        "	if (l > 0.0) n /= l;\n"
+        "	uint b = i * stride;\n"
+        "	vb[b + posofs] = p.x; vb[b + posofs + 1u] = p.y; vb[b + posofs + 2u] = p.z;\n"
+        "	vb[b + norofs] = n.x; vb[b + norofs + 1u] = n.y; vb[b + norofs + 2u] = n.z;\n"
+        "}\n";
+
+static const char *skin_uniform_names[17] = {
+	"nverts", "nfaces", "ngroups", "nkeys", "o_rest", "o_woff", "o_w", "o_keys", "o_faces", "o_vfoff",
+	"o_vfaces", "o_keyvals", "normals", "count", "stride", "posofs", "norofs",
+};
+enum {
+	SU_NVERTS, SU_NFACES, SU_NGROUPS, SU_NKEYS, SU_O_REST, SU_O_WOFF, SU_O_W, SU_O_KEYS, SU_O_FACES, SU_O_VFOFF,
+	SU_O_VFACES, SU_O_KEYVALS, SU_NORMALS, SU_COUNT, SU_STRIDE, SU_POSOFS, SU_NOROFS,
+};
+enum { SKIN_DEFORM, SKIN_FACENORMALS, SKIN_SMOOTH, SKIN_WRITE };
+
+/* a skin's buffers on the card */
+struct RAS_SkinGPU {
+	GLuint st;                 /* the static data (binding 0) */
+	GLuint sc;                 /* the scratch (binding 2) */
+	unsigned int nfaces;
+	unsigned int o[SU_O_KEYVALS + 1];  /* the offsets, by SU_* */
+	unsigned int frame;        /* the skin frame the scratch holds (0: none) */
+	std::map<const RAS_DisplayArray *, GLuint> maps;  /* each array's map (binding 3) */
+};
+
+static void skin_gpu_free(void *gpu)
+{
+	RAS_SkinGPU *g = (RAS_SkinGPU *)gpu;
+	if (!g)
+		return;
+	if (g->st)
+		glDeleteBuffers(1, &g->st);
+	if (g->sc)
+		glDeleteBuffers(1, &g->sc);
+	for (std::map<const RAS_DisplayArray *, GLuint>::iterator it = g->maps.begin(); it != g->maps.end(); ++it) {
+		if (it->second)
+			glDeleteBuffers(1, &it->second);
+	}
+	delete g;
+}
+
+static unsigned int skin_put(std::vector<unsigned int>& words, const void *data, size_t count)
+{
+	const unsigned int offset = (unsigned int)words.size();
+	words.resize(words.size() + count);
+	if (count)
+		memcpy(&words[offset], data, count * sizeof(unsigned int));
+	return offset;
+}
+
+/* the skin's static data and scratch on the card */
+static RAS_SkinGPU *skin_gpu_make(RAS_GPUSkin *skin)
+{
+	RAS_SkinGPU *g = new RAS_SkinGPU();
+	g->st = g->sc = 0;
+	g->frame = 0;
+	g->nfaces = (unsigned int)(skin->faces.size() / 4);
+	memset(g->o, 0, sizeof(g->o));
+
+	std::vector<unsigned int> words;
+	words.reserve(skin->rest.size() + skin->woffset.size() + skin->weights.size() + skin->keys.size() +
+	              skin->faces.size() + skin->vfoffset.size() + skin->vfaces.size() + 1);
+	g->o[SU_O_REST] = skin_put(words, skin->rest.empty() ? NULL : &skin->rest[0], skin->rest.size());
+	g->o[SU_O_WOFF] = skin_put(words, skin->woffset.empty() ? NULL : &skin->woffset[0], skin->woffset.size());
+	g->o[SU_O_W] = skin_put(words, skin->weights.empty() ? NULL : &skin->weights[0], skin->weights.size());
+	g->o[SU_O_KEYS] = skin_put(words, skin->keys.empty() ? NULL : &skin->keys[0], skin->keys.size());
+	g->o[SU_O_FACES] = skin_put(words, skin->faces.empty() ? NULL : &skin->faces[0], skin->faces.size());
+	g->o[SU_O_VFOFF] = skin_put(words, skin->vfoffset.empty() ? NULL : &skin->vfoffset[0], skin->vfoffset.size());
+	g->o[SU_O_VFACES] = skin_put(words, skin->vfaces.empty() ? NULL : &skin->vfaces[0], skin->vfaces.size());
+	g->o[SU_O_KEYVALS] = (unsigned int)skin->bones.size();
+	if (words.empty())
+		words.push_back(0);
+
+	glCreateBuffers(1, &g->st);
+	glNamedBufferStorage(g->st, (GLsizeiptr)(words.size() * sizeof(unsigned int)), &words[0], 0);
+	GPU_debug_label(GL_BUFFER, g->st, "BGE-Remix GPU skin data");
+	const size_t scratch = (2 * (size_t)skin->nverts + g->nfaces + 1) * 4 * sizeof(float);
+	glCreateBuffers(1, &g->sc);
+	glNamedBufferStorage(g->sc, (GLsizeiptr)scratch, NULL, 0);
+	GPU_debug_label(GL_BUFFER, g->sc, "BGE-Remix GPU skin scratch");
+	return g;
+}
+
+bool RAS_StorageBatch::SkinPrograms()
+{
+	if (m_skinstate != 0)
+		return m_skinstate == 1;
+	const char *passes[4] = {skin_cs_deform, skin_cs_facenormals, skin_cs_smooth, skin_cs_write};
+	const char *labels[4] = {"BGE-Remix GPU skinning", "BGE-Remix GPU skinning face normals",
+	                         "BGE-Remix GPU skinning normals", "BGE-Remix GPU skinning write"};
+	m_skinstate = 1;
+	for (int p = 0; p < 4; p++) {
+		std::string source = std::string(skin_cs_common) + passes[p];
+		m_skinprog[p] = GPU_compute_program(source.c_str(), labels[p]);
+		if (!m_skinprog[p]) {
+			m_skinstate = -1;
+			continue;
+		}
+		for (int u = 0; u < 17; u++)
+			m_skinloc[p][u] = glGetUniformLocation(m_skinprog[p], skin_uniform_names[u]);
+	}
+	if (m_skinstate != 1) {
+		/* the meshes are deformed on the CPU again (from the next frame) */
+		printf("BGE-Remix: the GPU skinning shaders did not build; skinning is done on the CPU\n");
+		GPU_speed_feature_set("gpu_skinning", false);
+	}
+	return m_skinstate == 1;
+}
+
+void RAS_StorageBatch::SkinArrays(RAS_MeshSlot& ms, RAS_GPUSkin *skin, bool modified)
+{
+	if (skin->nverts <= 0 || !SkinPrograms())
+		return;
+
+	/* what the passes change: the program and storage bindings 0 to 4 */
+	GLint program = 0;
+	glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+	GLint saved[5];
+	GLint64 saved_start[5], saved_size[5];
+	for (int i = 0; i < 5; i++) {
+		glGetIntegeri_v(GL_SHADER_STORAGE_BUFFER_BINDING, i, &saved[i]);
+		glGetInteger64i_v(GL_SHADER_STORAGE_BUFFER_START, i, &saved_start[i]);
+		glGetInteger64i_v(GL_SHADER_STORAGE_BUFFER_SIZE, i, &saved_size[i]);
+	}
+
+	if (!skin->gpu) {
+		skin->gpu = skin_gpu_make(skin);
+		skin->gpu_free = skin_gpu_free;
+	}
+	RAS_SkinGPU *g = (RAS_SkinGPU *)skin->gpu;
+	const unsigned int nverts = (unsigned int)skin->nverts;
+	const GLuint groups = (nverts + 63) / 64;
+	bool wrote = false;
+
+	/* the numbers every pass reads */
+	unsigned int values[17];
+	memset(values, 0, sizeof(values));
+	values[SU_NVERTS] = nverts;
+	values[SU_NFACES] = g->nfaces;
+	values[SU_NGROUPS] = (unsigned int)skin->ngroups;
+	values[SU_NKEYS] = (unsigned int)skin->nkeys;
+	for (int u = SU_O_REST; u <= SU_O_KEYVALS; u++)
+		values[u] = g->o[u];
+	values[SU_STRIDE] = (unsigned int)(TV_STRIDE / 4);
+	values[SU_POSOFS] = (unsigned int)((uintptr_t)TV_OFS(s_tv.getXYZ()) / 4);
+	values[SU_NOROFS] = (unsigned int)((uintptr_t)TV_OFS(s_tv.getNormal()) / 4);
+
+	if (g->frame != skin->frame) {
+		/* this frame's bones and key values */
+		const size_t nfloats = skin->bones.size() + skin->keyvalues.size();
+		const size_t size = (nfloats ? nfloats : 1) * sizeof(float);
+		GLuint buffer = 0;
+		size_t offset = 0;
+		float *data = (float *)GPU_stream_alloc(size, &buffer, &offset);
+		if (!data)
+			goto restore;
+		if (!skin->bones.empty())
+			memcpy(data, &skin->bones[0], skin->bones.size() * sizeof(float));
+		if (!skin->keyvalues.empty())
+			memcpy(data + skin->bones.size(), &skin->keyvalues[0], skin->keyvalues.size() * sizeof(float));
+		GPU_stream_written(buffer);
+
+		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, g->st);
+		glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, buffer, (GLintptr)offset, (GLsizeiptr)size);
+		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, g->sc);
+
+		int passes[3] = {SKIN_DEFORM, -1, -1};
+		if (skin->normals == RAS_GPUSkin::NORMALS_FACES && g->nfaces > 0) {
+			passes[1] = SKIN_FACENORMALS;
+			passes[2] = SKIN_SMOOTH;
+		}
+		for (int k = 0; k < 3; k++) {
+			const int p = passes[k];
+			if (p < 0)
+				continue;
+			glUseProgram(m_skinprog[p]);
+			for (int u = 0; u < 17; u++) {
+				if (m_skinloc[p][u] < 0)
+					continue;
+				if (u == SU_NORMALS)
+					glUniform1i(m_skinloc[p][u], skin->normals);
+				else
+					glUniform1ui(m_skinloc[p][u], values[u]);
+			}
+			glDispatchCompute(p == SKIN_FACENORMALS ? (g->nfaces + 63) / 64 : groups, 1, 1);
+			glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+		}
+		g->frame = skin->frame;
+	}
+
+	{
+		/* each array the slot draws: its buffer, written from the scratch */
+		const int p = SKIN_WRITE;
+		bool bound_pass = false;
+		RAS_MeshSlot::iterator it;
+		for (ms.begin(it); !ms.end(it); ms.next(it)) {
+			RAS_DisplayArray *array = it.array;
+			if (array->m_vertex.empty())
+				continue;
+			RAS_BatchArray *ba = GetArray(array);
+			if (modified && ba->uploaded != m_frame) {
+				/* as DrawArray would (the CPU's vertices first, then deformed) */
+				UploadVertices(ba);
+				UploadIndices(ba, 0, ba->nindex);
+				ba->uploaded = m_frame;
+			}
+			if (ba->skinned == skin->frame)
+				continue;
+
+			std::map<const RAS_DisplayArray *, RAS_GPUSkin::Array>::iterator ait = skin->arrays.find(array);
+			if (ait == skin->arrays.end() || ait->second.orig.size() != ba->nverts)
+				continue;  /* not the deformer's array: drawn as it is */
+			GLuint& map = g->maps[array];
+			if (!map) {
+				std::vector<unsigned int> pairs(ba->nverts * 2);
+				for (size_t i = 0; i < ba->nverts; i++) {
+					pairs[i * 2] = ait->second.orig[i];
+					pairs[i * 2 + 1] = ait->second.face[i];
+				}
+				glCreateBuffers(1, &map);
+				glNamedBufferStorage(map, (GLsizeiptr)(pairs.size() * sizeof(unsigned int)), &pairs[0], 0);
+				GPU_debug_label(GL_BUFFER, map, "BGE-Remix GPU skin map");
+			}
+
+			if (!bound_pass) {
+				glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, g->st);
+				glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, g->sc);
+				glUseProgram(m_skinprog[p]);
+				for (int u = 0; u < 17; u++) {
+					if (m_skinloc[p][u] < 0 || u == SU_COUNT)
+						continue;
+					if (u == SU_NORMALS)
+						glUniform1i(m_skinloc[p][u], skin->normals);
+					else
+						glUniform1ui(m_skinloc[p][u], values[u]);
+				}
+				bound_pass = true;
+			}
+			glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, map);
+			glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, ba->vbo);
+			if (m_skinloc[p][SU_COUNT] >= 0)
+				glUniform1ui(m_skinloc[p][SU_COUNT], (unsigned int)ba->nverts);
+			glDispatchCompute((GLuint)((ba->nverts + 63) / 64), 1, 1);
+			ba->skinned = skin->frame;
+			wrote = true;
+		}
+	}
+
+	if (wrote) {
+		/* the buffers are read as vertices next (or copied over by an upload) */
+		glMemoryBarrier(GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT |
+		                GL_SHADER_STORAGE_BARRIER_BIT);
+	}
+
+restore:
+	for (int i = 0; i < 5; i++) {
+		if (saved[i] && saved_size[i] > 0)
+			glBindBufferRange(GL_SHADER_STORAGE_BUFFER, i, (GLuint)saved[i], (GLintptr)saved_start[i],
+			                  (GLsizeiptr)saved_size[i]);
+		else
+			glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, (GLuint)saved[i]);
+	}
+	glUseProgram((GLuint)program);
 }

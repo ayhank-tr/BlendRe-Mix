@@ -54,6 +54,9 @@ public:
 	virtual void Relink(CTR_Map<class CTR_HashedPtr, void*>*map)=0;
 	virtual bool Apply(class RAS_IPolyMaterial *polymat)=0;
 	virtual bool Update(void)=0;
+	/* BGE-Remix P8 Part B (P8.13): the mesh deformed on the graphics card
+	 * (NULL: on the CPU, in the display arrays) */
+	virtual struct RAS_GPUSkin *GetGPUSkin() { return NULL; }
 	virtual bool UpdateBuckets(void)=0;
 	virtual RAS_Deformer *GetReplica()=0;
 	virtual void ProcessReplica()=0;
