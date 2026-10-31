@@ -88,6 +88,8 @@ public:
 	void Update(const class RAS_MeshSlot & ms, class RAS_IRasterizer* rasty);
 	void ReloadMaterial();
 	int GetAlphaBlend();
+	/* BGE-Remix P8 Part B (P8.11) */
+	GPUMaterial *GetGPUMaterial() { return mGPUMat; }
 
 	bool Equals(BL_BlenderShader *blshader);
 	

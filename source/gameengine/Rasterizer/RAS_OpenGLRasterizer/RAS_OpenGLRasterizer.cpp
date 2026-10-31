@@ -51,6 +51,7 @@
 
 #include "RAS_StorageBatch.h"
 #include "RAS_Pipeline.h"
+#include "RAS_GPUCulling.h"
 
 #include "GPU_draw.h"
 #include "GPU_extensions.h"
@@ -138,6 +139,10 @@ RAS_OpenGLRasterizer::RAS_OpenGLRasterizer(RAS_ICanvas* canvas, RAS_STORAGE_TYPE
 	m_stereoleft = false;
 	m_stereoshader = NULL;
 	m_pipeline = new RAS_Pipeline();
+	m_culling = new RAS_GPUCulling();
+	m_mainview_drawn = false;
+	m_scene_first = false;
+	static_cast<RAS_StorageBatch *>(m_storage)->SetCulling(m_culling);
 	GPU_classic_state_default(&m_state);
 	m_storage = new RAS_StorageBatch(&m_texco_num, m_texco, &m_attrib_num, m_attrib, m_attrib_layer, &m_classic,
 	                                 &m_state);
@@ -157,6 +162,7 @@ RAS_OpenGLRasterizer::~RAS_OpenGLRasterizer()
 		delete m_storage;
 	FreeMotionBlur();
 	delete m_pipeline;
+	delete m_culling;
 }
 
 bool RAS_OpenGLRasterizer::Init()
@@ -775,12 +781,65 @@ void RAS_OpenGLRasterizer::BeginScene(struct Scene *scene, bool first, int sampl
 	const float background[3] = {m_redback, m_greenback, m_blueback};
 	m_pipeline->Begin(scene, first, background, samples, area, clear);
 	glViewport(clear[0], clear[1], clear[2], clear[3]);
+	m_scene_first = first && fb == 0 && !Stereo();
+	m_mainview_drawn = false;
 }
 
 void RAS_OpenGLRasterizer::EndScene()
 {
+	/* BGE-Remix P8 Part B (P8.11): the first scene's main view makes the
+	 * depth pyramid the next frame culls against (its depth: the pipeline's
+	 * target, or the window's) */
+	if (m_scene_first && m_mainview_drawn) {
+		unsigned int depth = 0;
+		bool ms = false;
+		int vp[4];
+		m_pipeline->DepthTexture(&depth, &ms, vp);
+		/* the main camera's viewport (the pipeline's target is the window's size) */
+		memcpy(vp, m_mainview_vp, sizeof(vp));
+		float view[16], proj[16];
+		memcpy(view, m_mainview_view, sizeof(view));
+		memcpy(proj, m_mainview_proj, sizeof(proj));
+		m_culling->Build(depth, ms, vp, view, proj);
+	}
+	else if (m_scene_first) {
+		m_culling->Invalidate();
+	}
+	m_scene_first = false;
 	m_pipeline->End();
 	glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+}
+
+bool RAS_OpenGLRasterizer::IndexPrimitivesInstanced(std::vector<RAS_MeshSlot *>& slots)
+{
+	float view[4][4];
+	GPU_matrix_get(GPU_MATRIX_MODELVIEW, view);
+	return static_cast<RAS_StorageBatch *>(m_storage)->IndexPrimitivesInstanced(slots, &view[0][0]);
+}
+
+void RAS_OpenGLRasterizer::SetMainView(bool on)
+{
+	if (!on && m_culling->MainView()) {
+		/* the main view was drawn into this viewport */
+		glGetIntegerv(GL_VIEWPORT, m_mainview_vp);
+	}
+	m_culling->SetMainView(on && m_scene_first);
+	if (on && m_scene_first) {
+		m_mainview_drawn = true;
+		/* the view this frame's pyramid is drawn with */
+		float v[4][4], p[4][4];
+		GPU_matrix_get(GPU_MATRIX_MODELVIEW, v);
+		GPU_matrix_get(GPU_MATRIX_PROJECTION, p);
+		memcpy(m_mainview_view, v, sizeof(m_mainview_view));
+		memcpy(m_mainview_proj, p, sizeof(m_mainview_proj));
+	}
+}
+
+void RAS_OpenGLRasterizer::GetInstancingStats(int *r_draws, int *r_objects)
+{
+	RAS_StorageBatch *storage = static_cast<RAS_StorageBatch *>(m_storage);
+	*r_draws = storage->InstancedDraws();
+	*r_objects = storage->InstancedObjects();
 }
 
 void RAS_OpenGLRasterizer::SyncOldMatrices()

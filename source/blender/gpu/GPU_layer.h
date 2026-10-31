@@ -212,6 +212,13 @@ void GPU_imm_uniform_color(float r, float g, float b, float a);
  * attribute 0 (vec2, -1..3: use layout(location = 0)) */
 void GPU_draw_fullscreen_triangle(void);
 
+/* ---- speed features (BGE-Remix P8 Part B): each can be switched off
+ * ("instancing", "gpu_culling", "gpu_skinning"); the environment variable
+ * BGE_REMIX_NO_<NAME in capitals>=1 switches one off at start ---- */
+bool GPU_speed_feature(const char *name);
+/* false when the name is unknown */
+bool GPU_speed_feature_set(const char *name, bool on);
+
 /* ---- GPU time of the game's passes (BGE-Remix P8 Part B) ---- */
 
 typedef enum GPUPassTimer {

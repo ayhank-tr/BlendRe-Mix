@@ -176,6 +176,8 @@ private:
 	void ActivateTexGen( RAS_IRasterizer *ras ) const;
 
 	bool UsesLighting(RAS_IRasterizer *rasty) const;
+	/* BGE-Remix P8 Part B (P8.11) */
+	virtual bool CanInstance() const;
 	void GetMaterialRGBAColor(unsigned char *rgba) const;
 	Scene* GetBlenderScene() const;
 	void ReleaseMaterial();

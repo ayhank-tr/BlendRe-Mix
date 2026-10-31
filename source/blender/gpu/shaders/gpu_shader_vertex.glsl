@@ -91,10 +91,10 @@ void main()
 	vec3 normal = bge_nor;
 #endif
 
-	vec4 co = bge_mv * position;
+	vec4 co = BGE_MV * position;
 
 	varposition = co.xyz;
-	varnormal = normalize(bge_normalmat * normal);
+	varnormal = normalize(BGE_NORMALMAT * normal);
 	gl_Position = bge_proj * co;
 
 #ifdef BGE_COMPAT

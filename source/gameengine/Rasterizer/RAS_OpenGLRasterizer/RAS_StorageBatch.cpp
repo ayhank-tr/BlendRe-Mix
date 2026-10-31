@@ -22,15 +22,18 @@
  *  \ingroup bgerastogl
  */
 
+#include <math.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 #include <vector>
 
 #include "RAS_StorageBatch.h"
+#include "RAS_GPUCulling.h"
 #include "RAS_MaterialBucket.h"
 #include "RAS_MeshObject.h"
 #include "RAS_TexVert.h"
+#include "MT_Matrix4x4.h"
 
 #include "GPU_glew.h"
 
@@ -43,7 +46,8 @@ extern "C" {
 /* how a layout was made: the shader and what it was fed */
 struct RAS_BatchLayout {
 	unsigned int program;
-	int flags;  /* 1: wireframe (no texture coordinates or attributes), 2: colour array, 4: our own shader */
+	int flags;  /* 1: wireframe (no texture coordinates or attributes), 2: colour array, 4: our own shader,
+	             * 8: instanced (attribute 15) */
 	int texco_num;
 	int texco[RAS_MAX_TEXCO];
 	int attrib_num;
@@ -64,6 +68,7 @@ struct RAS_BatchArray {
 	GLuint vaos[RAS_BATCH_VAOS];
 	RAS_BatchLayout layouts[RAS_BATCH_VAOS];
 	int next;
+	float center[3], radius;  /* the vertices' bounding sphere (local) */
 };
 
 /* the offsets inside RAS_TexVert */
@@ -151,7 +156,15 @@ RAS_StorageBatch::RAS_StorageBatch(int *texco_num, RAS_IRasterizer::TexCoGen *te
     m_attrib_layer(attrib_layer),
     m_classic(classic),
     m_state(state),
-    m_frame(1)
+    m_frame(1),
+    m_instbuf(0),
+    m_cmdbuf(0),
+    m_visbuf(0),
+    m_cmdused(0),
+    m_visused(0),
+    m_culling(NULL),
+    m_inst_draws(0),
+    m_inst_objects(0)
 {
 	RAS_DisplayArray::s_storage_free = batch_array_free;
 }
@@ -176,6 +189,12 @@ void RAS_StorageBatch::Exit()
 	}
 	m_arrays.clear();
 	m_programs.clear();
+	GLuint bufs[3] = {m_instbuf, m_cmdbuf, m_visbuf};
+	for (int i = 0; i < 3; i++) {
+		if (bufs[i])
+			glDeleteBuffers(1, &bufs[i]);
+	}
+	m_instbuf = m_cmdbuf = m_visbuf = 0;
 }
 
 void RAS_StorageBatch::BeginFrame()
@@ -184,6 +203,8 @@ void RAS_StorageBatch::BeginFrame()
 	/* programs can be made again under the same name: asked anew each frame */
 	m_programs.clear();
 	GPU_old_builtins_frame();
+	m_cmdused = m_visused = 0;
+	m_inst_draws = m_inst_objects = 0;
 }
 
 void RAS_StorageBatch::Forget(RAS_BatchArray *ba)
@@ -215,6 +236,27 @@ RAS_BatchArray *RAS_StorageBatch::GetArray(RAS_DisplayArray *array)
 	ba->vdata = &array->m_vertex[0];
 	ba->quads = (array->m_type == RAS_DisplayArray::QUAD);
 	ba->uploaded = m_frame;
+	{
+		float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
+		for (size_t v = 0; v < ba->nverts; v++) {
+			const float *co = array->m_vertex[v].getXYZ();
+			for (int k = 0; k < 3; k++) {
+				lo[k] = (co[k] < lo[k]) ? co[k] : lo[k];
+				hi[k] = (co[k] > hi[k]) ? co[k] : hi[k];
+			}
+		}
+		float r2 = 0.0f;
+		for (int k = 0; k < 3; k++) {
+			ba->center[k] = 0.5f * (lo[k] + hi[k]);
+		}
+		for (size_t v = 0; v < ba->nverts; v++) {
+			const float *co = array->m_vertex[v].getXYZ();
+			const float dx = co[0] - ba->center[0], dy = co[1] - ba->center[1], dz = co[2] - ba->center[2];
+			const float d2 = dx * dx + dy * dy + dz * dz;
+			r2 = (d2 > r2) ? d2 : r2;
+		}
+		ba->radius = sqrtf(r2);
+	}
 
 	glCreateBuffers(1, &ba->vbo);
 	glNamedBufferStorage(ba->vbo, (GLsizeiptr)(ba->nverts * sizeof(RAS_TexVert)), &array->m_vertex[0],
@@ -256,6 +298,7 @@ const RAS_StorageBatch::ProgramInfo& RAS_StorageBatch::GetProgram(unsigned int p
 	ProgramInfo pi;
 	pi.pos = pi.nor = pi.col = pi.cl_texco = -1;
 	pi.core = false;
+	pi.instanced = -1;
 	for (int i = 0; i < 8; i++)
 		pi.texco[i] = -1;
 	if (program) {
@@ -272,6 +315,7 @@ const RAS_StorageBatch::ProgramInfo& RAS_StorageBatch::GetProgram(unsigned int p
 			}
 			pi.cl_texco = glGetAttribLocation(program, "bge_texco");
 			pi.core = pi.pos >= 0;
+			pi.instanced = glGetUniformLocation(program, "bge_instanced");
 		}
 	}
 	return m_programs[program] = pi;
@@ -304,7 +348,7 @@ static void batch_texco_attrib(GLint loc, RAS_IRasterizer::TexCoGen gen, int lay
 }
 
 unsigned int RAS_StorageBatch::GetVAO(RAS_BatchArray *ba, unsigned int program, bool own, bool wireframe,
-                                      bool color_array)
+                                      bool color_array, bool instanced)
 {
 	RAS_BatchLayout layout;
 	memset(&layout, 0, sizeof(layout));
@@ -316,7 +360,7 @@ unsigned int RAS_StorageBatch::GetVAO(RAS_BatchArray *ba, unsigned int program, 
 	 * share places with attributes, so an array the shader does not read is
 	 * left off. Our own shaders (classic, depth) take no material attributes. */
 	const bool legacy = !pi.core;
-	layout.flags = (wireframe ? 1 : 0) | (color_array ? 2 : 0) | (own ? 4 : 0);
+	layout.flags = (wireframe ? 1 : 0) | (color_array ? 2 : 0) | (own ? 4 : 0) | (instanced ? 8 : 0);
 	if (!wireframe) {
 		layout.texco_num = *m_texco_num;
 		for (int i = 0; i < layout.texco_num; i++)
@@ -423,6 +467,14 @@ unsigned int RAS_StorageBatch::GetVAO(RAS_BatchArray *ba, unsigned int program, 
 				glEnableVertexAttribArray(pi.cl_texco);
 			}
 		}
+	}
+
+	if (instanced && m_instbuf) {
+		/* the instance number: one per instance (the draw's base instance added) */
+		glBindBuffer(GL_ARRAY_BUFFER, m_instbuf);
+		glVertexAttribIPointer(15, 1, GL_UNSIGNED_INT, 0, 0);
+		glVertexAttribDivisor(15, 1);
+		glEnableVertexAttribArray(15);
 	}
 
 	glBindVertexArray(0);
@@ -571,4 +623,132 @@ void RAS_StorageBatch::IndexPrimitives(RAS_MeshSlot& ms)
 
 	if (own)
 		GPU_shader_unbind();
+}
+
+/* ------------------------------------------------------------------------ */
+/* BGE-Remix P8 Part B (P8.11): instances */
+
+#define INST_MAX 65536            /* instance numbers (and instances a draw) */
+#define CMD_MAX 4096              /* indirect commands a frame */
+#define VIS_MAX (1024 * 1024)     /* visible instance numbers a frame */
+
+bool RAS_StorageBatch::IndexPrimitivesInstanced(std::vector<RAS_MeshSlot *>& slots, const float view[16])
+{
+	if (slots.size() < 2 || !GPU_speed_feature("instancing") || !GPU_instancing_supported())
+		return false;
+	GLint bound = 0;
+	glGetIntegerv(GL_CURRENT_PROGRAM, &bound);
+	if (!bound)
+		return false;
+	const ProgramInfo& pi = GetProgram((unsigned int)bound);
+	if (!pi.core || pi.instanced < 0)
+		return false;
+	if (m_drawingmode != RAS_IRasterizer::KX_TEXTURED)
+		return false;
+
+	if (!m_instbuf) {
+		std::vector<unsigned int> numbers(INST_MAX);
+		for (unsigned int i = 0; i < INST_MAX; i++)
+			numbers[i] = i;
+		glCreateBuffers(1, &m_instbuf);
+		glNamedBufferStorage(m_instbuf, sizeof(unsigned int) * INST_MAX, &numbers[0], 0);
+		glCreateBuffers(1, &m_cmdbuf);
+		glNamedBufferStorage(m_cmdbuf, sizeof(unsigned int) * 5 * CMD_MAX, NULL, GL_DYNAMIC_STORAGE_BIT);
+		glCreateBuffers(1, &m_visbuf);
+		glNamedBufferStorage(m_visbuf, sizeof(unsigned int) * VIS_MAX, NULL, 0);
+		GPU_debug_label(GL_BUFFER, m_instbuf, "BGE-Remix instance numbers");
+		GPU_debug_label(GL_BUFFER, m_cmdbuf, "BGE-Remix indirect draws");
+		GPU_debug_label(GL_BUFFER, m_visbuf, "BGE-Remix visible instances");
+	}
+
+	RAS_MeshSlot& first = *slots[0];
+	const bool modified = first.m_mesh && first.m_mesh->MeshModified();
+	const size_t total = slots.size();
+
+	/* the game's state for the old built-ins (the first slot's colour: the
+	 * slots have no object colour) */
+	GPUClassicState state = *m_state;
+	if (first.m_bucket) {
+		unsigned char rgba[4];
+		first.m_bucket->GetPolyMaterial()->GetMaterialRGBAColor(rgba);
+		for (int k = 0; k < 4; k++)
+			state.current_color[k] = rgba[k] / 255.0f;
+	}
+	GPU_old_builtins((unsigned int)bound, &state);
+	glDisable(GL_ALPHA_TEST);
+
+	for (size_t start = 0; start < total; start += INST_MAX) {
+		const size_t n = (total - start < INST_MAX) ? total - start : INST_MAX;
+
+		/* the instances' model-view matrices: the view times each object's */
+		GLuint buffer = 0;
+		size_t offset = 0;
+		float *mats = (float *)GPU_stream_alloc(n * 16 * sizeof(float), &buffer, &offset);
+		if (!mats)
+			return start > 0;
+		MT_Matrix4x4 v;
+		v.setValue(view);
+		for (size_t i = 0; i < n; i++) {
+			MT_Matrix4x4 o;
+			o.setValue(slots[start + i]->m_OpenGLMatrix);
+			MT_Matrix4x4 mv = v * o;
+			mv.getValue(&mats[i * 16]);
+		}
+		GPU_stream_written(buffer);
+		glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 8, buffer, (GLintptr)offset, (GLsizeiptr)(n * 16 * sizeof(float)));
+		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, m_visbuf);
+
+		RAS_MeshSlot::iterator it;
+		for (first.begin(it); !first.end(it); first.next(it)) {
+			if (it.totindex == 0 || it.array->m_vertex.empty())
+				continue;
+			RAS_BatchArray *ba = GetArray(it.array);
+			if (modified && ba->uploaded != m_frame) {
+				UploadVertices(ba);
+				UploadIndices(ba, 0, ba->nindex);
+				ba->uploaded = m_frame;
+			}
+			const size_t firstidx = (size_t)(it.index - &it.array->m_index[0]);
+			const GLenum mode = (it.array->m_type == RAS_DisplayArray::LINE) ? GL_LINES : GL_TRIANGLES;
+			const bool color_array = !first.m_bObjectColor && mode != GL_LINES;
+			if (pi.col >= 0 && !color_array) {
+				const float black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+				glVertexAttrib4fv(pi.col, black);
+			}
+			const GLuint vao = GetVAO(ba, (unsigned int)bound, false, false, color_array, true);
+			const size_t gl_first = ba->quads ? firstidx / 4 * 6 : firstidx;
+			const size_t gl_count = ba->quads ? it.totindex / 4 * 6 : it.totindex;
+
+			/* the culling pass (the main view, with last frame's depth) */
+			bool culled = false;
+			if (m_culling && m_cmdused < CMD_MAX && m_visused + n <= VIS_MAX) {
+				const unsigned int cmd[5] = {(unsigned int)gl_count, 0u, (unsigned int)gl_first, 0u, m_visused};
+				const unsigned int cmd_offset = m_cmdused * 5 * sizeof(unsigned int);
+				glNamedBufferSubData(m_cmdbuf, cmd_offset, sizeof(cmd), cmd);
+				if (m_culling->Cull((int)n, ba->center, ba->radius, view, m_cmdbuf, cmd_offset)) {
+					glProgramUniform1i((GLuint)bound, pi.instanced, 2);
+					glBindVertexArray(vao);
+					glBindBuffer(GL_DRAW_INDIRECT_BUFFER, m_cmdbuf);
+					glDrawElementsIndirect(mode, GL_UNSIGNED_SHORT, (const void *)(uintptr_t)cmd_offset);
+					glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+					glBindVertexArray(0);
+					m_cmdused++;
+					m_visused += (unsigned int)n;
+					culled = true;
+				}
+			}
+			if (!culled) {
+				glProgramUniform1i((GLuint)bound, pi.instanced, 1);
+				glBindVertexArray(vao);
+				glDrawElementsInstancedBaseInstance(mode, (GLsizei)gl_count, GL_UNSIGNED_SHORT,
+				                                    (const void *)(uintptr_t)(gl_first * sizeof(unsigned short)),
+				                                    (GLsizei)n, 0);
+				glBindVertexArray(0);
+			}
+			m_inst_draws++;
+		}
+		m_inst_objects += (int)n;
+	}
+	glProgramUniform1i((GLuint)bound, pi.instanced, 0);
+	return true;
 }

@@ -136,6 +136,7 @@ extern "C" {
 extern "C" {
 #include "BKE_main.h"
 #include "BKE_scene.h"
+#include "GPU_layer.h"
 #include "BKE_global.h"
 #include "BKE_library.h"
 #include "BKE_appdir.h"
@@ -1101,6 +1102,30 @@ static PyObject *gPyGetRenderPipeline(PyObject *)
 	return PyUnicode_FromString(modern ? "MODERN" : "CLASSIC");
 }
 
+/* BGE-Remix P8 Part B: the speed features ("instancing", "gpu_culling",
+ * "gpu_skinning"), each on unless switched off */
+static PyObject *gPySetSpeedFeature(PyObject *, PyObject *args)
+{
+	char *name;
+	int on;
+	if (!PyArg_ParseTuple(args, "si:setSpeedFeature", &name, &on))
+		return NULL;
+	if (!GPU_speed_feature_set(name, on != 0)) {
+		PyErr_Format(PyExc_ValueError, "bge.render.setSpeedFeature: unknown feature \"%s\" "
+		             "(instancing, gpu_culling, gpu_skinning)", name);
+		return NULL;
+	}
+	Py_RETURN_NONE;
+}
+
+static PyObject *gPyGetSpeedFeature(PyObject *, PyObject *args)
+{
+	char *name;
+	if (!PyArg_ParseTuple(args, "s:getSpeedFeature", &name))
+		return NULL;
+	return PyBool_FromLong(GPU_speed_feature(name) ? 1 : 0);
+}
+
 static PyObject *gPyGetEyeSeparation(PyObject *)
 {
 	if (!gp_Rasterizer) {
@@ -1728,6 +1753,8 @@ static struct PyMethodDef rasterizer_methods[] = {
 	{"setEyeSeparation", (PyCFunction) gPySetEyeSeparation, METH_VARARGS, "set the eye separation for stereo mode"},
 	{"getEyeSeparation", (PyCFunction) gPyGetEyeSeparation, METH_NOARGS, "get the eye separation for stereo mode"},
 	{"getRenderPipeline", (PyCFunction) gPyGetRenderPipeline, METH_NOARGS, "get the active scene's pipeline: 'CLASSIC' or 'MODERN'"},
+	{"setSpeedFeature", (PyCFunction) gPySetSpeedFeature, METH_VARARGS, "switch a speed feature on or off: setSpeedFeature(name, on)"},
+	{"getSpeedFeature", (PyCFunction) gPyGetSpeedFeature, METH_VARARGS, "whether a speed feature is on: getSpeedFeature(name)"},
 	{"setFocalLength", (PyCFunction) gPySetFocalLength, METH_VARARGS, "set the focal length for stereo mode"},
 	{"getFocalLength", (PyCFunction) gPyGetFocalLength, METH_VARARGS, "get the focal length for stereo mode"},
 	{"getStereoEye", (PyCFunction) gPyGetStereoEye, METH_VARARGS, "get the current stereoscopy eye being rendered"},

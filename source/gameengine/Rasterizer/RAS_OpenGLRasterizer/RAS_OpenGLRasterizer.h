@@ -160,6 +160,14 @@ protected:
 
 	/* BGE-Remix P8 Part B (P8.12): the scene's pipeline target */
 	class RAS_Pipeline *m_pipeline;
+	/* BGE-Remix P8 Part B (P8.11): GPU occlusion culling; whether this
+	 * frame's first scene was drawn by the main camera (its depth makes the
+	 * pyramid) */
+	class RAS_GPUCulling *m_culling;
+	bool m_mainview_drawn;
+	bool m_scene_first;
+	float m_mainview_view[16], m_mainview_proj[16];
+	int m_mainview_vp[4];
 
 	/* BGE-Remix P8 Part B: interlaced stereo by a shader: the left eye's
 	 * picture (its texture, size and place) shown on its rows or columns */
@@ -207,6 +215,9 @@ public:
 	virtual void SyncOldMatrices();
 	virtual void BeginScene(struct Scene *scene, bool first, int samples);
 	virtual void EndScene();
+	virtual bool IndexPrimitivesInstanced(std::vector<class RAS_MeshSlot *>& slots);
+	virtual void SetMainView(bool on);
+	virtual void GetInstancingStats(int *r_draws, int *r_objects);
 	virtual void SetEye(const StereoEye eye);
 	virtual StereoEye GetEye();
 	virtual void SetEyeSeparation(const float eyeseparation);

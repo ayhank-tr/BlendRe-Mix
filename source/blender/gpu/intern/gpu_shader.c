@@ -283,7 +283,9 @@ static const char *gpu_frontend_vert_compat =
         "#define bge_projinv gl_ProjectionMatrixInverse\n"
         "#define bge_normalmat gl_NormalMatrix\n"
         "#define BGE_VCOL_OUT gl_FrontColor\n"
-        "#define BGE_VCOL2_OUT gl_FrontSecondaryColor\n";
+        "#define BGE_VCOL2_OUT gl_FrontSecondaryColor\n"
+        "#define BGE_MV gl_ModelViewMatrix\n"
+        "#define BGE_NORMALMAT gl_NormalMatrix\n";
 
 static const char *gpu_frontend_frag_compat =
         "#define BGE_COMPAT\n"
@@ -311,7 +313,30 @@ static const char *gpu_frontend_vert_core =
         "out vec4 bge_vcol_v;\n"
         "out vec4 bge_vcol2_v;\n"
         "#define BGE_VCOL_OUT bge_vcol_v\n"
-        "#define BGE_VCOL2_OUT bge_vcol2_v\n";
+        "#define BGE_VCOL2_OUT bge_vcol2_v\n"
+        /* BGE-Remix P8 Part B (P8.11): instances of one mesh and material in
+         * one draw; each instance's model-view matrix from a storage buffer,
+         * found through its instance number (attribute 15, one per instance)
+         * directly (bge_instanced 1) or through the culling pass's list of
+         * visible instances (2) */
+        "#ifndef BGE_NO_INSTANCING\n"
+        "layout(location = 15) in uint bge_instance;\n"
+        "layout(std430, binding = 8) readonly buffer BgeInstanceMatrices { mat4 bge_inst_mv[]; };\n"
+        "layout(std430, binding = 9) readonly buffer BgeInstanceVisible { uint bge_inst_visible[]; };\n"
+        "uniform int bge_instanced;\n"
+        "mat4 bge_mv_inst()\n"
+        "{\n"
+        "	if (bge_instanced == 0) return bge_mv;\n"
+        "	uint i = bge_instance;\n"
+        "	if (bge_instanced == 2) i = bge_inst_visible[i];\n"
+        "	return bge_inst_mv[i];\n"
+        "}\n"
+        "#define BGE_MV bge_mv_inst()\n"
+        "#define BGE_NORMALMAT (bge_instanced != 0 ? transpose(inverse(mat3(BGE_MV))) : bge_normalmat)\n"
+        "#else\n"
+        "#define BGE_MV bge_mv\n"
+        "#define BGE_NORMALMAT bge_normalmat\n"
+        "#endif\n";
 
 static const char *gpu_frontend_frag_core =
         "#define BGE_CORE\n"
@@ -422,6 +447,11 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 	gpu_shader_standard_defines(standard_defines,
 	                            use_opensubdiv,
 	                            (flags & GPU_SHADER_FLAGS_NEW_SHADING) != 0);
+	/* BGE-Remix P8 Part B (P8.11): instancing reads storage buffers in the
+	 * vertex stage, which OpenGL 4.5 does not promise */
+	if (core && frontend && !GPU_instancing_supported()) {
+		strcat(standard_defines, "#define BGE_NO_INSTANCING\n");
+	}
 	if (!glsl450) {
 		gpu_shader_standard_extensions(standard_extensions, geocode != NULL);
 	}
@@ -563,6 +593,17 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 #endif
 
 	return shader;
+}
+
+bool GPU_instancing_supported(void)
+{
+	static int supported = -1;
+	if (supported < 0) {
+		GLint blocks = 0;
+		glGetIntegerv(GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS, &blocks);
+		supported = (blocks >= 2) ? 1 : 0;
+	}
+	return supported == 1;
 }
 
 unsigned int GPU_shader_program(GPUShader *shader)

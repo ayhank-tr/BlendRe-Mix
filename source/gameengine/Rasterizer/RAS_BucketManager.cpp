@@ -45,6 +45,8 @@
 #include "GPU_layer.h"
 
 #include <algorithm>
+#include <map>
+#include <vector>
 /* sorting */
 
 struct RAS_BucketManager::sortedmeshslot
@@ -176,11 +178,44 @@ void RAS_BucketManager::RenderSolidBuckets(const MT_Transform& cameratrans, RAS_
 #if 1
 		RAS_MaterialBucket* bucket = *bit;
 		RAS_MeshSlot* ms;
-		// remove the mesh slot from the list, it culls them automatically for next frame
-		while ((ms = bucket->GetNextActiveMeshSlot())) {
-			rasty->SetClientObject(ms->m_clientObj);
-			while (bucket->ActivateMaterial(cameratrans, rasty))
-				bucket->RenderMeshSlot(cameratrans, rasty, *ms);
+		/* BGE-Remix P8 Part B (P8.11): objects of one mesh with this material
+		 * (not deformed, no object colour, no billboard or text) are drawn
+		 * as instances, in one draw, where the material allows it */
+		RAS_IPolyMaterial *mat = bucket->GetPolyMaterial();
+		const bool instancing = rasty->GetDrawingMode() == RAS_IRasterizer::KX_TEXTURED && mat->CanInstance() &&
+		    !(mat->GetDrawingMode() & (RAS_IRasterizer::RAS_RENDER_3DPOLYGON_TEXT | RAS_IPolyMaterial::BILLBOARD_SCREENALIGNED |
+		                               RAS_IPolyMaterial::BILLBOARD_AXISALIGNED | RAS_IPolyMaterial::SHADOW));
+		std::vector<RAS_MeshSlot *> active;
+		while ((ms = bucket->GetNextActiveMeshSlot()))
+			active.push_back(ms);
+		std::map<RAS_MeshObject *, std::vector<RAS_MeshSlot *> > groups;
+		if (instancing) {
+			for (size_t i = 0; i < active.size(); i++) {
+				RAS_MeshSlot *s = active[i];
+				if (!s->m_pDeformer && !s->m_pDerivedArrays && !s->m_bObjectColor && !s->m_joinSlot &&
+				    s->m_joinedSlots.empty() && s->m_mesh)
+				{
+					groups[s->m_mesh].push_back(s);
+				}
+			}
+		}
+		for (size_t i = 0; i < active.size(); i++) {
+			ms = active[i];
+			std::map<RAS_MeshObject *, std::vector<RAS_MeshSlot *> >::iterator g =
+			        instancing ? groups.find(ms->m_mesh) : groups.end();
+			if (g != groups.end() && g->second.size() >= 2) {
+				if (g->second[0] == ms) {
+					/* the group is drawn where its first object comes */
+					rasty->SetClientObject(ms->m_clientObj);
+					while (bucket->ActivateMaterial(cameratrans, rasty))
+						bucket->RenderMeshSlotsInstanced(cameratrans, rasty, g->second);
+				}
+			}
+			else {
+				rasty->SetClientObject(ms->m_clientObj);
+				while (bucket->ActivateMaterial(cameratrans, rasty))
+					bucket->RenderMeshSlot(cameratrans, rasty, *ms);
+			}
 
 			// make this mesh slot culled automatically for next frame
 			// it will be culled out by frustum culling

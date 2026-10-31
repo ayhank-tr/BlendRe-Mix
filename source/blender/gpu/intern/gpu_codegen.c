@@ -819,7 +819,7 @@ static char *code_generate_vertex(ListBase *nodes, const GPUMatType type)
 					BLI_dynstr_appendf(ds, "#ifndef USE_OPENSUBDIV\n");
 #endif
 					BLI_dynstr_appendf(
-					        ds, "\tvar%d.xyz = normalize(bge_normalmat * att%d.xyz);\n",
+					        ds, "\tvar%d.xyz = normalize(BGE_NORMALMAT * att%d.xyz);\n",
 					        input->attribid, input->attribid);
 					BLI_dynstr_appendf(
 					        ds, "\tvar%d.w = att%d.w;\n",

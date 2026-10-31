@@ -65,6 +65,14 @@ public:
 	virtual void Exit();
 
 	virtual void IndexPrimitives(RAS_MeshSlot& ms);
+	/* BGE-Remix P8 Part B (P8.11): slots of one mesh and material in one
+	 * instanced draw (their model-view matrices from "view" and their own);
+	 * false when the bound shader cannot (the caller draws them one by one) */
+	bool IndexPrimitivesInstanced(std::vector<RAS_MeshSlot *>& slots, const float view[16]);
+	void SetCulling(class RAS_GPUCulling *culling) { m_culling = culling; }
+	/* the frame's instanced draws and instances (statistics) */
+	int InstancedDraws() const { return m_inst_draws; }
+	int InstancedObjects() const { return m_inst_objects; }
 
 	virtual void SetDrawingMode(int drawingmode) { m_drawingmode = drawingmode; }
 	virtual void BeginFrame();
@@ -75,6 +83,7 @@ public:
 	struct ProgramInfo {
 		int pos, nor, col, texco[8], cl_texco;
 		bool core;  /* reads bge_pos: attributes only (otherwise the old arrays) */
+		int instanced;  /* the uniform bge_instanced (-1: the shader cannot instance) */
 	};
 
 protected:
@@ -96,7 +105,15 @@ protected:
 	void UploadVertices(RAS_BatchArray *ba);
 	void UploadIndices(RAS_BatchArray *ba, size_t first, size_t count);
 	const ProgramInfo &GetProgram(unsigned int program);
-	unsigned int GetVAO(RAS_BatchArray *ba, unsigned int program, bool own, bool wireframe, bool color_array);
+	unsigned int GetVAO(RAS_BatchArray *ba, unsigned int program, bool own, bool wireframe, bool color_array,
+	                    bool instanced = false);
+
+	/* instancing: the instance numbers (attribute 15), the indirect commands
+	 * and the visible lists of the culling pass (used from the start each frame) */
+	unsigned int m_instbuf, m_cmdbuf, m_visbuf;
+	unsigned int m_cmdused, m_visused;
+	class RAS_GPUCulling *m_culling;
+	int m_inst_draws, m_inst_objects;
 	void DrawArray(RAS_MeshSlot& ms, RAS_DisplayArray *array, unsigned short *index, size_t totindex,
 	               unsigned int program, const ProgramInfo& pi, bool own, bool modified, bool zsort);
 

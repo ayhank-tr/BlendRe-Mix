@@ -27,6 +27,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "MEM_guardedalloc.h"
@@ -1140,6 +1141,50 @@ void gpu_layer_init(void)
 {
 	mat_init();
 	gpu_imm.color[0] = gpu_imm.color[1] = gpu_imm.color[2] = gpu_imm.color[3] = 1.0f;
+}
+
+/* BGE-Remix P8 Part B: the speed features' switches */
+static const char *gpu_speed_names[] = {"instancing", "gpu_culling", "gpu_skinning"};
+#define SPEED_COUNT 3
+static int gpu_speed_on[SPEED_COUNT] = {-1, -1, -1};
+
+static int speed_index(const char *name)
+{
+	for (int i = 0; i < SPEED_COUNT; i++) {
+		if (name && strcmp(name, gpu_speed_names[i]) == 0) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+bool GPU_speed_feature(const char *name)
+{
+	const int i = speed_index(name);
+	if (i < 0) {
+		return false;
+	}
+	if (gpu_speed_on[i] < 0) {
+		char env[64] = "BGE_REMIX_NO_";
+		size_t n = strlen(env);
+		for (const char *c = gpu_speed_names[i]; *c && n < sizeof(env) - 1; c++) {
+			env[n++] = (char)((*c >= 'a' && *c <= 'z') ? *c - 32 : *c);
+		}
+		env[n] = '\0';
+		const char *v = getenv(env);
+		gpu_speed_on[i] = (v && v[0] && v[0] != '0') ? 0 : 1;
+	}
+	return gpu_speed_on[i] == 1;
+}
+
+bool GPU_speed_feature_set(const char *name, bool on)
+{
+	const int i = speed_index(name);
+	if (i < 0) {
+		return false;
+	}
+	gpu_speed_on[i] = on ? 1 : 0;
+	return true;
 }
 
 /* BGE-Remix P8 Part B: GPU time of the game's passes, from timestamps. Each

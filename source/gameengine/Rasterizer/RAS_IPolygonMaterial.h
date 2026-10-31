@@ -180,6 +180,8 @@ public:
 	virtual bool		UsesLighting(RAS_IRasterizer *rasty) const;
 	virtual bool		UsesObjectColor() const;
 	virtual bool		CastsShadows() const;
+	/* BGE-Remix P8 Part B (P8.11): objects of one mesh may be drawn as instances */
+	virtual bool		CanInstance() const { return false; }
 	virtual bool		OnlyShadow() const;
 
 	virtual void		Replace_IScene(SCA_IScene *val) {} /* overridden by KX_BlenderMaterial */

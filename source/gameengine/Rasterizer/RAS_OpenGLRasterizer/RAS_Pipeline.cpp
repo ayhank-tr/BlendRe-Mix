@@ -122,6 +122,13 @@ RAS_Pipeline::~RAS_Pipeline()
 	Free();
 }
 
+void RAS_Pipeline::DepthTexture(unsigned int *r_texture, bool *r_multisample, int r_area[4]) const
+{
+	*r_texture = m_active ? m_depth : 0;
+	*r_multisample = m_active && m_samples > 1;
+	memcpy(r_area, m_area, sizeof(m_area));
+}
+
 void RAS_Pipeline::Free()
 {
 	if (m_fbo)

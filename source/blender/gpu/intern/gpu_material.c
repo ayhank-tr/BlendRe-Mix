@@ -120,6 +120,8 @@ static struct GPUWorld {
 } GPUWorld;
 
 struct GPUMaterial {
+	/* BGE-Remix P8 Part B (P8.11): instances may share its draw (-1: not asked yet) */
+	int instanceable;
 	Scene *scene;
 	Material *ma;
 
@@ -436,6 +438,8 @@ static GPUMaterial *GPU_material_construct_begin(Material *ma)
 	GPUMaterial *material = MEM_callocN(sizeof(GPUMaterial), "GPUMaterial");
 
 	material->ma = ma;
+
+	material->instanceable = -1;
 
 	return material;
 }
@@ -1022,6 +1026,45 @@ void GPU_material_bind(
 
 		material->bound = 1;
 	}
+}
+
+/* BGE-Remix P8 Part B (P8.11): whether instances of one mesh can share a
+ * draw with this game material: nothing per object (object matrices, object
+ * colour, auto bump scale), and the fragment stage reads no model-view
+ * matrix (only the vertex stage has the instance's) */
+bool GPU_material_instanceable(GPUMaterial *material)
+{
+	if (!material || !material->pass || !material->is_game) {
+		return false;
+	}
+	if (material->instanceable >= 0) {
+		return material->instanceable == 1;
+	}
+	material->instanceable = 0;
+	const int per_object = GPU_OBJECT_MATRIX | GPU_INVERSE_OBJECT_MATRIX | GPU_OBCOLOR | GPU_AUTO_BUMPSCALE |
+	                       GPU_LOC_TO_VIEW_MATRIX | GPU_INVERSE_LOC_TO_VIEW_MATRIX;
+	if (material->builtins & per_object) {
+		return false;
+	}
+	GPUShader *shader = GPU_pass_shader(material->pass);
+	const GLuint program = shader ? GPU_shader_program(shader) : 0;
+	if (!program || glGetUniformLocation(program, "bge_instanced") < 0) {
+		return false;
+	}
+	const char *names[3] = {"bge_mv", "bge_mvinv", "bge_normalmat"};
+	for (int i = 0; i < 3; i++) {
+		const GLuint idx = glGetProgramResourceIndex(program, GL_UNIFORM, names[i]);
+		if (idx != GL_INVALID_INDEX) {
+			const GLenum prop = GL_REFERENCED_BY_FRAGMENT_SHADER;
+			GLint ref = 0;
+			glGetProgramResourceiv(program, GL_UNIFORM, idx, 1, &prop, 1, NULL, &ref);
+			if (ref) {
+				return false;
+			}
+		}
+	}
+	material->instanceable = 1;
+	return true;
 }
 
 GPUBuiltin GPU_get_material_builtins(GPUMaterial *material)

@@ -41,6 +41,7 @@
 #include "RAS_IRasterizer.h"
 
 #include "GPU_draw.h"
+#include "GPU_material.h"
 #include "GPU_layer.h"
 
 #include "STR_HashedString.h"
@@ -628,6 +629,15 @@ KX_BlenderMaterial::Activate(
 			return false;
 		}
 	}
+}
+
+/* BGE-Remix P8 Part B (P8.11): a GLSL material without custom shader or
+ * blending, whose shader has nothing per object */
+bool KX_BlenderMaterial::CanInstance() const
+{
+	if (mShader || !mBlenderShader || !mBlenderShader->Ok() || mUserDefBlend)
+		return false;
+	return GPU_material_instanceable(mBlenderShader->GetGPUMaterial());
 }
 
 bool KX_BlenderMaterial::UsesLighting(RAS_IRasterizer *rasty) const

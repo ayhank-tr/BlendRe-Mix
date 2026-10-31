@@ -59,6 +59,8 @@ enum {
 
 /* BGE-Remix P8.3: the program's OpenGL name (the drawing layer binds it) */
 unsigned int GPU_shader_program(GPUShader *shader);
+/* BGE-Remix P8 Part B (P8.11): vertex shaders can read storage buffers (instancing) */
+bool GPU_instancing_supported(void);
 /* BGE-Remix P8.3: the shader cache's counts since start, and its folder */
 void GPU_shader_cache_stats(int *r_loaded, int *r_built, int *r_saved);
 void GPU_shader_cache_init(void);

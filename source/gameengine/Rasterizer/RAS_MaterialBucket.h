@@ -252,6 +252,10 @@ public:
 	/* Rendering */
 	bool ActivateMaterial(const MT_Transform& cameratrans, RAS_IRasterizer* rasty);
 	void RenderMeshSlot(const MT_Transform& cameratrans, RAS_IRasterizer* rasty, RAS_MeshSlot &ms);
+	/* BGE-Remix P8 Part B (P8.11): slots of one mesh as instances (one by
+	 * one when the rasterizer cannot) */
+	void RenderMeshSlotsInstanced(const MT_Transform& cameratrans, RAS_IRasterizer* rasty,
+	                              std::vector<RAS_MeshSlot *>& slots);
 	
 	/* Mesh Slot Access */
 	list<RAS_MeshSlot>::iterator msBegin();

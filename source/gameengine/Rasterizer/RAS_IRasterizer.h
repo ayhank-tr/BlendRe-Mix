@@ -504,6 +504,12 @@ public:
 	 * scene (it clears the background); EndScene puts it on the window */
 	virtual void BeginScene(struct Scene *scene, bool first, int samples) {}
 	virtual void EndScene() {}
+	/* BGE-Remix P8 Part B (P8.11): mesh slots of one mesh and material drawn
+	 * as instances (false: the caller draws them one by one); the main
+	 * camera's view (GPU occlusion culling may be used); the frame's counts */
+	virtual bool IndexPrimitivesInstanced(std::vector<class RAS_MeshSlot *>& slots) { return false; }
+	virtual void SetMainView(bool on) {}
+	virtual void GetInstancingStats(int *r_draws, int *r_objects) { *r_draws = *r_objects = 0; }
 
 	virtual void SetClientObject(void *obj) = 0;
 

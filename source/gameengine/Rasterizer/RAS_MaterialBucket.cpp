@@ -687,6 +687,17 @@ void RAS_MaterialBucket::RenderMeshSlot(const MT_Transform& cameratrans, RAS_IRa
 	rasty->PopMatrix();
 }
 
+void RAS_MaterialBucket::RenderMeshSlotsInstanced(const MT_Transform& cameratrans, RAS_IRasterizer* rasty,
+                                                  std::vector<RAS_MeshSlot *>& slots)
+{
+	/* the material's uniforms are the same for every slot (nothing per object) */
+	m_material->ActivateMeshSlot(*slots[0], rasty);
+	if (rasty->IndexPrimitivesInstanced(slots))
+		return;
+	for (size_t i = 0; i < slots.size(); i++)
+		RenderMeshSlot(cameratrans, rasty, *slots[i]);
+}
+
 void RAS_MaterialBucket::Optimize(MT_Scalar distance)
 {
 	/* TODO: still have to check before this works correct:

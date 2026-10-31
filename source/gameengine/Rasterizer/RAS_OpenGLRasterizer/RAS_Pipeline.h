@@ -65,6 +65,9 @@ public:
 	void End();
 
 	bool Active() const { return m_active; }
+	/* the target's depth texture while active (0 otherwise), whether it is
+	 * multisampled, and the area drawn */
+	void DepthTexture(unsigned int *r_texture, bool *r_multisample, int r_area[4]) const;
 	bool Multisampled() const { return m_active && m_samples > 1; }
 	bool Modern() const { return m_active && m_modern; }
 

@@ -503,7 +503,7 @@ void GPU_classic_texenv_from_gl(GPUClassicState *st)
 /* BGE-Remix P8.4: the game's shadow maps: depth only, from the game's
  * batches (BGE-Remix P8 Part B: the core front end, the layer's matrices) */
 static const char *vert_game_depth =
-        "void main() { gl_Position = bge_proj * (bge_mv * bge_pos); }\n";
+        "void main() { gl_Position = bge_proj * (BGE_MV * bge_pos); }\n";
 static const char *frag_game_depth =
         "void main() { bge_fragcolor = vec4(1.0); }\n";
 

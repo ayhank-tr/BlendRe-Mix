@@ -580,6 +580,16 @@ void KX_KetsjiEngine::EndFrame()
 		PyDict_SetItemString(m_pyprofiledict, m_profileLabels[i], val);
 		Py_DECREF(val);
 	}
+	/* BGE-Remix P8 Part B (P8.11): instanced draws and the objects they drew */
+	{
+		int draws = 0, objects = 0;
+		m_rasterizer->GetInstancingStats(&draws, &objects);
+		PyObject *val = PyTuple_New(2);
+		PyTuple_SetItem(val, 0, PyFloat_FromDouble((double)draws));
+		PyTuple_SetItem(val, 1, PyFloat_FromDouble((double)objects));
+		PyDict_SetItemString(m_pyprofiledict, "Instancing", val);
+		Py_DECREF(val);
+	}
 	/* BGE-Remix P8 Part B: the GPU time of each pass ("GPU Shadows"...) */
 	for (int i = 0; i < GPU_PASS_COUNT; i++) {
 		const float ms = GPU_pass_timer_ms((GPUPassTimer)i);
@@ -988,7 +998,10 @@ void KX_KetsjiEngine::Render()
 			m_rasterizer->SetAuxilaryClientInfo(scene);
 	
 			// do the rendering
+			/* BGE-Remix P8 Part B (P8.11): the main camera's view (GPU culling) */
+			m_rasterizer->SetMainView(true);
 			RenderFrame(scene, cam);
+			m_rasterizer->SetMainView(false);
 		}
 		
 		list<class KX_Camera*>* cameras = scene->GetCameras();
