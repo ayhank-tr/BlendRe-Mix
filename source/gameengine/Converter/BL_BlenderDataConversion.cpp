@@ -138,6 +138,7 @@
 
 #include "BKE_key.h"
 #include "BKE_mesh.h"
+#include "BKE_curve.h"  /* BGE-Remix P8.22: CurveCache */
 #include "BKE_lamp_physical.h"
 
 #include "BLI_math.h"
@@ -1924,9 +1925,13 @@ static KX_GameObject *gameobject_from_blenderobject(
 		}
 #endif
 		/* a metaball has no shape until it is evaluated (the player never
-		 * evaluates it): the render settings make one here */
+		 * evaluates it): the render settings make one here; they also update
+		 * the object's texture space, which reads its (here empty) cache */
+		if (ob->type == OB_MBALL && !ob->curve_cache)
+			ob->curve_cache = (CurveCache *)MEM_callocN(sizeof(CurveCache), "BGE-Remix metaball cache");
+		const bool mball_render = ob->type == OB_MBALL && !(ob->curve_cache && ob->curve_cache->disp.first);
 		Mesh *me = BKE_mesh_new_from_object(G.main, blenderscene, ob, true,
-		                                    (ob->type == OB_MBALL && !ob->curve_cache) ? 2 : 1, true, false);
+		                                    mball_render ? 2 : 1, true, false);
 		if (!me)
 			break;
 		converter->RegisterTemporaryID(&me->id);
