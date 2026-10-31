@@ -75,6 +75,9 @@ public:
 	/* the frame's instanced draws and instances (statistics) */
 	int InstancedDraws() const { return m_inst_draws; }
 	int InstancedObjects() const { return m_inst_objects; }
+	/* the frame's instances the culling pass tested and those it let through
+	 * (read back from the card: only with BGE_REMIX_DRAW_STATS=1, else -1) */
+	void CullingStats(int *r_tested, int *r_drawn);
 
 	virtual void SetDrawingMode(int drawingmode) { m_drawingmode = drawingmode; }
 	virtual void BeginFrame();
@@ -116,6 +119,7 @@ protected:
 	unsigned int m_cmdused, m_visused;
 	class RAS_GPUCulling *m_culling;
 	int m_inst_draws, m_inst_objects;
+	int m_cull_tested;
 	void DrawArray(RAS_MeshSlot& ms, RAS_DisplayArray *array, unsigned short *index, size_t totindex,
 	               unsigned int program, const ProgramInfo& pi, bool own, bool modified, bool zsort);
 

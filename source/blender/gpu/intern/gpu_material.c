@@ -2270,7 +2270,7 @@ bool GPU_material_planar_mirror(Material *ma)
 	for (int i = 0; i < MAX_MTEX; i++) {
 		MTex *mtex = ma->mtex[i];
 		if (mtex && mtex->tex && mtex->tex->type == TEX_ENVMAP && mtex->tex->env &&
-		    mtex->tex->env->stype == ENV_PLANE)
+		    mtex->tex->env->type == ENV_PLANE)
 		{
 			return true;
 		}
@@ -2673,7 +2673,7 @@ static void do_material_tex(GPUShadeInput *shi)
 			{
 				/* BGE-Remix P8 Part B (P8.18): Static and Animated env maps
 				 * through probes, Planar ones through mirrors */
-				float planar = (tex->env->stype == ENV_PLANE) ? 1.0f : 0.0f;
+				float planar = (tex->env->type == ENV_PLANE) ? 1.0f : 0.0f;
 				GPU_link(mat, "mtex_probe_refl", GPU_builtin(GPU_VIEW_POSITION), shi->vn,
 				         GPU_builtin(GPU_INVERSE_VIEW_MATRIX), GPU_uniform(&planar), &tin, &trgb);
 				rgbnor = TEX_RGB;

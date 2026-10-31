@@ -622,6 +622,17 @@ void KX_KetsjiEngine::EndFrame()
 		PyDict_SetItemString(m_pyprofiledict, "Instancing", val);
 		Py_DECREF(val);
 	}
+	/* BGE-Remix P8 Part B (P8.11): instances the GPU culling pass tested and
+	 * drew (-1: not read back, see BGE_REMIX_DRAW_STATS) */
+	{
+		int tested = 0, drawn = -1;
+		m_rasterizer->GetCullingStats(&tested, &drawn);
+		PyObject *val = PyTuple_New(2);
+		PyTuple_SetItem(val, 0, PyFloat_FromDouble((double)tested));
+		PyTuple_SetItem(val, 1, PyFloat_FromDouble((double)drawn));
+		PyDict_SetItemString(m_pyprofiledict, "Culling", val);
+		Py_DECREF(val);
+	}
 	/* BGE-Remix P8 Part B: the GPU time of each pass ("GPU Shadows"...) */
 	for (int i = 0; i < GPU_PASS_COUNT; i++) {
 		const float ms = GPU_pass_timer_ms((GPUPassTimer)i);
@@ -1481,7 +1492,8 @@ void KX_KetsjiEngine::ScanProbes(KX_Scene *scene)
 		for (int i = 0; i < MAX_MTEX; i++) {
 			MTex *mtex = ma->mtex[i];
 			EnvMap *env = (mtex && mtex->tex && mtex->tex->type == TEX_ENVMAP) ? mtex->tex->env : NULL;
-			if (env && env->object && (env->stype == ENV_STATIC || env->stype == ENV_ANIM))
+			/* (a Planar one, whatever its source, is a mirror) */
+			if (env && env->object && env->type != ENV_PLANE && (env->stype == ENV_STATIC || env->stype == ENV_ANIM))
 				envview[env->object] = (env->stype == ENV_ANIM) ? 1 : 0;
 		}
 	}

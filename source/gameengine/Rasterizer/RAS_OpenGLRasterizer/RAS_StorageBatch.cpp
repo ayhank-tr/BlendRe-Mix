@@ -25,6 +25,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <string>
 #include <vector>
@@ -170,6 +171,7 @@ RAS_StorageBatch::RAS_StorageBatch(int *texco_num, RAS_IRasterizer::TexCoGen *te
     m_culling(NULL),
     m_inst_draws(0),
     m_inst_objects(0),
+    m_cull_tested(0),
     m_skinstate(0)
 {
 	memset(m_skinprog, 0, sizeof(m_skinprog));
@@ -219,6 +221,30 @@ void RAS_StorageBatch::BeginFrame()
 	GPU_old_builtins_frame();
 	m_cmdused = m_visused = 0;
 	m_inst_draws = m_inst_objects = 0;
+	m_cull_tested = 0;
+}
+
+void RAS_StorageBatch::CullingStats(int *r_tested, int *r_drawn)
+{
+	static int wanted = -1;
+	if (wanted < 0) {
+		const char *e = getenv("BGE_REMIX_DRAW_STATS");
+		wanted = (e && e[0] == '1') ? 1 : 0;
+	}
+	*r_tested = m_cull_tested;
+	*r_drawn = -1;
+	if (!wanted || !m_cmdbuf)
+		return;
+	*r_drawn = 0;
+	if (!m_cmdused)
+		return;
+	/* the commands' instance counts, as the culling pass wrote them (the
+	 * game waits for the card here: statistics for tests only) */
+	std::vector<unsigned int> cmds(m_cmdused * 5);
+	glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+	glGetNamedBufferSubData(m_cmdbuf, 0, (GLsizeiptr)(cmds.size() * sizeof(unsigned int)), &cmds[0]);
+	for (unsigned int i = 0; i < m_cmdused; i++)
+		*r_drawn += (int)cmds[i * 5 + 1];
 }
 
 void RAS_StorageBatch::Forget(RAS_BatchArray *ba)
@@ -773,6 +799,7 @@ bool RAS_StorageBatch::IndexPrimitivesInstanced(std::vector<RAS_MeshSlot *>& slo
 					glBindVertexArray(0);
 					m_cmdused++;
 					m_visused += (unsigned int)n;
+					m_cull_tested += (int)n;
 					culled = true;
 				}
 			}

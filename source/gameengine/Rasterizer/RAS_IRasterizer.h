@@ -512,6 +512,9 @@ public:
 	virtual bool IndexPrimitivesInstanced(std::vector<class RAS_MeshSlot *>& slots) { return false; }
 	virtual void SetMainView(bool on) {}
 	virtual void GetInstancingStats(int *r_draws, int *r_objects) { *r_draws = *r_objects = 0; }
+	/* BGE-Remix P8 Part B (P8.11): instances the GPU culling pass tested and
+	 * let through this frame (drawn: -1 unless BGE_REMIX_DRAW_STATS=1) */
+	virtual void GetCullingStats(int *r_tested, int *r_drawn) { *r_tested = 0; *r_drawn = -1; }
 
 	virtual void SetClientObject(void *obj) = 0;
 

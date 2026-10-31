@@ -851,6 +851,11 @@ void RAS_OpenGLRasterizer::GetInstancingStats(int *r_draws, int *r_objects)
 	*r_objects = storage->InstancedObjects();
 }
 
+void RAS_OpenGLRasterizer::GetCullingStats(int *r_tested, int *r_drawn)
+{
+	static_cast<RAS_StorageBatch *>(m_storage)->CullingStats(r_tested, r_drawn);
+}
+
 void RAS_OpenGLRasterizer::SyncOldMatrices()
 {
 	GPU_matrix_to_gl();

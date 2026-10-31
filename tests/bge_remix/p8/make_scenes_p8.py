@@ -1,4 +1,4 @@
-# BGE-Remix P8 test scenes, Part A (materials). Runs inside Blender 2.79b
+# BGE-Remix P8 test scenes, Parts A and B. Runs inside Blender 2.79b
 # (Python 3.5: no f-strings).
 #
 #   blender --background --factory-startup --python make_scenes_p8.py -- <out_dir>           (ours)
@@ -26,6 +26,29 @@
 # The official 2.79b writes (--stock), saved in Multitexture mode:
 #   mt_features.blend    one object per Multitexture-only feature
 #   mt_bench.blend       2,000 lit, textured objects and 8 lamps
+#
+# Part B (P8 v2) adds, besides lamps, shadows, shadows_far and shadows_bench:
+#   classic_look_*.blend   mist of each type over posts; each stereo mode; dome
+#   game_overlays.blend    text objects, debug properties, physics shapes, the
+#                          profile, drawLine, render to texture, a bge.texture
+#                          mirror (and a Remix copy)
+#   pipelines: glsl_features and pbr_spheres in Modern (Standard and Filmic,
+#                          exposure 0 and 1); a cut-out fence with and without
+#                          anti-aliasing
+#   crowd.blend            100 skinned walkers (20 with a shape key), 20,000
+#                          rocks and trees sharing 10 meshes, a wall hiding half
+#                          (crowd_small: 20 walkers, 2,000 objects, for CI)
+#   many_lamps*.blend      a night street with 256 small lamps, 4 casting, one
+#                          changing type (and 64- and 8-lamp copies)
+#   world_sky_*.blend      posts at 10-80 m; each sky type, Sky & Atmosphere
+#                          (sun low, middle, high), each mist with and without
+#                          height, Classic and Modern; light shafts; Remix copies
+#   reflections*.blend     a coloured room, chrome and rough balls with a probe,
+#                          a floor mirror, a moving cube, Static and Planar Env
+#                          Maps (and copies for SSR and B8.11)
+#   volumes*.blend         a fog cube, a glowing sphere, baked smoke and fire, a
+#                          camera moving into the fog cube (a Remix copy)
+# New scenes start Modern; the earlier ones are saved Classic.
 #
 # Every scene has the P2 probe (frames, frame times, a screenshot) and an
 # orthographic camera, so each object's rectangle on screen is known
@@ -118,15 +141,25 @@ def classic_lamps():
             la["bge_physical"] = 0
 
 
-def save(scene, path, physical=None, lamps_physical=False):
+def set_pipeline(modern):
+    """P8 Part B (P8.12): new scenes start in the Modern pipeline; the scenes
+    made before it keep the Classic one they were checked with (a hidden
+    property: harmless in stock 2.79)"""
+    if not STOCK:
+        for sc in bpy.data.scenes:
+            sc["bge_remix_pipeline"] = 1 if modern else 0
+
+
+def save(scene, path, physical=None, lamps_physical=False, modern=False):
     """physical: None keeps each material's own shading (new materials are
     physical), False makes all Classic; lamps_physical: False makes every lamp
-    use its own falloff, True keeps each lamp's model"""
+    use its own falloff, True keeps each lamp's model; modern: the pipeline"""
     if physical is False:
         for ma in bpy.data.materials:
             ma["bge_physical"] = 0
     if not lamps_physical:
         classic_lamps()
+    set_pipeline(modern)
     p2.add_probe(scene)
     scene.update()
     bpy.ops.wm.save_as_mainfile(filepath=path, check_existing=False, compress=False)
@@ -1141,6 +1174,7 @@ def make_shadows_bench(folder):
     logic(scene, driver, "p8_shadow_move.py", MOVE_SCRIPT)
     p2.add_probe(scene)
     scene.update()
+    set_pipeline(False)
 
     def variant(name, casting, sun_casts=False, size=0.3):
         for k, la in enumerate(points):
@@ -1520,6 +1554,970 @@ def make_deform(folder, E):
                    "frames": list(DF_FRAMES)}
 
 
+# ---------------------------------------------------------------------------
+# P8 v2 Part B: the new scenes (classic_look, game_overlays, pipelines,
+# crowd, many_lamps, world_sky, reflections, volumes). Each file name a test
+# plays is listed in E[<scene>]["files"].
+
+SHOTS_SCRIPT = r'''
+# BGE-Remix P8 Part B: screenshots at set frames into BGE_REMIX_P8_SHOTS
+# (<BGE_REMIX_P8_TAG>_<frame>.png)
+import os
+import bge
+g = bge.logic.globalDict
+n = g.get("p8_shots", 0) + 1
+g["p8_shots"] = n
+out = os.environ.get("BGE_REMIX_P8_SHOTS")
+if out and n in %s:
+    tag = os.environ.get("BGE_REMIX_P8_TAG", "shot")
+    bge.render.makeScreenshot(os.path.join(out, "%%s_%%d.png" %% (tag, n)))
+'''
+
+SHOT_FRAMES = (40, 80, 100)
+
+
+def shots_driver(scene, frames=SHOT_FRAMES):
+    ob = bpy.data.objects.new("P8Shots", None)
+    scene.objects.link(ob)
+    logic(scene, ob, "p8_shots.py", SHOTS_SCRIPT % repr(tuple(frames)))
+    return ob
+
+
+def copy_save(folder, name, modern=None):
+    """the open file saved again under another name (the pipeline first,
+    when given)"""
+    if modern is not None:
+        set_pipeline(modern)
+    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, name + ".blend"), copy=True)
+    print("BGE-Remix: wrote", name)
+    return name
+
+
+def persp_base(name, location, target, lens=35.0):
+    """base() with a perspective camera"""
+    scene = base(name)
+    cam = scene.camera
+    cam.data.type = 'PERSP'
+    cam.data.lens = lens
+    cam.data.clip_end = 500.0
+    cam.location = location
+    p2.look_at(cam, target)
+    return scene
+
+
+def box(scene, name, location, size, ma, mesh=None):
+    """a box of size (x, y, z), its centre at location"""
+    ob = p2.cube(scene, name, 1.0, location, ma, mesh=mesh)
+    ob.scale = size
+    return ob
+
+
+def no_physics(ob):
+    ob.game.physics_type = 'NO_COLLISION'
+
+
+# ---- classic_look (against stock 2.79): mist types, stereo, dome ----
+
+STEREO_MODES = ("ANAGLYPH", "SIDEBYSIDE", "ABOVEBELOW", "INTERLACED", "VINTERLACE")
+MIST_TYPES = ("LINEAR", "QUADRATIC", "INVERSE_QUADRATIC")
+
+
+def posts_row(scene, prefix, count=10):
+    cols = [classic(prefix + "_post%d" % k, c) for k, c in
+            enumerate(((0.8, 0.2, 0.1), (0.1, 0.6, 0.2), (0.2, 0.3, 0.8)))]
+    for i in range(count):
+        y = 2.0 + 4.5 * i
+        for side in (-1, 1):
+            box(scene, "%s_post%d_%d" % (prefix, i, side + 1), (side * 2.0, y, 1.5), (0.5, 0.5, 3.0), cols[i % 3])
+
+
+def make_classic_look(folder, E):
+    scene = persp_base("ClassicLook", (0.0, -6.0, 1.6), (0.0, 20.0, 1.0), lens=30.0)
+    w = scene.world
+    w.horizon_color = (0.45, 0.5, 0.55)
+    w.zenith_color = (0.45, 0.5, 0.55)
+    p2.plane(scene, "CL_floor", 200.0, (0.0, 40.0, 0.0), (0.0, 0.0, 0.0), classic("CL_floor", (0.5, 0.5, 0.5)))
+    posts_row(scene, "CL")
+    p2.lamp(scene, "CL_sun", 'SUN', (0.0, 0.0, 10.0), (math.radians(50.0), 0.0, math.radians(30.0)), energy=1.0)
+    p2.lamp(scene, "CL_hemi", 'HEMI', (0.0, 0.0, 10.0), energy=0.3)
+    mist = w.mist_settings
+    mist.use_mist = True
+    mist.start = 3.0
+    mist.depth = 30.0
+    mist.falloff = 'LINEAR'
+    files = []
+    save(scene, os.path.join(folder, "classic_look_mist_linear.blend"), physical=False)
+    files.append("classic_look_mist_linear")
+    for kind in MIST_TYPES[1:]:
+        mist.falloff = kind
+        files.append(copy_save(folder, "classic_look_mist_" + kind.lower()))
+    mist.falloff = 'LINEAR'
+    gs = scene.game_settings
+    for mode in STEREO_MODES:
+        gs.stereo = 'STEREO'
+        gs.stereo_mode = mode
+        files.append(copy_save(folder, "classic_look_stereo_" + mode.lower()))
+    gs.stereo = 'DOME'
+    gs.dome_mode = 'FISHEYE'
+    files.append(copy_save(folder, "classic_look_dome"))
+    E["classic_look"] = {"files": files}
+
+
+# ---- game_overlays (against stock 2.79) ----
+
+OVERLAY_SCRIPT = r'''
+# BGE-Remix P8 Part B: a render-to-texture screen, a bge.texture mirror and a
+# square drawn with bge.render.drawLine, each frame
+import bge
+from bge import texture as vt
+g = bge.logic.globalDict
+sc = bge.logic.getCurrentScene()
+if "p8_ov" not in g:
+    made = []
+    screen, rcam = sc.objects["OV_screen"], sc.objects["OV_rttcam"]
+    t = vt.Texture(screen, vt.materialID(screen, "MAOV_screen"))
+    t.source = vt.ImageRender(sc, rcam)
+    t.source.capsize = (256, 256)
+    made.append(t)
+    mirror = sc.objects["OV_mirror"]
+    m = vt.Texture(mirror, vt.materialID(mirror, "MAOV_mirror"))
+    m.source = vt.ImageMirror(sc, sc.active_camera, mirror, 0)
+    m.source.capsize = (256, 256)
+    made.append(m)
+    g["p8_ov"] = made
+for t in g["p8_ov"]:
+    t.refresh(True)
+c = (1.0, 1.0, 0.0)
+pts = [(-0.7, -1.0, -2.9), (0.7, -1.0, -2.9), (0.7, -1.0, -1.5), (-0.7, -1.0, -1.5)]
+for i in range(4):
+    bge.render.drawLine(pts[i], pts[(i + 1) % 4], c)
+'''
+
+
+def make_game_overlays(folder, E):
+    scene = base("Overlays")
+    gs = scene.game_settings
+    gs.show_debug_properties = True
+    gs.show_framerate_profile = True
+    gs.show_physics_visualization = True
+    white = classic("OV_white", (1.0, 1.0, 1.0), shadeless=True)
+    # a text object (Blender's font), facing the camera
+    cu = bpy.data.curves.new("OV_text", 'FONT')
+    cu.body = "BGE 2.79"
+    cu.size = 0.8
+    cu.align_x = 'CENTER'
+    cu.materials.append(white)
+    txt = bpy.data.objects.new("OV_text", cu)
+    txt.location = (2.6, 0.0, 2.0)
+    txt.rotation_euler = (math.radians(90.0), 0.0, 0.0)
+    scene.objects.link(txt)
+    # Face Texture text (a bitmap font, a Text property)
+    font = font_image()
+    tm = mt_material("OV_facetext", (1.0, 1.0, 1.0))
+    tm.use_face_texture = True
+    tm.use_face_texture_alpha = True
+    tm.game_settings.text = True
+    tm.game_settings.alpha_blend = 'ALPHA'
+    tob = facing_plane(scene, "OV_facetext", 5.0, 2.0, 1.2, tm)
+    for d in tob.data.uv_textures[0].data:
+        d.image = font
+    scene.objects.active = tob
+    bpy.ops.object.game_property_new(type='STRING', name="Text")
+    tob.game.properties["Text"].value = "BGE"
+    # a debug property (shown at the top left)
+    holder = bpy.data.objects.new("OV_props", None)
+    scene.objects.link(holder)
+    scene.objects.active = holder
+    bpy.ops.object.game_property_new(type='INT', name="Score")
+    holder.game.properties["Score"].value = 42
+    holder.game.properties["Score"].show_debug = True
+    # physics shapes (static: they stay put)
+    grey = classic("OV_grey", (0.6, 0.6, 0.6))
+    b = box(scene, "OV_box", (-4.5, 0.0, -2.2), (1.0, 1.0, 1.0), grey)
+    b.game.physics_type = 'STATIC'
+    s = p3.sphere(scene, "OV_sphere", (-2.6, 0.0, -2.2), grey, radius=0.5)
+    s.game.physics_type = 'STATIC'
+    s.game.use_collision_bounds = True
+    s.game.collision_bounds_type = 'SPHERE'
+    # the render-to-texture screen and what its camera sees (far to the side)
+    checker = p3.image("OV_checker", p3.checker)
+    sm = classic("OV_screen", (1.0, 1.0, 1.0), shadeless=True)
+    p3.bi_slot(sm, checker, color=True)
+    facing_plane(scene, "OV_screen", 2.6, -2.0, 2.0, sm)
+    for k, (x, col) in enumerate(((39.4, (0.9, 0.2, 0.1)), (40.6, (0.1, 0.8, 0.2)))):
+        box(scene, "OV_target%d" % k, (x, 0.0, 0.0), (1.0, 1.0, 1.0), classic("OV_target%d" % k, col))
+    rcam_data = bpy.data.cameras.new("OV_rttcam")
+    rcam = bpy.data.objects.new("OV_rttcam", rcam_data)
+    rcam.location = (40.0, -6.0, 1.5)
+    scene.objects.link(rcam)
+    p2.look_at(rcam, (40.0, 0.0, 0.0))
+    # the bge.texture mirror and a cube in front of it
+    mm = classic("OV_mirror", (1.0, 1.0, 1.0), shadeless=True)
+    p3.bi_slot(mm, p3.image("OV_mirror_img", p3.checker), color=True)
+    facing_plane(scene, "OV_mirror", 5.0, -1.2, 2.0, mm)
+    box(scene, "OV_front", (5.0, -3.0, 1.0), (0.8, 0.8, 0.8), classic("OV_front", (0.2, 0.3, 0.9)))
+    p2.lamp(scene, "OV_sun", 'SUN', (0.0, -10.0, 5.0), (math.radians(60.0), 0.0, math.radians(20.0)), energy=1.0)
+    for ob in scene.objects:
+        if ob.type == 'MESH' and ob.name not in ("OV_box", "OV_sphere"):
+            no_physics(ob)
+    driver = bpy.data.objects.new("OV_driver", None)
+    scene.objects.link(driver)
+    logic(scene, driver, "p8_overlays.py", OVERLAY_SCRIPT)
+    save(scene, os.path.join(folder, "game_overlays.blend"), physical=False)
+    scene["bge_remix"] = 1
+    copy_save(folder, "game_overlays_remix")
+    E["game_overlays"] = {
+        "files": ["game_overlays"],
+        # the top-left corner holds the frame rate, the profile and the debug
+        # property (ours lists more lines than stock): checked for text only
+        "overlay": [0, 0, 380, 300],
+        "rects": {"text": layout_rect(2.6, 2.2, 1.0), "face_text": layout_rect(5.0, 2.0, 0.6),
+                  "physics": [layout_rect(-4.5, -2.2, 0.75)[0], layout_rect(-4.5, -2.2, 0.75)[1],
+                              layout_rect(-2.6, -2.2, 0.75)[2], layout_rect(-2.6, -2.2, 0.75)[3]],
+                  "draw_line": layout_rect(0.0, -2.2, 0.9), "render_to_texture": layout_rect(2.6, -2.0, 1.0),
+                  "mirror": layout_rect(5.0, -1.2, 1.0)}}
+
+
+# ---- pipelines: glsl_features and pbr_spheres in Modern; a cut-out fence ----
+
+PIPELINE_LOOKS = (("standard", 'Default', 0.0), ("standard_exp1", 'Default', 1.0),
+                  ("filmic", 'Filmic', 0.0), ("filmic_exp1", 'Filmic', 1.0))
+
+
+def make_pipelines(folder, E):
+    files = []
+    for src in ("glsl_features", "pbr_spheres"):
+        path = os.path.join(folder, src + ".blend")
+        if not os.path.isfile(path):
+            continue
+        bpy.ops.wm.open_mainfile(filepath=path)
+        for sc in bpy.data.scenes:
+            sc["bge_remix"] = 0
+        sc = bpy.context.scene
+        for tag, view, exposure in PIPELINE_LOOKS:
+            sc.view_settings.view_transform = view
+            sc.view_settings.exposure = exposure
+            files.append(copy_save(folder, "%s_modern_%s" % (src, tag), modern=True))
+    # the fence: a cut-out (Clip Alpha) turned 20 degrees, white on black
+    bpy.ops.wm.read_factory_settings(use_empty=False)
+    scene = base("Fence")
+    scene.world.horizon_color = (0.0, 0.0, 0.0)
+    scene.world.zenith_color = (0.0, 0.0, 0.0)
+    img = p3.image("PF_holes", lambda x, y: (1.0, 1.0, 1.0, 0.0 if (int(x * 6) + int(y * 6)) % 2 else 1.0))
+    ma = classic("PF_fence", (1.0, 1.0, 1.0), shadeless=True)
+    ma.use_transparency = True
+    ma.alpha = 0.0
+    ma.game_settings.alpha_blend = 'CLIP'
+    slot = p3.bi_slot(ma, img, color=True)
+    slot.use_map_alpha = True
+    ob = facing_plane(scene, "PF_fence", 0.0, 0.0, 4.5, ma)
+    ob.rotation_euler = (math.radians(90.0), math.radians(20.0), 0.0)
+    gs = scene.game_settings
+    gs.samples = 'SAMPLES_4'
+    save(scene, os.path.join(folder, "pipelines_fence_aa.blend"), physical=False, modern=True)
+    files.append("pipelines_fence_aa")
+    files.append(copy_save(folder, "pipelines_fence_aa_classic", modern=False))
+    gs.samples = 'SAMPLES_0'
+    files.append(copy_save(folder, "pipelines_fence_noaa", modern=True))
+    E["pipelines"] = {"files": files, "fence": layout_rect(0.0, 0.0, 2.6)}
+
+
+# ---- crowd: skinned walkers, rocks and trees sharing meshes, a wall ----
+
+CROWD_SCRIPT = r'''
+# BGE-Remix P8 Part B: each walker's step and breath set frame by frame (the
+# same frames in every build); the culling counts written at frame 80
+# (BGE_REMIX_P8_STATS)
+import json
+import os
+import bge
+g = bge.logic.globalDict
+n = g.get("p8_crowd", 0) + 1
+g["p8_crowd"] = n
+sc = bge.logic.getCurrentScene()
+if n == 1:
+    g["p8_rigs"] = [o for o in sc.objects if o.name.startswith("CW_rig")]
+    g["p8_keyed"] = [o for o in sc.objects if o.name.startswith("CW_body") and "keyed" in o]
+    for o in g["p8_rigs"]:
+        o.playAction("CW_walk", 1, 49, play_mode=bge.logic.KX_ACTION_MODE_LOOP)
+    for o in g["p8_keyed"]:
+        o.playAction("CW_puff", 1, 49, play_mode=bge.logic.KX_ACTION_MODE_LOOP)
+for i, o in enumerate(g["p8_rigs"]):
+    o.setActionFrame(1.0 + (n * 2 + i * 7) % 48)
+for i, o in enumerate(g["p8_keyed"]):
+    o.setActionFrame(1.0 + (n * 2 + i * 5) % 48)
+out = os.environ.get("BGE_REMIX_P8_STATS")
+if out and n == 80:
+    info = bge.logic.getProfileInfo()
+    with open(out, "w") as f:
+        json.dump({k: list(info[k]) for k in ("Culling", "Instancing") if k in info}, f)
+'''
+
+
+def walker_meshes():
+    """the walker's body (Root) and two legs (LegL, LegR): one mesh with
+    weights, and a copy with a shape key ("Puff": a wider body)"""
+    import bmesh
+    out = []
+    for keyed in (False, True):
+        me = bpy.data.meshes.new("CW_body_keyed" if keyed else "CW_body")
+        bm = bmesh.new()
+        parts = (("Root", (0.0, 0.0, 1.25), (0.5, 0.3, 0.7)),
+                 ("LegL", (-0.13, 0.0, 0.45), (0.18, 0.18, 0.9)),
+                 ("LegR", (0.13, 0.0, 0.45), (0.18, 0.18, 0.9)))
+        groups = []
+        for name, centre, size in parts:
+            res = bmesh.ops.create_cube(bm, size=1.0)
+            for v in res["verts"]:
+                v.co.x = centre[0] + v.co.x * size[0]
+                v.co.y = centre[1] + v.co.y * size[1]
+                v.co.z = centre[2] + v.co.z * size[2]
+            groups.append((name, list(res["verts"])))
+        bm.verts.index_update()
+        idx = [(name, [v.index for v in verts]) for name, verts in groups]
+        bm.to_mesh(me)
+        bm.free()
+        me.update()
+        out.append((me, idx))
+    return out
+
+
+def make_crowd_scene(folder, E, name, rocks, walkers, keyed_every):
+    scene = persp_base("Crowd", (0.0, -12.0, 3.0), (0.0, 30.0, 0.0), lens=28.0)
+    scene.world.horizon_color = (0.35, 0.45, 0.6)
+    scene.world.zenith_color = (0.35, 0.45, 0.6)
+    scene.camera.data.clip_end = 200.0
+    ground = p2.plane(scene, "CW_ground", 240.0, (0.0, 60.0, 0.0), (0.0, 0.0, 0.0),
+                      p2.material("CW_ground", (0.35, 0.4, 0.3)))
+    no_physics(ground)
+    # the wall hides the left half of the field from the camera
+    wall = box(scene, "CW_wall", (-40.0, 6.0, 10.0), (80.0, 1.0, 20.0), p2.material("CW_wall", (0.6, 0.55, 0.5)))
+    no_physics(wall)
+    # ten meshes: five rocks, five trees; each object one of them
+    import bmesh
+    rock_ma = p2.material("CW_rock", (0.45, 0.42, 0.4))
+    tree_ma = p2.material("CW_tree", (0.15, 0.45, 0.15))
+    meshes = []
+    for k in range(10):
+        me = bpy.data.meshes.new("CW_mesh%d" % k)
+        bm = bmesh.new()
+        if k < 5:
+            bmesh.ops.create_icosphere(bm, subdivisions=1, diameter=0.5 + 0.1 * k)
+            for v in bm.verts:
+                v.co.z = v.co.z * (0.6 + 0.08 * k) + 0.2
+            me.materials.append(rock_ma)
+        else:
+            bmesh.ops.create_cone(bm, cap_ends=True, segments=8, diameter1=0.9 + 0.1 * (k - 5), diameter2=0.0,
+                                  depth=2.5 + 0.3 * (k - 5))
+            for v in bm.verts:
+                v.co.z += 1.6
+            me.materials.append(tree_ma)
+        bm.to_mesh(me)
+        bm.free()
+        me.update()
+        meshes.append(me)
+    side = int(math.ceil(math.sqrt(rocks)))
+    step = 100.0 / side
+    for i in range(rocks):
+        r, c = divmod(i, side)
+        x = -50.0 + (c + 0.5) * step
+        y = 10.0 + (r + 0.5) * step
+        ob = bpy.data.objects.new("CW_obj%05d" % i, meshes[(i * 7 + r) % 10])
+        ob.location = (x, y, 0.0)
+        ob.rotation_euler = (0.0, 0.0, (i * 0.61) % 6.28)
+        scene.objects.link(ob)
+        no_physics(ob)
+    # the walkers: a rig (Root, LegL, LegR) and a body each
+    arm = bpy.data.armatures.new("CW_rig")
+    proto = bpy.data.objects.new("CW_rig_proto", arm)
+    scene.objects.link(proto)
+    scene.objects.active = proto
+    proto.select = True
+    bpy.ops.object.mode_set(mode='EDIT')
+    root = arm.edit_bones.new("Root")
+    root.head, root.tail = (0.0, 0.0, 0.9), (0.0, 0.0, 1.6)
+    for nm, x in (("LegL", -0.13), ("LegR", 0.13)):
+        b = arm.edit_bones.new(nm)
+        b.head, b.tail = (x, 0.0, 0.9), (x, 0.0, 0.0)
+        b.parent = root
+    bpy.ops.object.mode_set(mode='OBJECT')
+    walk = bpy.data.actions.new("CW_walk")
+    walk.use_fake_user = True
+    proto.animation_data_create()
+    proto.animation_data.action = walk
+    # (quaternions: every rig's bones keep the default rotation mode)
+    for frame, a in ((1, 0.5), (25, -0.5), (49, 0.5)):
+        for nm, sgn in (("LegL", 1.0), ("LegR", -1.0)):
+            pb = proto.pose.bones[nm]
+            pb.rotation_quaternion = (math.cos(sgn * a / 2.0), math.sin(sgn * a / 2.0), 0.0, 0.0)
+            pb.keyframe_insert("rotation_quaternion", frame=frame)
+    proto.animation_data.action = None
+    for nm in ("LegL", "LegR"):
+        proto.pose.bones[nm].rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
+    scene.objects.unlink(proto)
+    (plain, plain_idx), (keyed_me, keyed_idx) = walker_meshes()
+    body_ma = p2.material("CW_body", (0.8, 0.5, 0.3))
+    plain.materials.append(body_ma)
+    keyed_me.materials.append(body_ma)
+    # the shape key on the keyed copy (its action, on the key)
+    tmp = bpy.data.objects.new("CW_keytmp", keyed_me)
+    scene.objects.link(tmp)
+    tmp.shape_key_add(name="Basis", from_mix=False)
+    puff = tmp.shape_key_add(name="Puff", from_mix=False)
+    for d in puff.data:
+        if d.co.z > 0.9:
+            d.co.x *= 1.6
+            d.co.y *= 1.6
+    key = keyed_me.shape_keys
+    key.animation_data_create()
+    pa = bpy.data.actions.new("CW_puff")
+    pa.use_fake_user = True
+    key.animation_data.action = pa
+    kb = key.key_blocks["Puff"]
+    for frame, value in ((1, 0.0), (25, 1.0), (49, 0.0)):
+        kb.value = value
+        kb.keyframe_insert("value", frame=frame)
+    key.animation_data.action = None
+    kb.value = 0.0
+    scene.objects.unlink(tmp)
+    bpy.data.objects.remove(tmp, do_unlink=True)
+    cols = 20
+    for i in range(walkers):
+        r, c = divmod(i, cols)
+        x, y = -9.5 + c * 1.0, 0.0 + r * 1.1
+        rig = bpy.data.objects.new("CW_rig%03d" % i, arm)
+        rig.location = (x, y, 0.0)
+        scene.objects.link(rig)
+        no_physics(rig)
+        keyed = keyed_every and i % keyed_every == 0
+        body = bpy.data.objects.new("CW_body%03d" % i, keyed_me if keyed else plain)
+        scene.objects.link(body)
+        body.parent = rig
+        for nm, verts in (keyed_idx if keyed else plain_idx):
+            vg = body.vertex_groups.new(nm)
+            vg.add(verts, 1.0, 'REPLACE')
+        mod = body.modifiers.new("Armature", 'ARMATURE')
+        mod.object = rig
+        no_physics(body)
+        if keyed:
+            scene.objects.active = body
+            bpy.ops.object.game_property_new(type='INT', name="keyed")
+    sun = p2.lamp(scene, "CW_sun", 'SUN', (0.0, 2.0, 12.0), (math.radians(35.0), 0.0, math.radians(-30.0)),
+                  energy=1.0)
+    sun.data.use_shadow = True
+    sun.data.shadow_frustum_size = 24.0
+    p2.lamp(scene, "CW_hemi", 'HEMI', (0.0, 0.0, 10.0), energy=0.25)
+    driver = bpy.data.objects.new("CW_driver", None)
+    scene.objects.link(driver)
+    logic(scene, driver, "p8_crowd.py", CROWD_SCRIPT)
+    shots_driver(scene, (60, 90))
+    save(scene, os.path.join(folder, name + ".blend"), physical=False, modern=True)
+    files = [name]
+    if name == "crowd_small":
+        sun.data.use_shadow = False
+        files.append(copy_save(folder, "crowd_small_noshadow"))
+    # the walkers' band, with their shadows (screen rectangles)
+    rows = (walkers + cols - 1) // cols
+    rects = {"walkers": screen_rect(scene, (-10.0, -0.3, 0.0), (10.0, rows * 1.1, 1.8), shrink=1.0),
+             "shadows": screen_rect(scene, (-12.0, -0.3, 0.0), (12.0, rows * 1.1 + 2.5, 1.8), shrink=1.0)}
+    return files, rects
+
+
+def make_crowd(folder, E):
+    files, rects = make_crowd_scene(folder, E, "crowd", 20000, 100, 5)
+    E["crowd"] = dict(rects, files=files)
+
+
+def make_crowd_small(folder, E):
+    """crowd at a size CI's software OpenGL plays quickly"""
+    files, rects = make_crowd_scene(folder, E, "crowd_small", 2000, 20, 5)
+    E["crowd_small"] = dict(rects, files=files)
+
+
+# ---- many_lamps: a night street lit by 256 small lamps ----
+
+ML_SCRIPT = r'''
+# BGE-Remix P8 Part B: the lamp "ML_changing" changes type every 60 frames
+# (point, spot, sun, then point again)
+import bge
+g = bge.logic.globalDict
+n = g.get("p8_ml", 0) + 1
+g["p8_ml"] = n
+sc = bge.logic.getCurrentScene()
+if "ML_changing" in sc.objects and n % 60 == 0:
+    lamp = sc.objects["ML_changing"]
+    kinds = (lamp.NORMAL, lamp.SPOT, lamp.SUN)
+    lamp.type = kinds[(n // 60) % 3]
+    print("P8-LAMP-TYPE %d %d" % (n, lamp.type))
+'''
+
+ML_ROWS = (-4.5, -1.5, 1.5, 4.5)
+ML_PER_ROW = 64
+ML_LENGTH = 200.0
+ML_ORTHO = 210.0
+
+
+def ml_screen(x, y):
+    """a point of the street (top view) on screen (pixels)"""
+    view_h = ML_ORTHO * HEIGHT / WIDTH
+    return [int(round((x / ML_ORTHO + 0.5) * WIDTH)), int(round((0.5 - y / view_h) * HEIGHT))]
+
+
+def make_many_lamps(folder, E):
+    scene = base("ManyLamps")
+    cam = scene.camera
+    cam.data.ortho_scale = ML_ORTHO
+    cam.location = (0.0, 0.0, 50.0)
+    cam.rotation_euler = (0.0, 0.0, 0.0)
+    scene.world.horizon_color = (0.0, 0.0, 0.0)
+    scene.world.zenith_color = (0.0, 0.0, 0.0)
+    street = p2.plane(scene, "ML_street", 1.0, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), classic("ML_street", (0.7, 0.7, 0.7)))
+    street.scale = (ML_LENGTH + 10.0, 14.0, 1.0)
+    post_ma = classic("ML_post", (0.5, 0.45, 0.4))
+    lamps = []
+    kinds = ('POINT', 'SPOT', 'AREA')
+    for r, y in enumerate(ML_ROWS):
+        for i in range(ML_PER_ROW):
+            x = -ML_LENGTH / 2.0 + (i + 0.5) * ML_LENGTH / ML_PER_ROW
+            k = (i + r) % 3
+            name = "ML_changing" if (r == 0 and i == 0) else "ML_%d_%02d" % (r, i)
+            ob = p2.lamp(scene, name, kinds[k], (x, y, 0.6), energy=0.4, distance=1.0, soft=0.1)
+            la = ob.data
+            la["bge_physical"] = 1
+            if kinds[k] == 'SPOT':
+                la.spot_size = math.radians(70.0)
+                la.spot_blend = 0.3
+            if kinds[k] == 'AREA':
+                la.size = 0.3
+                la.energy = 0.6
+            if hasattr(la, "use_shadow"):
+                la.use_shadow = False
+            lamps.append({"name": name, "kind": kinds[k], "at": ml_screen(x, y),
+                          "between": ml_screen(x + 0.5 * ML_LENGTH / ML_PER_ROW, y)})
+    # four lamps cast: the moon and three spots over posts
+    moon = p2.lamp(scene, "ML_moon", 'SUN', (0.0, 0.0, 20.0), (math.radians(30.0), 0.0, math.radians(40.0)),
+                   energy=0.05)
+    moon.data.use_shadow = True
+    moon.data["bge_physical"] = 1
+    for k, x in enumerate((-60.0, 0.0, 60.0)):
+        box(scene, "ML_post%d" % k, (x + 1.5, 0.0, 0.6), (0.3, 0.3, 1.2), post_ma)
+        ob = p2.lamp(scene, "ML_cast%d" % k, 'SPOT', (x, 0.0, 4.0), energy=1.0, distance=4.0, soft=0.1)
+        ob.data.spot_size = math.radians(80.0)
+        ob.data.use_shadow = True
+        ob.data["bge_physical"] = 1
+    for ob in scene.objects:
+        if ob.type == 'MESH':
+            no_physics(ob)
+    driver = bpy.data.objects.new("ML_driver", None)
+    scene.objects.link(driver)
+    logic(scene, driver, "p8_many_lamps.py", ML_SCRIPT)
+    shots_driver(scene, (50, 100, 150))
+    save(scene, os.path.join(folder, "many_lamps.blend"), physical=False, lamps_physical=True, modern=True)
+    files = ["many_lamps"]
+
+    def keep_only(names):
+        for ob in list(scene.objects):
+            if ob.type == 'LAMP' and ob.name not in names:
+                bpy.data.objects.remove(ob, do_unlink=True)
+
+    # 64 lamps (16 a row) and the casting ones, for B8.9
+    keep_only({l["name"] for l in lamps if l["name"] == "ML_changing" or int(l["name"].split("_")[-1]) < 16} |
+              {"ML_moon", "ML_cast0", "ML_cast1", "ML_cast2"})
+    files.append(copy_save(folder, "many_lamps_64"))
+    # 8 lamps: two of each kind, the moon and a casting spot (T8.20: clustered
+    # lighting against the per-lamp code)
+    eight = [l["name"] for l in lamps[1:7]] + ["ML_moon", "ML_cast0"]
+    keep_only(set(eight))
+    files.append(copy_save(folder, "many_lamps_8"))
+    E["many_lamps"] = {"files": files, "lamps": lamps, "eight": eight}
+
+
+def screen_rect(scene, lo, hi, shrink=0.8):
+    """the screen rectangle (pixels, top-left origin) of a box from lo to hi
+    seen by the scene's camera, shrunk to its inner part"""
+    from bpy_extras.object_utils import world_to_camera_view
+    from mathutils import Vector
+    xs, ys = [], []
+    for i in range(8):
+        p = Vector((hi[0] if i & 1 else lo[0], hi[1] if i & 2 else lo[1], hi[2] if i & 4 else lo[2]))
+        v = world_to_camera_view(scene, scene.camera, p)
+        xs.append(v.x * WIDTH)
+        ys.append((1.0 - v.y) * HEIGHT)
+    cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+    hw, hh = (max(xs) - min(xs)) * shrink / 2.0, (max(ys) - min(ys)) * shrink / 2.0
+    r = [int(round(cx - hw)), int(round(cy - hh)), int(round(cx + hw)), int(round(cy + hh))]
+    return [min(max(r[0], 0), WIDTH), min(max(r[1], 0), HEIGHT), min(max(r[2], 0), WIDTH), min(max(r[3], 0), HEIGHT)]
+
+
+# ---- world_sky: each sky, Sky & Atmosphere, each mist, Classic and Modern ----
+
+WS_POSTS = ((10.0, -1.5), (20.0, -0.5), (40.0, 0.5), (80.0, 1.5))
+WS_SKIES = ("blend", "real", "paper", "image", "cloud")
+WS_SUN = (("low", 5.0), ("middle", 30.0), ("high", 70.0))
+
+
+def make_world_sky(folder, E):
+    scene = persp_base("WorldSky", (0.0, -2.0, 1.7), (0.0, 30.0, 1.7), lens=22.0)
+    scene.camera.data.clip_end = 1000.0
+    w = scene.world
+    floor = p2.plane(scene, "WS_floor", 1000.0, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), classic("WS_floor", (0.5, 0.5, 0.5)))
+    no_physics(floor)
+    post_ma = classic("WS_post", (0.75, 0.35, 0.2))
+    posts = {}
+    for y, f in WS_POSTS:
+        x, half = f * y / 10.0, 0.2 * y / 10.0
+        ob = box(scene, "WS_post%d" % int(y), (x, y, 3.0), (2.0 * half, 2.0 * half, 6.0), post_ma)
+        no_physics(ob)
+        posts[int(y)] = {"upper": screen_rect(scene, (x - half, y - half, 2.4), (x + half, y + half, 6.0)),
+                         "lower": screen_rect(scene, (x - half, y - half, 0.0), (x + half, y + half, 1.2))}
+    sun = p2.lamp(scene, "WS_sun", 'SUN', (0.0, 0.0, 20.0), (math.radians(50.0), 0.0, math.radians(160.0)),
+                  energy=1.0)
+    hemi = p2.lamp(scene, "WS_hemi", 'HEMI', (0.0, 0.0, 20.0), energy=0.2)
+    sky_img = p3.image("WS_sky_img", lambda x, y: (0.2 + 0.6 * x, 0.3 + 0.5 * y,
+                                                   0.9 if int(x * 12) % 2 else 0.5, 1.0))
+    sky_tex = bpy.data.textures.new("WS_sky_img", 'IMAGE')
+    sky_tex.image = sky_img
+    cloud_tex = procedural("WS_clouds", 'CLOUDS', {"noise_scale": 0.4})
+    shaft = p2.lamp(scene, "WS_shaft", 'SPOT', (5.0, 12.0, 7.0), energy=3.0, distance=40.0, soft=0.2)
+    p2.look_at(shaft, (-1.0, 22.0, 0.0))
+    shaft.data.spot_size = math.radians(40.0)
+    shaft.data.use_halo = True
+    shaft.data.halo_intensity = 1.0
+    shaft.data.use_shadow = True
+    shaft.data.shadow_buffer_clip_end = 60.0
+    shots_driver(scene, (100,))
+    save(scene, os.path.join(folder, "world_sky.blend"), physical=False)
+
+    def reset():
+        w.use_sky_blend = w.use_sky_real = w.use_sky_paper = False
+        w.horizon_color = (0.55, 0.6, 0.7)
+        w.zenith_color = (0.1, 0.25, 0.6)
+        for i in range(len(w.texture_slots)):
+            w.texture_slots.clear(i)
+        mist = w.mist_settings
+        mist.use_mist = False
+        mist.height = 0.0
+        sun.data.sky.use_sky = False
+        sun.data.sky.use_atmosphere = False
+        sun.rotation_euler = (math.radians(50.0), 0.0, math.radians(160.0))
+        shaft.data.energy = 0.0
+        shaft.data.use_halo = False
+        shaft.data.use_shadow = False
+        scene["bge_remix"] = 0
+
+    def both(name):
+        out = []
+        for modern in (False, True):
+            out.append(copy_save(folder, "world_sky_%s_%s" % (name, "modern" if modern else "classic"), modern=modern))
+        return out
+
+    files = {"sky": [], "atmosphere": [], "mist": [], "shafts": [], "remix": []}
+    for kind in WS_SKIES:
+        reset()
+        w.use_sky_blend = True
+        if kind == "real":
+            w.use_sky_real = True
+        elif kind == "paper":
+            w.use_sky_paper = True
+        elif kind in ("image", "cloud"):
+            slot = w.texture_slots.add()
+            slot.texture = sky_tex if kind == "image" else cloud_tex
+            slot.texture_coords = 'EQUIRECT' if kind == "image" else 'VIEW'
+            slot.use_map_blend = False
+            slot.use_map_horizon = True
+            slot.use_map_zenith_up = kind == "cloud"
+            slot.color = (1.0, 1.0, 1.0)
+        files["sky"] += both(kind)
+    for tag, elevation in WS_SUN:
+        reset()
+        w.horizon_color = (0.0, 0.0, 0.0)
+        w.zenith_color = (0.0, 0.0, 0.0)
+        sun.rotation_euler = (math.radians(90.0 - elevation), 0.0, math.radians(160.0))
+        sun.data.sky.use_sky = True
+        sun.data.sky.use_atmosphere = True
+        files["atmosphere"] += both("atmosphere_" + tag)
+    for kind in MIST_TYPES:
+        for height in (0.0, 2.0):
+            reset()
+            w.use_sky_blend = True
+            mist = w.mist_settings
+            mist.use_mist = True
+            mist.start = 5.0
+            mist.depth = 60.0
+            mist.falloff = kind
+            mist.height = height
+            files["mist"] += both("mist_%s%s" % (kind.lower(), "_height" if height else ""))
+    # Modern fog: a spot lamp's halo becomes a light shaft, shadowed by the posts
+    for tag, halo, shadow in (("shafts", True, True), ("shafts_noshadow", True, False),
+                              ("shafts_nohalo", False, True)):
+        reset()
+        mist = w.mist_settings
+        mist.use_mist = True
+        mist.start = 2.0
+        mist.depth = 80.0
+        mist.falloff = 'LINEAR'
+        sun.data.energy = 0.2
+        shaft.data.energy = 3.0
+        shaft.data.use_halo = halo
+        shaft.data.use_shadow = shadow
+        files["shafts"].append(copy_save(folder, "world_sky_%s_modern" % tag, modern=True))
+        sun.data.energy = 1.0
+    # Remix: the sky picture, the mist as fog
+    reset()
+    w.use_sky_blend = True
+    scene["bge_remix"] = 1
+    files["remix"].append(copy_save(folder, "world_sky_blend_remix", modern=False))
+    w.mist_settings.use_mist = True
+    w.mist_settings.start = 5.0
+    w.mist_settings.depth = 60.0
+    files["remix"].append(copy_save(folder, "world_sky_mist_remix", modern=False))
+    E["world_sky"] = {"files": files, "posts": posts, "mist": {"start": 5.0, "depth": 60.0},
+                      "sky_rect": [0, 0, WIDTH, int(HEIGHT * 0.42)], "ground_rect": [0, int(HEIGHT * 0.62), WIDTH, HEIGHT],
+                      "shaft_rect": screen_rect(scene, (-4.0, 14.0, 0.0), (4.0, 30.0, 6.0), shrink=1.0)}
+
+
+# ---- reflections: a coloured room, two balls, a floor mirror, Env Maps ----
+
+RF_SCRIPT = r'''
+# BGE-Remix P8 Part B: the cube passes the balls (by frame: the same in
+# every build)
+import bge
+g = bge.logic.globalDict
+n = g.get("p8_rf", 0) + 1
+g["p8_rf"] = n
+sc = bge.logic.getCurrentScene()
+cube = sc.objects["RF_mover"]
+cube.worldPosition = (0.0 if n < 60 else 2.6, -0.2, 0.3)
+'''
+
+
+def mirror_material(name, color, reflect, gloss, diffuse=0.05):
+    ma = classic(name, color, spec=0.5)
+    ma.diffuse_intensity = diffuse
+    ma.raytrace_mirror.use = True
+    ma.raytrace_mirror.reflect_factor = reflect
+    ma.raytrace_mirror.gloss_factor = gloss
+    return ma
+
+
+def env_panel(scene, name, x, z, mapping, viewpoint=None):
+    tex = bpy.data.textures.new(name, 'ENVIRONMENT_MAP')
+    env = tex.environment_map
+    env.source = 'STATIC'
+    env.mapping = mapping
+    ma = classic(name, (1.0, 1.0, 1.0))
+    ma.diffuse_intensity = 0.2
+    slot = ma.texture_slots.add()
+    slot.texture = tex
+    slot.texture_coords = 'REFLECTION'
+    slot.use_map_color_diffuse = True
+    ob = p2.plane(scene, name, 1.0, (x, 2.8, z), (math.radians(90.0), 0.0, 0.0), ma)
+    env.viewpoint_object = viewpoint or ob
+    return ob, ma
+
+
+def make_reflections(folder, E):
+    scene = persp_base("Reflections", (0.0, -3.2, 1.6), (0.0, 1.0, 0.8), lens=24.0)
+    walls = (("left", (-4.0, 0.0, 2.0), (0.1, 8.0, 4.0), (0.9, 0.1, 0.1)),
+             ("right", (4.0, 0.0, 2.0), (0.1, 8.0, 4.0), (0.1, 0.8, 0.1)),
+             ("back", (0.0, -4.0, 2.0), (8.0, 0.1, 4.0), (0.1, 0.2, 0.9)),
+             ("front", (0.0, 4.0, 2.0), (8.0, 0.1, 4.0), (0.9, 0.85, 0.1)),
+             ("ceiling", (0.0, 0.0, 4.0), (8.0, 8.0, 0.1), (0.9, 0.9, 0.9)))
+    for name, at, size, col in walls:
+        no_physics(box(scene, "RF_" + name, at, size, classic("RF_" + name, col)))
+    floor_ma = mirror_material("RF_floor", (0.5, 0.5, 0.5), 0.25, 0.9, diffuse=0.8)
+    no_physics(p2.plane(scene, "RF_floor", 8.0, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), floor_ma))
+    chrome = p3.sphere(scene, "RF_chrome", (-0.9, 1.0, 0.8), mirror_material("RF_chrome", (0.8, 0.8, 0.8), 1.0, 1.0),
+                       radius=0.6)
+    rough = p3.sphere(scene, "RF_rough", (0.9, 1.0, 0.8), mirror_material("RF_rough", (0.8, 0.8, 0.8), 0.9, 0.55,
+                                                                           diffuse=0.1), radius=0.6)
+    probe = bpy.data.objects.new("RF_probe", None)
+    probe.location = (-0.9, 1.0, 0.8)
+    probe["bge_probe"] = 1.0
+    probe["bge_probe_reach"] = 6.0
+    probe["bge_probe_rate"] = 1.0
+    scene.objects.link(probe)
+    patch_ma = mirror_material("RF_patch", (0.6, 0.6, 0.6), 0.9, 1.0, diffuse=0.1)
+    patch_ma["bge_planar_mirror"] = 1
+    patch = p2.plane(scene, "RF_patch", 1.2, (0.0, -0.6, 0.01), (0.0, 0.0, 0.0), patch_ma)
+    mover = box(scene, "RF_mover", (0.0, -0.2, 0.3), (0.4, 0.4, 0.4), classic("RF_mover", (1.0, 0.45, 0.05)))
+    view = bpy.data.objects.new("RF_envview", None)
+    view.location = (2.6, 2.7, 1.6)
+    scene.objects.link(view)
+    static_panel, static_ma = env_panel(scene, "RF_env_static", 2.6, 1.6, 'CUBE', view)
+    planar_panel, planar_ma = env_panel(scene, "RF_env_planar", -2.6, 1.6, 'PLANE')
+    for ob in (chrome, rough, patch, mover, static_panel, planar_panel):
+        no_physics(ob)
+    p2.lamp(scene, "RF_light", 'POINT', (0.0, 0.0, 3.5), energy=1.5, distance=10.0)
+    p2.lamp(scene, "RF_hemi", 'HEMI', (0.0, 0.0, 3.5), energy=0.2)
+    driver = bpy.data.objects.new("RF_driver", None)
+    scene.objects.link(driver)
+    logic(scene, driver, "p8_reflections.py", RF_SCRIPT)
+    shots_driver(scene, (40, 80))
+    save(scene, os.path.join(folder, "reflections.blend"), physical=False)
+    files = ["reflections"]
+    files.append(copy_save(folder, "reflections_modern", modern=True))
+    scene.world["bge_ssr"] = 0
+    files.append(copy_save(folder, "reflections_modern_nossr", modern=True))
+    scene.world["bge_ssr"] = 1
+    patch_ma["bge_planar_mirror"] = 0
+    patch_ma.raytrace_mirror.use = False
+    files.append(copy_save(folder, "reflections_nomirror", modern=False))
+    patch_ma["bge_planar_mirror"] = 1
+    patch_ma.raytrace_mirror.use = True
+    static_ma.use_textures[0] = False
+    planar_ma.use_textures[0] = False
+    files.append(copy_save(folder, "reflections_noenv", modern=False))
+    static_ma.use_textures[0] = True
+    planar_ma.use_textures[0] = True
+    # B8.11: 1 and 4 probes, drawn once, every 10 frames and every frame; the
+    # floor mirror alone
+    bench = []
+    extra = []
+    for count in (1, 4):
+        while len(extra) < count - 1:
+            k = len(extra)
+            ob = bpy.data.objects.new("RF_probe_extra%d" % k, None)
+            ob.location = ((-2.5, 2.5, 0.0)[k], (-2.0, -2.0, 2.5)[k], 1.5)
+            ob["bge_probe"] = 1.0
+            ob["bge_probe_reach"] = 4.0
+            scene.objects.link(ob)
+            extra.append(ob)
+        for tag, rate in (("once", 0.0), ("r10", 10.0), ("r1", 1.0)):
+            for ob in [probe] + extra:
+                ob["bge_probe_rate"] = rate
+            bench.append(copy_save(folder, "reflections_bench_p%d_%s" % (count, tag), modern=False))
+    for ob in [probe] + extra + [static_panel, planar_panel]:
+        bpy.data.objects.remove(ob, do_unlink=True)
+    bench.append(copy_save(folder, "reflections_bench_mirror", modern=False))
+    E["reflections"] = {
+        "files": files, "bench": bench,
+        "chrome": screen_rect(scene, (-1.5, 0.4, 0.2), (-0.3, 1.6, 1.4)),
+        "rough": screen_rect(scene, (0.3, 0.4, 0.2), (1.5, 1.6, 1.4)),
+        "patch": screen_rect(scene, (-0.6, -1.2, 0.0), (0.6, 0.0, 0.02)),
+        "env_static": screen_rect(scene, (2.1, 2.8, 1.1), (3.1, 2.8, 2.1)),
+        "env_planar": screen_rect(scene, (-3.1, 2.8, 1.1), (-2.1, 2.8, 2.1)),
+        "floor": screen_rect(scene, (-3.0, -1.5, 0.0), (3.0, 3.0, 0.0), shrink=1.0)}
+
+
+# ---- volumes: a fog cube, a glowing sphere, baked smoke and fire ----
+
+VO_SCRIPT = r'''
+# BGE-Remix P8 Part B: the second camera moves into the fog cube (frames 1
+# to 100); the smoke's emitter is hidden
+import bge
+g = bge.logic.globalDict
+n = g.get("p8_vo", 0) + 1
+g["p8_vo"] = n
+sc = bge.logic.getCurrentScene()
+if n == 1 and "VO_flow" in sc.objects:
+    sc.objects["VO_flow"].visible = False
+cam = sc.objects["VO_cam2"]
+t = min(n, 100) / 100.0
+cam.worldPosition = (-1.5, -7.0 + 7.0 * t, 1.2)
+'''
+
+
+def volume_material(name, density, scattering=1.0, emission=0.0, emission_color=(1.0, 1.0, 1.0),
+                    reflection_color=(1.0, 1.0, 1.0), transmission_color=(1.0, 1.0, 1.0)):
+    ma = bpy.data.materials.new(name)
+    ma.type = 'VOLUME'
+    v = ma.volume
+    v.density = density
+    v.scattering = scattering
+    v.emission = emission
+    v.emission_color = emission_color
+    v.reflection_color = reflection_color
+    v.transmission_color = transmission_color
+    v.step_size = 0.1
+    return ma
+
+
+def make_volumes(folder, E):
+    scene = persp_base("Volumes", (0.0, -8.0, 1.6), (0.0, 0.0, 1.2), lens=30.0)
+    scene.world.horizon_color = (0.1, 0.1, 0.12)
+    scene.world.zenith_color = (0.1, 0.1, 0.12)
+    stripes = p3.image("VO_stripes", lambda x, y: p3.stripes(x, y, n=8))
+    wall_ma = classic("VO_wall", (1.0, 1.0, 1.0))
+    p3.bi_slot(wall_ma, stripes, color=True)
+    wall = p3.uv_plane(scene, "VO_wall", 1.0, (0.0, 3.0, 2.0), (math.radians(90.0), 0.0, 0.0), wall_ma)
+    wall.scale = (10.0, 5.0, 1.0)
+    floor = p2.plane(scene, "VO_floor", 20.0, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), classic("VO_floor", (0.5, 0.5, 0.5)))
+    fog = box(scene, "VO_fogcube", (-1.5, 0.0, 1.2), (2.0, 2.0, 2.0),
+              volume_material("VO_fog", 0.6, reflection_color=(0.7, 0.8, 1.0), transmission_color=(0.85, 0.9, 1.0)))
+    glow = p3.sphere(scene, "VO_glow", (1.5, 0.0, 1.2),
+                     volume_material("VO_glow", 0.3, emission=2.0, emission_color=(1.0, 0.5, 0.1)), radius=0.8)
+    # baked smoke and fire: a domain and an emitter (hidden in the game, out
+    # of F12)
+    smoke_ma = volume_material("VO_smoke", 1.0, reflection_color=(0.6, 0.6, 0.6))
+    dom = box(scene, "VO_smoke", (3.8, 1.0, 1.3), (1.6, 1.6, 2.6), smoke_ma)
+    vtex = bpy.data.textures.new("VO_smoke_density", 'VOXEL_DATA')
+    vtex.voxel_data.domain_object = dom
+    vtex.voxel_data.smoke_data_type = 'SMOKEDENSITY'
+    slot = smoke_ma.texture_slots.add()
+    slot.texture = vtex
+    slot.texture_coords = 'ORCO'
+    slot.use_map_color_diffuse = False
+    slot.use_map_density = True
+    flow = p3.sphere(scene, "VO_flow", (3.8, 1.0, 0.4), classic("VO_flow", (1.0, 0.3, 0.0)), radius=0.25)
+    flow.hide_render = True
+    for ob in (wall, floor, fog, glow, dom, flow):
+        no_physics(ob)
+    cam2 = bpy.data.cameras.new("VO_cam2")
+    cam2.lens = 30.0
+    cam2_ob = bpy.data.objects.new("VO_cam2", cam2)
+    cam2_ob.location = (-1.5, -7.0, 1.2)
+    cam2_ob.rotation_euler = (math.radians(90.0), 0.0, 0.0)
+    scene.objects.link(cam2_ob)
+    p2.lamp(scene, "VO_sun", 'SUN', (0.0, -5.0, 8.0), (math.radians(40.0), 0.0, math.radians(20.0)), energy=1.0)
+    p2.lamp(scene, "VO_point", 'POINT', (0.0, -2.0, 3.0), energy=1.0, distance=8.0)
+    driver = bpy.data.objects.new("VO_driver", None)
+    scene.objects.link(driver)
+    logic(scene, driver, "p8_volumes.py", VO_SCRIPT)
+    rects = {"fog": screen_rect(scene, (-2.5, -1.0, 0.2), (-0.5, 1.0, 2.2), shrink=0.6),
+             "glow": screen_rect(scene, (0.7, -0.8, 0.4), (2.3, 0.8, 2.0), shrink=0.6),
+             "smoke": screen_rect(scene, (3.0, 0.2, 0.0), (4.6, 1.8, 2.6), shrink=0.9),
+             "wall": screen_rect(scene, (-4.5, 3.0, 2.8), (4.5, 3.0, 4.4), shrink=0.9)}
+    # the smoke baked (24 frames), kept in the file
+    mod = dom.modifiers.new("Smoke", 'SMOKE')
+    mod.smoke_type = 'DOMAIN'
+    ds = mod.domain_settings
+    ds.resolution_max = 24
+    ds.use_high_resolution = False
+    ds.point_cache.frame_start = 1
+    ds.point_cache.frame_end = 24
+    fmod = flow.modifiers.new("Smoke", 'SMOKE')
+    fmod.smoke_type = 'FLOW'
+    fmod.flow_settings.smoke_flow_type = 'BOTH'
+    scene.frame_start = 1
+    scene.frame_end = 24
+    shots_driver(scene, (100,))
+    save(scene, os.path.join(folder, "volumes.blend"), physical=False)
+    baked = False
+    try:
+        bpy.ops.ptcache.bake_all(bake=True)
+        baked = True
+    except Exception as ex:
+        print("BGE-Remix: baking the smoke with the operator failed (%s); stepping the frames" % ex)
+        ds.point_cache.use_disk_cache = True
+        for f in range(1, 25):
+            scene.frame_set(f)
+        baked = True
+    scene.frame_set(1)
+    files = [copy_save(folder, "volumes", modern=False)]
+    files.append(copy_save(folder, "volumes_modern", modern=True))
+    scene.camera = cam2_ob
+    scene["bge_remix"] = 1
+    files.append(copy_save(folder, "volumes_inside_remix", modern=False))
+    scene["bge_remix"] = 0
+    scene.camera = bpy.data.objects["Camera"]
+    for ob in (dom, flow):
+        bpy.data.objects.remove(ob, do_unlink=True)
+    files.append(copy_save(folder, "volumes_nosmoke", modern=False))
+    E["volumes"] = {"files": files, "rects": rects, "baked": baked,
+                    "fog": {"object": "VO_fogcube", "distance": round(1.0 / 0.6, 4)}}
+
+
 def main():
     folder = out_dir()
     E = {"width": WIDTH, "height": HEIGHT, "failed": {}}
@@ -1543,7 +2541,17 @@ def main():
                   ("custom_shaders", lambda: make_custom_shaders(folder, E)),
                   ("custom_filters", lambda: make_custom_filters(folder, E)),
                   # P8 v2 Part A2: meshes as batches
-                  ("deform", lambda: make_deform(folder, E))]
+                  ("deform", lambda: make_deform(folder, E)),
+                  # P8 v2 Part B: the new scenes
+                  ("classic_look", lambda: make_classic_look(folder, E)),
+                  ("game_overlays", lambda: make_game_overlays(folder, E)),
+                  ("pipelines", lambda: make_pipelines(folder, E)),
+                  ("crowd_small", lambda: make_crowd_small(folder, E)),
+                  ("crowd", lambda: make_crowd(folder, E)),
+                  ("many_lamps", lambda: make_many_lamps(folder, E)),
+                  ("world_sky", lambda: make_world_sky(folder, E)),
+                  ("reflections", lambda: make_reflections(folder, E)),
+                  ("volumes", lambda: make_volumes(folder, E))]
         target = os.path.join(folder, "p8_expected.json")
     for name, make in makers:
         try:

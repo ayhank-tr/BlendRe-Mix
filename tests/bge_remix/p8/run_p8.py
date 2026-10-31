@@ -28,6 +28,34 @@ T8.21 also: in the editor, changing the startup lamp's type keeps the 3D
       view and every other editor drawing (Material and Textured shading),
       and the shadows put the drawing state back
 
+Part B (the game on OpenGL 4.5; one build):
+T8.14 game drawing: classic_look (mist types, stereo modes, dome) and
+      game_overlays (text, debug properties, physics shapes, the profile,
+      drawLine, render to texture, a bge.texture mirror) as stock 2.79;
+      mt_bench the same with each storage setting
+T8.15 speed without change: instancing, GPU culling, GPU skinning, one-pass
+      shadows, clustered lighting and the shader cache give the same picture
+      on and off; GPU culling leaves crowd's hidden half undrawn (its counts,
+      BGE_REMIX_DRAW_STATS=1)
+T8.16 pipelines: Classic as stock; Modern (Standard) as Classic, exposure 1
+      doubles the light, Filmic applies; the setting both ways; cut-out edges
+      smoothed with anti-aliasing (Modern and Classic)
+T8.17 GPU skinning: crowd's walkers (bones and shape keys) as the CPU poses
+      them
+T8.18 Remix mode: the overlays over Remix's picture (fake runtime); P2-P5
+T8.20 many lamps: each of 256 lamps lights its spot; with 8 lamps clustered
+      equals per-lamp; a lamp's type changes while playing
+T8.21 also: crowd's characters cast, the same with GPU skinning
+T8.22 sky and mist: each sky and Sky & Atmosphere as F12, Modern as Classic;
+      mist with distance and height; Remix's sky picture and fog (log);
+      Modern's light shafts and their shadows
+T8.23 reflections: the chrome ball's walls, the floor mirror, the moving
+      cube in both, Static and Planar Env Maps, screen-space reflections
+T8.24 volumes: the fog cube and glowing sphere as F12, the baked smoke,
+      Remix's fog inside the volume (log)
+B8.7-B8.9, B8.11, B8.12 reported (B8.6, B8.10 with Part A's); their targets
+      are for the RTX run
+
 The first build's tests, renumbered (P8 plan v2):
 T8.4  one mode (was T8.1)            T8.5  Multitexture's features (T8.2)
 T8.6  GLSL unchanged (T8.3)          T8.7  fallback (T8.4)
@@ -1375,10 +1403,11 @@ def run(args, out):
                       frames=60)
     cache_dir = os.path.join(out, "shader_cache_t82")
     shutil.rmtree(cache_dir, ignore_errors=True)
+    # (a screenshot at frame 50: T8.15 compares the pictures built and loaded)
     gl["cache_first"] = play(args.ours, out, "t82_cache_first", S("glsl_features"),
-                             {"BGE_REMIX_SHADER_CACHE": cache_dir}, frames=60)
+                             {"BGE_REMIX_SHADER_CACHE": cache_dir, "BGE_REMIX_P2_SHOT_FRAME": "50"}, frames=60)
     gl["cache_second"] = play(args.ours, out, "t82_cache_second", S("glsl_features"),
-                              {"BGE_REMIX_SHADER_CACHE": cache_dir}, frames=60)
+                              {"BGE_REMIX_SHADER_CACHE": cache_dir, "BGE_REMIX_P2_SHOT_FRAME": "50"}, frames=60)
     gl["reset"] = play(args.ours, out, "t82_reset", S("glsl_features"), {"BGE_REMIX_GL_SIMULATE_RESET": "30"})
     cf_dirs = (os.path.join(out, "filters_ours"), os.path.join(out, "filters_stock"))
     for dpath in cf_dirs:
@@ -1440,6 +1469,9 @@ def run(args, out):
             r = play(args.official, out, "stock_" + name, S(name))
             shots["stock_" + name.replace("_gl", "")] = r.get("screenshot")
 
+    # P8 v2 Part B: the game on OpenGL 4.5
+    B = partb_runs(args, out, S, expected)
+
     tests = {}
     plan = [("T8.4 One mode", lambda: t81(args, out, scenes, mt_ours, api)),
             ("T8.5 Multitexture's features", lambda: t82(expected, mt_ours, mt_stock)),
@@ -1456,8 +1488,18 @@ def run(args, out):
             ("T8.2 Cache and recovery", lambda: t82_cache(gl)),
             ("T8.3 Old shaders", lambda: t83_shaders(expected, runs, shots, cf_dirs)),
             ("T8.35 Tiers", lambda: t835_tiers(gl, shots)),
-            ("Meshes as batches (deform scene)", lambda: t84_batches(expected, runs, df_dirs))]
-    needs_official = ("T8.4", "T8.5", "T8.6", "T8.3", "Meshes")
+            ("Meshes as batches (deform scene)", lambda: t84_batches(expected, runs, df_dirs)),
+            ("T8.14 Game drawing", lambda: t814_drawing(B, expected)),
+            ("T8.15 Speed without change", lambda: t815_speed(B, runs, shots, gl)),
+            ("T8.16 Pipelines", lambda: t816_pipelines(B, expected, shots)),
+            ("T8.17 GPU skinning", lambda: t817_skinning(B, expected)),
+            ("T8.18 Remix mode", lambda: t818_remix_mode(B, expected, out)),
+            ("T8.20 Many lamps", lambda: t820_many_lamps(B, expected)),
+            ("T8.21 Shadows: crowd", lambda: t821_crowd_shadows(B, expected)),
+            ("T8.22 Sky and mist", lambda: t822_sky(B, expected)),
+            ("T8.23 Reflections", lambda: t823_reflections(B, expected)),
+            ("T8.24 Volumes", lambda: t824_volumes(B, expected))]
+    needs_official = ("T8.4", "T8.5", "T8.6", "T8.3", "Meshes", "T8.14")
     for name, fn in plan:
         if not args.official and name.split()[0] in needs_official:
             tests[name] = {"ok": False, "checks": {"official 2.79b given (--official)": False}, "detail": {}}
@@ -1478,10 +1520,11 @@ def run(args, out):
         import traceback
         c, d = {"the test ran": False}, {"error": traceback.format_exc()}
     tests["T8.1 OpenGL 4.5"] = {"ok": bool(c) and all(bool(v) for v in c.values()), "checks": c, "detail": d}
-    ran = {k: bool(r.get("ran")) for k, r in runs.items()}
+    ran = {k: bool(r.get("ran")) for k, r in list(runs.items()) + list(B["runs"].items())}
     tests["The game ran (every scene)"] = {"ok": all(ran.values()), "checks": ran, "detail": {}}
 
     bench = benchmarks(args, out, scenes, runs)
+    bench.update(partb_benchmarks(args, out, S, expected))
     res = {"tests": tests, "bench": bench, "all_ok": all(t["ok"] for t in tests.values())}
     # the self-test picture as PNG for the sheet
     try:
@@ -1510,10 +1553,29 @@ def run(args, out):
              ("custom_shaders: stock 2.79", shots.get("stock_custom_shaders")),
              ("deform at frame 50: ours (batches)", os.path.join(out, "deform_ours", "deform_50.png")),
              ("deform at frame 50: stock 2.79", os.path.join(out, "deform_stock", "deform_50.png")),
-             ("layer self-test", os.path.join(out, "layer_selftest", "layer_selftest.png"))]
+             ("layer self-test", os.path.join(out, "layer_selftest", "layer_selftest.png")),
+             ("classic_look (linear mist): ours", B["runs"].get("b_classic_look_mist_linear", {}).get("screenshot")),
+             ("classic_look (anaglyph): ours", B["runs"].get("b_classic_look_stereo_anaglyph", {}).get("screenshot")),
+             ("classic_look (dome): ours", B["runs"].get("b_classic_look_dome", {}).get("screenshot")),
+             ("game_overlays: ours", B["runs"].get("b_game_overlays", {}).get("screenshot")),
+             ("game_overlays: stock 2.79", B["runs"].get("b_stock_game_overlays", {}).get("screenshot")),
+             ("game_overlays over Remix (fake runtime)", B["runs"].get("b_game_overlays_remix", {}).get("screenshot")),
+             ("glsl_features: Modern, Filmic", B["runs"].get("b_glsl_features_modern_filmic", {}).get("screenshot")),
+             ("pbr_spheres: Modern, Standard", B["runs"].get("b_pbr_spheres_modern_standard", {}).get("screenshot")),
+             ("crowd (small) at frame 60", B["runs"].get("b_crowd", {}).get("shots", {}).get(60)),
+             ("many_lamps at frame 50", B["runs"].get("b_many_lamps", {}).get("shots", {}).get(50)),
+             ("world_sky: blend sky (Classic)", B["runs"].get("b_world_sky_blend_classic", {}).get("screenshot")),
+             ("world_sky: blend sky, F12", B["f12"].get("b_f12_world_sky_blend_classic")),
+             ("world_sky: atmosphere, sun low (Modern)",
+              B["runs"].get("b_world_sky_atmosphere_low_modern", {}).get("screenshot")),
+             ("world_sky: light shafts (Modern)", B["runs"].get("b_world_sky_shafts_modern", {}).get("screenshot")),
+             ("reflections at frame 40", B["runs"].get("b_reflections", {}).get("shots", {}).get(40)),
+             ("reflections, Modern with SSR", B["runs"].get("b_reflections_modern", {}).get("shots", {}).get(40)),
+             ("volumes: game", B["runs"].get("b_volumes", {}).get("screenshot")),
+             ("volumes (no smoke): F12", B["f12"].get("b_f12_volumes"))]
     res["sheet"] = p2.contact_sheet(sheet, os.path.join(out, "sheet_p8a.png"))
 
-    lines = ["BGE-Remix P8 tests, plan v2: Part A (A1-A3) and the first build's tests (CI)", "=" * 70, ""]
+    lines = ["BGE-Remix P8 tests, plan v2: Parts A and B (CI)", "=" * 70, ""]
     for name, t in tests.items():
         lines.append("%-34s %s" % (name, p2.mark(t["ok"])))
         for check, ok in t["checks"].items():
@@ -1525,6 +1587,584 @@ def run(args, out):
     lines.append("Picture sheet: %s" % res.get("sheet"))
     lines += ["", "ALL PASSED" if res["all_ok"] else "SOMETHING FAILED (see results_p8a.json and the .log files)"]
     return res, lines
+
+
+
+
+# ---------------------------------------------------------------------------
+# P8 v2 Part B: the game on OpenGL 4.5 (T8.14-T8.24, B8.6-B8.12)
+
+TOL_OVERLAY = 6.0   # overlays and bge.texture against stock 2.79 (lines, text)
+TOL_SPEED = 1.0     # a speed feature on and off
+TOL_SKY = 10.0      # the game's sky against F12 (aligned, blurred)
+TOL_VOLUME = 16.0   # a volume against F12 (aligned, blurred)
+B_FRAMES = 110      # Part B runs: the probe's screenshot at frame 100
+
+PIPELINE_CHECK = r'''
+import bpy, json
+sc = bpy.context.scene
+r = {"opened": sc.game_settings.render_pipeline}
+new = bpy.data.scenes.new("P8Pipeline")
+r["new_scene"] = new.game_settings.render_pipeline
+sc.game_settings.render_pipeline = 'MODERN'
+r["set_modern"] = sc.game_settings.render_pipeline
+r["stored"] = sc.get("bge_remix_pipeline")
+sc.game_settings.render_pipeline = 'CLASSIC'
+r["set_classic"] = sc.game_settings.render_pipeline
+print("P8-PIPELINE " + json.dumps(r))
+'''
+
+# mt_bench saved with each storage setting (T8.14)
+STORAGE = r'''
+import bpy, os, sys
+folder = sys.argv[sys.argv.index("--") + 1]
+done = []
+for kind in ("AUTO", "VERTEX_ARRAY", "VERTEX_BUFFER_OBJECT"):
+    bpy.ops.wm.open_mainfile(filepath=os.path.join(folder, "mt_bench.blend"))
+    bpy.context.scene.game_settings.raster_storage = kind
+    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, "mt_bench_storage_%s.blend" % kind.lower()), copy=True)
+    done.append(kind)
+print("P8-STORAGE " + ",".join(done))
+'''
+STORAGES = ("auto", "vertex_array", "vertex_buffer_object")
+
+
+def play_shots(build, out, tag, blend, env=None, frames=B_FRAMES):
+    """play() with the scene's own screenshots (shots_driver) collected by
+    frame"""
+    folder = os.path.join(out, "shots")
+    os.makedirs(folder, exist_ok=True)
+    rx = re.compile(r"^%s_(\d+)\.png$" % re.escape(tag))
+    for name in os.listdir(folder):
+        if rx.match(name):
+            os.remove(os.path.join(folder, name))
+    e = {"BGE_REMIX_P8_SHOTS": folder, "BGE_REMIX_P8_TAG": tag}
+    e.update(env or {})
+    r = play(build, out, tag, blend, e, frames=frames)
+    r["shots"] = {}
+    for name in os.listdir(folder):
+        m = rx.match(name)
+        if m:
+            r["shots"][int(m.group(1))] = os.path.join(folder, name)
+    return r
+
+
+def shot_of(r, frame=None):
+    """a run's picture: its own screenshot at the frame, or the probe's"""
+    if not r:
+        return None
+    if frame is not None:
+        return picture(r.get("shots", {}).get(frame))
+    return picture(r.get("screenshot"))
+
+
+def text_pixels(a, rect, level=150.0):
+    """bright pixels in a region (overlay text on a dark ground)"""
+    if a is None:
+        return 0
+    return int((brightness(crop(a, rect)) > level).sum())
+
+
+def srgb_to_linear(a):
+    import numpy as np
+    c = a / 255.0
+    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+
+
+def mock_lines(log):
+    return p2.read_lines(log)
+
+
+def config_values(lines, key):
+    """the values the game gave a Remix setting (the fake runtime's log)"""
+    out = []
+    for l in lines:
+        if l.startswith("Config %s=" % key):
+            out.append(l.split("=", 1)[1])
+    return out
+
+
+def partb_runs(args, out, S, expected):
+    """every Part B run; the pictures and logs the tests read"""
+    B = {"runs": {}, "f12": {}, "remix": {}}
+    R = B["runs"]
+    have = lambda n: os.path.isfile(S(n))  # noqa: E731
+
+    def ours(tag, name, env=None, frames=B_FRAMES, shots=False):
+        if not have(name):
+            return {}
+        R[tag] = (play_shots if shots else play)(args.ours, out, tag, S(name), env, frames=frames)
+        return R[tag]
+
+    def stock(tag, name, frames=B_FRAMES):
+        if not args.official or not have(name):
+            return {}
+        R[tag] = play(args.official, out, tag, S(name), frames=frames, gl_debug=False)
+        return R[tag]
+
+    def remix(tag, name, frames=B_FRAMES):
+        if not have(name):
+            return {}
+        cache = p3.fresh(os.path.join(out, "cache_" + tag))
+        log, env = mock_env(args, out, tag, cache)
+        R[tag] = play(args.ours, out, tag, S(name), env, frames=frames)
+        B["remix"][tag] = mock_lines(log)
+        return R[tag]
+
+    def f12(tag, name):
+        if not have(name):
+            return None
+        path = os.path.join(out, tag + ".png")
+        blender_script(args.ours, out, tag, RENDER, [path], blend=S(name), timeout=1800)
+        B["f12"][tag] = path if os.path.isfile(path) else None
+        return B["f12"][tag]
+
+    # T8.14: classic_look and game_overlays against stock; mt_bench's storages
+    for f in expected.get("classic_look", {}).get("files", []):
+        ours("b_" + f, f)
+        stock("b_stock_" + f, f)
+    ours("b_game_overlays", "game_overlays")
+    stock("b_stock_game_overlays", "game_overlays")
+    remix("b_game_overlays_remix", "game_overlays_remix")
+    if have("mt_bench"):
+        blender_script(args.ours, out, "b_storage", STORAGE, [os.path.dirname(S("mt_bench"))])
+        for kind in STORAGES:
+            ours("b_mt_storage_" + kind, "mt_bench_storage_" + kind)
+
+    # T8.16: the pipelines
+    for f in expected.get("pipelines", {}).get("files", []):
+        ours("b_" + f, f)
+    code, text, _ = blender_script(args.ours, out, "b_pipeline_check", PIPELINE_CHECK, blend=S("glsl_features"))
+    B["pipeline_check"] = tagged(text, "P8-PIPELINE")
+
+    # T8.15, T8.17, T8.21: crowd (GPU culling's counts, each speed feature off)
+    stats = {k: os.path.join(out, "b_crowd_stats_%s.json" % k) for k in ("on", "nocull")}
+    for p in stats.values():
+        if os.path.isfile(p):
+            os.remove(p)
+    ours("b_crowd", "crowd_small", {"BGE_REMIX_DRAW_STATS": "1", "BGE_REMIX_P8_STATS": stats["on"]}, shots=True)
+    ours("b_crowd_noinst", "crowd_small", {"BGE_REMIX_NO_INSTANCING": "1"}, shots=True)
+    ours("b_crowd_nocull", "crowd_small", {"BGE_REMIX_NO_GPU_CULLING": "1", "BGE_REMIX_DRAW_STATS": "1",
+                                            "BGE_REMIX_P8_STATS": stats["nocull"]}, shots=True)
+    ours("b_crowd_noskin", "crowd_small", {"BGE_REMIX_NO_GPU_SKINNING": "1"}, shots=True)
+    ours("b_crowd_noshadow", "crowd_small_noshadow", shots=True)
+    B["crowd_stats"] = {k: p2.read_json(p) for k, p in stats.items()}
+
+    # T8.15, T8.20: lamps
+    ours("b_many_lamps", "many_lamps", frames=160, shots=True)
+    ours("b_many_lamps_8", "many_lamps_8", frames=B_FRAMES)
+    ours("b_many_lamps_8_perlamp", "many_lamps_8", {"BGE_REMIX_NO_CLUSTERED_LIGHTS": "1"})
+    ours("b_lamps_perlamp", "lamps_gl", {"BGE_REMIX_NO_CLUSTERED_LIGHTS": "1"}, frames=300)
+    ours("b_shadows_nolayered", "shadows", {"BGE_REMIX_NO_LAYERED_SHADOWS": "1"}, frames=300)
+
+    # T8.22: the sky and the mist
+    W = expected.get("world_sky", {}).get("files", {})
+    for f in W.get("sky", []) + W.get("atmosphere", []) + W.get("mist", []) + W.get("shafts", []):
+        ours("b_" + f, f)
+    for f in W.get("sky", []) + W.get("atmosphere", []):
+        if f.endswith("_classic"):
+            f12("b_f12_" + f, f)
+    for f in W.get("remix", []):
+        remix("b_" + f, f)
+
+    # T8.23: reflections
+    for f in expected.get("reflections", {}).get("files", []):
+        ours("b_" + f, f, frames=90, shots=True)
+
+    # T8.24: volumes
+    ours("b_volumes", "volumes")
+    ours("b_volumes_nosmoke", "volumes_nosmoke")
+    f12("b_f12_volumes", "volumes_nosmoke")
+    remix("b_volumes_inside_remix", "volumes_inside_remix", frames=150)
+    return B
+
+
+def t814_drawing(B, expected):
+    """classic_look and game_overlays as stock 2.79 draws them; mt_bench the
+    same with each storage setting"""
+    c, d = {}, {"classic_look": {}, "overlays": {}, "storage": {}}
+    R = B["runs"]
+    for f in expected.get("classic_look", {}).get("files", []):
+        md = whole_diff(shot_of(R.get("b_" + f)), shot_of(R.get("b_stock_" + f)))
+        tol = TOL_VIEW if f.endswith("dome") else TOL_SAME_CODE
+        d["classic_look"][f] = md
+        c["%s as stock 2.79 (within %.0f)" % (f, tol)] = md is not None and md <= tol
+    E = expected.get("game_overlays")
+    if not E:
+        c["the game_overlays scene was made"] = False
+    else:
+        a, b = shot_of(R.get("b_game_overlays")), shot_of(R.get("b_stock_game_overlays"))
+        cc, dd = compare_rects(a, b, E["rects"], TOL_OVERLAY, prefix="overlays: ")
+        c.update(cc)
+        d["overlays"] = dd
+        n = text_pixels(a, E["overlay"])
+        d["overlay_text_pixels"] = {"ours": n, "stock": text_pixels(b, E["overlay"])}
+        c["the frame rate, profile and debug property are drawn"] = n >= 300
+    base = shot_of(R.get("b_mt_storage_auto"))
+    for kind in STORAGES[1:]:
+        md = whole_diff(base, shot_of(R.get("b_mt_storage_" + kind)))
+        d["storage"][kind] = md
+        c["mt_bench with storage %s draws as with Auto" % kind] = md is not None and md <= TOL_SPEED
+    return c, d
+
+
+def t815_speed(B, runs, shots, gl):
+    """each speed feature gives the same picture on and off; GPU culling
+    leaves the hidden half of crowd undrawn"""
+    c, d = {}, {}
+    R = B["runs"]
+
+    def same(label, a, b):
+        md = whole_diff(a, b)
+        d[label] = md
+        c["%s: the same picture on and off" % label] = md is not None and md <= TOL_SPEED
+
+    for frame in (60, 90):
+        on = shot_of(R.get("b_crowd"), frame)
+        same("instancing (crowd, frame %d)" % frame, on, shot_of(R.get("b_crowd_noinst"), frame))
+        same("GPU culling (crowd, frame %d)" % frame, on, shot_of(R.get("b_crowd_nocull"), frame))
+        same("GPU skinning (crowd, frame %d)" % frame, on, shot_of(R.get("b_crowd_noskin"), frame))
+    same("one-pass shadows (shadows)", picture(shots.get("shadows")), shot_of(R.get("b_shadows_nolayered")))
+    same("clustered lighting (lamps)", picture(shots.get("lamps_gl")), shot_of(R.get("b_lamps_perlamp")))
+    same("clustered lighting (many_lamps, 8 lamps)", shot_of(R.get("b_many_lamps_8")),
+         shot_of(R.get("b_many_lamps_8_perlamp")))
+    same("the shader cache (glsl_features, built and loaded)", shot_of(gl.get("cache_first")),
+         shot_of(gl.get("cache_second")))
+    d["batching and streaming"] = "always on (no switch): every other picture is drawn with them"
+    st = B.get("crowd_stats", {})
+    on, off = st.get("on") or {}, st.get("nocull") or {}
+    tested, drawn = (on.get("Culling") or [0, -1])[:2]
+    d["culling"] = {"on": on, "off": off}
+    c["GPU culling tests crowd's rocks and trees"] = tested > 0
+    c["the hidden ones are not drawn (at most 75% drawn)"] = tested > 0 and 0 < drawn <= 0.75 * tested
+    c["with GPU culling off nothing is culled on the card"] = bool(off) and (off.get("Culling") or [1])[0] == 0
+    return c, d
+
+
+def t816_pipelines(B, expected, shots):
+    """Classic as stock; Modern with Standard as Classic, its exposure, its
+    view transform; the setting both ways; cut-out edges smoothed"""
+    import numpy as np
+    c, d = {}, {}
+    R = B["runs"]
+    md = whole_diff(picture(shots.get("glsl_features")), picture(shots.get("stock_glsl_features")))
+    d["classic_vs_stock"] = md
+    c["a Classic scene draws as stock 2.79 GLSL (glsl_features)"] = md is not None and md <= TOL_SAME_CODE
+    for src, classic_pic in (("glsl_features", shots.get("glsl_features")), ("pbr_spheres", shots.get("pbr_spheres_gl"))):
+        std = shot_of(R.get("b_%s_modern_standard" % src))
+        md = whole_diff(std, picture(classic_pic))
+        d["%s Modern (Standard) vs Classic" % src] = md
+        c["%s: Modern with the Standard view as Classic (within %.0f)" % (src, TOL_F12)] = \
+            md is not None and md <= TOL_F12
+        exp1 = shot_of(R.get("b_%s_modern_standard_exp1" % src))
+        ratio = None
+        if std is not None and exp1 is not None and std.shape == exp1.shape:
+            l0, l1 = srgb_to_linear(std).mean(axis=2), srgb_to_linear(exp1).mean(axis=2)
+            mask = (l0 > 0.03) & (l0 < 0.35)
+            if mask.sum() > 500:
+                ratio = round(float(np.median(l1[mask] / l0[mask])), 3)
+        d["%s exposure 1 / exposure 0 (linear)" % src] = ratio
+        c["%s: exposure 1 doubles the light" % src] = ratio is not None and 1.7 <= ratio <= 2.3
+        filmic = shot_of(R.get("b_%s_modern_filmic" % src))
+        md = whole_diff(std, filmic)
+        d["%s Filmic vs Standard" % src] = md
+        c["%s: the Filmic view transform applies" % src] = md is not None and md > 3.0
+    d["remix_exposure"] = "Modern's exposure against Remix's is checked in the RTX run"
+    pc = B.get("pipeline_check") or {}
+    d["pipeline_setting"] = pc
+    c["an old file opens Classic"] = pc.get("opened") == "CLASSIC"
+    c["a new scene starts Modern"] = pc.get("new_scene") == "MODERN"
+    c["the setting moves a scene both ways"] = pc.get("set_modern") == "MODERN" and pc.get("stored") == 1 and \
+        pc.get("set_classic") == "CLASSIC"
+    E = expected.get("pipelines")
+    if E:
+        def edges(tag):
+            a = shot_of(R.get(tag))
+            if a is None:
+                return None
+            g = brightness(crop(a, E["fence"]))
+            return round(float(((g > 30.0) & (g < 225.0)).mean()), 4)
+        aa, aac, noaa = edges("b_pipelines_fence_aa"), edges("b_pipelines_fence_aa_classic"), \
+            edges("b_pipelines_fence_noaa")
+        d["fence_partial_pixels"] = {"modern_aa": aa, "classic_aa": aac, "no_aa": noaa}
+        c["cut-out edges are smooth with anti-aliasing (Modern)"] = None not in (aa, noaa) and aa > 1.5 * noaa + 0.002
+        c["cut-out edges are smooth with anti-aliasing (Classic)"] = None not in (aac, noaa) and \
+            aac > 1.5 * noaa + 0.002
+    return c, d
+
+
+def t817_skinning(B, expected):
+    """crowd's walkers (bones and shape keys) on the card as on the CPU"""
+    c, d = {}, {}
+    R = B["runs"]
+    E = expected.get("crowd_small")
+    if not E:
+        return {"the crowd scene was made": False}, {}
+    for frame in (60, 90):
+        md = region_diff(shot_of(R.get("b_crowd"), frame), shot_of(R.get("b_crowd_noskin"), frame), E["walkers"])
+        d["frame %d" % frame] = md
+        c["frame %d: the walkers as the CPU poses them" % frame] = md is not None and md <= 1.5
+    moved = region_diff(shot_of(R.get("b_crowd"), 60), shot_of(R.get("b_crowd"), 90), E["walkers"])
+    d["frame 60 against 90"] = moved
+    c["the walkers move between the frames"] = moved is not None and moved > 1.0
+    return c, d
+
+
+def t818_remix_mode(B, expected, out):
+    """the overlays over Remix's picture (the copy path on CI; memory
+    sharing in the RTX run); P2-P5 unchanged"""
+    c, d = {}, {}
+    E = expected.get("game_overlays")
+    r = B["runs"].get("b_game_overlays_remix", {})
+    c["the player ran with Remix (fake runtime)"] = bool(r.get("ran"))
+    if E:
+        n = text_pixels(shot_of(r), E["overlay"])
+        d["overlay_text_pixels"] = n
+        c["the overlays show over Remix's picture"] = n >= 300
+    d["shared_memory"] = "Vulkan memory sharing is checked in the RTX run"
+    cc, dd = t820(out)
+    for k, v in cc.items():
+        if k.split()[0] in ("P2", "P3", "P4", "P5"):
+            c[k] = v
+    d["phases"] = dd
+    return c, d
+
+
+def t820_many_lamps(B, expected):
+    """each of the 256 lamps lights its spot; clustered equals per-lamp with
+    8 lamps; a lamp's type changes while playing"""
+    c, d = {}, {}
+    R = B["runs"]
+    E = expected.get("many_lamps")
+    if not E:
+        return {"the many_lamps scene was made": False}, {}
+    a = shot_of(R.get("b_many_lamps"), 50)
+    c["the street's picture made"] = a is not None
+    if a is not None:
+        g = brightness(a)
+        dark = []
+        for l in E["lamps"]:
+            (x, y), (bx, by) = l["at"], l["between"]
+            spot = float(g[y - 1:y + 2, x - 1:x + 2].mean())
+            gap = float(g[by - 1:by + 2, bx - 1:bx + 2].mean())
+            if spot < gap + 6.0:
+                dark.append({"lamp": l["name"], "spot": round(spot, 1), "between": round(gap, 1)})
+        d["lamps_not_lighting"] = dark[:20]
+        d["lamps"] = len(E["lamps"])
+        c["each of the %d lamps lights its spot" % len(E["lamps"])] = not dark
+    md = whole_diff(shot_of(R.get("b_many_lamps_8")), shot_of(R.get("b_many_lamps_8_perlamp")))
+    d["8 lamps: clustered vs per-lamp"] = md
+    c["with 8 lamps clustered lighting equals the per-lamp picture"] = md is not None and md <= TOL_SPEED
+    text = R.get("b_many_lamps", {}).get("text", "")
+    changes = re.findall(r"^P8-LAMP-TYPE (\d+) (\d+)", text, re.M)
+    d["type_changes"] = changes
+    c["the lamp's type changed while playing (60, 120)"] = len(changes) >= 2
+    ch = [l for l in E["lamps"] if l["name"] == "ML_changing"]
+    if ch and a is not None:
+        x, y = ch[0]["at"]
+        rect = [max(x - 12, 0), max(y - 12, 0), x + 12, y + 12]
+        spot = region_diff(a, shot_of(R.get("b_many_lamps"), 100), rect)
+        sun = shot_of(R.get("b_many_lamps"), 150)
+        brighter = None if sun is None else round(float(brightness(sun).mean() - brightness(a).mean()), 2)
+        d["changed_lamp"] = {"point_to_spot": spot, "sun_brighter_by": brighter}
+        c["the changed lamp lights as a spot"] = spot is not None and spot > 1.0
+        c["the changed lamp lights as a sun"] = brighter is not None and brighter > 2.0
+    return c, d
+
+
+def t821_crowd_shadows(B, expected):
+    """crowd's characters cast, the same with GPU skinning as on the CPU"""
+    c, d = {}, {}
+    R = B["runs"]
+    E = expected.get("crowd_small")
+    if not E:
+        return {"the crowd scene was made": False}, {}
+    on, off = shot_of(R.get("b_crowd"), 60), shot_of(R.get("b_crowd_noshadow"), 60)
+    dark = darkening(on, off)
+    frac = None if dark is None else round(float(shadow_mask(dark, E["shadows"], 15.0).mean()), 4)
+    d["crowd_shadowed"] = frac
+    c["crowd's characters cast"] = frac is not None and frac > 0.005
+    md = region_diff(on, shot_of(R.get("b_crowd_noskin"), 60), E["shadows"])
+    d["crowd_shadows_gpu_vs_cpu"] = md
+    c["crowd's shadows the same with GPU skinning"] = md is not None and md <= 1.5
+    return c, d
+
+
+def t822_sky(B, expected):
+    """each sky against F12, Modern as Classic, mist with distance and
+    height, Remix's sky picture and fog, Modern's light shafts"""
+    import numpy as np
+    c, d = {}, {}
+    R = B["runs"]
+    E = expected.get("world_sky")
+    if not E:
+        return {"the world_sky scenes were made": False}, {}
+    W = E["files"]
+    d["sky"] = {}
+    for f in W["sky"] + W["atmosphere"]:
+        if not f.endswith("_classic"):
+            continue
+        a, b = shot_of(R.get("b_" + f)), picture(B["f12"].get("b_f12_" + f))
+        name = f[len("world_sky_"):-len("_classic")]
+        sa, sb = blurred(a), blurred(b)
+        sky = aligned_diff(sa, sb, E["sky_rect"])
+        ground = aligned_diff(sa, sb, E["ground_rect"])
+        modern = whole_diff(a, shot_of(R.get("b_" + f.replace("_classic", "_modern"))))
+        d["sky"][name] = {"sky": sky, "ground": ground, "modern_vs_classic": modern}
+        c["%s: the sky as F12 (within %.0f)" % (name, TOL_SKY)] = sky is not None and sky <= TOL_SKY
+        c["%s: the ground as F12 (within %.0f)" % (name, TOL_SKY)] = ground is not None and ground <= TOL_SKY
+        c["%s: Modern as Classic (within %.0f)" % (name, TOL_F12)] = modern is not None and modern <= TOL_F12
+
+    def fog_distance(a, rect, colour):
+        """how far a region's colour is from the mist's (0: all mist)"""
+        if a is None:
+            return None
+        return round(float(np.abs(crop(a, rect).reshape(-1, 3).mean(axis=0) - colour).mean()), 1)
+
+    posts = E["posts"]
+    d["mist"] = {}
+    for f in W["mist"]:
+        a = shot_of(R.get("b_" + f))
+        if a is None:
+            c["%s played" % f] = False
+            continue
+        # the mist's colour: the horizon at the picture's middle row
+        h = a.shape[0] // 2
+        colour = a[h - 40:h - 20, :, :].reshape(-1, 3).mean(axis=0)
+        near = fog_distance(a, posts["10"]["lower"], colour)
+        far = fog_distance(a, posts["80"]["lower"], colour)
+        d["mist"][f] = {"near_post": near, "far_post": far}
+        c["%s: the far post is mistier than the near one" % f] = None not in (near, far) and near > far + 10.0
+        if "_height" in f:
+            plain = shot_of(R.get("b_" + f.replace("_height", "")))
+            up = fog_distance(a, posts["80"]["upper"], colour)
+            up0 = fog_distance(plain, posts["80"]["upper"], colour)
+            d["mist"][f]["far_post_top"] = {"with_height": up, "without": up0}
+            c["%s: the mist thins with height" % f] = None not in (up, up0) and up > up0 + 3.0
+    # Modern fog: halos become light shafts, shadowed by the posts
+    sh, noh, nos = (shot_of(R.get("b_world_sky_%s_modern" % t)) for t in ("shafts", "shafts_nohalo",
+                                                                          "shafts_noshadow"))
+    rect = E["shaft_rect"]
+    shaft = None if sh is None or noh is None else round(rect_mean(sh, rect) - rect_mean(noh, rect), 2)
+    shadow = region_diff(sh, nos, rect)
+    d["shafts"] = {"brighter_with_the_halo": shaft, "lamp_shadow_difference": shadow}
+    c["Modern fog: the spot halo makes a light shaft"] = shaft is not None and shaft > 3.0
+    c["Modern fog: the lamp's shadows show in the fog"] = shadow is not None and shadow > 0.5
+    # Remix: the sky picture and the mist as fog
+    lines = B["remix"].get("b_world_sky_blend_remix", [])
+    domes = [l for l in lines if l.startswith("CreateLight") and "type=dome" in l]
+    d["remix_sky"] = domes[:3]
+    c["Remix gets the sky as a picture"] = any("texture=1" in l for l in domes)
+    lines = B["remix"].get("b_world_sky_mist_remix", [])
+    dist = config_values(lines, "rtx.volumetrics.transmittanceMeasurementDistanceMeters")
+    want = E["mist"]["start"] + E["mist"]["depth"]
+    d["remix_fog"] = {"distance": dist, "expected": want,
+                      "enable": config_values(lines, "rtx.volumetrics.enable")}
+    c["Remix gets the mist as fog"] = any(abs(float(v) - want) < 0.01 for v in dist if v)
+    return c, d
+
+
+def t823_reflections(B, expected):
+    """the chrome ball's walls on the right sides; the floor mirror; the
+    moving cube in both; the Env Maps; screen-space reflections"""
+    c, d = {}, {}
+    R = B["runs"]
+    E = expected.get("reflections")
+    if not E:
+        return {"the reflections scene was made": False}, {}
+    a = shot_of(R.get("b_reflections"), 40)
+    if a is None:
+        return {"the reflections picture made": False}, {}
+    l, t, r, b = E["chrome"]
+    w = r - l
+    strips = {"left": [l, t + (b - t) // 4, l + w // 4, b - (b - t) // 4],
+              "right": [r - w // 4, t + (b - t) // 4, r, b - (b - t) // 4],
+              "middle": [l + 3 * w // 8, t + 3 * (b - t) // 8, r - 3 * w // 8, b - 3 * (b - t) // 8]}
+    col = {k: [round(float(x), 1) for x in crop(a, v).reshape(-1, 3).mean(axis=0)] for k, v in strips.items()}
+    d["chrome_colours"] = col
+    lr, rg, mb = col["left"], col["right"], col["middle"]
+    c["the chrome ball shows the red wall on its left"] = lr[0] > lr[1] + 10 and lr[0] > lr[2] + 10
+    c["the chrome ball shows the green wall on its right"] = rg[1] > rg[0] + 10 and rg[1] > rg[2] + 10
+    c["the chrome ball shows the blue wall behind the camera in its middle"] = mb[2] > mb[0] + 10 and mb[2] > mb[1]
+    sc, sr = region_look(a, E["chrome"]), region_look(a, E["rough"])
+    d["spread"] = {"chrome": sc, "rough": sr}
+    c["the rougher ball's reflection is blurrier"] = sr[1] < sc[1]
+    mirror = region_diff(a, shot_of(R.get("b_reflections_nomirror"), 40), E["patch"])
+    d["mirror_vs_none"] = mirror
+    c["the floor mirror shows what is above it"] = mirror is not None and mirror > 3.0
+    later = shot_of(R.get("b_reflections"), 80)
+    moved = {k: region_diff(a, later, E[k]) for k in ("chrome", "patch")}
+    d["moving_cube"] = moved
+    c["the moving cube appears in the chrome ball"] = (moved["chrome"] or 0.0) > 1.0
+    c["the moving cube appears in the mirror"] = (moved["patch"] or 0.0) > 1.0
+    noenv = shot_of(R.get("b_reflections_noenv"), 40)
+    env = {k: region_diff(a, noenv, E[k]) for k in ("env_static", "env_planar")}
+    d["env_maps"] = env
+    c["the Static Env Map works"] = (env["env_static"] or 0.0) > 3.0
+    c["the Planar Env Map works"] = (env["env_planar"] or 0.0) > 3.0
+    ssr = region_diff(shot_of(R.get("b_reflections_modern"), 40), shot_of(R.get("b_reflections_modern_nossr"), 40),
+                      E["floor"])
+    d["ssr"] = ssr
+    c["screen-space reflections add to the floor (Modern)"] = ssr is not None and ssr > 0.3
+    return c, d
+
+
+def t824_volumes(B, expected):
+    """the fog cube and the glowing sphere as F12; the smoke shows; Remix's
+    fog inside the volume"""
+    c, d = {}, {}
+    R = B["runs"]
+    E = expected.get("volumes")
+    if not E:
+        return {"the volumes scene was made": False}, {}
+    c["the smoke was baked"] = bool(E.get("baked"))
+    plain, smoky = shot_of(R.get("b_volumes_nosmoke")), shot_of(R.get("b_volumes"))
+    f12 = picture(B["f12"].get("b_f12_volumes"))
+    sa, sb = blurred(plain), blurred(f12)
+    for name in ("fog", "glow"):
+        md = aligned_diff(sa, sb, E["rects"][name])
+        d[name] = md
+        c["the %s looks as F12 (within %.0f)" % (name, TOL_VOLUME)] = md is not None and md <= TOL_VOLUME
+    smoke = region_diff(plain, smoky, E["rects"]["smoke"])
+    d["smoke_vs_none"] = smoke
+    c["the smoke shows"] = smoke is not None and smoke > 2.0
+    r = R.get("b_volumes_inside_remix", {})
+    lines = B["remix"].get("b_volumes_inside_remix", [])
+    dist = config_values(lines, "rtx.volumetrics.transmittanceMeasurementDistanceMeters")
+    d["remix"] = {"distances": dist, "said": [l for l in r.get("text", "").splitlines() if "Remix's fog" in l][:3]}
+    c["Remix's fog becomes the volume's when the camera is inside"] = \
+        "Remix's fog from the volume %s" % E["fog"]["object"] in r.get("text", "") and \
+        any(abs(float(v) - E["fog"]["distance"]) < 0.01 for v in dist if v)
+    return c, d
+
+
+def partb_benchmarks(args, out, S, expected):
+    """B8.7-B8.12 (B8.6 and B8.10 with Part A's)"""
+    b = {}
+    have = lambda n: os.path.isfile(S(n))  # noqa: E731
+
+    def ms(name, tag, env=None, frames=300):
+        if not have(name):
+            return None
+        r = play(args.ours, out, tag, S(name), env, frames=frames, gl_debug=False)
+        return r.get("probe", {}).get("frame_ms_median")
+
+    b["B8.7 GPU-driven drawing (ms): crowd"] = {
+        "on": ms("crowd", "b87_crowd_on", frames=200),
+        "instancing and GPU culling off": ms("crowd", "b87_crowd_off", {"BGE_REMIX_NO_INSTANCING": "1",
+                                                                        "BGE_REMIX_NO_GPU_CULLING": "1"}, frames=200)}
+    b["B8.8 Modern pipeline (ms)"] = {
+        "glsl_features classic": ms("glsl_features", "b88_glsl_classic"),
+        "glsl_features modern": ms("glsl_features_modern_filmic", "b88_glsl_modern"),
+        "pbr_spheres classic": ms("pbr_spheres_gl", "b88_pbr_classic"),
+        "pbr_spheres modern": ms("pbr_spheres_modern_filmic", "b88_pbr_modern")}
+    b["B8.9 many lamps (ms)"] = {"64": ms("many_lamps_64", "b89_64"), "256": ms("many_lamps", "b89_256")}
+    b["B8.11 reflections (ms)"] = {f[len("reflections_bench_"):]: ms(f, "b811_" + f)
+                                   for f in expected.get("reflections", {}).get("bench", [])}
+    b["B8.12 volumes and fog, Modern (ms)"] = {"volumes": ms("volumes_modern", "b812_volumes"),
+                                              "mist": ms("world_sky_mist_linear_modern", "b812_mist"),
+                                              "shafts": ms("world_sky_shafts_modern", "b812_shafts")}
+    return b
 
 
 def benchmarks(args, out, scenes, runs):

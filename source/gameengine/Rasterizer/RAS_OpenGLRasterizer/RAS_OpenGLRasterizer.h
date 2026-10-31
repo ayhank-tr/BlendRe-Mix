@@ -218,6 +218,7 @@ public:
 	virtual bool IndexPrimitivesInstanced(std::vector<class RAS_MeshSlot *>& slots);
 	virtual void SetMainView(bool on);
 	virtual void GetInstancingStats(int *r_draws, int *r_objects);
+	virtual void GetCullingStats(int *r_tested, int *r_drawn);
 	virtual void SetEye(const StereoEye eye);
 	virtual StereoEye GetEye();
 	virtual void SetEyeSeparation(const float eyeseparation);
