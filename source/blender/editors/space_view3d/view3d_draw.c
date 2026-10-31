@@ -30,6 +30,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <math.h>
 
 #include "DNA_armature_types.h"
@@ -2601,6 +2602,73 @@ static void gpu_render_lamp_update(Scene *scene, View3D *v3d,
 	}
 }
 
+/* BGE-Remix P8.10: the OpenGL state the region's drawing goes on with after
+ * the shadow buffers (a lamp's views move the scissor box, bind framebuffers
+ * and shaders); saved before them and put back after */
+typedef struct ShadowGLState {
+	GLint ints[18];
+	GLfloat mats[32];
+} ShadowGLState;
+
+static void shadow_gl_read(ShadowGLState *s)
+{
+	glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT, &s->ints[0]);
+	glGetIntegerv(GL_CURRENT_PROGRAM, &s->ints[1]);
+	glGetIntegerv(GL_ACTIVE_TEXTURE, &s->ints[2]);
+	glGetIntegerv(GL_MATRIX_MODE, &s->ints[3]);
+	glGetIntegerv(GL_VIEWPORT, &s->ints[4]);
+	glGetIntegerv(GL_SCISSOR_BOX, &s->ints[8]);
+	s->ints[12] = glIsEnabled(GL_SCISSOR_TEST);
+	s->ints[13] = glIsEnabled(GL_DEPTH_TEST);
+	s->ints[14] = glIsEnabled(GL_BLEND);
+	s->ints[15] = glIsEnabled(GL_CULL_FACE);
+	s->ints[16] = glIsEnabled(GL_LIGHTING);
+	glGetIntegerv(GL_DRAW_BUFFER, &s->ints[17]);
+	glGetFloatv(GL_PROJECTION_MATRIX, &s->mats[0]);
+	glGetFloatv(GL_MODELVIEW_MATRIX, &s->mats[16]);
+}
+
+/* BGE_REMIX_GL_CHECK=1: what differs, printed (T8.12); returns the count */
+static int shadow_gl_compare(const ShadowGLState *a, const ShadowGLState *b, const char *when)
+{
+	static const char *names[18] = {
+	    "framebuffer", "program", "active texture", "matrix mode", "viewport x", "viewport y", "viewport w",
+	    "viewport h", "scissor x", "scissor y", "scissor w", "scissor h", "scissor test", "depth test", "blend",
+	    "cull face", "lighting", "draw buffer"};
+	int n = 0;
+	for (int i = 0; i < 18; i++) {
+		if (a->ints[i] != b->ints[i]) {
+			printf("BGE-Remix GL check: shadows %s: %s (%d -> %d)\n", when, names[i], a->ints[i], b->ints[i]);
+			n++;
+		}
+	}
+	if (memcmp(a->mats, b->mats, sizeof(a->mats)) != 0) {
+		printf("BGE-Remix GL check: shadows %s: a matrix\n", when);
+		n++;
+	}
+	return n;
+}
+
+static void shadow_gl_restore(const ShadowGLState *s)
+{
+	glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, (GLuint)s->ints[0]);
+	glDrawBuffer((GLenum)s->ints[17]);
+	glUseProgram((GLuint)s->ints[1]);
+	glActiveTexture((GLenum)s->ints[2]);
+	glViewport(s->ints[4], s->ints[5], s->ints[6], s->ints[7]);
+	glScissor(s->ints[8], s->ints[9], s->ints[10], s->ints[11]);
+	if (s->ints[12]) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
+	if (s->ints[13]) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+	if (s->ints[14]) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+	if (s->ints[15]) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
+	if (s->ints[16]) glEnable(GL_LIGHTING); else glDisable(GL_LIGHTING);
+	glMatrixMode(GL_PROJECTION);
+	glLoadMatrixf(&s->mats[0]);
+	glMatrixMode(GL_MODELVIEW);
+	glLoadMatrixf(&s->mats[16]);
+	glMatrixMode((GLenum)s->ints[3]);
+}
+
 static void gpu_update_lamps_shadows_world(Scene *scene, View3D *v3d, RegionView3D *view_rv3d)
 {
 	ListBase shadows;
@@ -2632,6 +2700,13 @@ static void gpu_update_lamps_shadows_world(Scene *scene, View3D *v3d, RegionView
 		}
 	}
 	
+	/* BGE-Remix P8.10: the region's OpenGL state, put back after the shadows */
+	ShadowGLState gl_before;
+	const bool gl_check = shadows.first && getenv("BGE_REMIX_GL_CHECK") && atoi(getenv("BGE_REMIX_GL_CHECK")) == 1;
+	if (shadows.first) {
+		shadow_gl_read(&gl_before);
+	}
+
 	/* render shadows after updating all lamps, nested object_duplilist
 	 * don't work correct since it's replacing object matrices */
 	for (shadow = shadows.first; shadow; shadow = shadow->next) {
@@ -2680,6 +2755,20 @@ static void gpu_update_lamps_shadows_world(Scene *scene, View3D *v3d, RegionView
 		v3d->drawtype = drawtype;
 		v3d->lay = lay;
 		v3d->flag2 = flag2;
+	}
+
+	if (shadows.first) {
+		ShadowGLState gl_after;
+		if (gl_check) {
+			shadow_gl_read(&gl_after);
+			shadow_gl_compare(&gl_before, &gl_after, "changed");
+		}
+		shadow_gl_restore(&gl_before);
+		if (gl_check) {
+			shadow_gl_read(&gl_after);
+			printf("BGE-Remix GL check: shadows drawn, %d left changed\n",
+			       shadow_gl_compare(&gl_before, &gl_after, "left"));
+		}
 	}
 	
 	BLI_freelistN(&shadows);

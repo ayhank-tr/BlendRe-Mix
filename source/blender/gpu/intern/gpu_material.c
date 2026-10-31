@@ -3960,6 +3960,10 @@ void GPU_lamp_shadow_buffer_bind(GPULamp *lamp, float viewmat[4][4], int *winsiz
 	GPU_lamp_update_buffer_mats(lamp);
 
 	/* opengl */
+	/* BGE-Remix P8.10: the views move the scissor box over the atlas; the
+	 * caller's box comes back on unbind (the 3D view kept drawing into the
+	 * last view's box: point, sun and area lamps froze it) */
+	glPushAttrib(GL_SCISSOR_BIT);
 	glDisable(GL_SCISSOR_TEST);
 	/* BGE-Remix P8.10: Variance draws the depth first */
 	GPU_texture_bind_as_framebuffer(lamp->depthfb ? lamp->depthtex : lamp->tex);
@@ -4099,6 +4103,7 @@ void GPU_lamp_shadow_buffer_unbind(GPULamp *lamp)
 		GPU_framebuffer_texture_unbind(lamp->fb, lamp->tex);
 	}
 	GPU_framebuffer_restore();
+	glPopAttrib();
 	glEnable(GL_SCISSOR_TEST);
 	gpu_lamp_shadow_dump(lamp);
 }

@@ -23,6 +23,11 @@ Part A, build A3 (bakes on the graphics card):
 T8.11 also: a second start draws no bake (every one found in the cache by
       its content); B8.4 reports the bakes' time on the graphics card
 
+After Part A, the 3D view fix (held back from the first build):
+T8.21 also: in the editor, changing the startup lamp's type keeps the 3D
+      view and every other editor drawing (Material and Textured shading),
+      and the shadows put the drawing state back
+
 The first build's tests, renumbered (P8 plan v2):
 T8.4  one mode (was T8.1)            T8.5  Multitexture's features (T8.2)
 T8.6  GLSL unchanged (T8.3)          T8.7  fallback (T8.4)
@@ -356,8 +361,9 @@ def ui_probe(build, out, tag, blend, env, timeout=900):
     e.update(GL_ENV)
     e.update(env)
     # without Blender's crash handler, so a crash leaves a dump (CI)
+    # (no scene: Blender's own startup scene)
     code, text, secs = p2.run([p2.exe(build, "blender"), "--disable-crash-handler"] + WINDOW +
-                              [blend, "--python", UI_PROBE], e,
+                              ([blend] if blend else ["--factory-startup"]) + ["--python", UI_PROBE], e,
                               os.path.join(out, tag + ".log"), timeout=timeout, cwd=out)
     note_gl(build, "ui_" + tag, text)
     r = p2.read_json(done)
@@ -1113,6 +1119,59 @@ def t812(args, out, scenes, expected, shots, runs):
     c["a static lamp stops drawing its shadow"] = 0 < counts.get("S_static", 0) <= 3
     c["a moving lamp draws its shadow again"] = counts.get("S_moving", 0) >= 10
     c["a lamp draws again when something near it moves"] = counts.get("S_static_mover", 0) >= 10
+
+    # the 3D view in the editor: changing the lamp's type keeps every editor drawing
+    cc, dd = lamp_editor(runs.get("lamp_editor", {}))
+    c.update(cc)
+    d["editor"] = dd
+    return c, d
+
+
+def window_crop(a, rect, height):
+    """a region (window coordinates, from the bottom left) out of a screenshot"""
+    if a is None or not rect:
+        return None
+    x, y, w, h = rect["x"], rect["y"], rect["width"], rect["height"]
+    return a[height - (y + h):height - y, x:x + w]
+
+
+def lamp_editor(r):
+    """the startup scene's lamp set to each type in turn, the window redrawn
+    each time: the 3D view shows each change, the Properties editor keeps its
+    interface, and the shadows put the drawing state back (GL check)"""
+    import numpy as np
+    lamps = r.get("lamps") or {}
+    shots = lamps.get("shots") or []
+    c = {"the editor run made its pictures": bool(shots) and all(s["written"] for s in shots)}
+    d = {"errors": r.get("errors"), "exit": r.get("exit"), "lamp": lamps.get("lamp"), "shadow": lamps.get("shadow")}
+    text = r.get("text", "") or ""
+    left = [int(m) for m in re.findall(r"BGE-Remix GL check: shadows drawn, (\d+) left changed", text)]
+    d["gl_check"] = {"shadow_passes": len(left), "left_changed": sum(left),
+                     "changed_during": sorted(set(re.findall(r"BGE-Remix GL check: shadows changed: ([a-z ]+)", text)))}
+    c["the editor drew lamp shadows"] = len(left) > 0
+    c["the shadows put the drawing state back"] = len(left) > 0 and sum(left) == 0
+    if not c["the editor run made its pictures"]:
+        return c, d
+    pics = [picture(s["path"]) for s in shots]
+    height = pics[0].shape[0]
+    view, props = lamps.get("view"), lamps.get("properties")
+    d["views"], d["properties"] = {}, {}
+    updates, keeps = True, True
+    for shade in ("MATERIAL", "TEXTURED"):
+        idx = [i for i, s in enumerate(shots) if s["shade"] == shade]
+        crops = [brightness(window_crop(pics[i], view, height)) for i in idx]
+        ui = [float(brightness(window_crop(pics[i], props, height)).std()) for i in idx] if props else []
+        changed = []
+        for k in range(1, len(idx)):
+            changed.append(round(float((np.abs(crops[k] - crops[k - 1]) > 10.0).mean()), 4))
+        back = round(float(np.abs(crops[-1] - crops[0]).mean()), 2)
+        d["views"][shade.lower()] = {"changed_from_previous": changed, "last_hemi_vs_first": back,
+                                     "types": [shots[i]["type"] for i in idx]}
+        d["properties"][shade.lower()] = [round(v, 1) for v in ui]
+        updates = updates and all(v >= 0.002 for v in changed) and back < 2.0
+        keeps = keeps and bool(ui) and all(v >= 0.6 * ui[0] for v in ui)
+    c["the 3D view shows each lamp type (Material and Textured)"] = updates
+    c["the other editors keep their interface"] = keeps
     return c, d
 
 
@@ -1352,6 +1411,12 @@ def run(args, out):
         if args.official:
             runs["stock_deform"] = play(args.official, out, "stock_deform", S("deform"),
                                         {"BGE_REMIX_P8_DEFORM_DIR": df_dirs[1]}, frames=120)
+
+    # the editor: the startup scene's lamp changed to each type in the 3D view
+    lamp_dir = os.path.join(out, "lamp_editor")
+    os.makedirs(lamp_dir, exist_ok=True)
+    runs["lamp_editor"] = ui_probe(args.ours, out, "t812_lamp_editor", None,
+                                   {"BGE_REMIX_P8_LAMPS": lamp_dir, "BGE_REMIX_GL_CHECK": "1"})
 
     def mt_run(build, tag):
         res = {}

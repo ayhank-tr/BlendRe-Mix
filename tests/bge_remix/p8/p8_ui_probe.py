@@ -6,6 +6,9 @@
 #                             view, without overlays)
 #   BGE_REMIX_P8_GAME=1       T8.8: plays the scene once in the 3D view
 #                             (embedded), through RTX Remix
+#   BGE_REMIX_P8_LAMPS=<dir>  T8.12: the startup scene's lamp set to each
+#                             type in turn, in Material and Textured shading;
+#                             the whole window redrawn and saved each time
 #   BGE_REMIX_P8_DONE=<json>  what happened
 
 import json
@@ -16,6 +19,7 @@ import bpy
 
 VIEW = os.environ.get("BGE_REMIX_P8_VIEW")
 GAME = os.environ.get("BGE_REMIX_P8_GAME")
+LAMPS = os.environ.get("BGE_REMIX_P8_LAMPS")
 DONE = os.environ.get("BGE_REMIX_P8_DONE", "p8_ui.json")
 
 result = {"errors": [], "finished": False}
@@ -53,6 +57,38 @@ def render_view():
             "material_mode": bpy.context.scene.game_settings.material_mode}
 
 
+def region_rect(r):
+    return {"x": r.x, "y": r.y, "width": r.width, "height": r.height}
+
+
+def lamp_types():
+    """each lamp type after a shadowless hemi, so every picture differs from
+    the one before it; the window's own drawing (every editor), as a person
+    sees it after changing the type in the Lamp panel"""
+    o = view3d()
+    win = o["window"]
+    space = o["area"].spaces.active
+    lamp = bpy.data.objects.get("Lamp") or [ob for ob in bpy.data.objects if ob.type == 'LAMP'][0]
+    props = [a for a in win.screen.areas if a.type == 'PROPERTIES']
+    shots = []
+    order = ["HEMI", "POINT", "HEMI", "SUN", "HEMI", "AREA", "HEMI", "SPOT", "HEMI"]
+    for shade in ("MATERIAL", "TEXTURED"):
+        space.viewport_shade = shade
+        for i, kind in enumerate(order):
+            lamp.data.type = kind
+            for a in win.screen.areas:
+                a.tag_redraw()
+            bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=2)
+            path = os.path.join(LAMPS, "%s_%d_%s.png" % (shade.lower(), i, kind.lower()))
+            bpy.ops.screen.screenshot({"window": win, "screen": win.screen, "area": o["area"],
+                                       "region": o["region"]}, filepath=path, full=True)
+            shots.append({"shade": shade, "type": kind, "path": path, "written": os.path.isfile(path)})
+    return {"shots": shots, "window": {"width": win.width, "height": win.height},
+            "view": region_rect(o["region"]),
+            "properties": region_rect([r for r in props[0].regions if r.type == 'WINDOW'][0]) if props else None,
+            "lamp": lamp.name, "shadow": lamp.data.shadow_method}
+
+
 def play():
     o = view3d()
     bpy.context.scene["bge_remix"] = 1
@@ -77,6 +113,8 @@ class P8Probe(bpy.types.Operator):
             step("view", render_view)
         if GAME:
             step("game", play)
+        if LAMPS:
+            step("lamps", lamp_types)
         result["finished"] = True
         context.window_manager.event_timer_remove(self._timer)
         with open(DONE, "w") as f:
