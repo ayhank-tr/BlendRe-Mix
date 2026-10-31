@@ -178,6 +178,13 @@ if os.path.isfile(path):
 print("P8-VARIANTS done")
 '''
 
+# the startup scene (factory settings) saved as a file
+STARTUP_SAVE = r'''
+import bpy, sys
+bpy.ops.wm.save_as_mainfile(filepath=sys.argv[sys.argv.index("--") + 1], copy=True)
+print("P8-STARTUP saved")
+'''
+
 RENDER = r'''
 import bpy, json, os, sys
 args = sys.argv[sys.argv.index("--") + 1:]
@@ -396,6 +403,7 @@ def ui_probe(build, out, tag, blend, env, timeout=900):
     note_gl(build, "ui_" + tag, text)
     r = p2.read_json(done)
     r.update({"exit": code, "seconds": round(secs, 1), "text": text})
+    r["ran"] = code == 0 and bool(r.get("finished"))
     return r
 
 
@@ -1444,7 +1452,13 @@ def run(args, out):
     # the editor: the startup scene's lamp changed to each type in the 3D view
     lamp_dir = os.path.join(out, "lamp_editor")
     os.makedirs(lamp_dir, exist_ok=True)
-    runs["lamp_editor"] = ui_probe(args.ours, out, "t812_lamp_editor", None,
+    # (the startup scene saved to a file and opened from it: Blender shows no
+    # splash screen over the 3D view then)
+    startup = os.path.join(out, "editor_startup.blend")
+    if os.path.isfile(startup):
+        os.remove(startup)
+    blender_script(args.ours, out, "editor_startup", STARTUP_SAVE, [startup])
+    runs["lamp_editor"] = ui_probe(args.ours, out, "t812_lamp_editor", startup if os.path.isfile(startup) else None,
                                    {"BGE_REMIX_P8_LAMPS": lamp_dir, "BGE_REMIX_GL_CHECK": "1"})
 
     def mt_run(build, tag):
