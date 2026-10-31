@@ -26,10 +26,13 @@
  * stack (bge_mvp, bge_mv, bge_proj, bge_normalmat).
  */
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "MEM_guardedalloc.h"
+
+#include "BLI_utildefines.h"
 
 #include "GPU_glew.h"
 #include "GPU_glcheck.h"
@@ -37,6 +40,9 @@
 #include "GPU_shader.h"
 
 #include "gpu_private.h"
+
+/* the old built-ins' places (below) */
+static void old_builtins_free(void);
 
 /* ---- sources ---- */
 
@@ -166,6 +172,7 @@ static const char *vert_classic =
         "uniform vec4 bge_cl_mat_specular;\n"
         "uniform vec4 bge_cl_mat_emission;\n"
         "uniform float bge_cl_shininess;\n"
+        "uniform mat4 bge_cl_texmat;\n"
         "out vec4 v_col;\n"
         "out vec2 v_texco;\n"
         "out float v_fogz;\n"
@@ -211,7 +218,7 @@ static const char *vert_classic =
         "	}\n"
         "	if (bge_cl_vcol == 2) c *= bge_col;\n"
         "	v_col = c;\n"
-        "	v_texco = bge_texco;\n"
+        "	v_texco = (bge_cl_texmat * vec4(bge_texco, 0.0, 1.0)).xy;\n"
         "	v_fogz = abs(eye.z);\n"
         "	gl_Position = bge_proj * eye;\n"
         "}\n";
@@ -228,6 +235,7 @@ static const char *frag_classic =
         "uniform vec3 bge_cl_fog_params;\n"
         "uniform vec4 bge_cl_fog_color;\n"
         "uniform float bge_cl_alpha_ref;\n"
+        "uniform int bge_cl_alpha_test;\n"
         "out vec4 bge_fragcolor;\n"
         "void main()\n"
         "{\n"
@@ -240,7 +248,7 @@ static const char *frag_classic =
         "		else if (bge_cl_texenv == 3) { c.rgb += t.rgb; c.a *= t.a; }\n"
         "		else { c.rgb = mix(c.rgb, bge_cl_texenv_color.rgb, t.rgb); c.a *= t.a; }\n"
         "	}\n"
-        "	if (bge_cl_alpha_ref > 0.0 && c.a < bge_cl_alpha_ref) discard;\n"
+        "	if (bge_cl_alpha_test != 0 && !(c.a > bge_cl_alpha_ref)) discard;\n"
         "	if (bge_cl_fog != 0) {\n"
         "		float f;\n"
         "		if (bge_cl_fog == 1) f = (bge_cl_fog_params.y - v_fogz) / max(bge_cl_fog_params.y - bge_cl_fog_params.x, 1e-8);\n"
@@ -346,13 +354,46 @@ void GPU_classic_state_default(GPUClassicState *state)
 		l->spot_cutoff = 180.0f;
 		l->attenuation[0] = 1.0f;
 	}
+	for (int c = 0; c < 4; c++) {
+		state->lights[0].diffuse[c] = state->lights[0].specular[c] = 1.0f;
+		state->current_color[c] = 1.0f;
+	}
 	state->fog_end = 1.0f;
 	state->fog_density = 1.0f;
 }
 
+/* BGE-Remix P8 Part B: the classic shader's uniform places, found once per
+ * program (it draws every shader-less object now) */
+#define CLASSIC_LOCS 96
+static struct {
+	GLuint program;
+	int count;
+	char names[CLASSIC_LOCS][40];
+	GLint locs[CLASSIC_LOCS];
+} gpu_classic_locs = {0};
+
+static GLint classic_loc(GLuint program, const char *name)
+{
+	if (gpu_classic_locs.program != program) {
+		gpu_classic_locs.program = program;
+		gpu_classic_locs.count = 0;
+	}
+	for (int i = 0; i < gpu_classic_locs.count; i++) {
+		if (STREQ(gpu_classic_locs.names[i], name)) {
+			return gpu_classic_locs.locs[i];
+		}
+	}
+	const GLint loc = glGetUniformLocation(program, name);
+	if (gpu_classic_locs.count < CLASSIC_LOCS && strlen(name) < 40) {
+		strcpy(gpu_classic_locs.names[gpu_classic_locs.count], name);
+		gpu_classic_locs.locs[gpu_classic_locs.count++] = loc;
+	}
+	return loc;
+}
+
 static void uniform_v4(GLuint program, const char *name, const float v[4])
 {
-	const GLint loc = glGetUniformLocation(program, name);
+	const GLint loc = classic_loc(program, name);
 	if (loc >= 0) {
 		glProgramUniform4fv(program, loc, 1, v);
 	}
@@ -360,7 +401,7 @@ static void uniform_v4(GLuint program, const char *name, const float v[4])
 
 static void uniform_i(GLuint program, const char *name, int v)
 {
-	const GLint loc = glGetUniformLocation(program, name);
+	const GLint loc = classic_loc(program, name);
 	if (loc >= 0) {
 		glProgramUniform1i(program, loc, v);
 	}
@@ -368,7 +409,7 @@ static void uniform_i(GLuint program, const char *name, int v)
 
 static void uniform_f(GLuint program, const char *name, float v)
 {
-	const GLint loc = glGetUniformLocation(program, name);
+	const GLint loc = classic_loc(program, name);
 	if (loc >= 0) {
 		glProgramUniform1f(program, loc, v);
 	}
@@ -413,57 +454,33 @@ void GPU_classic_uniforms(struct GPUShader *shader, const GPUClassicState *st)
 	uniform_v4(program, "bge_cl_texenv_color", st->texenv_color);
 	uniform_i(program, "bge_cl_fog", st->fog);
 	{
-		const GLint loc = glGetUniformLocation(program, "bge_cl_fog_params");
+		const GLint loc = classic_loc(program, "bge_cl_fog_params");
 		if (loc >= 0) {
 			glProgramUniform3f(program, loc, st->fog_start, st->fog_end, st->fog_density);
 		}
 	}
 	uniform_v4(program, "bge_cl_fog_color", st->fog_color);
 	uniform_f(program, "bge_cl_alpha_ref", st->alpha_ref);
+	uniform_i(program, "bge_cl_alpha_test", st->alpha_test ? 1 : 0);
+	{
+		const GLint loc = classic_loc(program, "bge_cl_texmat");
+		if (loc >= 0) {
+			float m[4][4];
+			GPU_texture_matrix_get(0, m);
+			glProgramUniformMatrix4fv(program, loc, 1, GL_FALSE, &m[0][0]);
+		}
+	}
 }
 
-/* BGE-Remix P8.4: the classic look as the old OpenGL state has it (a game
- * material whose shader could not be built set it up for fixed-function
- * drawing); only in a compatibility context */
-void GPU_classic_state_from_gl(GPUClassicState *st)
+/* BGE-Remix P8 Part B: unit 0's texture environment, as the game's
+ * Multitexture materials set it (texturing, mode, colour) */
+void GPU_classic_texenv_from_gl(GPUClassicState *st)
 {
-	GPU_classic_state_default(st);
+	st->texturing = false;
+	st->texenv = GPU_TEXENV_MODULATE;
 	if (GPU_caps()->core_profile) {
 		return;
 	}
-	st->lighting = glIsEnabled(GL_LIGHTING) == GL_TRUE;
-	st->light_count = 0;
-	if (st->lighting) {
-		for (int i = 0; i < 8; i++) {
-			const GLenum light = GL_LIGHT0 + (GLenum)i;
-			if (!glIsEnabled(light)) {
-				continue;
-			}
-			GPUClassicLight *l = &st->lights[st->light_count++];
-			glGetLightfv(light, GL_POSITION, l->position);
-			glGetLightfv(light, GL_AMBIENT, l->ambient);
-			glGetLightfv(light, GL_DIFFUSE, l->diffuse);
-			glGetLightfv(light, GL_SPECULAR, l->specular);
-			glGetLightfv(light, GL_SPOT_DIRECTION, l->spot_direction);
-			glGetLightfv(light, GL_SPOT_CUTOFF, &l->spot_cutoff);
-			glGetLightfv(light, GL_SPOT_EXPONENT, &l->spot_exponent);
-			glGetLightfv(light, GL_CONSTANT_ATTENUATION, &l->attenuation[0]);
-			glGetLightfv(light, GL_LINEAR_ATTENUATION, &l->attenuation[1]);
-			glGetLightfv(light, GL_QUADRATIC_ATTENUATION, &l->attenuation[2]);
-		}
-		glGetFloatv(GL_LIGHT_MODEL_AMBIENT, st->scene_ambient);
-		glGetMaterialfv(GL_FRONT, GL_AMBIENT, st->mat_ambient);
-		glGetMaterialfv(GL_FRONT, GL_DIFFUSE, st->mat_diffuse);
-		glGetMaterialfv(GL_FRONT, GL_SPECULAR, st->mat_specular);
-		glGetMaterialfv(GL_FRONT, GL_EMISSION, st->mat_emission);
-		glGetMaterialfv(GL_FRONT, GL_SHININESS, &st->shininess);
-		st->vertex_color = glIsEnabled(GL_COLOR_MATERIAL) ? 1 : 0;
-	}
-	else {
-		/* unlit: the colour is the vertex's (or the current one) */
-		st->vertex_color = 1;
-	}
-
 	GLint active = GL_TEXTURE0;
 	glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
 	glActiveTexture(GL_TEXTURE0);
@@ -481,23 +498,10 @@ void GPU_classic_state_from_gl(GPUClassicState *st)
 		glGetTexEnvfv(GL_TEXTURE_ENV, GL_TEXTURE_ENV_COLOR, st->texenv_color);
 	}
 	glActiveTexture((GLenum)active);
-
-	if (glIsEnabled(GL_FOG)) {
-		GLint mode = GL_EXP;
-		glGetIntegerv(GL_FOG_MODE, &mode);
-		st->fog = (mode == GL_LINEAR) ? GPU_FOG_LINEAR : (mode == GL_EXP2) ? GPU_FOG_EXP2 : GPU_FOG_EXP;
-		glGetFloatv(GL_FOG_START, &st->fog_start);
-		glGetFloatv(GL_FOG_END, &st->fog_end);
-		glGetFloatv(GL_FOG_DENSITY, &st->fog_density);
-		glGetFloatv(GL_FOG_COLOR, st->fog_color);
-	}
-	if (glIsEnabled(GL_ALPHA_TEST)) {
-		glGetFloatv(GL_ALPHA_TEST_REF, &st->alpha_ref);
-	}
 }
 
 /* BGE-Remix P8.4: the game's shadow maps: depth only, from the game's
- * batches, with the old matrices (compatibility) */
+ * batches (BGE-Remix P8 Part B: the core front end, the layer's matrices) */
 static const char *vert_game_depth =
         "void main() { gl_Position = bge_proj * (bge_mv * bge_pos); }\n";
 static const char *frag_game_depth =
@@ -510,8 +514,8 @@ struct GPUShader *GPU_builtin_game_depth(void)
 {
 	if (!gpu_game_depth && !gpu_game_depth_failed) {
 		gpu_game_depth = GPU_shader_create_ex(vert_game_depth, frag_game_depth, NULL, NULL, NULL, 0, 0, 0,
-		                                      GPU_SHADER_FLAGS_GLSL450 | GPU_SHADER_FLAGS_FRONTEND |
-		                                      GPU_SHADER_FLAGS_BATCH);
+		                                      GPU_SHADER_FLAGS_GLSL450 | GPU_SHADER_FLAGS_CORE |
+		                                      GPU_SHADER_FLAGS_FRONTEND);
 		if (!gpu_game_depth) {
 			gpu_game_depth_failed = true;
 			fprintf(stderr, "BGE-Remix layer: the game's depth shader failed\n");
@@ -525,6 +529,7 @@ struct GPUShader *GPU_builtin_game_depth(void)
 
 void gpu_builtin_exit(void)
 {
+	old_builtins_free();
 	for (int i = 0; i < GPU_BUILTIN_COUNT; i++) {
 		if (gpu_builtins[i]) {
 			GPU_shader_free(gpu_builtins[i]);
@@ -537,4 +542,391 @@ void gpu_builtin_exit(void)
 		gpu_game_depth = NULL;
 	}
 	gpu_game_depth_failed = false;
+}
+
+/* ------------------------------------------------------------------------ */
+/* BGE-Remix P8 Part B: the old built-ins of the game's shaders, as uniforms
+ * (the material front end's and the translator's core names) */
+
+enum { OB_MV = 0, OB_PROJ, OB_MVP, OB_MVINV, OB_PROJINV, OB_MVPINV, OB_NORMALMAT, OB_MATRICES };
+static const char *ob_names[OB_MATRICES] = {
+	"bge_mv", "bge_proj", "bge_mvp", "bge_mvinv", "bge_projinv", "bge_mvpinv", "bge_normalmat"};
+
+enum { LS_AMBIENT = 0, LS_DIFFUSE, LS_SPECULAR, LS_POSITION, LS_HALF, LS_SPOTDIR, LS_SPOTEXP, LS_SPOTCUT,
+       LS_SPOTCOS, LS_CATT, LS_LATT, LS_QATT, LS_COUNT };
+static const char *ls_names[LS_COUNT] = {
+	"ambient", "diffuse", "specular", "position", "halfVector", "spotDirection", "spotExponent", "spotCutoff",
+	"spotCosCutoff", "constantAttenuation", "linearAttenuation", "quadraticAttenuation"};
+
+enum { MP_EMISSION = 0, MP_AMBIENT, MP_DIFFUSE, MP_SPECULAR, MP_SHININESS, MP_COUNT };
+static const char *mp_names[MP_COUNT] = {"emission", "ambient", "diffuse", "specular", "shininess"};
+
+enum { FOG_COLOR = 0, FOG_DENSITY, FOG_START, FOG_END, FOG_SCALE, FOG_COUNT };
+static const char *fog_names[FOG_COUNT] = {"color", "density", "start", "end", "scale"};
+
+enum { LP_AMBIENT = 0, LP_DIFFUSE, LP_SPECULAR, LP_COUNT };
+
+typedef struct OldPlaces {
+	unsigned int program;
+	unsigned int frame;
+	bool matrices, state;
+	int mat[OB_MATRICES];
+	int texmat[8];
+	int light[8][LS_COUNT];
+	int front[MP_COUNT], back[MP_COUNT];
+	int lm_ambient, lmp_scene;
+	int lprod[8][LP_COUNT];
+	int fog[FOG_COUNT];
+	int alphatest;
+} OldPlaces;
+
+#define OLD_PLACES 512  /* a power of two */
+
+static struct {
+	OldPlaces *table;
+	unsigned int frame;
+} gpu_old = {NULL, 1};
+
+void GPU_old_builtins_forget(unsigned int program)
+{
+	if (gpu_classic_locs.program == program) {
+		gpu_classic_locs.program = 0;
+		gpu_classic_locs.count = 0;
+	}
+	if (!gpu_old.table || !program) {
+		return;
+	}
+	for (int i = 0; i < OLD_PLACES; i++) {
+		if (gpu_old.table[i].program == program) {
+			gpu_old.table[i].frame = 0;
+		}
+	}
+}
+
+void GPU_old_builtins_frame(void)
+{
+	gpu_old.frame++;
+	if (gpu_old.frame == 0) {
+		gpu_old.frame = 1;
+	}
+}
+
+static int old_field(const char *s, const char **names, int count)
+{
+	for (int i = 0; i < count; i++) {
+		if (STREQ(s, names[i])) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+/* "prefix[i]" at s: the index, and s moved past "]" (-1: not this prefix) */
+static int old_index(const char **s, const char *prefix)
+{
+	const size_t n = strlen(prefix);
+	if (strncmp(*s, prefix, n) != 0 || (*s)[n] != '[') {
+		return -1;
+	}
+	const char *p = *s + n + 1;
+	int idx = 0;
+	while (*p >= '0' && *p <= '9') {
+		idx = idx * 10 + (*p - '0');
+		p++;
+	}
+	if (*p != ']') {
+		return -1;
+	}
+	*s = p + 1;
+	return idx;
+}
+
+static void old_find(OldPlaces *op, unsigned int program)
+{
+	memset(op, 0xff, sizeof(*op));  /* every place -1 */
+	op->program = program;
+	op->frame = gpu_old.frame;
+	op->matrices = op->state = false;
+
+	GLint linked = 0, count = 0;
+	glGetProgramiv(program, GL_LINK_STATUS, &linked);
+	if (!linked) {
+		return;
+	}
+	glGetProgramiv(program, GL_ACTIVE_UNIFORMS, &count);
+	for (GLint u = 0; u < count; u++) {
+		char name[128];
+		GLint size = 0;
+		GLenum type = 0;
+		GLsizei len = 0;
+		glGetActiveUniform(program, (GLuint)u, sizeof(name), &len, &size, &type, name);
+		if (strncmp(name, "bge_", 4) != 0) {
+			continue;
+		}
+		const char *s = name;
+		int i, f;
+		if ((f = old_field(name, ob_names, OB_MATRICES)) >= 0) {
+			op->mat[f] = glGetUniformLocation(program, name);
+			op->matrices = true;
+		}
+		else if ((i = old_index(&s, "bge_texturematrix")) >= 0) {
+			/* the array: each element asked by its own name */
+			char el[64];
+			for (int k = 0; k < size && k < 8; k++) {
+				snprintf(el, sizeof(el), "bge_texturematrix[%d]", k);
+				op->texmat[k] = glGetUniformLocation(program, el);
+			}
+			op->matrices = true;
+		}
+		else if ((i = old_index(&s, "bge_lightsource")) >= 0) {
+			if (i < 8 && *s == '.' && (f = old_field(s + 1, ls_names, LS_COUNT)) >= 0) {
+				op->light[i][f] = glGetUniformLocation(program, name);
+				op->state = true;
+			}
+		}
+		else if ((i = old_index(&s, "bge_frontlightproduct")) >= 0) {
+			if (i < 8 && *s == '.') {
+				f = STREQ(s + 1, "ambient") ? LP_AMBIENT : STREQ(s + 1, "diffuse") ? LP_DIFFUSE :
+				    STREQ(s + 1, "specular") ? LP_SPECULAR : -1;
+				if (f >= 0) {
+					op->lprod[i][f] = glGetUniformLocation(program, name);
+					op->state = true;
+				}
+			}
+		}
+		else if (strncmp(name, "bge_frontmaterial.", 18) == 0) {
+			if ((f = old_field(name + 18, mp_names, MP_COUNT)) >= 0) {
+				op->front[f] = glGetUniformLocation(program, name);
+				op->state = true;
+			}
+		}
+		else if (strncmp(name, "bge_backmaterial.", 17) == 0) {
+			if ((f = old_field(name + 17, mp_names, MP_COUNT)) >= 0) {
+				op->back[f] = glGetUniformLocation(program, name);
+				op->state = true;
+			}
+		}
+		else if (STREQ(name, "bge_lightmodel.ambient")) {
+			op->lm_ambient = glGetUniformLocation(program, name);
+			op->state = true;
+		}
+		else if (STREQ(name, "bge_frontlightmodelproduct.sceneColor")) {
+			op->lmp_scene = glGetUniformLocation(program, name);
+			op->state = true;
+		}
+		else if (strncmp(name, "bge_fog.", 8) == 0) {
+			if ((f = old_field(name + 8, fog_names, FOG_COUNT)) >= 0) {
+				op->fog[f] = glGetUniformLocation(program, name);
+				op->state = true;
+			}
+		}
+		else if (STREQ(name, "bge_alphatest")) {
+			op->alphatest = glGetUniformLocation(program, name);
+			op->state = true;
+		}
+	}
+}
+
+static OldPlaces *old_places(unsigned int program)
+{
+	if (!gpu_old.table) {
+		gpu_old.table = MEM_callocN(sizeof(OldPlaces) * OLD_PLACES, "BGE-Remix old built-ins");
+	}
+	unsigned int h = (program * 2654435761u) & (OLD_PLACES - 1);
+	OldPlaces *free_slot = NULL;
+	for (int n = 0; n < OLD_PLACES; n++, h = (h + 1) & (OLD_PLACES - 1)) {
+		OldPlaces *op = &gpu_old.table[h];
+		if (op->frame == gpu_old.frame && op->program == program) {
+			return op;
+		}
+		if (op->frame != gpu_old.frame) {
+			/* free this frame (entries are only ever added within a frame,
+			 * so the search ends at the first free one) */
+			free_slot = op;
+			break;
+		}
+	}
+	if (!free_slot) {
+		/* full (very many programs in one frame): the first slot is reused */
+		free_slot = &gpu_old.table[(program * 2654435761u) & (OLD_PLACES - 1)];
+	}
+	old_find(free_slot, program);
+	return free_slot;
+}
+
+static void old_v4(GLuint program, int loc, const float v[4])
+{
+	if (loc >= 0) {
+		glProgramUniform4fv(program, loc, 1, v);
+	}
+}
+
+static void old_f(GLuint program, int loc, float v)
+{
+	if (loc >= 0) {
+		glProgramUniform1f(program, loc, v);
+	}
+}
+
+static void old_v3(GLuint program, int loc, const float v[3])
+{
+	if (loc >= 0) {
+		glProgramUniform3fv(program, loc, 1, v);
+	}
+}
+
+static void old_mul_v4(float r[4], const float a[4], const float b[4])
+{
+	for (int c = 0; c < 4; c++) {
+		r[c] = a[c] * b[c];
+	}
+}
+
+void GPU_old_builtins(unsigned int program, const GPUClassicState *st)
+{
+	if (!program) {
+		return;
+	}
+	OldPlaces *op = old_places(program);
+
+	if (op->matrices) {
+		float mv[4][4], proj[4][4], m[4][4];
+		GPU_matrix_get(GPU_MATRIX_MODELVIEW, mv);
+		GPU_matrix_get(GPU_MATRIX_PROJECTION, proj);
+		if (op->mat[OB_MV] >= 0) {
+			glProgramUniformMatrix4fv(program, op->mat[OB_MV], 1, GL_FALSE, &mv[0][0]);
+		}
+		if (op->mat[OB_PROJ] >= 0) {
+			glProgramUniformMatrix4fv(program, op->mat[OB_PROJ], 1, GL_FALSE, &proj[0][0]);
+		}
+		if (op->mat[OB_MVP] >= 0 || op->mat[OB_MVPINV] >= 0) {
+			float mvp[4][4];
+			gpu_layer_m4_mul(mvp, proj, mv);
+			if (op->mat[OB_MVP] >= 0) {
+				glProgramUniformMatrix4fv(program, op->mat[OB_MVP], 1, GL_FALSE, &mvp[0][0]);
+			}
+			if (op->mat[OB_MVPINV] >= 0) {
+				gpu_layer_m4_invert(m, mvp);
+				glProgramUniformMatrix4fv(program, op->mat[OB_MVPINV], 1, GL_FALSE, &m[0][0]);
+			}
+		}
+		if (op->mat[OB_MVINV] >= 0 || op->mat[OB_NORMALMAT] >= 0) {
+			gpu_layer_m4_invert(m, mv);
+			if (op->mat[OB_MVINV] >= 0) {
+				glProgramUniformMatrix4fv(program, op->mat[OB_MVINV], 1, GL_FALSE, &m[0][0]);
+			}
+			if (op->mat[OB_NORMALMAT] >= 0) {
+				/* the transpose of the inverse's upper 3x3 */
+				float n[3][3];
+				for (int c = 0; c < 3; c++) {
+					for (int r = 0; r < 3; r++) {
+						n[c][r] = m[r][c];
+					}
+				}
+				glProgramUniformMatrix3fv(program, op->mat[OB_NORMALMAT], 1, GL_FALSE, &n[0][0]);
+			}
+		}
+		if (op->mat[OB_PROJINV] >= 0) {
+			gpu_layer_m4_invert(m, proj);
+			glProgramUniformMatrix4fv(program, op->mat[OB_PROJINV], 1, GL_FALSE, &m[0][0]);
+		}
+		for (int k = 0; k < 8; k++) {
+			if (op->texmat[k] >= 0) {
+				GPU_texture_matrix_get(k, m);
+				glProgramUniformMatrix4fv(program, op->texmat[k], 1, GL_FALSE, &m[0][0]);
+			}
+		}
+	}
+
+	if (!st || !op->state) {
+		return;
+	}
+
+	/* the material: colour material makes ambient and diffuse the colour
+	 * drawn with while lighting is on */
+	float ambient[4], diffuse[4];
+	const bool colmat = st->lighting && st->vertex_color == 1;
+	memcpy(ambient, colmat ? st->current_color : st->mat_ambient, sizeof(ambient));
+	memcpy(diffuse, colmat ? st->current_color : st->mat_diffuse, sizeof(diffuse));
+	for (int side = 0; side < 2; side++) {
+		const int *pl = side ? op->back : op->front;
+		old_v4(program, pl[MP_EMISSION], st->mat_emission);
+		old_v4(program, pl[MP_AMBIENT], ambient);
+		old_v4(program, pl[MP_DIFFUSE], diffuse);
+		old_v4(program, pl[MP_SPECULAR], st->mat_specular);
+		old_f(program, pl[MP_SHININESS], st->shininess);
+	}
+	old_v4(program, op->lm_ambient, st->scene_ambient);
+	if (op->lmp_scene >= 0) {
+		float sc[4];
+		for (int c = 0; c < 3; c++) {
+			sc[c] = st->mat_emission[c] + ambient[c] * st->scene_ambient[c];
+		}
+		sc[3] = diffuse[3];
+		old_v4(program, op->lmp_scene, sc);
+	}
+
+	/* the lamps (all eight, as OpenGL kept them; the count says which are on) */
+	for (int i = 0; i < 8; i++) {
+		const GPUClassicLight *l = &st->lights[i];
+		const int *pl = op->light[i];
+		old_v4(program, pl[LS_AMBIENT], l->ambient);
+		old_v4(program, pl[LS_DIFFUSE], l->diffuse);
+		old_v4(program, pl[LS_SPECULAR], l->specular);
+		old_v4(program, pl[LS_POSITION], l->position);
+		if (pl[LS_HALF] >= 0) {
+			float h[4] = {l->position[0], l->position[1], l->position[2], 0.0f};
+			float len = sqrtf(h[0] * h[0] + h[1] * h[1] + h[2] * h[2]);
+			if (len > 0.0f) {
+				h[0] /= len; h[1] /= len; h[2] /= len;
+			}
+			h[2] += 1.0f;
+			len = sqrtf(h[0] * h[0] + h[1] * h[1] + h[2] * h[2]);
+			if (len > 0.0f) {
+				h[0] /= len; h[1] /= len; h[2] /= len;
+			}
+			old_v4(program, pl[LS_HALF], h);
+		}
+		old_v3(program, pl[LS_SPOTDIR], l->spot_direction);
+		old_f(program, pl[LS_SPOTEXP], l->spot_exponent);
+		old_f(program, pl[LS_SPOTCUT], l->spot_cutoff);
+		old_f(program, pl[LS_SPOTCOS], l->spot_cutoff >= 180.0f ? -1.0f :
+		      cosf(l->spot_cutoff * (float)(M_PI / 180.0)));
+		old_f(program, pl[LS_CATT], l->attenuation[0]);
+		old_f(program, pl[LS_LATT], l->attenuation[1]);
+		old_f(program, pl[LS_QATT], l->attenuation[2]);
+		const int *pp = op->lprod[i];
+		if (pp[LP_AMBIENT] >= 0 || pp[LP_DIFFUSE] >= 0 || pp[LP_SPECULAR] >= 0) {
+			float v[4];
+			old_mul_v4(v, l->ambient, ambient);
+			old_v4(program, pp[LP_AMBIENT], v);
+			old_mul_v4(v, l->diffuse, diffuse);
+			old_v4(program, pp[LP_DIFFUSE], v);
+			old_mul_v4(v, l->specular, st->mat_specular);
+			old_v4(program, pp[LP_SPECULAR], v);
+		}
+	}
+
+	/* fog */
+	old_v4(program, op->fog[FOG_COLOR], st->fog_color);
+	old_f(program, op->fog[FOG_DENSITY], st->fog_density);
+	old_f(program, op->fog[FOG_START], st->fog_start);
+	old_f(program, op->fog[FOG_END], st->fog_end);
+	if (op->fog[FOG_SCALE] >= 0) {
+		const float range = st->fog_end - st->fog_start;
+		old_f(program, op->fog[FOG_SCALE], range != 0.0f ? 1.0f / range : 0.0f);
+	}
+
+	/* the alpha test: (on, reference) */
+	if (op->alphatest >= 0) {
+		glProgramUniform2f(program, op->alphatest, st->alpha_test ? 1.0f : 0.0f, st->alpha_ref);
+	}
+}
+
+static void old_builtins_free(void)
+{
+	if (gpu_old.table) {
+		MEM_freeN(gpu_old.table);
+		gpu_old.table = NULL;
+	}
 }

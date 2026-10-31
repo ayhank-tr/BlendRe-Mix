@@ -59,33 +59,20 @@ static const char *tfe_uniforms_compat =
         "#define bge_frontlightproduct gl_FrontLightProduct\n"
         "#define bge_fog gl_Fog\n";
 
-/* BGE-Remix P8.4: custom shaders are the game's: their vertex data comes
- * from the game's batches (bge_batch 1) or, drawn by Blender's mesh drawing,
- * from the old built-ins */
+/* the old built-ins themselves (a 2D filter; a custom shader whose core
+ * translation does not build, drawn from the old arrays) */
 static const char *tfe_vert_compat =
-        "uniform int bge_batch;\n"
-        "in vec4 bge_pos_b;\n"
-        "#define bge_pos (bge_batch != 0 ? bge_pos_b : gl_Vertex)\n"
-        "in vec3 bge_nor_b;\n"
-        "#define bge_nor (bge_batch != 0 ? bge_nor_b : gl_Normal)\n"
-        "in vec4 bge_col_b;\n"
-        "#define bge_col (bge_batch != 0 ? bge_col_b : gl_Color)\n"
-        "in vec4 bge_texco0_b;\n"
-        "#define bge_texco0 (bge_batch != 0 ? bge_texco0_b : gl_MultiTexCoord0)\n"
-        "in vec4 bge_texco1_b;\n"
-        "#define bge_texco1 (bge_batch != 0 ? bge_texco1_b : gl_MultiTexCoord1)\n"
-        "in vec4 bge_texco2_b;\n"
-        "#define bge_texco2 (bge_batch != 0 ? bge_texco2_b : gl_MultiTexCoord2)\n"
-        "in vec4 bge_texco3_b;\n"
-        "#define bge_texco3 (bge_batch != 0 ? bge_texco3_b : gl_MultiTexCoord3)\n"
-        "in vec4 bge_texco4_b;\n"
-        "#define bge_texco4 (bge_batch != 0 ? bge_texco4_b : gl_MultiTexCoord4)\n"
-        "in vec4 bge_texco5_b;\n"
-        "#define bge_texco5 (bge_batch != 0 ? bge_texco5_b : gl_MultiTexCoord5)\n"
-        "in vec4 bge_texco6_b;\n"
-        "#define bge_texco6 (bge_batch != 0 ? bge_texco6_b : gl_MultiTexCoord6)\n"
-        "in vec4 bge_texco7_b;\n"
-        "#define bge_texco7 (bge_batch != 0 ? bge_texco7_b : gl_MultiTexCoord7)\n"
+        "#define bge_pos gl_Vertex\n"
+        "#define bge_nor gl_Normal\n"
+        "#define bge_col gl_Color\n"
+        "#define bge_texco0 gl_MultiTexCoord0\n"
+        "#define bge_texco1 gl_MultiTexCoord1\n"
+        "#define bge_texco2 gl_MultiTexCoord2\n"
+        "#define bge_texco3 gl_MultiTexCoord3\n"
+        "#define bge_texco4 gl_MultiTexCoord4\n"
+        "#define bge_texco5 gl_MultiTexCoord5\n"
+        "#define bge_texco6 gl_MultiTexCoord6\n"
+        "#define bge_texco7 gl_MultiTexCoord7\n"
         "#define bge_col2 gl_SecondaryColor\n"
         "#define bge_texcoord gl_TexCoord\n"
         "#define bge_frontcolor gl_FrontColor\n"
@@ -521,9 +508,14 @@ static GLuint build_program(const char *vert, const char *frag, const char *who,
 	}
 	/* BGE-Remix P8.4: a custom shader's "Tangent" attribute is fed at place 1
 	 * (setAttrib, BL_Shader::SHD_TANGENT); stock 2.79 got it there by the
-	 * linker's order, which the game front end's own attributes change */
+	 * linker's order, which the front end's own attributes change.
+	 * BGE-Remix P8 Part B: the core front end's position at place 0 (a
+	 * compatibility context draws only when attribute 0 is fed) */
 	if (vs) {
 		glBindAttribLocation(prog, 1, "Tangent");
+		if (STREQ(what, "core")) {
+			glBindAttribLocation(prog, 0, "bge_pos");
+		}
 	}
 	glLinkProgram(prog);
 	GLint ok = 0;
@@ -546,6 +538,11 @@ static GLuint build_program(const char *vert, const char *frag, const char *who,
 
 unsigned int GPU_glsl_translate_program(const char *vert, const char *frag, const char *who)
 {
+	return GPU_glsl_translate_program_ex(vert, frag, who, false);
+}
+
+unsigned int GPU_glsl_translate_program_ex(const char *vert, const char *frag, const char *who, bool game)
+{
 	int pv = 0, pf = 0, cv = 0, cf = 0;
 	const bool has_vert = vert && vert[0];
 	const bool has_frag = frag && frag[0];
@@ -553,38 +550,51 @@ unsigned int GPU_glsl_translate_program(const char *vert, const char *frag, cons
 		return 0;
 	}
 
-	/* the program the old drawing code draws with now */
-	char *v = has_vert ? GPU_glsl_translate(vert, GPU_TRANSLATE_VERTEX, false, who, &pv) : NULL;
-	char *f = has_frag ? GPU_glsl_translate(frag, GPU_TRANSLATE_FRAGMENT, false, NULL, &pf) : NULL;
-	const GLuint prog = build_program(v, f, who, "translated");
-	if (v) MEM_freeN(v);
-	if (f) MEM_freeN(f);
-
-	/* the same translation with the core front end (the drawing layer's) */
-	bool core_ok = false;
-	if (prog) {
-		char *cvs = has_vert ? GPU_glsl_translate(vert, GPU_TRANSLATE_VERTEX, true, NULL, &cv) : NULL;
-		char *cfs = has_frag ? GPU_glsl_translate(frag, GPU_TRANSLATE_FRAGMENT, true, NULL, &cf) : NULL;
-		const char *cv_src = cvs ? cvs : "#version 450 core\n";
-		DynStr *ds = NULL;
-		char *filter_vert = NULL;
-		if (!cvs) {
-			ds = BLI_dynstr_new();
-			BLI_dynstr_append(ds, cv_src);
-			BLI_dynstr_append(ds, tfe_filter_vert_core);
-			filter_vert = BLI_dynstr_get_cstring(ds);
-			BLI_dynstr_free(ds);
-			cv_src = filter_vert;
-		}
-		const GLuint core_prog = build_program(cv_src, cfs, who, "core");
-		core_ok = core_prog != 0;
-		if (core_prog) {
-			glDeleteProgram(core_prog);
-		}
-		if (cvs) MEM_freeN(cvs);
-		if (cfs) MEM_freeN(cfs);
-		if (filter_vert) MEM_freeN(filter_vert);
+	/* the core translation (the drawing layer's front end) */
+	char *cvs = has_vert ? GPU_glsl_translate(vert, GPU_TRANSLATE_VERTEX, true, game ? who : NULL, &cv) : NULL;
+	char *cfs = has_frag ? GPU_glsl_translate(frag, GPU_TRANSLATE_FRAGMENT, true, NULL, &cf) : NULL;
+	char *filter_vert = NULL;
+	const char *cv_src = cvs;
+	if (!cvs) {
+		DynStr *ds = BLI_dynstr_new();
+		BLI_dynstr_append(ds, "#version 450 core\n");
+		BLI_dynstr_append(ds, tfe_filter_vert_core);
+		filter_vert = BLI_dynstr_get_cstring(ds);
+		BLI_dynstr_free(ds);
+		cv_src = filter_vert;
 	}
+
+	GLuint prog = 0;
+	bool core_ok = false;
+	if (game && has_vert) {
+		/* BGE-Remix P8 Part B: a custom shader draws with the core
+		 * translation (its matrices, lamps, material and fog are uniforms
+		 * the game sets); the compatibility one when that does not build */
+		prog = build_program(cv_src, cfs, who, "core");
+		core_ok = prog != 0;
+		pv = cv;
+		pf = cf;
+	}
+	if (!prog) {
+		/* the program the old drawing code draws with */
+		char *v = has_vert ? GPU_glsl_translate(vert, GPU_TRANSLATE_VERTEX, false, who, &pv) : NULL;
+		char *f = has_frag ? GPU_glsl_translate(frag, GPU_TRANSLATE_FRAGMENT, false, NULL, &pf) : NULL;
+		prog = build_program(v, f, who, "translated");
+		if (v) MEM_freeN(v);
+		if (f) MEM_freeN(f);
+
+		/* and whether the core translation builds too */
+		if (prog && !(game && has_vert)) {
+			const GLuint core_prog = build_program(cv_src, cfs, who, "core");
+			core_ok = core_prog != 0;
+			if (core_prog) {
+				glDeleteProgram(core_prog);
+			}
+		}
+	}
+	if (cvs) MEM_freeN(cvs);
+	if (cfs) MEM_freeN(cfs);
+	if (filter_vert) MEM_freeN(filter_vert);
 
 	printf("BGE-Remix GLSL translate %s: %s, %d not translated, core %s\n", who ? who : "",
 	       prog ? "built" : "not built (the original is used)", pv + pf, core_ok ? "ok" : "FAILED");

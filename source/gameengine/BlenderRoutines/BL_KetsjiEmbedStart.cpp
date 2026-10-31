@@ -64,6 +64,7 @@
 #include "BL_GameView.h"
 
 #include "GPU_extensions.h"
+#include "GPU_layer.h"
 #include "EXP_Value.h"
 
 
@@ -256,6 +257,13 @@ extern "C" void StartKetsjiShell(struct bContext *C, struct ARegion *ar, rcti *c
 	GlobalSettings gs;
 	gs.matmode= startscene->gm.matmode;
 	gs.glslflag= startscene->gm.flag;
+
+	/* BGE-Remix P8 Part B: the game owns the OpenGL state while it runs (its
+	 * own matrices, lamps and fog live in the layer and the rasterizer); the
+	 * editor's state is saved here and put back when the game ends (the
+	 * editor stays in the compatibility context until Part C) */
+	GPUStateScope gl_scope;
+	GPU_state_scope_begin(&gl_scope);
 
 	do
 	{
@@ -674,6 +682,9 @@ extern "C" void StartKetsjiShell(struct bContext *C, struct ARegion *ar, rcti *c
 	if (bfd) BLO_blendfiledata_free(bfd);
 
 	BLI_strncpy(G.main->name, oldsce, sizeof(G.main->name));
+
+	GPU_state_scope_end(&gl_scope);
+	GPU_matrix_from_gl();
 
 #ifdef WITH_PYTHON
 	PyDict_Clear(pyGlobalDict);

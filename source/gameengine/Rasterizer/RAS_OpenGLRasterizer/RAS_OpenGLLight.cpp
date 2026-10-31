@@ -79,11 +79,14 @@ RAS_OpenGLLight::~RAS_OpenGLLight()
 	}
 }
 
-bool RAS_OpenGLLight::ApplyFixedFunctionLighting(KX_Scene *kxscene, int oblayer, int slot)
+/* BGE-Remix P8 Part B: the lamp as the old fixed-function light (eye space,
+ * through the view matrix), for the game's state; false when it does not
+ * light objects of this layer */
+bool RAS_OpenGLLight::FillClassicLight(KX_Scene *kxscene, int oblayer, const MT_Transform& viewmat,
+                                       GPUClassicLight *cl)
 {
 	KX_Scene* lightscene = (KX_Scene*)m_scene;
 	KX_LightObject* kxlight = (KX_LightObject*)m_light;
-	float vec[4];
 	int scenelayer = ~0;
 
 	if (kxscene && kxscene->GetBlenderScene())
@@ -101,72 +104,71 @@ bool RAS_OpenGLLight::ApplyFixedFunctionLighting(KX_Scene *kxscene, int oblayer,
 		kxlight->GetOpenGLMatrix();
 
 	MT_CmMatrix4x4& worldmatrix= *kxlight->GetOpenGLMatrixPtr();
+	const MT_Matrix3x3& basis = viewmat.getBasis();
 
-	vec[0] = worldmatrix(0,3);
-	vec[1] = worldmatrix(1,3);
-	vec[2] = worldmatrix(2,3);
-	vec[3] = 1.0f;
+	/* the defaults OpenGL gave a light (the old code set the rest) */
+	memset(cl, 0, sizeof(*cl));
+	cl->ambient[3] = 1.0f;
+	cl->spot_direction[2] = -1.0f;
+	cl->spot_cutoff = 180.0f;
+	cl->attenuation[0] = 1.0f;
 
 	if (m_type==RAS_ILightObject::LIGHT_SUN) {
-
-		vec[0] = worldmatrix(0,2);
-		vec[1] = worldmatrix(1,2);
-		vec[2] = worldmatrix(2,2);
-		//vec[0] = base->object->obmat[2][0];
-		//vec[1] = base->object->obmat[2][1];
-		//vec[2] = base->object->obmat[2][2];
-		vec[3] = 0.0f;
-		glLightfv((GLenum)(GL_LIGHT0+slot), GL_POSITION, vec);
+		const MT_Vector3 dir = basis * MT_Vector3(worldmatrix(0,2), worldmatrix(1,2), worldmatrix(2,2));
+		cl->position[0] = (float)dir[0];
+		cl->position[1] = (float)dir[1];
+		cl->position[2] = (float)dir[2];
+		cl->position[3] = 0.0f;
 	}
 	else {
-		//vec[3] = 1.0f;
-		glLightfv((GLenum)(GL_LIGHT0+slot), GL_POSITION, vec);
-		glLightf((GLenum)(GL_LIGHT0+slot), GL_CONSTANT_ATTENUATION, 1.0f);
-		glLightf((GLenum)(GL_LIGHT0+slot), GL_LINEAR_ATTENUATION, m_att1/m_distance);
+		const MT_Point3 pos = viewmat(MT_Point3(worldmatrix(0,3), worldmatrix(1,3), worldmatrix(2,3)));
+		cl->position[0] = (float)pos[0];
+		cl->position[1] = (float)pos[1];
+		cl->position[2] = (float)pos[2];
+		cl->position[3] = 1.0f;
+		cl->attenuation[0] = 1.0f;
+		cl->attenuation[1] = m_att1/m_distance;
 		// without this next line it looks backward compatible.
 		//attennuation still is acceptable
-		glLightf((GLenum)(GL_LIGHT0+slot), GL_QUADRATIC_ATTENUATION, m_att2/(m_distance*m_distance));
+		cl->attenuation[2] = m_att2/(m_distance*m_distance);
 
 		if (m_type==RAS_ILightObject::LIGHT_SPOT) {
-			vec[0] = -worldmatrix(0,2);
-			vec[1] = -worldmatrix(1,2);
-			vec[2] = -worldmatrix(2,2);
-			//vec[0] = -base->object->obmat[2][0];
-			//vec[1] = -base->object->obmat[2][1];
-			//vec[2] = -base->object->obmat[2][2];
-			glLightfv((GLenum)(GL_LIGHT0+slot), GL_SPOT_DIRECTION, vec);
-			glLightf((GLenum)(GL_LIGHT0+slot), GL_SPOT_CUTOFF, m_spotsize / 2.0f);
-			glLightf((GLenum)(GL_LIGHT0+slot), GL_SPOT_EXPONENT, 128.0f * m_spotblend);
+			const MT_Vector3 dir = basis * MT_Vector3(-worldmatrix(0,2), -worldmatrix(1,2), -worldmatrix(2,2));
+			cl->spot_direction[0] = (float)dir[0];
+			cl->spot_direction[1] = (float)dir[1];
+			cl->spot_direction[2] = (float)dir[2];
+			cl->spot_cutoff = m_spotsize / 2.0f;
+			cl->spot_exponent = 128.0f * m_spotblend;
 		}
 		else {
-			glLightf((GLenum)(GL_LIGHT0+slot), GL_SPOT_CUTOFF, 180.0f);
+			cl->spot_cutoff = 180.0f;
 		}
 	}
 
-	if (m_nodiffuse) {
-		vec[0] = vec[1] = vec[2] = vec[3] = 0.0f;
+	if (!m_nodiffuse) {
+		cl->diffuse[0] = m_energy*m_color[0];
+		cl->diffuse[1] = m_energy*m_color[1];
+		cl->diffuse[2] = m_energy*m_color[2];
 	}
-	else {
-		vec[0] = m_energy*m_color[0];
-		vec[1] = m_energy*m_color[1];
-		vec[2] = m_energy*m_color[2];
-		vec[3] = 1.0f;
-	}
+	cl->diffuse[3] = m_nodiffuse ? 0.0f : 1.0f;
 
-	glLightfv((GLenum)(GL_LIGHT0+slot), GL_DIFFUSE, vec);
-	if (m_nospecular)
-	{
-		vec[0] = vec[1] = vec[2] = vec[3] = 0.0f;
+	if (m_nospecular) {
+		cl->specular[3] = 0.0f;
 	}
 	else if (m_nodiffuse) {
-		vec[0] = m_energy*m_color[0];
-		vec[1] = m_energy*m_color[1];
-		vec[2] = m_energy*m_color[2];
-		vec[3] = 1.0f;
+		cl->specular[0] = m_energy*m_color[0];
+		cl->specular[1] = m_energy*m_color[1];
+		cl->specular[2] = m_energy*m_color[2];
+		cl->specular[3] = 1.0f;
 	}
-
-	glLightfv((GLenum)(GL_LIGHT0+slot), GL_SPECULAR, vec);
-	glEnable((GLenum)(GL_LIGHT0+slot));
+	else {
+		/* the old code left the specular colour as the diffuse one it had
+		 * just set (the same vector) */
+		cl->specular[0] = cl->diffuse[0];
+		cl->specular[1] = cl->diffuse[1];
+		cl->specular[2] = cl->diffuse[2];
+		cl->specular[3] = cl->diffuse[3];
+	}
 
 	return true;
 }

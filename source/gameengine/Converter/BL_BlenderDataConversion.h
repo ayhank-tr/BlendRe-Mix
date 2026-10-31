@@ -53,4 +53,10 @@ void BL_ConvertBlenderObjects(struct Main* maggie,
 
 SCA_IInputDevice::KX_EnumInputs ConvertKeyCode(int key_code);
 
+/* BGE-Remix P8 Part B: the faces of a derived mesh that one material draws,
+ * as display arrays (see the .cpp); the arrays are reused, more made as needed */
+#include <vector>
+int BL_ConvertDerivedMeshArrays(struct DerivedMesh *dm, struct Object *blenderobj,
+                                class RAS_IPolyMaterial *polymat, std::vector<class RAS_DisplayArray *>& arrays);
+
 #endif  /* __BL_BLENDERDATACONVERSION_H__ */

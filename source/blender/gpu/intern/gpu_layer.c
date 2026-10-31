@@ -600,6 +600,57 @@ void GPU_matrix_frustum(float left, float right, float bottom, float top, float 
 	GPU_matrix_mult(m);
 }
 
+/* for gpu_builtin.c */
+void gpu_layer_m4_mul(float r[4][4], const float a[4][4], const float b[4][4])
+{
+	m4_mul(r, a, b);
+}
+
+bool gpu_layer_m4_invert(float r[4][4], const float m[4][4])
+{
+	return m4_invert(r, m);
+}
+
+/* BGE-Remix P8 Part B: texture matrices, one per unit */
+static struct {
+	float m[8][4][4];
+	bool init;
+} gpu_texmat = {{{{0}}}};
+
+static void texmat_init(void)
+{
+	if (!gpu_texmat.init) {
+		for (int i = 0; i < 8; i++) {
+			m4_identity(gpu_texmat.m[i]);
+		}
+		gpu_texmat.init = true;
+	}
+}
+
+void GPU_texture_matrix_set(int unit, const float m[4][4])
+{
+	texmat_init();
+	if (unit < 0 || unit >= 8) {
+		return;
+	}
+	if (m) {
+		memcpy(gpu_texmat.m[unit], m, sizeof(float[4][4]));
+	}
+	else {
+		m4_identity(gpu_texmat.m[unit]);
+	}
+}
+
+void GPU_texture_matrix_get(int unit, float r_m[4][4])
+{
+	texmat_init();
+	if (unit < 0 || unit >= 8) {
+		m4_identity(r_m);
+		return;
+	}
+	memcpy(r_m, gpu_texmat.m[unit], sizeof(float[4][4]));
+}
+
 void GPU_matrix_get(GPUMatrixMode mode, float r_m[4][4])
 {
 	mat_init();
@@ -679,6 +730,16 @@ void GPU_matrix_uniforms(struct GPUShader *shader)
 /* ------------------------------------------------------------------------ */
 /* state */
 
+static void set_enabled_offset(GLenum cap, bool on)
+{
+	if (on) {
+		glEnable(cap);
+	}
+	else {
+		glDisable(cap);
+	}
+}
+
 void GPU_state_blend(GPULayerBlend blend)
 {
 	if (blend == GPU_LAYER_BLEND_NONE) {
@@ -741,6 +802,14 @@ void GPU_state_scissor(bool on, int x, int y, int w, int h)
 	else {
 		glDisable(GL_SCISSOR_TEST);
 	}
+}
+
+void GPU_state_polygon_offset(float factor, float units, bool lines)
+{
+	const bool on = (factor != 0.0f || units != 0.0f);
+	glPolygonOffset(factor, units);
+	set_enabled_offset(GL_POLYGON_OFFSET_FILL, on && !lines);
+	set_enabled_offset(GL_POLYGON_OFFSET_LINE, on && lines);
 }
 
 enum {

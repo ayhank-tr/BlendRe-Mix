@@ -23,6 +23,7 @@
  */
 
 #include "GPU_translate.h"
+#include "GPU_layer.h"
 #include "GPU_glew.h"
 
 #include <iostream>
@@ -198,6 +199,7 @@ BL_Shader::~BL_Shader()
 	ClearUniforms();
 
 	if (mShader) {
+		GPU_old_builtins_forget(mShader);
 		glDeleteObjectARB(mShader);
 		mShader = 0;
 	}
@@ -325,11 +327,13 @@ bool BL_Shader::LinkProgram()
 		return false;
 	}
 
-	/* BGE-Remix P8.3: the shader translated to GLSL 4.50; the original is
-	 * built below when the translation does not build */
+	/* BGE-Remix P8.3: the shader translated to GLSL 4.50 (BGE-Remix P8 Part
+	 * B: the core translation, its old built-ins set by the game as
+	 * uniforms); the original is built below when the translation does not
+	 * build */
 	{
-		const unsigned int translated = GPU_glsl_translate_program(
-		        vertProg[0] ? vertProg : NULL, fragProg[0] ? fragProg : NULL, "custom shader");
+		const unsigned int translated = GPU_glsl_translate_program_ex(
+		        vertProg[0] ? vertProg : NULL, fragProg[0] ? fragProg : NULL, "custom shader", true);
 		if (translated) {
 			mShader = translated;
 			mOk = 1;
@@ -861,6 +865,7 @@ KX_PYMETHODDEF_DOC(BL_Shader, delSource, "delSource( )")
 {
 	ClearUniforms();
 	glUseProgramObjectARB(0);
+	GPU_old_builtins_forget(mShader);
 	glDeleteObjectARB(mShader);
 	mShader = 0;
 	mOk = 0;

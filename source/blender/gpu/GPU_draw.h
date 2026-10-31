@@ -83,6 +83,8 @@ void GPU_material_diffuse_get(int nr, float diff[4]);
 bool GPU_material_use_matcaps_get(void);
 
 void GPU_set_material_alpha_blend(int alphablend);
+/* BGE-Remix P8 Part B: the alpha test a blend mode sets (on, reference) */
+void GPU_material_alpha_test(int alphablend, bool *r_on, float *r_ref);
 int GPU_get_material_alpha_blend(void);
 
 /* TexFace drawing

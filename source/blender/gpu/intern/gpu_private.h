@@ -49,6 +49,9 @@ void gpu_glcheck_exit(void);
 void gpu_layer_init(void);
 void gpu_layer_exit(void);
 void gpu_builtin_exit(void);
+/* the layer's matrix helpers (column-major float[4][4]) */
+void gpu_layer_m4_mul(float r[4][4], const float a[4][4], const float b[4][4]);
+bool gpu_layer_m4_invert(float r[4][4], const float m[4][4]);
 /* the material library compiles with the core front end (gpu_codegen.c) */
 bool GPU_codegen_selftest_core(void);
 /* the layer's self-test (gpu_selftest.c): the number of failed checks */

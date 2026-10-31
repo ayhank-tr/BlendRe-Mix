@@ -41,6 +41,7 @@
 #include "RAS_IRasterizer.h"
 
 #include "GPU_draw.h"
+#include "GPU_layer.h"
 
 #include "STR_HashedString.h"
 
@@ -739,36 +740,35 @@ void KX_BlenderMaterial::ActivateTexGen(RAS_IRasterizer *ras) const
 	}
 }
 
+/* BGE-Remix P8 Part B: the texture matrix (scale, then offset) into the
+ * layer's texture matrices, as glScale and glTranslate built it */
+static void tex_matrix_scale_offset(int unit, const float scale[3], const float offset[3])
+{
+	float m[4][4] = {{0.0f}};
+	m[0][0] = scale[0];
+	m[1][1] = scale[1];
+	m[2][2] = scale[2];
+	m[3][0] = scale[0] * offset[0];
+	m[3][1] = scale[1] * offset[1];
+	m[3][2] = scale[2] * offset[2];
+	m[3][3] = 1.0f;
+	GPU_texture_matrix_set(unit, m);
+}
+
 void KX_BlenderMaterial::setTexMatrixData(int i)
 {
-	glMatrixMode(GL_TEXTURE);
-	glLoadIdentity();
+	float scale[3] = {mMaterial->mapping[i].scale[0], mMaterial->mapping[i].scale[1],
+	                  mMaterial->mapping[i].scale[2]};
+	const float offset[3] = {mMaterial->mapping[i].offsets[0], mMaterial->mapping[i].offsets[1],
+	                         mMaterial->mapping[i].offsets[2]};
 
 	if ( GLEW_ARB_texture_cube_map && 
 		mTextures[i].GetTextureType() == GL_TEXTURE_CUBE_MAP_ARB && 
 		mMaterial->mapping[i].mapping & USEREFL) {
-		glScalef( 
-			mMaterial->mapping[i].scale[0], 
-			-mMaterial->mapping[i].scale[1], 
-			-mMaterial->mapping[i].scale[2]
-		);
+		scale[1] = -scale[1];
+		scale[2] = -scale[2];
 	}
-	else
-	{
-		glScalef( 
-			mMaterial->mapping[i].scale[0], 
-			mMaterial->mapping[i].scale[1], 
-			mMaterial->mapping[i].scale[2]
-		);
-	}
-	glTranslatef(
-		mMaterial->mapping[i].offsets[0],
-		mMaterial->mapping[i].offsets[1], 
-		mMaterial->mapping[i].offsets[2]
-	);
-
-	glMatrixMode(GL_MODELVIEW);
-
+	tex_matrix_scale_offset(i, scale, offset);
 }
 
 static void GetProjPlane(BL_Material *mat, int index,int num, float*param)
@@ -813,21 +813,15 @@ void KX_BlenderMaterial::setObjectMatrixData(int i, RAS_IRasterizer *ras)
 
 	const MT_Matrix4x4& mvmat = ras->GetViewMatrix();
 
-	glMatrixMode(GL_TEXTURE);
-	glLoadIdentity();
-	glScalef( 
-		mMaterial->mapping[i].scale[0], 
-		mMaterial->mapping[i].scale[1], 
-		mMaterial->mapping[i].scale[2]
-	);
-
 	MT_Point3 pos = obj->NodeGetWorldPosition();
 	MT_Vector4 matmul = MT_Vector4(pos[0], pos[1], pos[2], 1.f);
 	MT_Vector4 t = mvmat*matmul;
 
-	glTranslatef( (float)(-t[0]), (float)(-t[1]), (float)(-t[2]) );
-
-	glMatrixMode(GL_MODELVIEW);
+	/* BGE-Remix P8 Part B: the layer's texture matrix */
+	const float scale[3] = {mMaterial->mapping[i].scale[0], mMaterial->mapping[i].scale[1],
+	                        mMaterial->mapping[i].scale[2]};
+	const float offset[3] = {(float)(-t[0]), (float)(-t[1]), (float)(-t[2])};
+	tex_matrix_scale_offset(i, scale, offset);
 
 }
 

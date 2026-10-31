@@ -743,6 +743,11 @@ static char *code_generate_fragment(ListBase *nodes, GPUOutput *output)
 	codegen_declare_tmps(ds, nodes);
 	codegen_call_functions(ds, nodes, output);
 
+	/* BGE-Remix P8 Part B: the old alpha test, in the shader (core) */
+	BLI_dynstr_append(ds, "#ifdef BGE_CORE\n"
+	                      "\tif (bge_alphatest.x > 0.5 && !(bge_fragcolor.a > bge_alphatest.y)) discard;\n"
+	                      "#endif\n");
+
 	BLI_dynstr_append(ds, "}\n");
 
 	/* create shader */
@@ -1741,7 +1746,7 @@ GPUPass *GPU_generate_pass(
         const GPUMatType type, const char *UNUSED(name),
         const bool use_opensubdiv,
         const bool use_new_shading,
-        const bool use_batch)
+        const bool use_core)
 {
 	GPUShader *shader;
 	GPUPass *pass;
@@ -1777,9 +1782,10 @@ GPUPass *GPU_generate_pass(
 	if (use_new_shading) {
 		flags |= GPU_SHADER_FLAGS_NEW_SHADING;
 	}
-	/* BGE-Remix P8.4: the game's materials read its batches */
-	if (use_batch) {
-		flags |= GPU_SHADER_FLAGS_BATCH;
+	/* BGE-Remix P8 Part B: the game's materials use the core front end
+	 * (matrices and the old built-ins as uniforms, the batches' attributes) */
+	if (use_core && !use_opensubdiv) {
+		flags |= GPU_SHADER_FLAGS_CORE;
 	}
 	shader = GPU_shader_create_ex(vertexcode,
 	                              fragmentcode,

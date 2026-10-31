@@ -28,11 +28,15 @@
  * Python) are written into the streaming buffer and copied on the card, once
  * a frame; depth-sorted ones get their indices the same way.
  *
- * A layout feeds both the generic attributes the game's shaders read (by
- * name: bge_pos_b, bge_nor_b, bge_col_b, bge_texcoN_b, and the built-in
- * shaders' bge_pos, bge_nor, bge_col, bge_texco; the material's own by
- * place) and, while the compatibility context lasts, the old arrays, so a
- * shader still written for gl_Vertex draws the same.
+ * A layout feeds the generic attributes the game's shaders read: by name
+ * (bge_pos, bge_nor, bge_col, bge_texcoN, and the classic shader's
+ * bge_texco) and the material's own by place. BGE-Remix P8 Part B: the
+ * matrices and the other old built-ins are set as uniforms before each
+ * draw (GPU_old_builtins) from the layer's matrices and the game's state.
+ * Only drawing that is still the old kind (no shader in the wireframe and
+ * solid modes, or a custom shader whose translation did not build) gets
+ * the old arrays, and the old alpha test, while the compatibility context
+ * lasts. A derived mesh (modifiers) is drawn from its slot's own arrays.
  */
 
 #ifndef __RAS_STORAGEBATCH_H__
@@ -45,13 +49,16 @@
 #include "RAS_IRasterizer.h"
 #include "RAS_OpenGLRasterizer.h"
 
+#include "GPU_layer.h"
+
 struct RAS_BatchArray;
 
 class RAS_StorageBatch : public RAS_IStorage
 {
 public:
 	RAS_StorageBatch(int *texco_num, RAS_IRasterizer::TexCoGen *texco, int *attrib_num,
-	                 RAS_IRasterizer::TexCoGen *attrib, int *attrib_layer, bool *classic);
+	                 RAS_IRasterizer::TexCoGen *attrib, int *attrib_layer, bool *classic,
+	                 const GPUClassicState *state);
 	virtual ~RAS_StorageBatch();
 
 	virtual bool Init();
@@ -67,7 +74,7 @@ public:
 
 	struct ProgramInfo {
 		int pos, nor, col, texco[8], cl_texco;
-		int batch;  /* the uniform bge_batch */
+		bool core;  /* reads bge_pos: attributes only (otherwise the old arrays) */
 	};
 
 protected:
@@ -79,6 +86,7 @@ protected:
 	RAS_IRasterizer::TexCoGen *m_attrib;
 	int *m_attrib_layer;
 	bool *m_classic;
+	const GPUClassicState *m_state;
 
 	unsigned int m_frame;
 	std::set<RAS_BatchArray *> m_arrays;
@@ -88,7 +96,9 @@ protected:
 	void UploadVertices(RAS_BatchArray *ba);
 	void UploadIndices(RAS_BatchArray *ba, size_t first, size_t count);
 	const ProgramInfo &GetProgram(unsigned int program);
-	unsigned int GetVAO(RAS_BatchArray *ba, unsigned int program, bool wireframe, bool color_array);
+	unsigned int GetVAO(RAS_BatchArray *ba, unsigned int program, bool own, bool wireframe, bool color_array);
+	void DrawArray(RAS_MeshSlot& ms, RAS_DisplayArray *array, unsigned short *index, size_t totindex,
+	               unsigned int program, const ProgramInfo& pi, bool own, bool modified, bool zsort);
 
 #ifdef WITH_CXX_GUARDEDALLOC
 public:

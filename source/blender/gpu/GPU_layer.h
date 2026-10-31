@@ -161,16 +161,37 @@ typedef struct GPUClassicState {
 	float fog_start, fog_end, fog_density;
 	float fog_color[4];
 	float alpha_ref;         /* discard below this alpha (0: off) */
+	/* BGE-Remix P8 Part B: what else the old built-ins held */
+	bool alpha_test;         /* alpha test on (fragments pass when alpha > alpha_ref) */
+	float current_color[4];  /* the colour drawn with (colour material follows it) */
 } GPUClassicState;
 
 void GPU_classic_state_default(GPUClassicState *state);
 void GPU_classic_uniforms(struct GPUShader *shader, const GPUClassicState *state);
-/* BGE-Remix P8.4: the classic look read from the old OpenGL state (lights,
- * material, texture environment, fog, alpha test); compatibility only */
-void GPU_classic_state_from_gl(GPUClassicState *state);
-/* BGE-Remix P8.4: depth only, for the game's shadow maps (the game's front
- * end: its batches, the old matrices) */
+/* BGE-Remix P8 Part B: the texture environment of unit 0 (texturing on,
+ * its mode and colour) read from OpenGL; lamps, material and fog come from
+ * the game's own state */
+void GPU_classic_texenv_from_gl(GPUClassicState *state);
+/* BGE-Remix P8.4: depth only, for the game's shadow maps (the core front
+ * end: the game's batches, the layer's matrices) */
 struct GPUShader *GPU_builtin_game_depth(void);
+
+/* BGE-Remix P8 Part B: the old built-ins a game shader reads (material
+ * shaders and translated custom shaders): the matrices from the layer's
+ * stack, the texture matrices, and lamps, material, light model, fog and
+ * alpha test from "state" (NULL: matrices only). Uniform places are found
+ * once per program and frame. */
+void GPU_old_builtins(unsigned int program, const GPUClassicState *state);
+/* programs may be made again under the same name: places found anew */
+void GPU_old_builtins_frame(void);
+/* a program is going (its name may be given again) */
+void GPU_old_builtins_forget(unsigned int program);
+
+/* ---- texture matrices (the old GL_TEXTURE matrix of units 0-7) ---- */
+
+/* m NULL: identity */
+void GPU_texture_matrix_set(int unit, const float m[4][4]);
+void GPU_texture_matrix_get(int unit, float r_m[4][4]);
 
 /* ---- immediate drawing (in place of glBegin/glEnd) ---- */
 
@@ -237,6 +258,9 @@ void GPU_state_depth(bool test, bool write);
 void GPU_state_cull(bool on, bool back);
 void GPU_state_viewport(int x, int y, int w, int h);
 void GPU_state_scissor(bool on, int x, int y, int w, int h);
+/* BGE-Remix P8 Part B: polygon offset for filled (and line) polygons;
+ * factor and units 0: off */
+void GPU_state_polygon_offset(float factor, float units, bool lines);
 
 /* a scope saves the OpenGL state everything relies on (framebuffers,
  * program, vertex array, textures, enables, blend, depth, masks, viewport,

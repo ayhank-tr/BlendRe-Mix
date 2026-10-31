@@ -40,6 +40,8 @@
 #include "RAS_IPolygonMaterial.h"
 #include "RAS_MeshObject.h"
 #include "PHY_IGraphicController.h"
+#include "RAS_MaterialBucket.h"
+#include "BL_BlenderDataConversion.h"
 
 #include "DNA_armature_types.h"
 #include "DNA_action_types.h"
@@ -68,6 +70,7 @@ extern "C"{
 
 BL_ModifierDeformer::~BL_ModifierDeformer()
 {
+	FreeDerivedArrays();
 	if (m_dm) {
 		// deformedOnly is used as a user counter
 		if (--m_dm->deformedOnly == 0) {
@@ -90,6 +93,9 @@ void BL_ModifierDeformer::ProcessReplica()
 {
 	/* Note! - This is not inherited from PyObjectPlus */
 	BL_ShapeDeformer::ProcessReplica();
+	/* the arrays are the original's: this replica makes its own */
+	m_dmArrays.clear();
+	m_dmArraysDirty = true;
 	if (m_dm)
 		// by default try to reuse mesh, deformedOnly is used as a user count
 		m_dm->deformedOnly++;
@@ -180,6 +186,7 @@ bool BL_ModifierDeformer::Update(void)
 				}
 			}
 			m_dm = dm;
+			m_dmArraysDirty = true;
 			// get rid of temporary data
 			m_dm->needsFree = 0;
 			m_dm->release(m_dm);
@@ -198,6 +205,10 @@ bool BL_ModifierDeformer::Update(void)
 		m_lastModifierUpdate=m_gameobj->GetLastFrame();
 		bShapeUpdate = true;
 
+		/* BGE-Remix P8 Part B: the slots draw the derived mesh as batches */
+		if (m_dmArraysDirty)
+			UpdateDerivedArrays();
+
 		int nmat = m_pMeshObject->NumMaterials();
 		for (int imat=0; imat<nmat; imat++) {
 			RAS_MeshMaterial *mmat = m_pMeshObject->GetMeshMaterial(imat);
@@ -205,9 +216,37 @@ bool BL_ModifierDeformer::Update(void)
 			if (!slot || !*slot)
 				continue;
 			(*slot)->m_pDerivedMesh = m_dm;
+			(*slot)->m_pDerivedArrays = (imat < (int)m_dmArrays.size()) ? &m_dmArrays[imat] : NULL;
 		}
 	}
 	return bShapeUpdate;
+}
+
+void BL_ModifierDeformer::FreeDerivedArrays()
+{
+	for (size_t i = 0; i < m_dmArrays.size(); i++) {
+		for (size_t j = 0; j < m_dmArrays[i].size(); j++)
+			delete m_dmArrays[i][j];
+	}
+	m_dmArrays.clear();
+}
+
+void BL_ModifierDeformer::UpdateDerivedArrays()
+{
+	m_dmArraysDirty = false;
+	if (!m_dm)
+		return;
+	Object *blendobj = m_gameobj->GetBlendObject();
+	const int nmat = m_pMeshObject->NumMaterials();
+	if ((int)m_dmArrays.size() != nmat) {
+		FreeDerivedArrays();
+		m_dmArrays.resize(nmat);
+	}
+	for (int imat = 0; imat < nmat; imat++) {
+		RAS_MeshMaterial *mmat = m_pMeshObject->GetMeshMaterial(imat);
+		RAS_IPolyMaterial *polymat = (mmat && mmat->m_bucket) ? mmat->m_bucket->GetPolyMaterial() : NULL;
+		BL_ConvertDerivedMeshArrays(m_dm, blendobj, polymat, m_dmArrays[imat]);
+	}
 }
 
 bool BL_ModifierDeformer::Apply(RAS_IPolyMaterial *mat)

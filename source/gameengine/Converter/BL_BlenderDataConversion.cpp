@@ -964,6 +964,155 @@ static RAS_MaterialBucket *material_from_mesh(Material *ma, MFace *mface, MTFace
 	return bucket;
 }
 
+/* BGE-Remix P8 Part B: the faces of a derived mesh (an object's modifiers)
+ * that one mesh material draws (the faces of its material slot and, without
+ * GLSL, of its face image, as Blender's mesh drawing chose them for the game
+ * before), as display arrays of triangles: vertices filled as BL_ConvertMesh
+ * fills a mesh's (positions, normals, UV layers by the material's mapping,
+ * tangents, colours), quads split 0 1 2 / 0 2 3 as Blender's drawing split
+ * them, at most 65535 vertices an array. Returns the triangles made. */
+int BL_ConvertDerivedMeshArrays(DerivedMesh *dm, Object *blenderobj, RAS_IPolyMaterial *polymat,
+                                RAS_DisplayArrayList& arrays)
+{
+	for (RAS_DisplayArrayList::iterator it = arrays.begin(); it != arrays.end(); ++it) {
+		(*it)->m_vertex.clear();
+		(*it)->m_index.clear();
+	}
+	if (!dm || !polymat)
+		return 0;
+
+	KX_BlenderMaterial *kxmat = static_cast<KX_BlenderMaterial *>(polymat);
+	BL_Material *bl_mat = kxmat->GetBLMaterial();
+	if (!bl_mat)
+		return 0;
+	const int matindex = polymat->GetMaterialIndex();
+	const bool glsl = (polymat->GetFlag() & RAS_BLENDERGLSL) != 0;
+	Image *image = polymat->GetBlenderImage();
+
+	DM_ensure_tessface(dm);
+	MVert *mvert = dm->getVertArray(dm);
+	MFace *mface = dm->getTessFaceArray(dm);
+	MTFace *tface = static_cast<MTFace*>(dm->getTessFaceDataArray(dm, CD_MTFACE));
+	MCol *mcol = static_cast<MCol*>(dm->getTessFaceDataArray(dm, CD_MCOL));
+	const int totface = dm->getNumTessFaces(dm);
+	float (*tangent)[4] = NULL;
+	if (tface) {
+		if (CustomData_get_layer_index(&dm->faceData, CD_TANGENT) == -1) {
+			bool generate_data = false;
+			if (CustomData_get_layer_index(&dm->loopData, CD_TANGENT) == -1) {
+				DM_calc_loop_tangents(dm, true, NULL, 0);
+				generate_data = true;
+			}
+			DM_generate_tangent_tessface_data(dm, generate_data);
+		}
+		tangent = (float(*)[4])dm->getTessFaceDataArray(dm, CD_TANGENT);
+	}
+
+	MTF_localLayer layers[MAX_MTFACE];
+	for (int lay = 0; lay < MAX_MTFACE; lay++) {
+		layers[lay].face = 0;
+		layers[lay].name = "";
+	}
+	int validLayers = 0;
+	for (int i = 0; i < dm->faceData.totlayer && validLayers < MAX_MTFACE; i++) {
+		if (dm->faceData.layers[i].type == CD_MTFACE) {
+			layers[validLayers].face = (MTFace*)(dm->faceData.layers[i].data);
+			layers[validLayers].name = dm->faceData.layers[i].name;
+			validLayers++;
+		}
+	}
+
+	MT_Point2 uvs[4][RAS_TexVert::MAX_UNIT];
+	for (unsigned int i = 0; i < RAS_TexVert::MAX_UNIT; i++)
+		uvs[0][i] = uvs[1][i] = uvs[2][i] = uvs[3][i] = MT_Point2(0.0f, 0.0f);
+	unsigned int rgb[4] = {0};
+	MT_Point3 pt[4];
+	MT_Vector3 no[4];
+	MT_Vector4 tan[4];
+	for (unsigned int i = 0; i < 4; i++) {
+		const float zero_vec[4] = {0.0f};
+		pt[i].setValue(zero_vec);
+		no[i].setValue(zero_vec);
+		tan[i].setValue(zero_vec);
+	}
+
+	size_t used = 0;
+	RAS_DisplayArray *array = NULL;
+	int triangles = 0;
+
+	for (int f = 0; f < totface; f++) {
+		MFace *mf = &mface[f];
+		MTFace *tf = tface ? &tface[f] : NULL;
+		if (mf->mat_nr != matindex)
+			continue;
+		if (!glsl && tf && tf->tpage != image)
+			continue;
+
+		const int nverts = mf->v4 ? 4 : 3;
+		const unsigned int vi[4] = {mf->v1, mf->v2, mf->v3, mf->v4};
+		for (int k = 0; k < nverts; k++)
+			pt[k].setValue(mvert[vi[k]].co);
+		if (mf->flag & ME_SMOOTH) {
+			for (int k = 0; k < nverts; k++) {
+				float n[3];
+				normal_short_to_float_v3(n, mvert[vi[k]].no);
+				no[k] = n;
+			}
+		}
+		else {
+			float fno[3];
+			if (mf->v4)
+				normal_quad_v3(fno, mvert[mf->v1].co, mvert[mf->v2].co, mvert[mf->v3].co, mvert[mf->v4].co);
+			else
+				normal_tri_v3(fno, mvert[mf->v1].co, mvert[mf->v2].co, mvert[mf->v3].co);
+			no[0] = no[1] = no[2] = no[3] = MT_Vector3(fno);
+		}
+		if (tangent) {
+			for (int k = 0; k < nverts; k++)
+				tan[k] = tangent[f * 4 + k];
+		}
+
+		Material *ma = blenderobj ? give_current_material(blenderobj, mf->mat_nr + 1) : NULL;
+		if (ma == NULL)
+			ma = &defmaterial;
+		GetRGB(GetMaterialUseVColor(ma, bl_mat->glslmat), mf, mcol ? &mcol[f * 4] : NULL, ma, rgb);
+		/* the UV layers of this face */
+		MTF_localLayer facelayers[MAX_MTFACE];
+		for (int lay = 0; lay < MAX_MTFACE; lay++) {
+			facelayers[lay].name = layers[lay].name;
+			facelayers[lay].face = layers[lay].face ? layers[lay].face + f : 0;
+		}
+		GetUVs(bl_mat, facelayers, mf, tf, uvs);
+
+		if (!array || used + (size_t)nverts > RAS_DisplayArray::BUCKET_MAX_VERTEX) {
+			/* the next array (made when there are not enough) */
+			const size_t next = array ? (size_t)(std::find(arrays.begin(), arrays.end(), array) - arrays.begin()) + 1 : 0;
+			if (next >= arrays.size())
+				arrays.push_back(new RAS_DisplayArray());
+			array = arrays[next];
+			array->m_type = RAS_DisplayArray::TRIANGLE;
+			used = 0;
+		}
+		const unsigned short base = (unsigned short)array->m_vertex.size();
+		for (int k = 0; k < nverts; k++) {
+			array->m_vertex.push_back(RAS_TexVert(pt[k], uvs[k], tan[k], rgb[k], no[k],
+			                                      (mf->flag & ME_SMOOTH) == 0, vi[k]));
+		}
+		used += (size_t)nverts;
+		array->m_index.push_back(base);
+		array->m_index.push_back((unsigned short)(base + 1));
+		array->m_index.push_back((unsigned short)(base + 2));
+		triangles++;
+		if (nverts == 4) {
+			array->m_index.push_back(base);
+			array->m_index.push_back((unsigned short)(base + 2));
+			array->m_index.push_back((unsigned short)(base + 3));
+			triangles++;
+		}
+	}
+	return triangles;
+}
+
 /* blenderobj can be NULL, make sure its checked for */
 RAS_MeshObject* BL_ConvertMesh(Mesh* mesh, Object* blenderobj, KX_Scene* scene, KX_BlenderSceneConverter *converter, bool libloading)
 {

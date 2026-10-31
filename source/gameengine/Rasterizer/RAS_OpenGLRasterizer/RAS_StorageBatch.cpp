@@ -43,7 +43,7 @@ extern "C" {
 /* how a layout was made: the shader and what it was fed */
 struct RAS_BatchLayout {
 	unsigned int program;
-	int flags;  /* 1: wireframe (no texture coordinates or attributes), 2: colour array */
+	int flags;  /* 1: wireframe (no texture coordinates or attributes), 2: colour array, 4: our own shader */
 	int texco_num;
 	int texco[RAS_MAX_TEXCO];
 	int attrib_num;
@@ -141,7 +141,8 @@ static void batch_copy_in(GLuint dst, size_t dst_offset, const void *data, size_
 }
 
 RAS_StorageBatch::RAS_StorageBatch(int *texco_num, RAS_IRasterizer::TexCoGen *texco, int *attrib_num,
-                                   RAS_IRasterizer::TexCoGen *attrib, int *attrib_layer, bool *classic)
+                                   RAS_IRasterizer::TexCoGen *attrib, int *attrib_layer, bool *classic,
+                                   const GPUClassicState *state)
     :m_drawingmode(RAS_IRasterizer::KX_TEXTURED),
     m_texco_num(texco_num),
     m_attrib_num(attrib_num),
@@ -149,6 +150,7 @@ RAS_StorageBatch::RAS_StorageBatch(int *texco_num, RAS_IRasterizer::TexCoGen *te
     m_attrib(attrib),
     m_attrib_layer(attrib_layer),
     m_classic(classic),
+    m_state(state),
     m_frame(1)
 {
 	RAS_DisplayArray::s_storage_free = batch_array_free;
@@ -181,6 +183,7 @@ void RAS_StorageBatch::BeginFrame()
 	m_frame++;
 	/* programs can be made again under the same name: asked anew each frame */
 	m_programs.clear();
+	GPU_old_builtins_frame();
 }
 
 void RAS_StorageBatch::Forget(RAS_BatchArray *ba)
@@ -251,29 +254,24 @@ const RAS_StorageBatch::ProgramInfo& RAS_StorageBatch::GetProgram(unsigned int p
 		return it->second;
 
 	ProgramInfo pi;
-	pi.pos = pi.nor = pi.col = pi.cl_texco = pi.batch = -1;
+	pi.pos = pi.nor = pi.col = pi.cl_texco = -1;
+	pi.core = false;
 	for (int i = 0; i < 8; i++)
 		pi.texco[i] = -1;
 	if (program) {
 		GLint linked = 0;
 		glGetProgramiv(program, GL_LINK_STATUS, &linked);
 		if (linked) {
-			pi.pos = glGetAttribLocation(program, "bge_pos_b");
-			if (pi.pos < 0)
-				pi.pos = glGetAttribLocation(program, "bge_pos");
-			pi.nor = glGetAttribLocation(program, "bge_nor_b");
-			if (pi.nor < 0)
-				pi.nor = glGetAttribLocation(program, "bge_nor");
-			pi.col = glGetAttribLocation(program, "bge_col_b");
-			if (pi.col < 0)
-				pi.col = glGetAttribLocation(program, "bge_col");
+			pi.pos = glGetAttribLocation(program, "bge_pos");
+			pi.nor = glGetAttribLocation(program, "bge_nor");
+			pi.col = glGetAttribLocation(program, "bge_col");
 			char name[32];
 			for (int i = 0; i < 8; i++) {
-				snprintf(name, sizeof(name), "bge_texco%d_b", i);
+				snprintf(name, sizeof(name), "bge_texco%d", i);
 				pi.texco[i] = glGetAttribLocation(program, name);
 			}
 			pi.cl_texco = glGetAttribLocation(program, "bge_texco");
-			pi.batch = glGetUniformLocation(program, "bge_batch");
+			pi.core = pi.pos >= 0;
 		}
 	}
 	return m_programs[program] = pi;
@@ -305,28 +303,26 @@ static void batch_texco_attrib(GLint loc, RAS_IRasterizer::TexCoGen gen, int lay
 	glEnableVertexAttribArray(loc);
 }
 
-unsigned int RAS_StorageBatch::GetVAO(RAS_BatchArray *ba, unsigned int program, bool wireframe, bool color_array)
+unsigned int RAS_StorageBatch::GetVAO(RAS_BatchArray *ba, unsigned int program, bool own, bool wireframe,
+                                      bool color_array)
 {
 	RAS_BatchLayout layout;
 	memset(&layout, 0, sizeof(layout));
 	layout.program = program;
 	const ProgramInfo& pi = GetProgram(program);
-	/* which arrays: the old ones for the fixed-function path and shaders
-	 * written for the old built-ins; for the game's front end (bge_batch),
-	 * its attributes plus the old vertex array (in a compatibility context
-	 * drawing needs it, and gl_Vertex owns its place); for the built-in
-	 * shaders, their attributes only (their position is attribute 0). On
-	 * some drivers the old arrays share places with attributes, so an
-	 * array the shader does not read is left off. */
-	const bool legacy = (program == 0 || (pi.batch < 0 && pi.pos < 0));
-	const bool builtin = (!legacy && pi.batch < 0);
-	layout.flags = (wireframe ? 1 : 0) | (color_array ? 2 : 0);
+	/* which arrays: a shader that reads bge_pos gets attributes only (its
+	 * position is attribute 0); the old kind (no shader, or one still
+	 * written for gl_Vertex) the old arrays. On some drivers the old arrays
+	 * share places with attributes, so an array the shader does not read is
+	 * left off. Our own shaders (classic, depth) take no material attributes. */
+	const bool legacy = !pi.core;
+	layout.flags = (wireframe ? 1 : 0) | (color_array ? 2 : 0) | (own ? 4 : 0);
 	if (!wireframe) {
 		layout.texco_num = *m_texco_num;
 		for (int i = 0; i < layout.texco_num; i++)
 			layout.texco[i] = (int)m_texco[i];
 	}
-	if (!wireframe && !builtin) {
+	if (!wireframe && !own) {
 		layout.attrib_num = *m_attrib_num;
 		for (int i = 0; i < layout.attrib_num; i++) {
 			layout.attrib[i] = (int)m_attrib[i];
@@ -353,11 +349,9 @@ unsigned int RAS_StorageBatch::GetVAO(RAS_BatchArray *ba, unsigned int program, 
 	glBindBuffer(GL_ARRAY_BUFFER, ba->vbo);
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ba->ibo);
 
-	if (!builtin) {
+	if (legacy) {
 		glEnableClientState(GL_VERTEX_ARRAY);
 		glVertexPointer(3, GL_FLOAT, TV_STRIDE, TV_OFS(s_tv.getXYZ()));
-	}
-	if (legacy) {
 		glEnableClientState(GL_NORMAL_ARRAY);
 		glNormalPointer(GL_FLOAT, TV_STRIDE, TV_OFS(s_tv.getNormal()));
 		if (color_array) {
@@ -392,7 +386,7 @@ unsigned int RAS_StorageBatch::GetVAO(RAS_BatchArray *ba, unsigned int program, 
 		}
 		glClientActiveTexture(GL_TEXTURE0);
 	}
-	if (!wireframe && !builtin) {
+	if (!wireframe && !own) {
 		/* the material's own attributes, by place */
 		for (int unit = 0; unit < layout.attrib_num; unit++)
 			batch_texco_attrib(unit, m_attrib[unit], m_attrib_layer[unit]);
@@ -436,16 +430,67 @@ unsigned int RAS_StorageBatch::GetVAO(RAS_BatchArray *ba, unsigned int program, 
 	return vao;
 }
 
-void RAS_StorageBatch::IndexPrimitives(RAS_MeshSlot& ms)
+void RAS_StorageBatch::DrawArray(RAS_MeshSlot& ms, RAS_DisplayArray *array, unsigned short *index, size_t totindex,
+                                 unsigned int program, const ProgramInfo& pi, bool own, bool modified, bool zsort)
 {
 	const bool wireframe = m_drawingmode <= RAS_IRasterizer::KX_WIREFRAME;
+	if (totindex == 0 || array->m_vertex.empty())
+		return;
+
+	RAS_BatchArray *ba = GetArray(array);
+	if (modified && ba->uploaded != m_frame) {
+		/* changed on the CPU (deformed, or by Python): once a frame */
+		UploadVertices(ba);
+		UploadIndices(ba, 0, ba->nindex);
+		ba->uploaded = m_frame;
+	}
+
+	const size_t first = (size_t)(index - &array->m_index[0]);
+	if (zsort)
+		UploadIndices(ba, first, totindex);
+
+	const GLenum mode = (array->m_type == RAS_DisplayArray::LINE) ? GL_LINES : GL_TRIANGLES;
+
+	/* the colour, as the vertex arrays had it */
+	bool color_array = false;
+	float rgba[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+	if (mode != GL_LINES && !wireframe) {
+		if (ms.m_bObjectColor) {
+			const MT_Vector4& c = ms.m_RGBAcolor;
+			rgba[0] = (float)c[0];
+			rgba[1] = (float)c[1];
+			rgba[2] = (float)c[2];
+			rgba[3] = (float)c[3];
+		}
+		else {
+			color_array = true;
+		}
+	}
+	if (!pi.core)
+		glColor4fv(rgba);
+	else if (pi.col >= 0 && !color_array)
+		glVertexAttrib4fv(pi.col, rgba);
+
+	const GLuint vao = GetVAO(ba, program, own, wireframe, color_array);
+	const size_t gl_first = ba->quads ? first / 4 * 6 : first;
+	const size_t gl_count = ba->quads ? totindex / 4 * 6 : totindex;
+
+	glBindVertexArray(vao);
+	glDrawElements(mode, (GLsizei)gl_count, GL_UNSIGNED_SHORT,
+	               (const void *)(uintptr_t)(gl_first * sizeof(unsigned short)));
+	glBindVertexArray(0);
+}
+
+void RAS_StorageBatch::IndexPrimitives(RAS_MeshSlot& ms)
+{
 	const bool modified = ms.m_mesh && ms.m_mesh->MeshModified();
 	const bool zsort = ms.m_bucket && ms.m_bucket->IsZSort() && m_drawingmode >= RAS_IRasterizer::KX_SOLID;
-	RAS_MeshSlot::iterator it;
 
 	/* the shader: the bound one; with none, the built-in depth shader for
-	 * shadow maps, the classic look for a material whose shader could not be
-	 * built (otherwise the fixed-function path, fed by the old arrays) */
+	 * shadow maps, and the classic look for the rest (a material whose
+	 * shader could not be built, Multitexture materials, and the solid,
+	 * wireframe and bounding-box modes: BGE-Remix P8 Part B, the old
+	 * fixed-function lighting is not set any more) */
 	GLint bound = 0;
 	glGetIntegerv(GL_CURRENT_PROGRAM, &bound);
 	GPUShader *own = NULL;
@@ -453,85 +498,72 @@ void RAS_StorageBatch::IndexPrimitives(RAS_MeshSlot& ms)
 		if (m_drawingmode == RAS_IRasterizer::KX_SHADOW) {
 			own = GPU_builtin_game_depth();
 		}
-		else if (m_classic && *m_classic && m_drawingmode == RAS_IRasterizer::KX_TEXTURED) {
-			GPUClassicState state;
-			GPU_classic_state_from_gl(&state);
+		else {
 			own = GPU_builtin_shader(GPU_BUILTIN_CLASSIC);
 			static bool said = false;
-			if (own && !said) {
+			if (own && !said && m_classic && *m_classic && m_drawingmode == RAS_IRasterizer::KX_TEXTURED) {
 				printf("BGE-Remix: a material without its GLSL shader is drawn with the built-in classic shader\n");
 				said = true;
 			}
-			if (own) {
-				GPU_shader_bind(own);
-				GPU_matrix_from_gl();
-				GPU_matrix_uniforms(own);
-				GPU_classic_uniforms(own, &state);
-			}
 		}
 		if (own) {
-			if (m_drawingmode == RAS_IRasterizer::KX_SHADOW)
-				GPU_shader_bind(own);
+			GPU_shader_bind(own);
 			bound = (GLint)GPU_shader_program(own);
 		}
 	}
 	const ProgramInfo& pi = GetProgram((unsigned int)bound);
-	if (pi.batch >= 0)
-		glUniform1i(pi.batch, 1);
 
-	for (ms.begin(it); !ms.end(it); ms.next(it)) {
-		if (it.totindex == 0 || it.array->m_vertex.empty())
-			continue;
-
-		RAS_BatchArray *ba = GetArray(it.array);
-		if (modified && ba->uploaded != m_frame) {
-			/* changed on the CPU (deformed, or by Python): once a frame */
-			UploadVertices(ba);
-			UploadIndices(ba, 0, ba->nindex);
-			ba->uploaded = m_frame;
-		}
-
-		const size_t first = (size_t)(it.index - &it.array->m_index[0]);
-		if (zsort)
-			UploadIndices(ba, first, it.totindex);
-
-		GLenum mode;
-		if (it.array->m_type == RAS_DisplayArray::LINE)
-			mode = GL_LINES;
-		else
-			mode = GL_TRIANGLES;
-
-		/* the colour, as the vertex arrays had it */
-		bool color_array = false;
-		float rgba[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-		if (mode != GL_LINES && !wireframe) {
-			if (ms.m_bObjectColor) {
-				const MT_Vector4& c = ms.m_RGBAcolor;
-				rgba[0] = (float)c[0];
-				rgba[1] = (float)c[1];
-				rgba[2] = (float)c[2];
-				rgba[3] = (float)c[3];
-			}
-			else {
-				color_array = true;
-			}
-		}
-		glColor4fv(rgba);
-		if (pi.col > 0 && !color_array)
-			glVertexAttrib4fv(pi.col, rgba);
-
-		const GLuint vao = GetVAO(ba, (unsigned int)bound, wireframe, color_array);
-		const size_t gl_first = ba->quads ? first / 4 * 6 : first;
-		const size_t gl_count = ba->quads ? it.totindex / 4 * 6 : it.totindex;
-
-		glBindVertexArray(vao);
-		glDrawElements(mode, (GLsizei)gl_count, GL_UNSIGNED_SHORT,
-		               (const void *)(uintptr_t)(gl_first * sizeof(unsigned short)));
-		glBindVertexArray(0);
+	/* BGE-Remix P8 Part B: the game's state, the colour drawn with (colour
+	 * material follows it: the object colour, or the material's, which the
+	 * vertex colours carry when the mesh has none) */
+	GPUClassicState state = *m_state;
+	if (ms.m_bObjectColor) {
+		const MT_Vector4& c = ms.m_RGBAcolor;
+		for (int k = 0; k < 4; k++)
+			state.current_color[k] = (float)c[k];
+	}
+	else if (ms.m_bucket) {
+		unsigned char rgba[4];
+		ms.m_bucket->GetPolyMaterial()->GetMaterialRGBAColor(rgba);
+		for (int k = 0; k < 4; k++)
+			state.current_color[k] = rgba[k] / 255.0f;
 	}
 
-	if (pi.batch >= 0)
-		glUniform1i(pi.batch, 0);
+	if (own && own == GPU_builtin_shader(GPU_BUILTIN_CLASSIC)) {
+		GPU_classic_texenv_from_gl(&state);
+		GPU_matrix_uniforms(own);
+		GPU_classic_uniforms(own, &state);
+	}
+	else if (bound) {
+		/* the matrices and the old built-ins the shader reads */
+		GPU_old_builtins((unsigned int)bound, &state);
+	}
+
+	/* the old alpha test only for the old kind of drawing (shaders do their own) */
+	if (!pi.core && !own && state.alpha_test) {
+		glEnable(GL_ALPHA_TEST);
+		glAlphaFunc(GL_GREATER, state.alpha_ref);
+	}
+	else {
+		glDisable(GL_ALPHA_TEST);
+	}
+
+	if (ms.m_pDerivedArrays) {
+		/* a derived mesh (modifiers): its arrays for this slot's material */
+		RAS_DisplayArrayList& arrays = *ms.m_pDerivedArrays;
+		for (size_t a = 0; a < arrays.size(); a++) {
+			RAS_DisplayArray *array = arrays[a];
+			if (!array->m_index.empty())
+				DrawArray(ms, array, &array->m_index[0], array->m_index.size(), (unsigned int)bound, pi,
+				          own != NULL, modified, false);
+		}
+	}
+	else {
+		RAS_MeshSlot::iterator it;
+		for (ms.begin(it); !ms.end(it); ms.next(it))
+			DrawArray(ms, it.array, it.index, it.totindex, (unsigned int)bound, pi, own != NULL, modified, zsort);
+	}
+
 	if (own)
 		GPU_shader_unbind();
 }

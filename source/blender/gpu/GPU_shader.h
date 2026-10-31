@@ -55,10 +55,6 @@ enum {
 	GPU_SHADER_FLAGS_FRONTEND           = (1 << 4),
 	/* BGE-Remix P8.3: the shared lamp and world buffers (GLSL 4.50 only) */
 	GPU_SHADER_FLAGS_SHARED             = (1 << 5),
-	/* BGE-Remix P8.4: the game's front end (compatibility): bge_pos, bge_nor
-	 * and bge_col come from the game's batches (uniform bge_batch set to 1)
-	 * or from the old built-ins (bge_batch 0, Blender's mesh drawing) */
-	GPU_SHADER_FLAGS_BATCH              = (1 << 6),
 };
 
 /* BGE-Remix P8.3: the program's OpenGL name (the drawing layer binds it) */

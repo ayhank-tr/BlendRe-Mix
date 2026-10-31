@@ -129,11 +129,12 @@ RAS_OpenGLRasterizer::RAS_OpenGLRasterizer(RAS_ICanvas* canvas, RAS_STORAGE_TYPE
 	/* BGE-Remix P8.4: the game's meshes are batches on the card, whatever
 	 * storage the file asks for (Display Lists, Vertex Arrays or VBO) */
 	m_classic = false;
-	m_storage = new RAS_StorageBatch(&m_texco_num, m_texco, &m_attrib_num, m_attrib, m_attrib_layer, &m_classic);
+	GPU_classic_state_default(&m_state);
+	m_storage = new RAS_StorageBatch(&m_texco_num, m_texco, &m_attrib_num, m_attrib, m_attrib_layer, &m_classic,
+	                                 &m_state);
 
-	glGetIntegerv(GL_MAX_LIGHTS, (GLint *) &m_numgllights);
-	if (m_numgllights < 8)
-		m_numgllights = 8;
+	/* BGE-Remix P8 Part B: eight lamps, as the old fixed-function lighting had */
+	m_numgllights = 8;
 }
 
 
@@ -156,11 +157,13 @@ bool RAS_OpenGLRasterizer::Init()
 	m_ambr = 0.0f;
 	m_ambg = 0.0f;
 	m_ambb = 0.0f;
+	GPU_classic_state_default(&m_state);
 
 	glDisable(GL_BLEND);
 	glDisable(GL_ALPHA_TEST);
 	//m_last_alphablend = GPU_BLEND_SOLID;
 	GPU_set_material_alpha_blend(GPU_BLEND_SOLID);
+	m_state.alpha_test = false;
 
 	glFrontFace(GL_CCW);
 	m_last_frontface = true;
@@ -192,8 +195,10 @@ void RAS_OpenGLRasterizer::SetAmbientColor(float color[3])
 
 void RAS_OpenGLRasterizer::SetAmbient(float factor)
 {
-	float ambient[] = {m_ambr * factor, m_ambg * factor, m_ambb * factor, 1.0f};
-	glLightModelfv(GL_LIGHT_MODEL_AMBIENT, ambient);
+	m_state.scene_ambient[0] = m_ambr * factor;
+	m_state.scene_ambient[1] = m_ambg * factor;
+	m_state.scene_ambient[2] = m_ambb * factor;
+	m_state.scene_ambient[3] = 1.0f;
 }
 
 void RAS_OpenGLRasterizer::SetBackColor(float color[3])
@@ -206,12 +211,14 @@ void RAS_OpenGLRasterizer::SetBackColor(float color[3])
 
 void RAS_OpenGLRasterizer::SetFog(short type, float start, float dist, float intensity, float color[3])
 {
-	float params[4] = {color[0], color[1], color[2], 1.0f};
-	glFogi(GL_FOG_MODE, GL_LINEAR);
-	glFogf(GL_FOG_DENSITY, intensity / 10.0f);
-	glFogf(GL_FOG_START, start);
-	glFogf(GL_FOG_END, start + dist);
-	glFogfv(GL_FOG_COLOR, params);
+	/* BGE-Remix P8 Part B: the game's state, not glFog */
+	m_state.fog_density = intensity / 10.0f;
+	m_state.fog_start = start;
+	m_state.fog_end = start + dist;
+	m_state.fog_color[0] = color[0];
+	m_state.fog_color[1] = color[1];
+	m_state.fog_color[2] = color[2];
+	m_state.fog_color[3] = 1.0f;
 }
 
 void RAS_OpenGLRasterizer::EnableFog(bool enable)
@@ -221,12 +228,7 @@ void RAS_OpenGLRasterizer::EnableFog(bool enable)
 
 void RAS_OpenGLRasterizer::DisplayFog()
 {
-	if ((m_drawingmode >= KX_SOLID) && m_fogenabled) {
-		glEnable(GL_FOG);
-	}
-	else {
-		glDisable(GL_FOG);
-	}
+	m_state.fog = ((m_drawingmode >= KX_SOLID) && m_fogenabled) ? GPU_FOG_LINEAR : GPU_FOG_OFF;
 }
 
 bool RAS_OpenGLRasterizer::SetMaterial(const RAS_IPolyMaterial& mat)
@@ -279,6 +281,7 @@ bool RAS_OpenGLRasterizer::BeginFrame(double time)
 	glDisable(GL_ALPHA_TEST);
 	//m_last_alphablend = GPU_BLEND_SOLID;
 	GPU_set_material_alpha_blend(GPU_BLEND_SOLID);
+	m_state.alpha_test = false;
 
 	glFrontFace(GL_CCW);
 	m_last_frontface = true;
@@ -286,6 +289,10 @@ bool RAS_OpenGLRasterizer::BeginFrame(double time)
 	glShadeModel(GL_SMOOTH);
 
 	glEnable(GL_MULTISAMPLE_ARB);
+
+	/* BGE-Remix P8 Part B: the layer's matrices start from the old ones
+	 * (the canvas and the 3D view set them) */
+	GPU_matrix_from_gl();
 
 	m_2DCanvas->BeginFrame();
 
@@ -748,116 +755,50 @@ void RAS_OpenGLRasterizer::SetAttrib(TexCoGen coords, int unit, int layer)
 
 void RAS_OpenGLRasterizer::IndexPrimitives(RAS_MeshSlot& ms)
 {
-	if (ms.m_pDerivedMesh)
-		DrawDerivedMesh(ms);
-	else
-		m_storage->IndexPrimitives(ms);
+	/* BGE-Remix P8 Part B: a derived mesh (modifiers) is drawn as batches
+	 * too (the slot's m_pDerivedArrays); Blender's mesh drawing is not used */
+	m_storage->IndexPrimitives(ms);
 }
 
-// Code for hooking into Blender's mesh drawing for derived meshes.
-// If/when we use more of Blender's drawing code, we may be able to
-// clean this up
-static bool current_wireframe;
-static RAS_MaterialBucket *current_bucket;
-static RAS_IPolyMaterial *current_polymat;
-static RAS_MeshSlot *current_ms;
-static RAS_MeshObject *current_mesh;
-static int current_blmat_nr;
-static GPUVertexAttribs current_gpu_attribs;
-static Image *current_image;
-static int CheckMaterialDM(int matnr, void *attribs)
+/* BGE-Remix P8 Part B: the old OpenGL matrices follow the layer's (see the
+ * header); the matrix mode is left as modelview, as the drawing expects */
+void RAS_OpenGLRasterizer::MirrorModelview()
 {
-	// only draw the current material
-	if (matnr != current_blmat_nr)
-		return 0;
-	GPUVertexAttribs *gattribs = (GPUVertexAttribs *)attribs;
-	if (gattribs)
-		memcpy(gattribs, &current_gpu_attribs, sizeof(GPUVertexAttribs));
-	return 1;
+	float m[4][4];
+	GPU_matrix_get(GPU_MATRIX_MODELVIEW, m);
+	glMatrixMode(GL_MODELVIEW);
+	glLoadMatrixf(&m[0][0]);
 }
 
-static DMDrawOption CheckTexDM(MTexPoly *mtexpoly, const bool has_mcol, int matnr)
+void RAS_OpenGLRasterizer::MirrorProjection()
 {
-
-	// index is the original face index, retrieve the polygon
-	if (matnr == current_blmat_nr &&
-		(mtexpoly == NULL || mtexpoly->tpage == current_image)) {
-		// must handle color.
-		if (current_wireframe)
-			return DM_DRAW_OPTION_NO_MCOL;
-		if (current_ms->m_bObjectColor) {
-			MT_Vector4& rgba = current_ms->m_RGBAcolor;
-			glColor4d(rgba[0], rgba[1], rgba[2], rgba[3]);
-			// don't use mcol
-			return DM_DRAW_OPTION_NO_MCOL;
-		}
-		if (!has_mcol) {
-			// we have to set the color from the material
-			unsigned char rgba[4];
-			current_polymat->GetMaterialRGBAColor(rgba);
-			glColor4ubv((const GLubyte *)rgba);
-			return DM_DRAW_OPTION_NORMAL;
-		}
-		return DM_DRAW_OPTION_NORMAL;
-	}
-	return DM_DRAW_OPTION_SKIP;
-}
-
-void RAS_OpenGLRasterizer::DrawDerivedMesh(class RAS_MeshSlot &ms)
-{
-	// mesh data is in derived mesh
-	current_bucket = ms.m_bucket;
-	current_polymat = current_bucket->GetPolyMaterial();
-	current_ms = &ms;
-	current_mesh = ms.m_mesh;
-	current_wireframe = m_drawingmode <= RAS_IRasterizer::KX_WIREFRAME;
-	// MCol *mcol = (MCol*)ms.m_pDerivedMesh->getFaceDataArray(ms.m_pDerivedMesh, CD_MCOL); /* UNUSED */
-
-	// handle two-side
-	if (current_polymat->GetDrawingMode() & RAS_IRasterizer::KX_BACKCULL)
-		this->SetCullFace(true);
-	else
-		this->SetCullFace(false);
-
-	if (current_polymat->GetFlag() & RAS_BLENDERGLSL) {
-		// GetMaterialIndex return the original mface material index,
-		// increment by 1 to match what derived mesh is doing
-		current_blmat_nr = current_polymat->GetMaterialIndex()+1;
-		// For GLSL we need to retrieve the GPU material attribute
-		Material* blmat = current_polymat->GetBlenderMaterial();
-		Scene* blscene = current_polymat->GetBlenderScene();
-		if (!current_wireframe && blscene && blmat)
-			GPU_material_vertex_attributes(GPU_material_from_blender_ex(blscene, blmat, false, true), &current_gpu_attribs);
-		else
-			memset(&current_gpu_attribs, 0, sizeof(current_gpu_attribs));
-		// DM draw can mess up blending mode, restore at the end
-		int current_blend_mode = GPU_get_material_alpha_blend();
-		ms.m_pDerivedMesh->drawFacesGLSL(ms.m_pDerivedMesh, CheckMaterialDM);
-		GPU_set_material_alpha_blend(current_blend_mode);
-	} else {
-		//ms.m_pDerivedMesh->drawMappedFacesTex(ms.m_pDerivedMesh, CheckTexfaceDM, mcol);
-		current_blmat_nr = current_polymat->GetMaterialIndex();
-		current_image = current_polymat->GetBlenderImage();
-		ms.m_pDerivedMesh->drawFacesTex(ms.m_pDerivedMesh, CheckTexDM, NULL, NULL, DM_DRAW_USE_ACTIVE_UV);
-	}
+	float m[4][4];
+	GPU_matrix_get(GPU_MATRIX_PROJECTION, m);
+	glMatrixMode(GL_PROJECTION);
+	glLoadMatrixf(&m[0][0]);
+	glMatrixMode(GL_MODELVIEW);
 }
 
 void RAS_OpenGLRasterizer::SetProjectionMatrix(MT_CmMatrix4x4 &mat)
 {
-	glMatrixMode(GL_PROJECTION);
 	float* matrix = &mat(0, 0);
-	glLoadMatrixf(matrix);
+	GPU_matrix_mode(GPU_MATRIX_PROJECTION);
+	GPU_matrix_load((const float (*)[4])matrix);
+	GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
+	MirrorProjection();
 
 	m_camortho = (mat(3, 3) != 0.0f);
 }
 
 void RAS_OpenGLRasterizer::SetProjectionMatrix(const MT_Matrix4x4 & mat)
 {
-	glMatrixMode(GL_PROJECTION);
 	float matrix[16];
 	/* Get into argument. Looks a bit dodgy, but it's ok. */
 	mat.getValue(matrix);
-	glLoadMatrixf(matrix);
+	GPU_matrix_mode(GPU_MATRIX_PROJECTION);
+	GPU_matrix_load((const float (*)[4])matrix);
+	GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
+	MirrorProjection();
 
 	m_camortho = (mat[3][3] != 0.0f);
 }
@@ -908,12 +849,22 @@ MT_Matrix4x4 RAS_OpenGLRasterizer::GetFrustumMatrix(
 			}
 	}
 	
-	glMatrixMode(GL_PROJECTION);
-	glLoadIdentity();
-	glFrustum(left, right, bottom, top, frustnear, frustfar);
-		
-	glGetFloatv(GL_PROJECTION_MATRIX, mat);
+	/* glFrustum's matrix, column-major */
+	memset(mat, 0, sizeof(mat));
+	mat[0] = 2.0f * frustnear / (right - left);
+	mat[5] = 2.0f * frustnear / (top - bottom);
+	mat[8] = (right + left) / (right - left);
+	mat[9] = (top + bottom) / (top - bottom);
+	mat[10] = -(frustfar + frustnear) / (frustfar - frustnear);
+	mat[11] = -1.0f;
+	mat[14] = -2.0f * frustfar * frustnear / (frustfar - frustnear);
 	result.setValue(mat);
+
+	/* it is also the projection now, as glFrustum made it (callers rely on it) */
+	GPU_matrix_mode(GPU_MATRIX_PROJECTION);
+	GPU_matrix_load((const float (*)[4])mat);
+	GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
+	MirrorProjection();
 
 	return result;
 }
@@ -930,12 +881,22 @@ MT_Matrix4x4 RAS_OpenGLRasterizer::GetOrthoMatrix(
 	float mat[16];
 
 	// stereo is meaningless for orthographic, disable it
-	glMatrixMode(GL_PROJECTION);
-	glLoadIdentity();
-	glOrtho(left, right, bottom, top, frustnear, frustfar);
-		
-	glGetFloatv(GL_PROJECTION_MATRIX, mat);
+	/* glOrtho's matrix, column-major */
+	memset(mat, 0, sizeof(mat));
+	mat[0] = 2.0f / (right - left);
+	mat[5] = 2.0f / (top - bottom);
+	mat[10] = -2.0f / (frustfar - frustnear);
+	mat[12] = -(right + left) / (right - left);
+	mat[13] = -(top + bottom) / (top - bottom);
+	mat[14] = -(frustfar + frustnear) / (frustfar - frustnear);
+	mat[15] = 1.0f;
 	result.setValue(mat);
+
+	/* it is also the projection now, as glOrtho made it (callers rely on it) */
+	GPU_matrix_mode(GPU_MATRIX_PROJECTION);
+	GPU_matrix_load((const float (*)[4])mat);
+	GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
+	MirrorProjection();
 
 	return result;
 }
@@ -1001,8 +962,9 @@ void RAS_OpenGLRasterizer::SetViewMatrix(const MT_Matrix4x4 &mat,
 	MT_Scalar glviewmat[16];
 	m_viewmatrix.getValue(glviewmat);
 
-	glMatrixMode(GL_MODELVIEW);
-	glLoadMatrixf(glviewmat);
+	GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
+	GPU_matrix_load((const float (*)[4])glviewmat);
+	MirrorModelview();
 	m_campos = pos;
 	m_camnegscale = negX ^ negY ^ negZ;
 }
@@ -1039,30 +1001,36 @@ void RAS_OpenGLRasterizer::SetSpecularity(float specX,
 										  float specZ,
 										  float specval)
 {
-	GLfloat mat_specular[] = {specX, specY, specZ, specval};
-	glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, mat_specular);
+	m_state.mat_specular[0] = specX;
+	m_state.mat_specular[1] = specY;
+	m_state.mat_specular[2] = specZ;
+	m_state.mat_specular[3] = specval;
 }
 
 
 
 void RAS_OpenGLRasterizer::SetShinyness(float shiny)
 {
-	GLfloat mat_shininess[] = {	shiny };
-	glMaterialfv(GL_FRONT_AND_BACK, GL_SHININESS, mat_shininess);
+	/* OpenGL clamped the shininess to 0..128 */
+	m_state.shininess = (shiny < 0.0f) ? 0.0f : (shiny > 128.0f) ? 128.0f : shiny;
 }
 
 
 
 void RAS_OpenGLRasterizer::SetDiffuse(float difX,float difY,float difZ,float diffuse)
 {
-	GLfloat mat_diffuse [] = {difX, difY,difZ, diffuse};
-	glMaterialfv(GL_FRONT_AND_BACK, GL_DIFFUSE, mat_diffuse);
+	m_state.mat_diffuse[0] = difX;
+	m_state.mat_diffuse[1] = difY;
+	m_state.mat_diffuse[2] = difZ;
+	m_state.mat_diffuse[3] = diffuse;
 }
 
 void RAS_OpenGLRasterizer::SetEmissive(float eX, float eY, float eZ, float e)
 {
-	GLfloat mat_emit [] = {eX,eY,eZ,e};
-	glMaterialfv(GL_FRONT_AND_BACK, GL_EMISSION, mat_emit);
+	m_state.mat_emission[0] = eX;
+	m_state.mat_emission[1] = eY;
+	m_state.mat_emission[2] = eZ;
+	m_state.mat_emission[3] = e;
 }
 
 
@@ -1073,14 +1041,8 @@ double RAS_OpenGLRasterizer::GetTime()
 
 void RAS_OpenGLRasterizer::SetPolygonOffset(float mult, float add)
 {
-	glPolygonOffset(mult, add);
-	GLint mode = GL_POLYGON_OFFSET_FILL;
-	if (m_drawingmode < KX_SHADED)
-		mode = GL_POLYGON_OFFSET_LINE;
-	if (mult != 0.0f || add != 0.0f)
-		glEnable(mode);
-	else
-		glDisable(mode);
+	/* lines in wireframe and bounding-box drawing */
+	GPU_state_polygon_offset(mult, add, m_drawingmode < KX_SHADED);
 }
 
 void RAS_OpenGLRasterizer::EnableMotionBlur(float motionblurvalue)
@@ -1102,9 +1064,11 @@ void RAS_OpenGLRasterizer::SetAlphaBlend(int alphablend)
 {
 	/* Variance shadow maps don't handle alpha well, best to not allow it for now  */
 	if (m_drawingmode == KX_SHADOW && m_usingoverrideshader)
-		GPU_set_material_alpha_blend(GPU_BLEND_SOLID);
-	else
-		GPU_set_material_alpha_blend(alphablend);
+		alphablend = GPU_BLEND_SOLID;
+	GPU_set_material_alpha_blend(alphablend);
+	/* BGE-Remix P8 Part B: the alpha test is the shaders' (the storage sets
+	 * the old one only for drawing that is still fixed-function) */
+	GPU_material_alpha_test(alphablend, &m_state.alpha_test, &m_state.alpha_ref);
 /*
 	if (alphablend == m_last_alphablend)
 		return;
@@ -1238,25 +1202,18 @@ void RAS_OpenGLRasterizer::ProcessLighting(bool uselights, const MT_Transform& v
 		//enable = ApplyLights(layer, viewmat);
 		// taken from blender source, incompatibility between Blender Object / GameObject
 		KX_Scene* kxscene = (KX_Scene*)m_auxilaryClientInfo;
-		float glviewmat[16];
 		unsigned int count;
 		std::vector<RAS_OpenGLLight*>::iterator lit = m_lights.begin();
 
-		for (count=0; count<m_numgllights; count++)
-			glDisable((GLenum)(GL_LIGHT0+count));
-
-		viewmat.getValue(glviewmat);
-
-		glPushMatrix();
-		glLoadMatrixf(glviewmat);
+		/* BGE-Remix P8 Part B: into the game's state (eye space) */
 		for (lit = m_lights.begin(), count = 0; !(lit==m_lights.end()) && count < m_numgllights; ++lit)
 		{
 			RAS_OpenGLLight* light = (*lit);
 
-			if (light->ApplyFixedFunctionLighting(kxscene, layer, count))
+			if (light->FillClassicLight(kxscene, layer, viewmat, &m_state.lights[count]))
 				count++;
 		}
-		glPopMatrix();
+		m_state.light_count = (int)count;
 
 		enable = count > 0;
 	}
@@ -1272,14 +1229,10 @@ void RAS_OpenGLRasterizer::EnableOpenGLLights()
 	if (m_lastlighting == true)
 		return;
 
-	glEnable(GL_LIGHTING);
-	glEnable(GL_COLOR_MATERIAL);
-
-	glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
-	glLightModeli(GL_LIGHT_MODEL_TWO_SIDE, GL_TRUE);
-	glLightModeli(GL_LIGHT_MODEL_LOCAL_VIEWER, (GetCameraOrtho())? GL_FALSE: GL_TRUE);
-	if (GLEW_EXT_separate_specular_color || GLEW_VERSION_1_2)
-		glLightModeli(GL_LIGHT_MODEL_COLOR_CONTROL, GL_SEPARATE_SPECULAR_COLOR);
+	/* BGE-Remix P8 Part B: lighting with colour material (ambient and
+	 * diffuse follow the colour), in the game's state */
+	m_state.lighting = true;
+	m_state.vertex_color = 1;
 
 	m_lastlighting = true;
 }
@@ -1289,8 +1242,9 @@ void RAS_OpenGLRasterizer::DisableOpenGLLights()
 	if (m_lastlighting == false)
 		return;
 
-	glDisable(GL_LIGHTING);
-	glDisable(GL_COLOR_MATERIAL);
+	m_state.lighting = false;
+	m_state.light_count = 0;
+	m_state.vertex_color = 1;
 
 	m_lastlighting = false;
 }
@@ -1338,9 +1292,9 @@ bool RAS_OpenGLRasterizer::RayHit(struct KX_ClientObjectInfo *client, KX_RayCast
 		                  resultnormal[0], resultnormal[1], resultnormal[2], 0,
 		                  0,               0,               0,               1};
 
-		glTranslatef(oglmatrix[12],oglmatrix[13],oglmatrix[14]);
-		//glMultMatrixd(oglmatrix);
-		glMultMatrixf(maat);
+		GPU_matrix_translate(oglmatrix[12],oglmatrix[13],oglmatrix[14]);
+		GPU_matrix_mult((const float (*)[4])maat);
+		MirrorModelview();
 		return true;
 	}
 	else {
@@ -1406,8 +1360,9 @@ void RAS_OpenGLRasterizer::applyTransform(float* oglmatrix,int objectdrawmode )
 		                   up[0],   up[1],   up[2],   0,
 		                   0,       0,       0,       1};
 
-		glTranslatef(objpos[0],objpos[1],objpos[2]);
-		glMultMatrixf(maat);
+		GPU_matrix_translate(objpos[0],objpos[1],objpos[2]);
+		GPU_matrix_mult((const float (*)[4])maat);
+		MirrorModelview();
 
 	}
 	else {
@@ -1435,19 +1390,22 @@ void RAS_OpenGLRasterizer::applyTransform(float* oglmatrix,int objectdrawmode )
 			if (!KX_RayCast::RayTest(physics_environment, frompoint, topoint, callback))
 			{
 				// couldn't find something to cast the shadow on...
-				glMultMatrixf(oglmatrix);
+				GPU_matrix_mult((const float (*)[4])oglmatrix);
+				MirrorModelview();
 			}
 			else
 			{ // we found the "ground", but the cast matrix doesn't take
 			  // scaling in consideration, so we must apply the object scale
 				MT_Vector3  size = gameobj->GetSGNode()->GetLocalScale();
-				glScalef(size[0], size[1], size[2]);
+				GPU_matrix_scale(size[0], size[1], size[2]);
+				MirrorModelview();
 			}
 		} else
 		{
 
 			// 'normal' object
-			glMultMatrixf(oglmatrix);
+			GPU_matrix_mult((const float (*)[4])oglmatrix);
+			MirrorModelview();
 		}
 	}
 }
@@ -1605,12 +1563,15 @@ void RAS_OpenGLRasterizer::RenderText2D(
 
 void RAS_OpenGLRasterizer::PushMatrix()
 {
-	glPushMatrix();
+	GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
+	GPU_matrix_push();
 }
 
 void RAS_OpenGLRasterizer::PopMatrix()
 {
-	glPopMatrix();
+	GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
+	GPU_matrix_pop();
+	MirrorModelview();
 }
 
 void RAS_OpenGLRasterizer::MotionBlur()

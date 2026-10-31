@@ -145,6 +145,10 @@ public:
 	void*					m_clientObj;
 	RAS_Deformer*			m_pDeformer;
 	DerivedMesh*			m_pDerivedMesh;
+	/* BGE-Remix P8 Part B: the derived mesh's faces of this slot's
+	 * material as display arrays (the deformer's), drawn in place of the
+	 * slot's own arrays */
+	RAS_DisplayArrayList*	m_pDerivedArrays;
 	float*					m_OpenGLMatrix;
 	// visibility
 	bool					m_bVisible;

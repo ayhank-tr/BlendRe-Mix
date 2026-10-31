@@ -2098,6 +2098,29 @@ int GPU_get_material_alpha_blend(void)
 	return GMS.lastalphablend;
 }
 
+/* BGE-Remix P8 Part B: the alpha test a blend mode sets (as
+ * gpu_set_alpha_blend sets it): on, and the reference alpha fragments must
+ * be greater than */
+void GPU_material_alpha_test(int alphablend, bool *r_on, float *r_ref)
+{
+	*r_on = false;
+	*r_ref = 0.0f;
+	if (ELEM(alphablend, GPU_BLEND_ALPHA, GPU_BLEND_ALPHA_SORT)) {
+		if (U.glalphaclip != 1.0f) {
+			*r_on = true;
+			*r_ref = U.glalphaclip;
+		}
+	}
+	else if (alphablend == GPU_BLEND_CLIP) {
+		*r_on = true;
+		*r_ref = 0.5f;
+	}
+	else if (alphablend == GPU_BLEND_ALPHA_TO_COVERAGE) {
+		*r_on = true;
+		*r_ref = U.glalphaclip;
+	}
+}
+
 void GPU_object_material_unbind(void)
 {
 	GMS.lastmatnr = -1;

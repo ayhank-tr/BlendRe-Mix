@@ -47,6 +47,8 @@ using namespace std;
 
 #include "BLI_utildefines.h"
 
+#include "GPU_layer.h"  /* GPUClassicState */
+
 class RAS_IStorage;
 class RAS_ICanvas;
 class RAS_OpenGLLight;
@@ -141,6 +143,18 @@ protected:
 	RAS_IStorage *m_storage;
 	/* BGE-Remix P8.4: see SetClassicFallback */
 	bool m_classic;
+	/* BGE-Remix P8 Part B: what the old OpenGL state held for the game's
+	 * shaders (lamps in eye space, material, light model, fog, alpha test):
+	 * the classic shader, custom shaders and the materials' old built-ins
+	 * read it as uniforms; glLight, glMaterial and glFog are not set */
+	GPUClassicState m_state;
+
+	/* BGE-Remix P8 Part B: the matrices are the layer's (GPU_matrix_*); the
+	 * old OpenGL matrices follow them for the drawing the next step of
+	 * Part B moves (text, debug lines, 2D filters, dome, bge.texture,
+	 * Python's bgl), and for shaders that are still the old kind */
+	void MirrorModelview();
+	void MirrorProjection();
 
 public:
 	double GetTime();
@@ -189,7 +203,6 @@ public:
 
 	virtual void IndexPrimitives(class RAS_MeshSlot &ms);
 	virtual void IndexPrimitives_3DText(class RAS_MeshSlot &ms, class RAS_IPolyMaterial *polymat);
-	virtual void DrawDerivedMesh(class RAS_MeshSlot &ms);
 
 	virtual void SetProjectionMatrix(MT_CmMatrix4x4 &mat);
 	virtual void SetProjectionMatrix(const MT_Matrix4x4 &mat);

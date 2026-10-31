@@ -88,6 +88,7 @@ RAS_MeshSlot::RAS_MeshSlot() : SG_QList()
 	m_bDisplayList = true;
 	m_joinSlot = NULL;
 	m_pDerivedMesh = NULL;
+	m_pDerivedArrays = NULL;
 }
 
 RAS_MeshSlot::~RAS_MeshSlot()
@@ -120,6 +121,7 @@ RAS_MeshSlot::RAS_MeshSlot(const RAS_MeshSlot& slot) : SG_QList()
 	m_clientObj = NULL;
 	m_pDeformer = NULL;
 	m_pDerivedMesh = NULL;
+	m_pDerivedArrays = NULL;
 	m_OpenGLMatrix = NULL;
 	m_mesh = slot.m_mesh;
 	m_bucket = slot.m_bucket;

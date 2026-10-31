@@ -38,6 +38,7 @@
 #include "GPU_extensions.h"
 #include "GPU_glew.h"
 #include "GPU_shader.h"
+#include "GPU_layer.h"
 #include "GPU_texture.h"
 #include "GPU_material.h"
 
@@ -267,34 +268,15 @@ GPUShader *GPU_shader_create(const char *vertexcode,
  * bge_lightsource (the 3D view's default lights), BGE_VCOL and BGE_VCOL2
  * (the vertex colour and MatCap varyings), BGE_TEXCOORD (old texture
  * coordinates) and bge_fragcolor (the output). The compatibility front end
- * maps them to the old built-ins, for meshes the old code still draws; the
- * core front end declares them, for the drawing layer's batches. */
+ * maps them to the old built-ins, for meshes the old code still draws (the
+ * 3D view); the core front end declares them, for the drawing layer's
+ * batches (BGE-Remix P8 Part B: the game's materials), with bge_alphatest
+ * (the old alpha test: on, reference). */
 static const char *gpu_frontend_vert_compat =
         "#define BGE_COMPAT\n"
         "#define bge_pos gl_Vertex\n"
         "#define bge_nor gl_Normal\n"
         "#define bge_col gl_Color\n"
-        "#define bge_mv gl_ModelViewMatrix\n"
-        "#define bge_mvinv gl_ModelViewMatrixInverse\n"
-        "#define bge_proj gl_ProjectionMatrix\n"
-        "#define bge_projinv gl_ProjectionMatrixInverse\n"
-        "#define bge_normalmat gl_NormalMatrix\n"
-        "#define BGE_VCOL_OUT gl_FrontColor\n"
-        "#define BGE_VCOL2_OUT gl_FrontSecondaryColor\n";
-
-/* BGE-Remix P8.4: the game's meshes come from batches (generic attributes);
- * Blender's own mesh drawing (modifiers drawn as derived meshes) still feeds
- * the old built-ins, so the uniform bge_batch picks the source */
-static const char *gpu_frontend_vert_batch =
-        "#define BGE_COMPAT\n"
-        "#define BGE_BATCH\n"
-        "in vec4 bge_pos_b;\n"
-        "in vec3 bge_nor_b;\n"
-        "in vec4 bge_col_b;\n"
-        "uniform int bge_batch;\n"
-        "#define bge_pos (bge_batch != 0 ? bge_pos_b : gl_Vertex)\n"
-        "#define bge_nor (bge_batch != 0 ? bge_nor_b : gl_Normal)\n"
-        "#define bge_col (bge_batch != 0 ? bge_col_b : gl_Color)\n"
         "#define bge_mv gl_ModelViewMatrix\n"
         "#define bge_mvinv gl_ModelViewMatrixInverse\n"
         "#define bge_proj gl_ProjectionMatrix\n"
@@ -345,6 +327,7 @@ static const char *gpu_frontend_frag_core =
         "#define BGE_VCOL bge_vcol_v\n"
         "#define BGE_VCOL2 bge_vcol2_v\n"
         "#define BGE_TEXCOORD(n) vec4(0.0)\n"
+        "uniform vec2 bge_alphatest;\n"
         "out vec4 bge_fragcolor;\n";
 
 /* BGE-Remix P8.3: lamp and world values, read from shared storage buffers
@@ -408,9 +391,7 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 	const bool core = glsl450 && (flags & GPU_SHADER_FLAGS_CORE);
 	const bool frontend = (flags & GPU_SHADER_FLAGS_FRONTEND) != 0;
 	const char *version = gpu_shader_version_ex(flags, use_opensubdiv);
-	const char *vert_front = frontend ? (core ? gpu_frontend_vert_core :
-	                                     ((flags & GPU_SHADER_FLAGS_BATCH) ? gpu_frontend_vert_batch :
-	                                                                         gpu_frontend_vert_compat)) : NULL;
+	const char *vert_front = frontend ? (core ? gpu_frontend_vert_core : gpu_frontend_vert_compat) : NULL;
 	const char *frag_front = frontend ? (core ? gpu_frontend_frag_core : gpu_frontend_frag_compat) : NULL;
 	const char *shared = (glsl450 && (flags & GPU_SHADER_FLAGS_SHARED)) ? gpu_frontend_shared : NULL;
 
@@ -543,6 +524,13 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 		glProgramParameteri(shader->program, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
 	}
 
+	/* BGE-Remix P8 Part B: the core front end's position at place 0 (a
+	 * compatibility context draws only when attribute 0 or the old vertex
+	 * array is fed; the game's batches feed attributes only) */
+	if (core && frontend && vertexcode) {
+		glBindAttribLocation(shader->program, 0, "bge_pos");
+	}
+
 	glLinkProgram(shader->program);
 	glGetProgramiv(shader->program, GL_LINK_STATUS, &status);
 	if (!status) {
@@ -598,6 +586,10 @@ void GPU_shader_unbind(void)
 
 void GPU_shader_free(GPUShader *shader)
 {
+	/* BGE-Remix P8 Part B: the old built-ins' places of the program go too */
+	if (shader && shader->program) {
+		GPU_old_builtins_forget(shader->program);
+	}
 	if (shader->vertex)
 		glDeleteShader(shader->vertex);
 	if (shader->geometry)
