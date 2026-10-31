@@ -2476,7 +2476,7 @@ void GVBuilder::Remix()
 			if (a->type != ACT_2DFILTER) continue;
 			auto it = m_brickElement.find(std::string(name_of(ob)) + "/" + a->name);
 			if (it != m_brickElement.end()) {
-				Warn(it->second, "RMX_FILTER2D", GV_WARN_NOTE, "RTX Remix does not show 2D filters", true);
+				Warn(it->second, "RMX_FILTER2D", GV_WARN_NOTE, "2D filters run over RTX Remix's picture, without its depth", true);
 				m_warn[it->second].back().layer = GV_LAYER_REMIX;
 			}
 		}

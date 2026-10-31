@@ -31,6 +31,7 @@
 
 
 #include "BL_DeformableGameObject.h"
+#include "RAS_MeshObject.h"
 #include "BL_ShapeDeformer.h"
 #include "BL_ShapeActionActuator.h"
 #include "RAS_MaterialBucket.h"
@@ -110,6 +111,9 @@ void BL_DeformableGameObject::SetDeformer(class RAS_Deformer* deformer)
 	SG_QList::iterator<RAS_MeshSlot> mit(m_meshSlots);
 	for (mit.begin(); !mit.end(); ++mit)
 	{
+		/* BGE-Remix P8.20: hair cards keep their own shape */
+		if ((*mit)->m_mesh && (*mit)->m_mesh->IsUndeformed())
+			continue;
 		(*mit)->SetDeformer(deformer);
 	}
 }

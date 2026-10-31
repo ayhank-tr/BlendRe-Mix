@@ -1898,10 +1898,16 @@ static KX_GameObject *gameobject_from_blenderobject(
 
 		/* BGE-Remix P8 Part C (P8.22): its text as geometry, for Remix (the
 		 * game draws it as text) */
-		if (Mesh *me = BKE_mesh_new_from_object(G.main, blenderscene, ob, true, 1, true, false)) {
+		Mesh *me = BKE_mesh_new_from_object(G.main, blenderscene, ob, true, 2, true, false);
+		if (me) {
 			converter->RegisterTemporaryID(&me->id);
 			if (me->totpoly > 0)
 				static_cast<KX_FontObject*>(gameobj)->SetRemixMesh(BL_ConvertMesh(me, ob, kxscene, converter, libloading));
+		}
+		static int said_text = 0;
+		if (said_text < 8) {
+			said_text++;
+			printf("BGE-Remix: text \"%s\" for Remix: %d faces\n", ob->id.name + 2, me ? me->totpoly : 0);
 		}
 		break;
 	}
@@ -1917,7 +1923,10 @@ static KX_GameObject *gameobject_from_blenderobject(
 			BKE_displist_make_curveTypes(blenderscene, ob, false);
 		}
 #endif
-		Mesh *me = BKE_mesh_new_from_object(G.main, blenderscene, ob, true, 1, true, false);
+		/* a metaball has no shape until it is evaluated (the player never
+		 * evaluates it): the render settings make one here */
+		Mesh *me = BKE_mesh_new_from_object(G.main, blenderscene, ob, true,
+		                                    (ob->type == OB_MBALL && !ob->curve_cache) ? 2 : 1, true, false);
 		if (!me)
 			break;
 		converter->RegisterTemporaryID(&me->id);

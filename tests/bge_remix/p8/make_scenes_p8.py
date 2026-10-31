@@ -2620,7 +2620,7 @@ def make_hair_particles(folder, E):
     gsph = p3.sphere(scene, "HP_gsphere", (0.0, 0.0, -32.0), classic("HP_gsph", (0.2, 0.8, 0.9)), radius=0.06)
     group.objects.link(gsph)
     em_ma = classic("HP_emit", (0.9, 0.5, 0.2))
-    em_ma.halo.size = 0.08
+    em_ma.halo.size = 0.25
     columns = {}
     for i, kind in enumerate(HP_TYPES):
         x = -4.5 + 1.8 * i
@@ -2848,6 +2848,10 @@ n = g.get("p8_cfx", 0) + 1
 g["p8_cfx"] = n
 cam = bge.logic.getCurrentScene().active_camera
 cam.applyRotation((0.0, 0.0, 0.004 if (n // 50) % 2 == 0 else -0.004), False)
+# the 2D filter, when the scene has one
+cont = bge.logic.getCurrentController()
+for act in cont.actuators:
+    cont.activate(act)
 '''
 
 

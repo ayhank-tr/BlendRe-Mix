@@ -271,6 +271,10 @@ RAS_MeshObject *BL_ConvertHairCards(Object *ob, KX_Scene *kxscene, KX_BlenderSce
 	converter->RegisterTemporaryID(&me->id);
 
 	RAS_MeshObject *meshobj = BL_ConvertMesh(me, NULL, kxscene, converter, libloading);
+	if (meshobj) {
+		/* drawn as made, whatever deforms the object's own mesh */
+		meshobj->SetUndeformed(true);
+	}
 	static int said = 0;
 	if (said < 4) {
 		said++;

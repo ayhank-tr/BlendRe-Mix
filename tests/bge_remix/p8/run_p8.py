@@ -2352,9 +2352,12 @@ class Rec:
 class Ctx:
     pass
 
+class Self:
+    pass
+
 def drawn(panel, ctx):
     log = []
-    p = panel.__new__(panel)
+    p = Self()
     p.layout = Rec(log)
     try:
         if hasattr(panel, "poll") and not panel.poll(ctx):
@@ -2414,14 +2417,14 @@ def partc_runs(args, out, S, expected):
         R[tag] = play(args.ours, out, tag, S(name), env, frames=frames)
         return R[tag]
 
-    def remix(tag, name, frames=C_FRAMES, cache=None, extra=None):
+    def remix(tag, name, frames=C_FRAMES, cache=None, extra=None, seconds=0):
         if not have(name):
             return {}
         cache = cache or p3.fresh(os.path.join(out, "cache_" + tag))
         log, env = mock_env(args, out, tag, cache)
         env["BGE_REMIX_MOCK_DRAWS_FRAME"] = C_DRAWS_FRAME
         env.update(extra or {})
-        R[tag] = play(args.ours, out, tag, S(name), env, frames=frames)
+        R[tag] = play(args.ours, out, tag, S(name), env, frames=frames, seconds=seconds)
         C["remix"][tag] = mock_lines(log)
         return R[tag]
 
@@ -2453,7 +2456,8 @@ def partc_runs(args, out, S, expected):
     # T8.29: Remix's fields; the shared texture cache (Remix fills it, the
     # game alone then reads it)
     shared = p3.fresh(os.path.join(out, "cache_c_shared"))
-    remix("c_remix_extras_remix", "remix_extras_remix", cache=shared)
+    # (the fake runtime runs fast: time for the encoder to write the images)
+    remix("c_remix_extras_remix", "remix_extras_remix", cache=shared, seconds=12)
     ours("c_remix_extras_shared", "remix_extras", {"BGE_REMIX_CACHE_DIR": shared})
     if have("remix_extras"):
         code, text, _ = blender_script(args.ours, out, "c_match", MATCH_CHECK, blend=S("remix_extras"))
@@ -2461,6 +2465,30 @@ def partc_runs(args, out, S, expected):
         code, text, _ = blender_script(args.ours, out, "c_panels", PANELS_CHECK, blend=S("remix_extras"))
         C["panels"] = tagged(text, "P8-PANELS")
     return C
+
+
+def coverage(a, rect, level=20.0):
+    """the share of a region's pixels that differ from the picture's
+    background (its top-left pixel) by more than level"""
+    if a is None:
+        return None
+    bg = a[2, 2, :3]
+    reg = crop(a, rect)[:, :, :3]
+    return round(float((abs(reg - bg).max(axis=2) > level).mean()), 3)
+
+
+def changed_pixels(a, b, level=8.0):
+    if a is None or b is None or a.shape != b.shape:
+        return None
+    return int((abs(a - b)[:, :, :3].mean(axis=2) > level).sum())
+
+
+def sharpness(a, rect):
+    """a region's mean horizontal step between neighbours"""
+    if a is None:
+        return None
+    reg = crop(a, rect)[:, :, :3].mean(axis=2)
+    return float(abs(reg[:, 1:] - reg[:, :-1]).mean())
 
 
 def draws_at(lines, frame=C_DRAWS_FRAME):
@@ -2536,7 +2564,13 @@ def t826_transparency(C, expected):
                             ("Classic", "c_transparency", "c_transparency_shuffled", TOL_SORTED)):
         pa, pb = shot_of(R.get(a)), shot_of(R.get(b))
         for k, rect in E["rects"].items():
-            md = region_diff(pa, pb, rect)
+            # (particles are simulated by the frame's time: the smoke is
+            # compared by its mean colour, not pixel by pixel)
+            if k == "smoke":
+                ma, mb = rect_rgb(pa, rect), rect_rgb(pb, rect)
+                md = None if ma is None or mb is None else round(float(abs(ma - mb).mean()), 2)
+            else:
+                md = region_diff(pa, pb, rect)
             d["%s %s" % (mode, k)] = md
             c["%s: %s the same in both orders (within %.0f)" % (mode, k, tol)] = md is not None and md <= tol
     return c, d
@@ -2552,10 +2586,11 @@ def t827_left_out(C, expected):
     R = C["runs"]
     a = shot_of(R.get("c_left_out"))
     for k in E["items"]:
-        v = rect_rgb(a, E["rects"][k]) if a is not None else None
-        d[k] = None if v is None else [round(float(x), 1) for x in v]
-        c["%s shows in the game" % k] = v is not None and float(v.mean()) > 25.0
+        cov = coverage(a, E["rects"][k])
+        d[k] = cov
+        c["%s shows in the game" % k] = cov is not None and cov > 0.03
     text = R.get("c_left_out", {}).get("text", "")
+    c["the text has a shape for Remix"] = re.search(r'text "LO_text" for Remix: [1-9]', text) is not None
     for name in E["as_mesh"]:
         c["%s drawn as a mesh" % name] = ('"%s" drawn as a mesh' % name) in text
     disp = re.findall(r"BGE-Remix displacement %s: (\d+) levels, (\d+) faces" % E["displaced"], text)
@@ -2580,12 +2615,23 @@ def t828_camera(C, expected):
         return {"the camera_fx scene was made": False}, {}
     R = C["runs"]
     none = shot_of(R.get("c_camera_fx_none"))
-    where = {"bloom": "glow_ring", "auto_exposure": "whole", "vignette": "corner_tl", "depth_of_field": "far",
-             "motion_blur": "whole", "ao": "contact", "filmic": "whole"}
+    where = {"bloom": "glow_ring", "auto_exposure": "whole", "vignette": "corner_tl", "filmic": "whole"}
     for k in E["effects"]:
-        md = region_diff(none, shot_of(R.get("c_camera_fx_" + k)), E["rects"][where[k]])
-        d[k] = md
-        c["%s changes the picture (%s)" % (k, where[k])] = md is not None and md > 1.0
+        pic = shot_of(R.get("c_camera_fx_" + k))
+        if k in where:
+            md = region_diff(none, pic, E["rects"][where[k]])
+            d[k] = md
+            c["%s changes the picture (%s)" % (k, where[k])] = md is not None and md > 1.0
+        else:
+            # depth of field, motion blur and ambient occlusion change edges
+            # and corners: counted in pixels
+            n = changed_pixels(none, pic)
+            d[k] = n
+            c["%s changes the picture (1,000 pixels or more)" % k] = n is not None and n >= 1000
+    s0, s1 = sharpness(none, E["rects"]["far"]), sharpness(shot_of(R.get("c_camera_fx_depth_of_field")),
+                                                          E["rects"]["far"])
+    d["far_sharpness"] = [s0, s1]
+    c["depth of field blurs the far wall"] = s0 is not None and s1 is not None and s1 < s0
     v_none = rect_rgb(none, E["rects"]["corner_tl"]) if none is not None else None
     vig = shot_of(R.get("c_camera_fx_vignette"))
     v_on = rect_rgb(vig, E["rects"]["corner_tl"]) if vig is not None else None

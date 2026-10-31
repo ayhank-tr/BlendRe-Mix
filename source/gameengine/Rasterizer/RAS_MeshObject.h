@@ -60,6 +60,7 @@ private:
 	bool						m_bModified;
 	bool						m_bMeshModified;
 	bool						m_cpuVertices;  /* BGE-Remix P8 Part B (P8.13) */
+	bool						m_undeformed;   /* BGE-Remix P8.20: never given the object's deformer */
 
 	STR_String					m_name;
 	static STR_String			s_emptyname;
@@ -135,6 +136,10 @@ public:
 	
 	/* buckets */
 	virtual void		AddMeshUser(void *clientobj, SG_QList *head, RAS_Deformer* deformer);
+	/* BGE-Remix P8.20: a mesh drawn as it is even when its object has a
+	 * deformer (hair cards: the object's modifiers deform its own mesh) */
+	void				SetUndeformed(bool on) { m_undeformed = on; }
+	bool				IsUndeformed() const { return m_undeformed; }
 
 	void				RemoveFromBuckets(void *clientobj);
 	void				EndConversion();

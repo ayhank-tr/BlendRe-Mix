@@ -739,7 +739,8 @@ void KX_GameObject::AddMeshUser()
 {
 	for (size_t i=0;i<m_meshes.size();i++)
 	{
-		m_meshes[i]->AddMeshUser(this, &m_meshSlots, GetDeformer());
+		/* BGE-Remix P8.20: hair cards keep their own shape */
+		m_meshes[i]->AddMeshUser(this, &m_meshSlots, m_meshes[i]->IsUndeformed() ? NULL : GetDeformer());
 	}
 	// set the part of the mesh slot that never change
 	float *fl = GetOpenGLMatrixPtr()->getPointer();
