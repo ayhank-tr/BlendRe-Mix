@@ -3693,6 +3693,8 @@ static void do_world_tex(GPUShadeInput *shi, struct World *wo, GPUNodeLink **hor
 			else if (mtex->texco == TEXCO_EQUIRECTMAP || mtex->texco == TEXCO_ANGMAP) {
 				if ((tex->type == TEX_IMAGE && wo->skytype & WO_SKYREAL) || tex->type == TEX_ENVMAP)
 					GPU_link(mat, "background_transform_to_world", GPU_builtin(GPU_VIEW_POSITION), &texco);
+				else if (mtex->texco == TEXCO_EQUIRECTMAP)
+					GPU_link(mat, "bge_background_view", GPU_builtin(GPU_VIEW_POSITION), &texco);
 				else
 					texco = GPU_builtin(GPU_VIEW_POSITION);
 			}

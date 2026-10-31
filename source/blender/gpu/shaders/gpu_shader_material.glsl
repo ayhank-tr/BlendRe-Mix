@@ -3386,6 +3386,14 @@ void bge_dir_xzy(vec3 v, out vec3 o)
 	o = v.xzy;
 }
 
+/* BGE-Remix P8 Part B (P8.17): the camera's view direction at a background
+ * pixel (its view position is the screen's), as F12's sky textures use it */
+void bge_background_view(vec3 viewvec, out vec3 view)
+{
+	vec4 co = bge_projinv * vec4(viewvec, 1.0);
+	view = (bge_proj[3][3] == 0.0) ? normalize(co.xyz / co.w) : vec3(0.0, 0.0, -1.0);
+}
+
 void node_tex_environment_equirectangular(vec3 co, sampler2D ima, out vec4 color)
 {
 	vec3 nco = normalize(co);

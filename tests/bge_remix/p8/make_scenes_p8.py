@@ -1519,6 +1519,15 @@ def make_deform(folder, E):
     ma_cube = classic("DF_Cube", (0.3, 0.6, 0.9))
     p3.bi_slot(ma_cube, img, color=True)
     cube = p3.textured_cube(scene, "ShapeCube", 1.2, (0.0, 0.0, 0.0), ma_cube)
+    # in triangles: stock 2.79 draws a quad as GL_QUADS, which each driver
+    # splits along a diagonal of its own choice (the shape key's trapezoids
+    # then show their texture bent one way or the other)
+    import bmesh
+    bm = bmesh.new()
+    bm.from_mesh(cube.data)
+    bmesh.ops.triangulate(bm, faces=bm.faces[:])
+    bm.to_mesh(cube.data)
+    bm.free()
     cube.shape_key_add(name="Basis", from_mix=False)
     grow = cube.shape_key_add(name="Grow", from_mix=False)
     for d in grow.data:

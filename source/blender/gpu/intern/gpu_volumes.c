@@ -74,8 +74,54 @@ static const char *vol_frag_main =
         "uniform vec4 viewport;\n"
         "uniform int lamps_on;\n"
         "uniform int shape;\n"
+        "uniform int self_shadow, ext_shadow, srgb;\n"
+        "uniform sampler2D scenecolor;\n"
         "out vec4 fragcolor;\n"
         "float lum(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }\n"
+        "vec3 to_linear(vec3 c)\n"
+        "{\n"
+        "	return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));\n"
+        "}\n"
+        "vec3 to_srgb(vec3 c)\n"
+        "{\n"
+        "	c = max(c, vec3(0.0));\n"
+        "	return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));\n"
+        "}\n"
+        /* how far the volume goes from a point (object space) along a
+         * direction (object space, a world length per unit) */
+        "float exit_t(vec3 po, vec3 dl)\n"
+        "{\n"
+        "	if (shape == 1) {\n"
+        "		vec3 h = max(0.5 * (bbmax - bbmin), vec3(1e-6));\n"
+        "		vec3 q = (po - 0.5 * (bbmin + bbmax)) / h, e = dl / h;\n"
+        "		float a = max(dot(e, e), 1e-12), b = dot(q, e), cq = dot(q, q) - 1.0;\n"
+        "		float disc = b * b - a * cq;\n"
+        "		return (disc <= 0.0) ? 0.0 : max((-b + sqrt(disc)) / a, 0.0);\n"
+        "	}\n"
+        "	vec3 sd = mix(vec3(-1e-8), vec3(1e-8), step(vec3(0.0), dl));\n"
+        "	vec3 ia = 1.0 / (dl + sd);\n"
+        "	vec3 tf = max((bbmin - po) * ia, (bbmax - po) * ia);\n"
+        "	return max(min(min(tf.x, tf.y), tf.z), 0.0);\n"
+        "}\n"
+        /* Blender Internal's Shaded volumes: the lamp's light dimmed by the
+         * volume between the point and the lamp (or the volume's edge) */
+        "vec3 light_through(vec3 w, vec3 lv, float maxd, vec3 sigma)\n"
+        "{\n"
+        "	vec3 po = (obinv * vec4(w, 1.0)).xyz, dl = (obinv * vec4(lv, 0.0)).xyz;\n"
+        "	float t = min(exit_t(po, dl), maxd);\n"
+        "	if (t <= 0.0) return vec3(1.0);\n"
+        "	float dens = p0.x * p0.y;\n"
+        "	if (p4.z > 0.5) {\n"
+        "		float s = 0.0;\n"
+        "		for (int i = 0; i < 6; i++) {\n"
+        "			vec3 uvw = (po + dl * t * (float(i) + 0.5) / 6.0 - smin) / max(smax - smin, vec3(1e-6));\n"
+        "			if (all(greaterThanEqual(uvw, vec3(0.0))) && all(lessThanEqual(uvw, vec3(1.0))))\n"
+        "				s += texture(smoke_density, uvw).r;\n"
+        "		}\n"
+        "		dens *= s / 6.0;\n"
+        "	}\n"
+        "	return exp(-dens * t * sigma);\n"
+        "}\n"
         "float hg(float g, float ct)\n"
         "{\n"
         "	if (g == 0.0) return 0.07957747;\n"
@@ -104,6 +150,7 @@ static const char *vol_frag_main =
         "	vec3 sigma = vec3(1.0) - p2.rgb + p0.z;\n"
         "	vec3 refl = p1.w * p3.rgb * p0.z;\n"
         "	vec3 tr = vec3(1.0), rad = vec3(0.0);\n"
+        "	lamp_shadow_use = float(ext_shadow);\n"
         "	for (float t = t0 + 0.5 * stepl; t < t1; t += stepl) {\n"
         "		vec3 w = cam + dir * t;\n"
         "		vec3 po = (obinv * vec4(w, 1.0)).xyz;\n"
@@ -139,6 +186,8 @@ static const char *vol_frag_main =
         "					vec3 lc = lamp_light(L, pv, w, halo);\n"
         "					int type = int(L.co_type.w + 0.5);\n"
         "					vec3 lv = (type == 1 || type == 3) ? -L.vec_dist.xyz : normalize(L.co_type.xyz - w);\n"
+        "					if (self_shadow != 0 && lum(lc) > 0.0)\n"
+        "						lc *= light_through(w, lv, (type == 1 || type == 3) ? 1e30 : distance(L.co_type.xyz, w), sigma);\n"
         "					scat += lc * hg(p2.w, dot(-dir, lv)) * 3.14159265;\n"
         "				}\n"
         "			}\n"
@@ -147,7 +196,14 @@ static const char *vol_frag_main =
         "		rad += stepd * tr * (emit + scat);\n"
         "		if (t > t0 + 0.25 * (t1 - t0) && lum(tr) < p4.x) break;\n"
         "	}\n"
-        "	fragcolor = vec4(rad, 1.0 - lum(tr));\n"
+        /* an sRGB target: mixed with what is behind in linear light (the
+         * target's copy), else blended over it */
+        "	if (srgb != 0) {\n"
+        "		vec4 behind = texelFetch(scenecolor, ivec2(gl_FragCoord.xy), 0);\n"
+        "		fragcolor = vec4(to_srgb(to_linear(behind.rgb) * tr + rad), behind.a);\n"
+        "	}\n"
+        "	else\n"
+        "		fragcolor = vec4(rad, 1.0 - lum(tr));\n"
         "}\n";
 
 /* the scene's view depth of a depth value (as the shaders' shadow_view_z) */
@@ -163,6 +219,61 @@ static const char *vol_view_z =
 static GPUShader *vol_shader = NULL;
 static bool vol_failed = false;
 static GLuint vol_vao = 0;
+
+/* a copy of the target's colours (for sRGB targets), made before each
+ * volume so that each sees those drawn before it */
+static struct {
+	GLuint tex, fbo;
+	int size[2];
+	bool failed;
+} vol_copy = {0};
+
+static bool volume_copy_target(const int vp[4])
+{
+	if (vol_copy.failed) {
+		return false;
+	}
+	const int w = vp[0] + vp[2], h = vp[1] + vp[3];
+	if (w <= 0 || h <= 0) {
+		return false;
+	}
+	if (!vol_copy.tex || vol_copy.size[0] != w || vol_copy.size[1] != h) {
+		if (vol_copy.tex) {
+			glDeleteTextures(1, &vol_copy.tex);
+		}
+		glCreateTextures(GL_TEXTURE_2D, 1, &vol_copy.tex);
+		glTextureStorage2D(vol_copy.tex, 1, GL_RGBA8, w, h);
+		glTextureParameteri(vol_copy.tex, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTextureParameteri(vol_copy.tex, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		GPU_debug_label(GL_TEXTURE, vol_copy.tex, "BGE-Remix volumes: the target's copy");
+		if (!vol_copy.fbo) {
+			glCreateFramebuffers(1, &vol_copy.fbo);
+		}
+		glNamedFramebufferTexture(vol_copy.fbo, GL_COLOR_ATTACHMENT0, vol_copy.tex, 0);
+		vol_copy.size[0] = w;
+		vol_copy.size[1] = h;
+	}
+	GLint target = 0;
+	glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &target);
+	GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
+	glDisable(GL_SCISSOR_TEST);
+	while (glGetError() != GL_NO_ERROR) {
+		/* (errors from before: not this copy's) */
+	}
+	/* (a multisampled window is resolved by the same rectangle) */
+	glBlitNamedFramebuffer((GLuint)target, vol_copy.fbo, vp[0], vp[1], w, h, vp[0], vp[1], w, h,
+	                       GL_COLOR_BUFFER_BIT, GL_NEAREST);
+	const GLenum err = glGetError();
+	if (scissor) {
+		glEnable(GL_SCISSOR_TEST);
+	}
+	if (err != GL_NO_ERROR) {
+		vol_copy.failed = true;
+		printf("BGE-Remix volumes: the target cannot be copied (GL error 0x%x): volumes blend in sRGB\n", err);
+		return false;
+	}
+	return true;
+}
 
 static GPUShader *volume_shader(void)
 {
@@ -248,10 +359,16 @@ void GPU_volume_draw(const GPUVolume *vol)
 	glUniform4f(glGetUniformLocation(p, "p4"), vol->depth_cutoff, vol->shadeless ? 1.0f : 0.0f,
 	            vol->smoke_density ? 1.0f : 0.0f, vol->smoke_flame ? 1.0f : 0.0f);
 	glUniform1i(glGetUniformLocation(p, "shape"), vol->shape);
+	glUniform1i(glGetUniformLocation(p, "self_shadow"), vol->self_shadow);
+	glUniform1i(glGetUniformLocation(p, "ext_shadow"), vol->ext_shadow);
 	glUniform3fv(glGetUniformLocation(p, "smin"), 1, vol->smoke_min);
 	glUniform3fv(glGetUniformLocation(p, "smax"), 1, vol->smoke_max);
 	int vp[4];
 	glGetIntegerv(GL_VIEWPORT, vp);
+	const bool srgb = vol->srgb && volume_copy_target(vp);
+	glUniform1i(glGetUniformLocation(p, "srgb"), srgb ? 1 : 0);
+	glBindTextureUnit(2, srgb ? vol_copy.tex : 0);
+	glUniform1i(glGetUniformLocation(p, "scenecolor"), 2);
 	glUniform4f(glGetUniformLocation(p, "viewport"), (float)vp[0], (float)vp[1], (float)vp[2], (float)vp[3]);
 	glUniform1f(glGetUniformLocation(p, "scenedepth_on"), gpu_scene_depth_is_on() ? 1.0f : 0.0f);
 	/* the scene's depth and the shadow pool on the lights' units, the grids
@@ -276,8 +393,13 @@ void GPU_volume_draw(const GPUVolume *vol)
 	glEnable(GL_CULL_FACE);
 	/* the box's triangles face out: its back faces are drawn */
 	glCullFace(GL_FRONT);
-	glEnable(GL_BLEND);
-	glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+	if (srgb) {
+		glDisable(GL_BLEND);
+	}
+	else {
+		glEnable(GL_BLEND);
+		glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+	}
 	if (!vol_vao) {
 		glGenVertexArrays(1, &vol_vao);
 	}
@@ -289,7 +411,10 @@ void GPU_volume_draw(const GPUVolume *vol)
 	if (!cull) {
 		glDisable(GL_CULL_FACE);
 	}
-	if (!blend) {
+	if (blend) {
+		glEnable(GL_BLEND);
+	}
+	else {
 		glDisable(GL_BLEND);
 	}
 	if (depthtest) {
@@ -297,6 +422,7 @@ void GPU_volume_draw(const GPUVolume *vol)
 	}
 	glBindTextureUnit(0, 0);
 	glBindTextureUnit(1, 0);
+	glBindTextureUnit(2, 0);
 	GPU_shader_unbind();
 }
 
@@ -311,4 +437,11 @@ void GPU_volumes_exit(void)
 		vol_vao = 0;
 	}
 	vol_failed = false;
+	if (vol_copy.tex) {
+		glDeleteTextures(1, &vol_copy.tex);
+	}
+	if (vol_copy.fbo) {
+		glDeleteFramebuffers(1, &vol_copy.fbo);
+	}
+	memset(&vol_copy, 0, sizeof(vol_copy));
 }

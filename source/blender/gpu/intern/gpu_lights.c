@@ -631,6 +631,9 @@ void GPU_lights_cluster(const void *records, int count, size_t record_size, unsi
 static const char *lamp_glsl =
         FOG_LAMP_DECL
         "uniform sampler2DArray pool;\n"
+        /* (the volumes turn the shadow maps off for volumes that do not
+         * receive the scene's shadows, as Blender Internal's) */
+        "float lamp_shadow_use = 1.0;\n"
         "float linear_depth(float d, vec3 clip)\n"
         "{\n"
         "	if (clip.z > 0.5) return clip.x + d * (clip.y - clip.x);\n"
@@ -679,7 +682,7 @@ static const char *lamp_glsl =
         "	halo = 0.0;\n"
         "	int type = int(L.co_type.w + 0.5);\n"
         "	vec3 col = L.col_energy.rgb * L.col_energy.w;\n"
-        "	if (type == 1 || type == 3) return col * lamp_shadow(L, w);\n"
+        "	if (type == 1 || type == 3) return col * (lamp_shadow_use > 0.5 ? lamp_shadow(L, w) : 1.0);\n"
         "	vec3 d = w - L.co_type.xyz;\n"
         "	float dist = length(d), ld = L.vec_dist.w, v = 1.0;\n"
         "	int fo = int(L.falloff.x + 0.5);\n"
@@ -690,6 +693,7 @@ static const char *lamp_glsl =
         "		else if (fo == 5) v = 1.0 / max(L.coeff.x + L.coeff.y * dist + L.coeff.z * dist * dist, 1e-6);\n"
         "		if ((L.bits.x & 64u) != 0u) v *= max(ld - dist, 0.0) / ld;\n"
         "	}\n"
+        "	float vf = v;\n"
         "	if (type == 2) {\n"
         "		vec3 lp = (L.imat * vec4(w, 1.0)).xyz;\n"
         "		vec2 xy = lp.xy / max(-lp.z, 1e-6) / L.spot.zw;\n"
@@ -697,10 +701,13 @@ static const char *lamp_glsl =
         "		float t = inpr - L.spot.x;\n"
         "		if (t <= 0.0) return vec3(0.0);\n"
         "		if (L.spot.y > 0.0 && t < L.spot.y) { t /= L.spot.y; v *= t * t * (3.0 - 2.0 * t); }\n"
-        "		halo = L.extra.x;\n"
+        /* a halo glows as Blender Internal's does: its light fades
+         * linearly to the lamp's distance, whatever its falloff (so
+         * halo * the returned light is the halo's own light) */
+        "		halo = L.extra.x * max(1.0 - dist / max(ld, 1e-6), 0.0) / max(vf, 1e-6);\n"
         "	}\n"
         "	if (v <= 0.0) return vec3(0.0);\n"
-        "	return col * v * lamp_shadow(L, w);\n"
+        "	return col * v * (lamp_shadow_use > 0.5 ? lamp_shadow(L, w) : 1.0);\n"
         "}\n"
 ;
 
@@ -769,11 +776,9 @@ static const char *fog_inject_cs_main =
         "				float halo;\n"
         "				vec3 L = lamp_light(lamps[wd * 32u + uint(b)], pm, w, halo);\n"
         /* a halo's own medium in its cone: it scatters the lamp's light
-         * toward the eye (Blender Internal's halo, intensity 1: a clearly
-         * lit cone) and barely dims what is behind it */
-        "				float sh = 0.25 * halo;\n"
-        "				scat += (sigma + sh) * L * 0.07957747;\n"  /* isotropic: 1 / 4 pi */
-        "				ext += 0.1 * sh;\n"
+         * toward the eye and, like Blender Internal's halo, only adds
+         * light (intensity 1: a clearly lit cone) */
+        "				scat += (sigma + 0.4 * halo) * L * 0.07957747;\n"  /* isotropic: 1 / 4 pi */
         "			}\n"
         "		}\n"
         "	}\n"

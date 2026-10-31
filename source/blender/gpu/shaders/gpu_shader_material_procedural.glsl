@@ -994,16 +994,20 @@ void proc_bump_tap3(
 {
 #ifdef BIT_OPERATIONS
 	vec3 dx = BI_DFDX(texvec), dy = BI_DFDY(texvec);
-	vec3 ll = texvec, lr = texvec + dx, ul = texvec + dy;
-	if (uvmode != 0.0) {
-		ll.z = lr.z = ul.z = 0.0;
+	float H[3] = float[3](0.0, 0.0, 0.0);
+	/* one copy of the texture in a loop the compiler cannot unroll (its
+	 * count depends on a uniform): three inlined copies came out wrong on an
+	 * NVIDIA driver (the bump of wood broke at the noise's cells) */
+	for (int k = 0; k < 3 + int(min(uvmode, 0.0)); k++) {
+		vec3 q = texvec + ((k == 1) ? dx : ((k == 2) ? dy : vec3(0.0)));
+		if (uvmode != 0.0) {
+			q.z = 0.0;
+		}
+		vec4 c;
+		H[k] = bi_multitex(tab, q, p0, p1, p2, p3, p4, p5, p6, p7, c);
 	}
-	vec4 c;
-	float Hll = bi_multitex(tab, ll, p0, p1, p2, p3, p4, p5, p6, p7, c);
-	float Hlr = bi_multitex(tab, lr, p0, p1, p2, p3, p4, p5, p6, p7, c);
-	float Hul = bi_multitex(tab, ul, p0, p1, p2, p3, p4, p5, p6, p7, c);
-	dBs = hScale * (Hlr - Hll);
-	dBt = hScale * (Hul - Hll);
+	dBs = hScale * (H[1] - H[0]);
+	dBt = hScale * (H[2] - H[0]);
 #else
 	dBs = dBt = 0.0;
 #endif
@@ -1015,16 +1019,17 @@ void proc_bump_tap3_band(
 {
 #ifdef BIT_OPERATIONS
 	vec3 dx = BI_DFDX(texvec), dy = BI_DFDY(texvec);
-	vec3 ll = texvec, lr = texvec + dx, ul = texvec + dy;
-	if (uvmode != 0.0) {
-		ll.z = lr.z = ul.z = 0.0;
+	float H[3] = float[3](0.0, 0.0, 0.0);
+	for (int k = 0; k < 3 + int(min(uvmode, 0.0)); k++) {
+		vec3 q = texvec + ((k == 1) ? dx : ((k == 2) ? dy : vec3(0.0)));
+		if (uvmode != 0.0) {
+			q.z = 0.0;
+		}
+		vec4 c;
+		H[k] = bi_luminance(bi_colorband(band, bi_multitex(tab, q, p0, p1, p2, p3, p4, p5, p6, p7, c)).rgb);
 	}
-	vec4 c;
-	float Hll = bi_luminance(bi_colorband(band, bi_multitex(tab, ll, p0, p1, p2, p3, p4, p5, p6, p7, c)).rgb);
-	float Hlr = bi_luminance(bi_colorband(band, bi_multitex(tab, lr, p0, p1, p2, p3, p4, p5, p6, p7, c)).rgb);
-	float Hul = bi_luminance(bi_colorband(band, bi_multitex(tab, ul, p0, p1, p2, p3, p4, p5, p6, p7, c)).rgb);
-	dBs = hScale * (Hlr - Hll);
-	dBt = hScale * (Hul - Hll);
+	dBs = hScale * (H[1] - H[0]);
+	dBt = hScale * (H[2] - H[0]);
 #else
 	dBs = dBt = 0.0;
 #endif

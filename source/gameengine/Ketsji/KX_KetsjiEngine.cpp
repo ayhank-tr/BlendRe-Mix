@@ -1800,6 +1800,14 @@ void KX_KetsjiEngine::RenderVolumes(KX_Scene *scene)
 		v.stepsize = vs.stepsize;
 		v.depth_cutoff = vs.depth_cutoff;
 		v.shadeless = (vs.shade_type == MA_VOL_SHADE_SHADELESS);
+		v.self_shadow = (vs.shade_type == MA_VOL_SHADE_SHADED || vs.shade_type == MA_VOL_SHADE_MULTIPLE ||
+		                 vs.shade_type == MA_VOL_SHADE_SHADEDPLUSMULTIPLE);
+		v.ext_shadow = (vs.shade_type == MA_VOL_SHADE_SHADOWED) || (vs.shadeflag & MA_VOL_RECV_EXT_SHADOW);
+		/* Classic draws sRGB colours when the scene manages them (as the
+		 * GLSL materials' GPU_material_do_color_management) */
+		v.srgb = BKE_scene_game_pipeline(blscene) != BKE_SCENE_GAME_PIPELINE_MODERN &&
+		         BKE_scene_check_color_management_enabled(blscene) &&
+		         !(blscene->gm.flag & GAME_GLSL_NO_COLOR_MANAGEMENT);
 
 #ifdef WITH_SMOKE
 		/* a baked smoke and fire simulation: the cache frame at the game's

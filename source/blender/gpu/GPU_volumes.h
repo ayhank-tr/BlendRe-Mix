@@ -48,6 +48,12 @@ typedef struct GPUVolume {
 	/* the object's shape: 0 its box, 1 the ellipsoid in its box (a sphere's
 	 * mesh); other meshes are stepped through their box */
 	int shape;
+	/* Blender Internal's shading: the light dimmed by the volume on its way
+	 * in (Shaded), the scene's shadows (Receive External Shadows) */
+	int self_shadow, ext_shadow;
+	/* the target holds sRGB colours (Classic with colour management): the
+	 * volume mixes with what is behind it in linear light, as F12 does */
+	int srgb;
 	/* a smoke domain's grids (0: none), box and flame colour */
 	unsigned int smoke_density, smoke_flame;
 	float smoke_min[3], smoke_max[3];
