@@ -51,6 +51,7 @@ using namespace std;
 #endif
 
 class RAS_ICanvas;
+struct Scene;
 class RAS_IPolyMaterial;
 class RAS_MeshSlot;
 class RAS_ILightObject;
@@ -498,6 +499,11 @@ public:
 	/* BGE-Remix P8 Part B: the old OpenGL matrices set from the layer's, for
 	 * old drawing that reads them (Python's bgl in drawing callbacks) */
 	virtual void SyncOldMatrices() {}
+	/* BGE-Remix P8 Part B (P8.12): a scene draws into its pipeline's target
+	 * (Modern, or Classic with anti-aliasing); "first": the frame's first
+	 * scene (it clears the background); EndScene puts it on the window */
+	virtual void BeginScene(struct Scene *scene, bool first, int samples) {}
+	virtual void EndScene() {}
 
 	virtual void SetClientObject(void *obj) = 0;
 

@@ -135,6 +135,7 @@ extern "C" {
 
 extern "C" {
 #include "BKE_main.h"
+#include "BKE_scene.h"
 #include "BKE_global.h"
 #include "BKE_library.h"
 #include "BKE_appdir.h"
@@ -1090,6 +1091,16 @@ static PyObject *gPySetEyeSeparation(PyObject *, PyObject *args)
 	Py_RETURN_NONE;
 }
 
+/* BGE-Remix P8 Part B (P8.12): the active scene's pipeline ("CLASSIC" or
+ * "MODERN"; it is set in the scene's Render settings) */
+static PyObject *gPyGetRenderPipeline(PyObject *)
+{
+	KX_Scene *scene = KX_GetActiveScene();
+	Scene *blscene = scene ? scene->GetBlenderScene() : NULL;
+	const bool modern = blscene && BKE_scene_game_pipeline(blscene) == BKE_SCENE_GAME_PIPELINE_MODERN;
+	return PyUnicode_FromString(modern ? "MODERN" : "CLASSIC");
+}
+
 static PyObject *gPyGetEyeSeparation(PyObject *)
 {
 	if (!gp_Rasterizer) {
@@ -1716,6 +1727,7 @@ static struct PyMethodDef rasterizer_methods[] = {
 
 	{"setEyeSeparation", (PyCFunction) gPySetEyeSeparation, METH_VARARGS, "set the eye separation for stereo mode"},
 	{"getEyeSeparation", (PyCFunction) gPyGetEyeSeparation, METH_NOARGS, "get the eye separation for stereo mode"},
+	{"getRenderPipeline", (PyCFunction) gPyGetRenderPipeline, METH_NOARGS, "get the active scene's pipeline: 'CLASSIC' or 'MODERN'"},
 	{"setFocalLength", (PyCFunction) gPySetFocalLength, METH_VARARGS, "set the focal length for stereo mode"},
 	{"getFocalLength", (PyCFunction) gPyGetFocalLength, METH_VARARGS, "get the focal length for stereo mode"},
 	{"getStereoEye", (PyCFunction) gPyGetStereoEye, METH_VARARGS, "get the current stereoscopy eye being rendered"},

@@ -50,6 +50,7 @@
 #include "RAS_OpenGLSync.h"
 
 #include "RAS_StorageBatch.h"
+#include "RAS_Pipeline.h"
 
 #include "GPU_draw.h"
 #include "GPU_extensions.h"
@@ -136,6 +137,7 @@ RAS_OpenGLRasterizer::RAS_OpenGLRasterizer(RAS_ICanvas* canvas, RAS_STORAGE_TYPE
 	m_stereorect[0] = m_stereorect[1] = m_stereorect[2] = m_stereorect[3] = 0;
 	m_stereoleft = false;
 	m_stereoshader = NULL;
+	m_pipeline = new RAS_Pipeline();
 	GPU_classic_state_default(&m_state);
 	m_storage = new RAS_StorageBatch(&m_texco_num, m_texco, &m_attrib_num, m_attrib, m_attrib_layer, &m_classic,
 	                                 &m_state);
@@ -154,6 +156,7 @@ RAS_OpenGLRasterizer::~RAS_OpenGLRasterizer()
 	if (m_storage)
 		delete m_storage;
 	FreeMotionBlur();
+	delete m_pipeline;
 }
 
 bool RAS_OpenGLRasterizer::Init()
@@ -754,6 +757,32 @@ void RAS_OpenGLRasterizer::IndexPrimitives(RAS_MeshSlot& ms)
 /* BGE-Remix P8 Part B: the old OpenGL matrices are set from the layer's only
  * where old drawing still reads them (Python's bgl in drawing callbacks, a
  * shader whose translation did not build) */
+void RAS_OpenGLRasterizer::BeginScene(struct Scene *scene, bool first, int samples)
+{
+	/* the canvas in window coordinates, and the part the frame cleared (the
+	 * viewport ClearFrame left) */
+	GLint clear[4], area[4], fb = 0;
+	glGetIntegerv(GL_VIEWPORT, clear);
+	glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &fb);
+	if (fb == 0) {
+		m_2DCanvas->SetViewPort(0, 0, m_2DCanvas->GetWidth(), m_2DCanvas->GetHeight());
+		glGetIntegerv(GL_VIEWPORT, area);
+	}
+	else {
+		/* drawing into an offscreen target (bge.texture, bge.render): its viewport */
+		memcpy(area, clear, sizeof(area));
+	}
+	const float background[3] = {m_redback, m_greenback, m_blueback};
+	m_pipeline->Begin(scene, first, background, samples, area, clear);
+	glViewport(clear[0], clear[1], clear[2], clear[3]);
+}
+
+void RAS_OpenGLRasterizer::EndScene()
+{
+	m_pipeline->End();
+	glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+}
+
 void RAS_OpenGLRasterizer::SyncOldMatrices()
 {
 	GPU_matrix_to_gl();
@@ -1044,6 +1073,15 @@ void RAS_OpenGLRasterizer::SetAlphaBlend(int alphablend)
 	/* BGE-Remix P8 Part B: the alpha test is the shaders' (the storage sets
 	 * the old one only for drawing that is still fixed-function) */
 	GPU_material_alpha_test(alphablend, &m_state.alpha_test, &m_state.alpha_ref);
+	/* BGE-Remix P8 Part B (P8.12): cut-outs (clip alpha) in a multisampled
+	 * target become alpha to coverage (smooth edges) */
+	if (alphablend == GPU_BLEND_CLIP && m_pipeline->Multisampled()) {
+		glEnable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+		m_state.alpha_test = false;
+	}
+	else if (alphablend != GPU_BLEND_ALPHA_TO_COVERAGE) {
+		glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+	}
 /*
 	if (alphablend == m_last_alphablend)
 		return;

@@ -392,6 +392,10 @@ class RENDER_PT_game_shading(RenderButtonsPanel, Panel):
 
         gs = context.scene.game_settings
 
+        # BGE-Remix P8 Part B: the pipeline (Modern applies the scene's Color
+        # Management view transform, exposure, look and gamma at the end)
+        layout.row().prop(gs, "render_pipeline", expand=True)
+
         # BGE-Remix P8: one material mode (GLSL), so no mode switch
         split = layout.split()
 

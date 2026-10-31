@@ -43,6 +43,7 @@
 #include "BKE_brush.h"
 #include "BKE_library.h"
 #include "BKE_main.h"
+#include "BKE_scene.h"
 
 #include "BLO_readfile.h"
 
@@ -91,6 +92,8 @@ void BLO_update_defaults_userpref_blend(void)
 void BLO_update_defaults_startup_blend(Main *bmain)
 {
 	for (Scene *scene = bmain->scene.first; scene; scene = scene->id.next) {
+		/* BGE-Remix P8 Part B: a new file's scene uses the Modern pipeline */
+		BKE_scene_game_pipeline_set(scene, BKE_SCENE_GAME_PIPELINE_MODERN);
 		scene->r.im_format.planes = R_IMF_PLANES_RGBA;
 		scene->r.im_format.compress = 15;
 

@@ -56,7 +56,9 @@ KX_WorldInfo::KX_WorldInfo(Scene *blenderscene, World *blenderworld)
 {
 	if (blenderworld) {
 		m_name = blenderworld->id.name + 2;
-		m_do_color_management = BKE_scene_check_color_management_enabled(blenderscene);
+		/* BGE-Remix P8 Part B: the Modern pipeline keeps scene-linear colours */
+		m_do_color_management = BKE_scene_check_color_management_enabled(blenderscene) &&
+		                        BKE_scene_game_pipeline(blenderscene) != BKE_SCENE_GAME_PIPELINE_MODERN;
 		m_hasworld = true;
 		m_hasmist = ((blenderworld->mode) & WO_MIST ? true : false);
 		m_misttype = blenderworld->mistype;

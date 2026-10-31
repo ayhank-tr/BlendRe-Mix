@@ -341,9 +341,15 @@ bool ImageRender::Render()
 
 	m_engine->UpdateAnimations(m_scene);
 
+	/* BGE-Remix P8 Part B (P8.12): a Modern scene draws into its pipeline's
+	 * target and is put over the cleared background with its view transform */
+	m_rasterizer->BeginScene(m_scene->GetBlenderScene(), false, 0);
+
 	m_scene->RenderBuckets(camtrans, m_rasterizer);
 
 	m_scene->RenderFonts();
+
+	m_rasterizer->EndScene();
 
 	// restore the canvas area now that the render is completed
 	m_canvas->GetWindowArea() = area;

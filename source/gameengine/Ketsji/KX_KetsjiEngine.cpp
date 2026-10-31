@@ -351,6 +351,9 @@ void KX_KetsjiEngine::RenderDome()
 				RenderShadowBuffers(scene);
 				GPU_pass_timer_end(GPU_PASS_SHADOWS);
 			}
+			/* BGE-Remix P8 Part B (P8.12): the scene's pipeline target */
+			m_rasterizer->BeginScene(scene->GetBlenderScene(), sceneit == m_scenes.begin(),
+			                         scene->GetBlenderScene()->gm.aasamples);
 			// Avoid drawing the scene with the active camera twice when its viewport is enabled
 			if (cam && !cam->GetViewport())
 			{
@@ -385,6 +388,7 @@ void KX_KetsjiEngine::RenderDome()
 				
 				it++;
 			}
+			m_rasterizer->EndScene();
 			// Part of PostRenderScene()
 			m_rasterizer->MotionBlur();
 			scene->Render2DFilters(m_canvas);
@@ -969,6 +973,12 @@ void KX_KetsjiEngine::Render()
 			GPU_pass_timer_end(GPU_PASS_SHADOWS);
 		}
 
+		/* BGE-Remix P8 Part B (P8.12): the scene's pipeline target (not for
+		 * the scene Remix draws) */
+		if (scene != m_remixScene)
+			m_rasterizer->BeginScene(scene->GetBlenderScene(), sceneit == m_scenes.begin(),
+			                         scene->GetBlenderScene()->gm.aasamples);
+
 		// Avoid drawing the scene with the active camera twice when its viewport is enabled
 		if (cam && !cam->GetViewport())
 		{
@@ -999,6 +1009,7 @@ void KX_KetsjiEngine::Render()
 			
 			it++;
 		}
+		m_rasterizer->EndScene();
 		PostRenderScene(scene);
 	}
 
@@ -1020,6 +1031,10 @@ void KX_KetsjiEngine::Render()
 			// pass the scene's worldsettings to the rasterizer
 			scene->GetWorldInfo()->UpdateWorldSettings();
 		
+			if (scene != m_remixScene)
+				m_rasterizer->BeginScene(scene->GetBlenderScene(), sceneit == m_scenes.begin(),
+				                         scene->GetBlenderScene()->gm.aasamples);
+
 			if (scene->IsClearingZBuffer())
 				m_rasterizer->ClearDepthBuffer();
 
@@ -1048,6 +1063,7 @@ void KX_KetsjiEngine::Render()
 				
 				it++;
 			}
+			m_rasterizer->EndScene();
 			PostRenderScene(scene);
 		}
 	} // if (m_rasterizer->Stereo())

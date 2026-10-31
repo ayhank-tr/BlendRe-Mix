@@ -3323,7 +3323,10 @@ GPUMaterial *GPU_material_from_blender_ex(Scene *scene, Material *ma, bool use_o
 		GPU_material_output_link(mat, outlink);
 	}
 
-	if (GPU_material_do_color_management(mat))
+	/* BGE-Remix P8 Part B: the game's Modern pipeline keeps scene-linear
+	 * colour (its last pass applies the view transform) */
+	const bool modern = for_game && BKE_scene_game_pipeline(scene) == BKE_SCENE_GAME_PIPELINE_MODERN;
+	if (GPU_material_do_color_management(mat) && !modern)
 		if (mat->outlink)
 			GPU_link(mat, "linearrgb_to_srgb", mat->outlink, &mat->outlink);
 

@@ -158,6 +158,9 @@ protected:
 	struct GPUShader *m_mbshader;
 	void FreeMotionBlur();
 
+	/* BGE-Remix P8 Part B (P8.12): the scene's pipeline target */
+	class RAS_Pipeline *m_pipeline;
+
 	/* BGE-Remix P8 Part B: interlaced stereo by a shader: the left eye's
 	 * picture (its texture, size and place) shown on its rows or columns */
 	unsigned int m_stereotex;
@@ -202,6 +205,8 @@ public:
 	virtual bool InterlacedStereo();
 	virtual void FinishStereo();
 	virtual void SyncOldMatrices();
+	virtual void BeginScene(struct Scene *scene, bool first, int samples);
+	virtual void EndScene();
 	virtual void SetEye(const StereoEye eye);
 	virtual StereoEye GetEye();
 	virtual void SetEyeSeparation(const float eyeseparation);

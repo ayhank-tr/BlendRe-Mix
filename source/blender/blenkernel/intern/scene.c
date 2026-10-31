@@ -848,6 +848,8 @@ Scene *BKE_scene_add(Main *bmain, const char *name)
 	id_us_ensure_real(&sce->id);
 
 	BKE_scene_init(sce);
+	/* BGE-Remix P8 Part B: new scenes start with the Modern pipeline */
+	BKE_scene_game_pipeline_set(sce, BKE_SCENE_GAME_PIPELINE_MODERN);
 
 	return sce;
 }
@@ -2280,6 +2282,38 @@ void BKE_scene_disable_color_management(Scene *scene)
 	if (view) {
 		BLI_strncpy(view_settings->view_transform, view, sizeof(view_settings->view_transform));
 	}
+}
+
+/* BGE-Remix P8 Part B: the game's pipeline (BKE_SCENE_GAME_PIPELINE_*), kept
+ * as a hidden ID property so the file still opens in stock 2.79; a scene
+ * without it (an old file) is Classic */
+#define GAME_PIPELINE_PROP "bge_remix_pipeline"
+
+int BKE_scene_game_pipeline(const Scene *scene)
+{
+	IDProperty *group = scene ? scene->id.properties : NULL;
+	IDProperty *prop = group ? IDP_GetPropertyFromGroup(group, GAME_PIPELINE_PROP) : NULL;
+	if (prop && prop->type == IDP_INT) {
+		return IDP_Int(prop) == BKE_SCENE_GAME_PIPELINE_MODERN ? BKE_SCENE_GAME_PIPELINE_MODERN :
+		                                                         BKE_SCENE_GAME_PIPELINE_CLASSIC;
+	}
+	return BKE_SCENE_GAME_PIPELINE_CLASSIC;
+}
+
+void BKE_scene_game_pipeline_set(Scene *scene, int pipeline)
+{
+	IDProperty *group = IDP_GetProperties(&scene->id, true);
+	IDProperty *prop = IDP_GetPropertyFromGroup(group, GAME_PIPELINE_PROP);
+	if (prop && prop->type != IDP_INT) {
+		IDP_FreeFromGroup(group, prop);
+		prop = NULL;
+	}
+	if (!prop) {
+		IDPropertyTemplate val = {0};
+		prop = IDP_New(IDP_INT, &val, GAME_PIPELINE_PROP);
+		IDP_AddToGroup(group, prop);
+	}
+	IDP_Int(prop) = pipeline;
 }
 
 bool BKE_scene_check_color_management_enabled(const Scene *scene)

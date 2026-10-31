@@ -145,6 +145,11 @@ bool BKE_scene_uses_blender_internal(const struct Scene *scene);
 bool BKE_scene_uses_blender_game(const struct Scene *scene);
 
 void BKE_scene_disable_color_management(struct Scene *scene);
+/* BGE-Remix P8 Part B: the game's pipeline (a hidden ID property; Classic
+ * when a scene has none) */
+enum { BKE_SCENE_GAME_PIPELINE_CLASSIC = 0, BKE_SCENE_GAME_PIPELINE_MODERN = 1 };
+int BKE_scene_game_pipeline(const struct Scene *scene);
+void BKE_scene_game_pipeline_set(struct Scene *scene, int pipeline);
 bool BKE_scene_check_color_management_enabled(const struct Scene *scene);
 bool BKE_scene_check_rigidbody_active(const struct Scene *scene);
 
