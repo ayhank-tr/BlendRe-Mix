@@ -2196,15 +2196,12 @@ static void material_lights_clustered(GPUShadeInput *shi, GPUShadeResult *shr)
 		float *array;
 		int size;
 		GPUNodeLink *bandc, *bands;
+		/* each slot its own table: a colour band's link (and its pixels) is
+		 * freed when an input takes it, so one link cannot fill two inputs */
 		colorband_table_RGBA(ramp_col ? ma->ramp_col : ma->ramp_spec, &array, &size);
 		bandc = GPU_texture(size, array);
-		if (ramp_col && ramp_spec) {
-			colorband_table_RGBA(ma->ramp_spec, &array, &size);
-			bands = GPU_texture(size, array);
-		}
-		else {
-			bands = bandc;
-		}
+		colorband_table_RGBA(ramp_spec ? ma->ramp_spec : ma->ramp_col, &array, &size);
+		bands = GPU_texture(size, array);
 		GPU_link(mat, "shade_lights_clustered_ex",
 		         GPU_builtin(GPU_VIEW_POSITION), shi->vn, shi->view, shi->rgb, shi->specrgb, shi->spec, shi->har,
 		         shi->refl, GPU_uniform(matp), GPU_uniform(diffp), GPU_uniform(specp), GPU_uniform(matq),

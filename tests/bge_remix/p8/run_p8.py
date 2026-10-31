@@ -320,9 +320,12 @@ def note_gl(build, tag, text):
     # the custom shader scene's deliberate mistake (its "Broken" shader) is
     # meant to fail: its compiler errors, on the lines that name the mistake,
     # are not driver errors
-    loc = re.compile(r"shader compiler error \d+: (\d+:\d+)\(")
-    meant = {m.group(1) for e in errors if DELIBERATE_MISTAKE in e for m in [loc.search(e)] if m}
-    errors = [e for e in errors if not (loc.search(e) and loc.search(e).group(1) in meant)]
+    loc = re.compile(r"shader compiler error \d+: (\d+:\d+)\(|shader compiler error \d+: (\d+\(\d+\)) :")
+    def where(e):
+        m = loc.search(e)
+        return (m.group(1) or m.group(2)) if m else None
+    meant = {where(e) for e in errors if DELIBERATE_MISTAKE in e and where(e)}
+    errors = [e for e in errors if not (where(e) and where(e) in meant)]
     m = GL_VERSION.search(text or "")
     GL_LOG[tag] = {"errors": len(errors), "first": errors[:5],
                    "version": [int(m.group(1)), int(m.group(2))] if m else None,
@@ -1308,7 +1311,7 @@ def t83_shaders(expected, runs, shots, cf_dirs):
     c["each working shader is translated and built"] = built == good
     c["each translation also builds for core"] = core_ok == good
     c["the broken shader is reported with its line"] = not_built == 1 and "does not build" in text and \
-        re.search(r"\d+:\d+\(\d+\): error|ERROR: \d+:\d+", text) is not None
+        re.search(r"\d+:\d+\(\d+\): error|ERROR: \d+:\d+|\d+\(\d+\) : error", text) is not None
     a, b = picture(shots.get("custom_shaders")), picture(shots.get("stock_custom_shaders"))
     rects = {k: v for k, v in E["rects"].items() if k != E["broken"]}
     cc, dd = compare_rects(a, b, rects, TOL_SAME_CODE, prefix="custom shader ")

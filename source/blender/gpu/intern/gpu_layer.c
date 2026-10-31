@@ -1118,14 +1118,24 @@ void GPU_imm_end(void)
 			if (color_loc >= 0) {
 				glUniform4fv(color_loc, 1, gpu_imm.color);
 			}
+			/* (a compatibility context gives gl_PointCoord only with point
+			 * sprites on: NVIDIA's; Mesa's always does) */
+			GLboolean sprite = GL_FALSE;
 			if (gpu_imm.shader == GPU_BUILTIN_POINT) {
 				glEnable(GL_PROGRAM_POINT_SIZE);
+				if (!GPU_caps()->core_profile) {
+					sprite = glIsEnabled(GL_POINT_SPRITE);
+					glEnable(GL_POINT_SPRITE);
+				}
 			}
 			glBindVertexArray(vao);
 			glDrawArrays(prim, 0, count);
 			glBindVertexArray(0);
 			if (gpu_imm.shader == GPU_BUILTIN_POINT) {
 				glDisable(GL_PROGRAM_POINT_SIZE);
+				if (!GPU_caps()->core_profile && !sprite) {
+					glDisable(GL_POINT_SPRITE);
+				}
 			}
 			glUseProgram((GLuint)prev_program);
 		}

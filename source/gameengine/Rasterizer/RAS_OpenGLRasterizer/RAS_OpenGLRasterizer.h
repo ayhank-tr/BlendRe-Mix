@@ -219,6 +219,8 @@ public:
 	virtual void SetMainView(bool on);
 	virtual void GetInstancingStats(int *r_draws, int *r_objects);
 	virtual void GetCullingStats(int *r_tested, int *r_drawn);
+	/* P8.11: the main view's camera matrices, kept as they are set */
+	void KeepMainViewMatrices();
 	virtual void SetEye(const StereoEye eye);
 	virtual StereoEye GetEye();
 	virtual void SetEyeSeparation(const float eyeseparation);

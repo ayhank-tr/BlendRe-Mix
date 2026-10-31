@@ -114,6 +114,19 @@ int BRMX_present_direct_available(const char **r_reason)
 		}
 		return 0;
 	}
+	/* the tests' fake runtime (it sets this when loaded): its Vulkan handles
+	 * are made up, so the picture is copied, unless a test simulates direct
+	 * mode (BGE_REMIX_FAKE_VK_DRAW=1) */
+	if (!env_is("BGE_REMIX_FAKE_VK_DRAW", "1")) {
+		char fake[8] = "";
+		if (GetEnvironmentVariableA("BGE_REMIX_FAKE_RUNTIME", fake, sizeof(fake)) > 0 && fake[0] == '1') {
+			present.reason = "the tests' fake Remix runtime has no Vulkan picture";
+			if (r_reason) {
+				*r_reason = present.reason;
+			}
+			return 0;
+		}
+	}
 	if (!present.checked) {
 		present.checked = 1;
 		if (env_is("BGE_REMIX_FAKE_VK_DRAW", "1")) {

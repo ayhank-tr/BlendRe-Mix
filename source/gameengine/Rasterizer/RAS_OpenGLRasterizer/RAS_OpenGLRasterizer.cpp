@@ -840,13 +840,28 @@ void RAS_OpenGLRasterizer::SetMainView(bool on)
 	m_culling->SetMainView(on && m_scene_first);
 	if (on && m_scene_first) {
 		m_mainview_drawn = true;
-		/* the view this frame's pyramid is drawn with */
+		/* the view this frame's pyramid is drawn with: the camera's, set
+		 * after this (SetViewMatrix and SetProjectionMatrix keep it) */
 		float v[4][4], p[4][4];
 		GPU_matrix_get(GPU_MATRIX_MODELVIEW, v);
 		GPU_matrix_get(GPU_MATRIX_PROJECTION, p);
 		memcpy(m_mainview_view, v, sizeof(m_mainview_view));
 		memcpy(m_mainview_proj, p, sizeof(m_mainview_proj));
 	}
+}
+
+/* BGE-Remix P8 Part B (P8.11): the main view's camera, as it is set (the
+ * last one set while the main view is drawn: mirrors and probes put the
+ * camera back after their own views) */
+void RAS_OpenGLRasterizer::KeepMainViewMatrices()
+{
+	if (!m_culling || !m_culling->MainView())
+		return;
+	float v[4][4], p[4][4];
+	GPU_matrix_get(GPU_MATRIX_MODELVIEW, v);
+	GPU_matrix_get(GPU_MATRIX_PROJECTION, p);
+	memcpy(m_mainview_view, v, sizeof(m_mainview_view));
+	memcpy(m_mainview_proj, p, sizeof(m_mainview_proj));
 }
 
 void RAS_OpenGLRasterizer::GetInstancingStats(int *r_draws, int *r_objects)
@@ -874,6 +889,7 @@ void RAS_OpenGLRasterizer::SetProjectionMatrix(MT_CmMatrix4x4 &mat)
 	GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
 
 	m_camortho = (mat(3, 3) != 0.0f);
+	KeepMainViewMatrices();
 }
 
 void RAS_OpenGLRasterizer::SetProjectionMatrix(const MT_Matrix4x4 & mat)
@@ -886,6 +902,7 @@ void RAS_OpenGLRasterizer::SetProjectionMatrix(const MT_Matrix4x4 & mat)
 	GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
 
 	m_camortho = (mat[3][3] != 0.0f);
+	KeepMainViewMatrices();
 }
 
 MT_Matrix4x4 RAS_OpenGLRasterizer::GetFrustumMatrix(
@@ -1052,6 +1069,7 @@ void RAS_OpenGLRasterizer::SetViewMatrix(const MT_Matrix4x4 &mat,
 	GPU_matrix_load((const float (*)[4])glviewmat);
 	m_campos = pos;
 	m_camnegscale = negX ^ negY ^ negZ;
+	KeepMainViewMatrices();
 }
 
 

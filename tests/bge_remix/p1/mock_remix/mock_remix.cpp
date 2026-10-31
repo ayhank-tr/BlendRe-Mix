@@ -885,6 +885,11 @@ extern "C" REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_InitializeLibrary(
 	if (mode && mode[0]) {
 		strncpy(g_mode, mode, sizeof(g_mode) - 1);
 	}
+	/* P8: the game asks before choosing direct mode: this runtime's Vulkan
+	 * handles are made up (a driver with GL_NV_draw_vulkan_image would draw
+	 * from them), so it says what it is (the process's environment block:
+	 * the game's C library has its own copy of getenv's) */
+	SetEnvironmentVariableA("BGE_REMIX_FAKE_RUNTIME", "1");
 	const uint64_t v = info ? info->version : 0;
 	mlog("InitializeLibrary api=%llu.%llu.%llu mode=%s",
 	     (unsigned long long)REMIXAPI_VERSION_GET_MAJOR(v), (unsigned long long)REMIXAPI_VERSION_GET_MINOR(v),

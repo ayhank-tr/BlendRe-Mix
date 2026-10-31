@@ -332,15 +332,24 @@ def run_ci(args, out):
     cloth_cpu = runs["physx_cpu"]["probe"].get("track", {}).get("Cloth", [])
     cloth_bullet = runs["bullet"]["probe"].get("track", {}).get("Cloth", [])
     cc, dd = compare(runs["physx_cpu"]["probe"], g["probe"], ex)
-    c = {
-        "the GPU scene ran": ran(g, frames),
-        "one warning: it runs on the CPU": log.count("asks for the GPU, it runs on the CPU") == 1,
-        "the scene says PhysX (CPU)": "uses PhysX (CPU)" in log,
-        "it ends as the CPU scene does": all(cc.values()),
+    # (on a PC with an NVIDIA card the GPU scene runs on the GPU: then that is
+    # what is checked, and how it ends is the RTX run's T6.5g)
+    on_gpu = "PhysX uses the GPU" in log and "uses PhysX (GPU)" in log
+    c = {"the GPU scene ran": ran(g, frames)}
+    if on_gpu:
+        c["(a GPU here) the GPU scene runs on the GPU, no warning"] = \
+            log.count("asks for the GPU, it runs on the CPU") == 0
+    else:
+        c.update({
+            "one warning: it runs on the CPU": log.count("asks for the GPU, it runs on the CPU") == 1,
+            "the scene says PhysX (CPU)": "uses PhysX (CPU)" in log,
+            "it ends as the CPU scene does": all(cc.values())})
+    c.update({
         "cloth stays still on the CPU": bool(cloth_cpu) and abs(cloth_cpu[-1][2] - cloth_cpu[0][2]) < 1e-3,
         "with one warning": runs["physx_cpu"]["log"].count("soft bodies need the GPU") == 1,
         "(the same cloth falls with Bullet)": bool(cloth_bullet) and cloth_bullet[-1][2] < cloth_bullet[0][2] - 1.0,
-    }
+    })
+    dd = dict(dd, gpu_here=on_gpu)
     res["T6.7"] = dict(test(c), detail=dd)
 
     names = {"T6.0": "Build and choice",
