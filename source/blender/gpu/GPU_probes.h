@@ -95,7 +95,10 @@ bool GPU_clip_plane(float r_plane[4]);
  * traces; on: Modern scenes with reflections on */
 void GPU_ssr_history_store(unsigned int framebuffer, int width, int height);
 void GPU_ssr_set(bool on);
+/* the materials trace (on, and a frame kept); wanted: on (the frame is kept
+ * from the first one) */
 bool GPU_ssr(void);
+bool GPU_ssr_wanted(void);
 
 /* ---- for the materials ---- */
 

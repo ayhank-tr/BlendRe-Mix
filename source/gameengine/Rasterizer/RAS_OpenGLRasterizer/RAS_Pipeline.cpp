@@ -379,7 +379,7 @@ void RAS_Pipeline::End(const float *view, const float *proj, const int *viewport
 	}
 
 	/* P8.18: the frame for the next frame's screen-space reflections */
-	if (m_modern && GPU_ssr())
+	if (m_modern && GPU_ssr_wanted())
 		GPU_ssr_history_store(m_fbo, m_size[0], m_size[1]);
 
 	glBindFramebuffer(GL_FRAMEBUFFER, m_prevfb);

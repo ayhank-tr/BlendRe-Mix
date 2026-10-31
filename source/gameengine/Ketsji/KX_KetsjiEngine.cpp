@@ -1815,8 +1815,16 @@ void KX_KetsjiEngine::RenderVolumes(KX_Scene *scene)
 				e.frame = frame;
 				const int cfra = blscene->r.cfra;
 				blscene->r.cfra = frame;
+				/* a smoke cache is on disk next to the file (blendcache_<file>):
+				 * the point cache reads it only when the file's path counts as
+				 * valid, which the game never says (the player loads files its
+				 * own way) */
+				const int relbase = G.relbase_valid;
+				if (G.main && G.main->name[0])
+					G.relbase_valid = 1;
 				DerivedMesh *dm = CDDM_from_mesh((Mesh *)ob->data);
 				DerivedMesh *res = smokeModifier_do(smd, blscene, ob, dm);
+				G.relbase_valid = relbase;
 				if (res && res != dm)
 					res->release(res);
 				dm->release(dm);

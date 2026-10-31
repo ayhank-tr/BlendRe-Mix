@@ -3379,6 +3379,13 @@ void node_tex_clouds(vec3 co, float size, out vec4 color, out float fac)
 	fac = 1.0;
 }
 
+/* BGE-Remix P8 Part B: a camera-space direction with its axes as the
+ * equirectangular lookup takes them (F12's sky without Real Sky) */
+void bge_dir_xzy(vec3 v, out vec3 o)
+{
+	o = v.xzy;
+}
+
 void node_tex_environment_equirectangular(vec3 co, sampler2D ima, out vec4 color)
 {
 	vec3 nco = normalize(co);

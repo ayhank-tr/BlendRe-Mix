@@ -476,6 +476,11 @@ bool GPU_ssr(void)
 	return pr.ssr && pr.history != 0;
 }
 
+bool GPU_ssr_wanted(void)
+{
+	return pr.ssr;
+}
+
 /* ---- for the materials ---- */
 
 void GPU_probes_bind(void)

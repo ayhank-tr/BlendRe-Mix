@@ -3700,7 +3700,14 @@ static void do_world_tex(GPUShadeInput *shi, struct World *wo, GPUNodeLink **hor
 				continue;
 			GPU_link(mat, "texco_norm", texco, &texco);
 			if (tex->type == TEX_IMAGE && !(wo->skytype & WO_SKYREAL)) {
-				GPU_link(mat, "mtex_2d_mapping", texco, &texco);
+				if (mtex->texco == TEXCO_EQUIRECTMAP) {
+					/* BGE-Remix P8 Part B (P8.17): as F12 (do_sky_tex): the
+					 * camera's view direction, its up axis as the picture's up */
+					GPU_link(mat, "bge_dir_xzy", texco, &texco);
+				}
+				else if (mtex->texco != TEXCO_ANGMAP) {
+					GPU_link(mat, "mtex_2d_mapping", texco, &texco);
+				}
 			}
 			if (mtex->size[0] != 1.0f || mtex->size[1] != 1.0f || mtex->size[2] != 1.0f) {
 				float size[3] = { mtex->size[0], mtex->size[1], mtex->size[2] };

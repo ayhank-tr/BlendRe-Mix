@@ -768,9 +768,12 @@ static const char *fog_inject_cs_main =
         "				bits &= bits - 1u;\n"
         "				float halo;\n"
         "				vec3 L = lamp_light(lamps[wd * 32u + uint(b)], pm, w, halo);\n"
-        "				float sh = 0.02 * halo;\n"   /* a halo's own medium in its cone */
+        /* a halo's own medium in its cone: it scatters the lamp's light
+         * toward the eye (Blender Internal's halo, intensity 1: a clearly
+         * lit cone) and barely dims what is behind it */
+        "				float sh = 0.25 * halo;\n"
         "				scat += (sigma + sh) * L * 0.07957747;\n"  /* isotropic: 1 / 4 pi */
-        "				ext += sh;\n"
+        "				ext += 0.1 * sh;\n"
         "			}\n"
         "		}\n"
         "	}\n"
