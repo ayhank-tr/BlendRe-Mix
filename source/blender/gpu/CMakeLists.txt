@@ -59,6 +59,7 @@ set(SRC
 	intern/gpu_init_exit.c
 	intern/gpu_layer.c
 	intern/gpu_lights.c
+	intern/gpu_probes.c
 	intern/gpu_material.c
 	intern/gpu_select.c
 	intern/gpu_select_pick.c
@@ -104,6 +105,7 @@ set(SRC
 	GPU_init_exit.h
 	GPU_layer.h
 	GPU_lights.h
+	GPU_probes.h
 	GPU_material.h
 	GPU_select.h
 	GPU_shader.h

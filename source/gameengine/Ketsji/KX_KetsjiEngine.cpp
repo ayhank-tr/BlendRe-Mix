@@ -87,9 +87,18 @@
 #include "GPU_glew.h"
 #include "GPU_glcheck.h" /* BGE-Remix P8.1 */
 #include "GPU_layer.h"   /* BGE-Remix P8.2 */
+#include "GPU_probes.h"  /* BGE-Remix P8 Part B */
 extern "C" {
 #include "BKE_scene.h"  /* BGE-Remix P8 Part B: the pipeline */
+#include "BKE_idprop.h"
+#include "BKE_material.h"
+#include "BKE_global.h"
+#include "BKE_main.h"
+#include "DNA_material_types.h"
+#include "DNA_texture_types.h"
 }
+#include <algorithm>
+#include <map>
 
 #ifdef WITH_REMIX
 #  include "KX_RemixRenderer.h"
@@ -195,6 +204,9 @@ KX_KetsjiEngine::KX_KetsjiEngine(KX_ISystem* system)
 	m_remixOverride = -1;
 	m_remixFastOverride = -1;
 	m_remixWindowModeAllowed = false;
+	m_probes_scene = NULL;  /* BGE-Remix P8 Part B (P8.18) */
+	m_probes_scan = 0;
+	m_mirror_drawing = false;
 
 	// Initialize the time logger
 	m_logger = new KX_TimeCategoryLogger (25);
@@ -353,6 +365,9 @@ void KX_KetsjiEngine::RenderDome()
 				GPU_pass_timer_begin(GPU_PASS_SHADOWS);
 				RenderShadowBuffers(scene);
 				GPU_pass_timer_end(GPU_PASS_SHADOWS);
+				/* BGE-Remix P8 Part B (P8.18): reflection probes */
+				if (sceneit == m_scenes.begin())
+					RenderProbes(scene);
 			}
 			/* BGE-Remix P8 Part B (P8.12): the scene's pipeline target */
 			m_rasterizer->BeginScene(scene->GetBlenderScene(), sceneit == m_scenes.begin(),
@@ -984,6 +999,9 @@ void KX_KetsjiEngine::Render()
 			GPU_pass_timer_begin(GPU_PASS_SHADOWS);
 			RenderShadowBuffers(scene);
 			GPU_pass_timer_end(GPU_PASS_SHADOWS);
+			/* BGE-Remix P8 Part B (P8.18): reflection probes (the first scene's) */
+			if (scene == *m_scenes.begin())
+				RenderProbes(scene);
 		}
 
 		/* BGE-Remix P8 Part B (P8.12): the scene's pipeline target (not for
@@ -1390,6 +1408,276 @@ void KX_KetsjiEngine::RenderShadowBuffers(KX_Scene *scene)
 	scene->SetShadowDone(true);
 }
 
+/* ------------------------------------------------------------------------ */
+/* BGE-Remix P8 Part B (P8.18): reflections */
+
+static IDProperty *id_prop(ID *id, const char *name)
+{
+	IDProperty *props = id ? IDP_GetProperties(id, false) : NULL;
+	return props ? IDP_GetPropertyFromGroup(props, name) : NULL;
+}
+
+static float id_float(ID *id, const char *name, float def)
+{
+	IDProperty *p = id_prop(id, name);
+	if (!p)
+		return def;
+	if (p->type == IDP_INT)
+		return (float)IDP_Int(p);
+	if (p->type == IDP_FLOAT)
+		return IDP_Float(p);
+	if (p->type == IDP_DOUBLE)
+		return (float)IDP_Double(p);
+	return def;
+}
+
+void KX_KetsjiEngine::ReleaseProbes()
+{
+	for (size_t i = 0; i < m_probes.size(); i++) {
+		GPU_probe_free(m_probes[i].slot);
+		m_probes[i].obj->Release();
+	}
+	m_probes.clear();
+	for (size_t i = 0; i < m_mirror_objects.size(); i++)
+		m_mirror_objects[i].first->Release();
+	m_mirror_objects.clear();
+	m_probes_scene = NULL;
+}
+
+/* the probes and the mirror candidates of the scene (looked for every
+ * second: objects added later are found then) */
+void KX_KetsjiEngine::ScanProbes(KX_Scene *scene)
+{
+	if (m_probes_scene == scene && (m_probes_scan++ % 60) != 0)
+		return;
+	if (m_probes_scene != scene) {
+		ReleaseProbes();
+		m_probes_scene = scene;
+		m_probes_scan = 1;
+	}
+	/* Static and Animated env maps: a probe at their viewpoint */
+	std::map<Object *, int> envview;
+	for (Material *ma = (Material *)G.main->mat.first; ma; ma = (Material *)ma->id.next) {
+		for (int i = 0; i < MAX_MTEX; i++) {
+			MTex *mtex = ma->mtex[i];
+			EnvMap *env = (mtex && mtex->tex && mtex->tex->type == TEX_ENVMAP) ? mtex->tex->env : NULL;
+			if (env && env->object && (env->stype == ENV_STATIC || env->stype == ENV_ANIM))
+				envview[env->object] = (env->stype == ENV_ANIM) ? 1 : 0;
+		}
+	}
+	CListValue *objects = scene->GetObjectList();
+	std::vector<ProbeEntry> keep;
+	std::vector<std::pair<KX_GameObject *, int> > mirrors;
+	for (int i = 0; i < objects->GetCount(); i++) {
+		KX_GameObject *obj = (KX_GameObject *)objects->GetValue(i);
+		Object *ob = obj->GetBlenderObject();
+		if (!ob)
+			continue;
+		std::map<Object *, int>::iterator env = envview.find(ob);
+		const bool probe = id_float(&ob->id, "bge_probe", 0.0f) != 0.0f || env != envview.end();
+		if (probe) {
+			bool found = false;
+			for (size_t k = 0; k < m_probes.size(); k++) {
+				if (m_probes[k].obj == obj) {
+					keep.push_back(m_probes[k]);
+					m_probes[k].obj = NULL;
+					found = true;
+					break;
+				}
+			}
+			if (!found) {
+				ProbeEntry e;
+				e.slot = GPU_probe_alloc();
+				if (e.slot >= 0) {
+					e.obj = obj;
+					obj->AddRef();
+					e.rate = (env != envview.end()) ? env->second : (int)id_float(&ob->id, "bge_probe_rate", 0.0f);
+					e.reach = id_float(&ob->id, "bge_probe_reach", 10.0f);
+					e.age = 0;
+					e.drawn = false;
+					keep.push_back(e);
+				}
+			}
+		}
+		/* an object whose material reads a planar mirror */
+		if (obj->GetMeshCount() > 0) {
+			for (int c = 1; c <= ob->totcol; c++) {
+				Material *ma = give_current_material(ob, c);
+				if (ma && GPU_material_planar_mirror(ma)) {
+					obj->AddRef();
+					mirrors.push_back(std::make_pair(obj, -1));
+					break;
+				}
+			}
+		}
+	}
+	/* probes whose objects are gone */
+	for (size_t k = 0; k < m_probes.size(); k++) {
+		if (m_probes[k].obj) {
+			GPU_probe_free(m_probes[k].slot);
+			m_probes[k].obj->Release();
+		}
+	}
+	m_probes.swap(keep);
+	for (size_t k = 0; k < m_mirror_objects.size(); k++)
+		m_mirror_objects[k].first->Release();
+	m_mirror_objects.swap(mirrors);
+}
+
+/* the scene as seen with these matrices, into the bound target (cleared) */
+void KX_KetsjiEngine::RenderView(KX_Scene *scene, const MT_Matrix4x4 &view, const MT_Matrix4x4 &proj,
+                                 KX_GameObject *hide, bool cull)
+{
+	RAS_CameraData camdata = RAS_CameraData();
+	/* (a mirrored view's frustum is turned inside out: not culled) */
+	KX_Camera *cam = new KX_Camera(scene, scene->m_callbacks, camdata, cull, true);
+	cam->SetName("__view__cam__");
+	float v[16];
+	view.getValue(v);
+	MT_Transform trans = MT_Transform(v);
+	MT_Transform camtrans;
+	camtrans.invert(trans);
+	cam->SetModelviewMatrix(view);
+	cam->SetProjectionMatrix(proj);
+	cam->NodeSetLocalPosition(camtrans.getOrigin());
+	cam->NodeSetLocalOrientation(camtrans.getBasis());
+	cam->NodeUpdateGS(0);
+	RAS_IRasterizer::StereoMode stereomode = m_rasterizer->GetStereoMode();
+	m_rasterizer->SetStereoMode(RAS_IRasterizer::RAS_STEREO_NOSTEREO);
+	m_rasterizer->SetProjectionMatrix(proj);
+	m_rasterizer->SetViewMatrix(view, cam->NodeGetWorldOrientation(), cam->NodeGetWorldPosition(),
+	                            cam->NodeGetLocalScaling(), true);
+	m_rasterizer->SetStereoMode(stereomode);
+
+	const bool visible = hide ? hide->GetVisible() : false;
+	if (hide && visible)
+		hide->SetVisible(false, false);
+	scene->CalculateVisibleMeshes(m_rasterizer, cam);
+	scene->GetWorldInfo()->RenderBackground(m_rasterizer);
+	scene->RenderBuckets(camtrans, m_rasterizer);
+	if (hide && visible)
+		hide->SetVisible(true, false);
+	cam->Release();
+}
+
+void KX_KetsjiEngine::RenderProbes(KX_Scene *scene)
+{
+	if (m_rasterizer->GetDrawingMode() != RAS_IRasterizer::KX_TEXTURED)
+		return;
+	ScanProbes(scene);
+	/* the sky the materials reflect where no probe reaches */
+	static int skyframe = 0;
+	if (scene->GetWorldInfo()->DrawsSky()) {
+		if ((skyframe++ % 30) == 0)
+			GPU_sky_cube_update(scene->GetBlenderScene(), scene->GetBlenderScene()->world);
+	}
+	else {
+		GPU_sky_cube_clear();
+	}
+	int drawn = 0;
+	for (size_t i = 0; i < m_probes.size(); i++) {
+		ProbeEntry &e = m_probes[i];
+		const MT_Point3 &p = e.obj->NodeGetWorldPosition();
+		const float center[3] = {(float)p[0], (float)p[1], (float)p[2]};
+		const bool due = !e.drawn || (e.rate > 0 && ++e.age >= e.rate);
+		if (!due || drawn >= 2) {
+			GPU_probe_place(e.slot, center, e.reach, e.drawn);
+			continue;
+		}
+		/* (at most two a frame) */
+		e.age = 0;
+		drawn++;
+		GPU_probe_place(e.slot, center, e.reach, false);
+		m_mirror_drawing = true;
+		for (int face = 0; face < 6; face++) {
+			float view[4][4], proj[4][4];
+			int size;
+			GPU_probe_face_begin(e.slot, face, view, proj, &size);
+			RenderView(scene, MT_Matrix4x4(&view[0][0]), MT_Matrix4x4(&proj[0][0]), e.obj);
+			GPU_probe_face_end();
+		}
+		m_mirror_drawing = false;
+		GPU_probe_filter(e.slot);
+		e.drawn = true;
+		GPU_probe_place(e.slot, center, e.reach, true);
+	}
+}
+
+/* each visible mirror (the nearest four): the camera's view mirrored in the
+ * object's plane (its local Z the normal), drawn with a clip plane */
+void KX_KetsjiEngine::RenderMirrors(KX_Scene *scene, KX_Camera *cam)
+{
+	for (size_t i = 0; i < m_mirror_objects.size(); i++)
+		m_mirror_objects[i].second = -1;
+	if (m_mirror_objects.empty() || m_rasterizer->GetDrawingMode() != RAS_IRasterizer::KX_TEXTURED)
+		return;
+	const MT_Point3 campos = cam->NodeGetWorldPosition();
+	std::vector<std::pair<double, size_t> > order;
+	for (size_t i = 0; i < m_mirror_objects.size(); i++) {
+		KX_GameObject *obj = m_mirror_objects[i].first;
+		if (obj->GetCulled() || !obj->GetVisible())
+			continue;
+		order.push_back(std::make_pair((double)(obj->NodeGetWorldPosition() - campos).length2(), i));
+	}
+	if (order.empty())
+		return;
+	std::sort(order.begin(), order.end());
+
+	const MT_Matrix4x4 view = m_rasterizer->GetViewMatrix();
+	const MT_Matrix4x4 proj = cam->GetProjectionMatrix();
+	World *wo = scene->GetBlenderScene()->world;
+	const float scale = CLAMPIS(wo ? id_float(&wo->id, "bge_mirror_scale", 0.5f) : 0.5f, 0.1f, 1.0f);
+	int vp[4];
+	glGetIntegerv(GL_VIEWPORT, vp);
+	m_mirror_drawing = true;
+	for (size_t k = 0; k < order.size() && k < GPU_MIRRORS; k++) {
+		KX_GameObject *obj = m_mirror_objects[order[k].second].first;
+		const MT_Vector3 n = obj->NodeGetWorldOrientation().getColumn(2).safe_normalized();
+		const MT_Point3 &p = obj->NodeGetWorldPosition();
+		double d = -n.dot(p);
+		/* the side the camera is on is kept */
+		const double side = (n.dot(campos) + d) >= 0.0 ? 1.0 : -1.0;
+		/* the reflection in the plane n.x + d = 0 */
+		MT_Matrix4x4 R;
+		R.setIdentity();
+		for (int r = 0; r < 3; r++) {
+			for (int c = 0; c < 3; c++)
+				R[r][c] = (r == c ? 1.0 : 0.0) - 2.0 * n[r] * n[c];
+			R[r][3] = -2.0 * d * n[r];
+		}
+		const MT_Matrix4x4 mview = view * R;
+		/* the clip plane in the mirrored camera's eye space: (V'^-1)^T P */
+		MT_Matrix4x4 inv = mview;
+		inv.invert();
+		const double P[4] = {side * n[0], side * n[1], side * n[2], side * d};
+		float plane[4];
+		for (int c = 0; c < 4; c++)
+			plane[c] = (float)(inv[0][c] * P[0] + inv[1][c] * P[1] + inv[2][c] * P[2] + inv[3][c] * P[3]);
+		GPU_mirror_begin((int)k, (int)(vp[2] * scale), (int)(vp[3] * scale), plane);
+		RenderView(scene, mview, proj, obj, false);
+		GPU_mirror_end((int)k);
+		m_mirror_objects[order[k].second].second = (int)k;
+	}
+	m_mirror_drawing = false;
+
+	/* the camera's own view again */
+	m_rasterizer->SetProjectionMatrix(proj);
+	m_rasterizer->SetViewMatrix(view, cam->NodeGetWorldOrientation(), cam->NodeGetWorldPosition(),
+	                            cam->NodeGetLocalScaling(), cam->GetCameraData()->m_perspective);
+	scene->CalculateVisibleMeshes(m_rasterizer, cam);
+}
+
+int KX_KetsjiEngine::MirrorIndex(KX_GameObject *obj) const
+{
+	if (m_mirror_drawing)
+		return -1;
+	for (size_t i = 0; i < m_mirror_objects.size(); i++) {
+		if (m_mirror_objects[i].first == obj)
+			return m_mirror_objects[i].second;
+	}
+	return -1;
+}
+
 /* BGE-Remix P8.10: whether a lamp of the scene has contact shadows (they read
  * the scene's depth, drawn first) */
 static bool scene_needs_depth(KX_Scene *scene)
@@ -1574,8 +1862,18 @@ void KX_KetsjiEngine::RenderFrame(KX_Scene* scene, KX_Camera* cam)
 	else
 #endif
 	{
+		/* BGE-Remix P8 Part B (P8.18): planar mirrors (the first scene's main
+		 * camera), screen-space reflections (Modern scenes) */
+		if (scene == *m_scenes.begin() && cam == scene->GetActiveCamera())
+			RenderMirrors(scene, cam);
+		World *wo = scene->GetBlenderScene()->world;
+		const bool ssr = BKE_scene_game_pipeline(scene->GetBlenderScene()) == BKE_SCENE_GAME_PIPELINE_MODERN &&
+		                 (!wo || id_float(&wo->id, "bge_ssr", 1.0f) != 0.0f);
+		GPU_ssr_set(ssr);
+
 		/* BGE-Remix P8.10: the scene's depth first, for contact shadows */
-		const bool depth = m_rasterizer->GetDrawingMode() == RAS_IRasterizer::KX_TEXTURED && scene_needs_depth(scene);
+		const bool depth = m_rasterizer->GetDrawingMode() == RAS_IRasterizer::KX_TEXTURED &&
+		                   (scene_needs_depth(scene) || ssr);
 		if (depth) {
 			const int drawmode = m_rasterizer->GetDrawingMode();
 			GPU_scene_depth_begin(viewport.GetWidth() + 1, viewport.GetHeight() + 1);
@@ -1718,6 +2016,8 @@ void KX_KetsjiEngine::StopEngine()
 //			printf("TestHandlesPhysicsObjectToAnimationIpo\n");
 			m_sceneconverter->TestHandlesPhysicsObjectToAnimationIpo();
 		}
+
+		ReleaseProbes();  /* BGE-Remix P8 Part B (P8.18) */
 
 #ifdef WITH_REMIX
 		/* the game's objects leave Remix (which keeps running for the next game) */

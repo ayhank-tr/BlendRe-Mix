@@ -415,6 +415,9 @@ void GPU_lamp_update_type(GPULamp *lamp, int type);
  * This Layer Only lamp needs a material per layer) */
 void GPU_material_set_object_layer(GPUMaterial *material, int lay);
 bool GPU_lamp_needs_own_code(struct Lamp *la);
+/* BGE-Remix P8 Part B (P8.18): the material reads a planar mirror (its
+ * "bge_planar_mirror" switch, or a Planar env map texture) */
+bool GPU_material_planar_mirror(struct Material *ma);
 /* BGE-Remix P8.9: the light's size (point/spot radius; area lamps: width and
  * height) and its shadow settings, changed while playing without rebuilding
  * shaders (bias as Lamp.bias) */

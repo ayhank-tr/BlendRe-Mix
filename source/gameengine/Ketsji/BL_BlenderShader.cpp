@@ -40,6 +40,9 @@
 #include "BL_BlenderShader.h"
 #include "BL_Material.h"
 #include "KX_GameObject.h"
+#include "KX_KetsjiEngine.h"
+#include "KX_PythonInit.h"
+#include "GPU_probes.h"
 
 #include "GPU_material.h"
 #include "GPU_shader.h"
@@ -167,8 +170,11 @@ void BL_BlenderShader::Update(const RAS_MeshSlot & ms, RAS_IRasterizer* rasty )
 		return;
 
 	/* BGE-Remix P8 Part B (P8.15): the object's layers (This Layer Only lamps) */
-	if (ms.m_clientObj)
+	if (ms.m_clientObj) {
 		GPU_material_set_object_layer(gpumat, ((KX_GameObject *)ms.m_clientObj)->GetLayer());
+		/* BGE-Remix P8 Part B (P8.18): the object's planar mirror */
+		GPU_mirror_use(KX_GetActiveEngine()->MirrorIndex((KX_GameObject *)ms.m_clientObj));
+	}
 
 	MT_Matrix4x4 model;
 	model.setValue(ms.m_OpenGLMatrix);

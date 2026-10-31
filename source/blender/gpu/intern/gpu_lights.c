@@ -39,6 +39,7 @@
 #include "GPU_glcheck.h"
 #include "GPU_layer.h"
 #include "GPU_lights.h"
+#include "GPU_probes.h"
 
 #include "BKE_material.h"
 
@@ -352,6 +353,7 @@ void GPU_lights_program_samplers(unsigned int program)
 	if (loc >= 0) {
 		glProgramUniform1i(program, loc, GPU_lights_unit_scenedepth());
 	}
+	GPU_probes_program_samplers(program);
 	/* never read; on a unit of its own type */
 	loc = glGetUniformLocation(program, "bge_noramp");
 	if (loc >= 0) {

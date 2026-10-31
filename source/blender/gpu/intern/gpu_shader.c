@@ -398,6 +398,17 @@ static const char *gpu_frontend_lights =
         "layout(std430, binding = 12) readonly buffer BgeClusterInfo {\n"
         "	vec4 bge_cl_viewport; vec4 bge_cl_depth; uvec4 bge_cl_counts; };\n"
         "layout(std430, binding = 13) readonly buffer BgeClusterMasks { uint bge_cl_mask[]; };\n"
+        /* P8.18: the probes (GPU_probes.h), the sky, a planar mirror, the
+         * last frame (screen-space reflections) */
+        "layout(std430, binding = 14) readonly buffer BgeProbes { uvec4 bge_probe_head; vec4 bge_probe[]; };\n"
+        "uniform samplerCubeArray bge_probes;\n"
+        "uniform samplerCube bge_skycube;\n"
+        "uniform sampler2D bge_mirror;\n"
+        "uniform sampler2D bge_history;\n"
+        "uniform int bge_sky_on;\n"
+        "uniform int bge_mirror_on;\n"
+        "uniform vec2 bge_mirror_size;\n"
+        "uniform int bge_ssr_on;\n"
         "#endif\n";
 
 /* BGE-Remix P8 Part B (P8.16): a lamp's shadow views in one pass. Each view
@@ -408,6 +419,7 @@ static const char *gpu_views_vert_front =
         "uniform int bge_views;\n"
         "uniform int bge_view_layer;\n"
         "uniform mat4 bge_view_m[6];\n"
+        "uniform vec4 bge_clipplane;\n"   /* P8.18: a planar mirror's view (eye space) */
         "#define main bge_user_main\n";
 
 static const char *gpu_views_vert_suffix =
@@ -415,6 +427,7 @@ static const char *gpu_views_vert_suffix =
         "void main()\n"
         "{\n"
         "	bge_user_main();\n"
+        "	gl_ClipDistance[0] = dot(bge_clipplane, bge_projinv * gl_Position);\n"
         "	if (bge_views > 0) {\n"
         "		gl_Position = bge_view_m[gl_InstanceID] * gl_Position;\n"
         "#ifdef BGE_LAYERED\n"

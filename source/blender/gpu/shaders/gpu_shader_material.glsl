@@ -4263,16 +4263,25 @@ void shade_pbr_light(
 
 /* the world's light: ambient colour on the diffuse part, the sky's
  * horizon-to-zenith colours reflected (rougher: more even) */
+/* (P8.18, further down) */
+vec3 bge_env(vec3 wp, vec3 R, float rough, vec3 fallback);
+vec4 bge_ssr(vec3 co, vec3 Rv, float rough);
+
 void shade_pbr_ambient(
-        vec3 vn, vec3 view, vec3 diffcol, vec3 f0, float roughness, float amb, vec3 ambcol,
+        vec3 co, vec3 vn, vec3 view, vec3 diffcol, vec3 f0, float roughness, float amb, vec3 ambcol,
         vec3 horicol, vec3 zencol, mat4 viewinv, vec4 col_in, out vec4 col_out)
 {
 	vec3 N = -normalize(vn);
 	vec3 V = -normalize(view);
 	float nv = max(dot(N, V), 0.0);
-	vec3 R = (viewinv * vec4(reflect(-V, N), 0.0)).xyz;
+	vec3 Rv = reflect(-V, N);
+	vec3 R = (viewinv * vec4(Rv, 0.0)).xyz;
 	vec3 sky = mix(horicol, zencol, clamp(R.z, 0.0, 1.0));
 	sky = mix(sky, 0.5 * (horicol + zencol), clamp(roughness, 0.0, 1.0));
+	/* BGE-Remix P8 Part B (P8.18): a probe, the sky, the screen */
+	sky = bge_env((viewinv * vec4(co, 1.0)).xyz, R, roughness, sky);
+	vec4 s = bge_ssr(co, Rv, roughness);
+	sky = mix(sky, s.rgb, s.a);
 	vec3 F = f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - nv, 5.0);
 	col_out = col_in;
 	col_out.rgb += amb * (ambcol * diffcol + F * sky);
@@ -4749,4 +4758,137 @@ void shade_atmosphere(vec3 co, mat4 s, mat4 a, vec4 col_in, out vec4 col_out)
 	vec3 E = E1 * a[2].w * a[3].xyz;
 	/* (the colour is not premultiplied here) */
 	col_out = vec4(col_in.rgb * E + I, col_in.a);
+}
+
+/* ---- BGE-Remix P8 Part B (P8.18): reflections ----
+ * bge_env: the light from direction R (world) at the point wp (world): the
+ * nearest probe that reaches it, blurred by roughness, or the sky, or the
+ * fallback (the horizon and zenith colours). bge_ssr: the reflected ray
+ * (view space) traced through the scene's depth; the colour the last frame
+ * showed where it hits (a: how much to trust it). */
+
+vec3 bge_env(vec3 wp, vec3 R, float rough, vec3 fallback)
+{
+#ifdef BGE_CLUSTERED
+	int best = -1;
+	float bd = 1e30;
+	for (uint i = 0u; i < bge_probe_head.x; i++) {
+		vec4 c = bge_probe[i * 2u];
+		float d = distance(wp, c.xyz);
+		if (d < c.w && d < bd) {
+			bd = d;
+			best = int(i);
+		}
+	}
+	if (best >= 0) {
+		float lod = clamp(rough, 0.0, 1.0) * float(max(bge_probe_head.y, 1u) - 1u);
+		return textureLod(bge_probes, vec4(R, bge_probe[uint(best) * 2u + 1u].x), lod).rgb;
+	}
+	if (bge_sky_on != 0)
+		return textureLod(bge_skycube, R, clamp(rough, 0.0, 1.0) * 4.0).rgb;
+#endif
+	return fallback;
+}
+
+vec4 bge_ssr(vec3 co, vec3 Rv, float rough)
+{
+#ifdef BGE_CLUSTERED
+	if (bge_ssr_on == 0 || bge_scenedepth_on < 0.5 || rough > 0.6)
+		return vec4(0.0);
+	float stepl = max(-co.z, 0.2) * 0.04;
+	vec3 p = co;
+	vec3 prev = co;
+	for (int i = 0; i < 32; i++) {
+		prev = p;
+		p += Rv * stepl;
+		stepl *= 1.12;
+		vec4 c = bge_proj * vec4(p, 1.0);
+		if (c.w <= 0.0)
+			break;
+		vec2 uv = c.xy / c.w * 0.5 + 0.5;
+		if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
+			break;
+		float dz = shadow_view_z(texture(bge_scenedepth, uv).r) - p.z;
+		if (dz > 0.0 && dz < max(stepl * 2.0, 0.1)) {
+			/* refined between the last two points */
+			vec3 a = prev, b = p;
+			for (int k = 0; k < 5; k++) {
+				vec3 m = 0.5 * (a + b);
+				vec4 cm = bge_proj * vec4(m, 1.0);
+				vec2 um = cm.xy / cm.w * 0.5 + 0.5;
+				if (shadow_view_z(texture(bge_scenedepth, um).r) - m.z > 0.0) b = m; else a = m;
+			}
+			vec4 cb = bge_proj * vec4(b, 1.0);
+			uv = cb.xy / cb.w * 0.5 + 0.5;
+			vec2 edge = min(uv, 1.0 - uv);
+			float fade = clamp(min(edge.x, edge.y) * 10.0, 0.0, 1.0) * (1.0 - float(i) / 32.0) *
+			             clamp(1.0 - rough / 0.6, 0.0, 1.0);
+			return vec4(textureLod(bge_history, uv, 0.0).rgb, fade);
+		}
+	}
+#endif
+	return vec4(0.0);
+}
+
+/* a planar mirror's picture at this pixel, blurred by roughness (a: on) */
+vec4 bge_planar(float rough)
+{
+#ifdef BGE_CLUSTERED
+	if (bge_mirror_on != 0) {
+		/* the mirror's picture covers the view (the clusters' viewport) */
+		vec2 uv = (gl_FragCoord.xy - bge_cl_viewport.xy) / max(bge_cl_viewport.zw, vec2(1.0));
+		return vec4(textureLod(bge_mirror, uv, clamp(rough, 0.0, 1.0) * 6.0).rgb, 1.0);
+	}
+#endif
+	return vec4(0.0);
+}
+
+/* Blender Internal's ray mirror: how much reflects (fresnel_fac in F12) */
+float bge_fresnel_fac(vec3 view, vec3 vn, float grad, float fac)
+{
+	if (fac == 0.0)
+		return 1.0;
+	float t1 = dot(view, vn);
+	float t2 = (t1 > 0.0) ? 1.0 + t1 : 1.0 - t1;
+	return clamp(grad + (1.0 - grad) * pow(t2, fac), 0.0, 1.0);
+}
+
+/* a ray mirror material's reflection as the mirror colour input expects it
+ * (refcol: amount, colour); mp: reflectivity, Fresnel, Fresnel blend,
+ * gloss; planar: the material reads a planar mirror */
+void shade_ray_mirror(vec3 co, vec3 vn, vec3 view, mat4 viewinv, vec4 mp, float planar, vec4 refcol_in,
+                      out vec4 refcol_out)
+{
+	float amount = mp.x * bge_fresnel_fac(view, vn, mp.z, mp.y);
+	float rough = clamp(1.0 - mp.w, 0.0, 1.0);
+	/* Blender Internal's normals point into the surface */
+	vec3 N = -normalize(vn);
+	vec3 Rv = reflect(normalize(co), N);
+	vec3 R = (viewinv * vec4(Rv, 0.0)).xyz;
+	vec3 wp = (viewinv * vec4(co, 1.0)).xyz;
+	vec3 col = bge_env(wp, R, rough, refcol_in.gba);
+	if (planar > 0.5) {
+		vec4 m = bge_planar(rough);
+		col = mix(col, m.rgb, m.a);
+	}
+	else {
+		vec4 s = bge_ssr(co, Rv, rough);
+		col = mix(col, s.rgb, s.a);
+	}
+	refcol_out = vec4(amount, col);
+}
+
+/* an Env Map texture (Static, Animated: a probe; Planar: a mirror) */
+void mtex_probe_refl(vec3 co, vec3 vn, mat4 viewinv, float planar, out float value, out vec4 color)
+{
+	vec3 N = -normalize(vn);
+	vec3 Rv = reflect(normalize(co), N);
+	vec3 R = (viewinv * vec4(Rv, 0.0)).xyz;
+	vec3 wp = (viewinv * vec4(co, 1.0)).xyz;
+	color = vec4(bge_env(wp, R, 0.0, vec3(0.0)), 1.0);
+	if (planar > 0.5) {
+		vec4 m = bge_planar(0.0);
+		color.rgb = mix(color.rgb, m.rgb, m.a);
+	}
+	value = 1.0;
 }

@@ -38,6 +38,7 @@
 #include "GPU_glcheck.h"
 #include "GPU_layer.h"
 #include "GPU_lights.h"
+#include "GPU_probes.h"
 #include "GPU_shader.h"
 
 #include "gpu_private.h"
@@ -596,6 +597,8 @@ typedef struct OldPlaces {
 	/* BGE-Remix P8 Part B (P8.16): shadow views in one pass, the shadow
 	 * pass, contact shadows' depth */
 	int views, view_m, view_layer, shadowpass, scenedepth_on;
+	/* (P8.18) reflections */
+	int clipplane, mirror_on, mirror_size, sky_on, ssr_on;
 	bool pass;
 } OldPlaces;
 
@@ -763,6 +766,17 @@ static void old_find(OldPlaces *op, unsigned int program)
 			op->scenedepth_on = glGetUniformLocation(program, name);
 			op->pass = true;
 		}
+		else if (STREQ(name, "bge_clipplane") || STREQ(name, "bge_mirror_on") || STREQ(name, "bge_mirror_size") ||
+		         STREQ(name, "bge_sky_on") || STREQ(name, "bge_ssr_on"))
+		{
+			const GLint loc = glGetUniformLocation(program, name);
+			if (name[4] == 'c') op->clipplane = loc;
+			else if (STREQ(name, "bge_mirror_on")) op->mirror_on = loc;
+			else if (name[4] == 'm') op->mirror_size = loc;
+			else if (name[5] == 'k') op->sky_on = loc;
+			else op->ssr_on = loc;
+			op->pass = true;
+		}
 	}
 }
 
@@ -846,6 +860,16 @@ void GPU_old_builtins(unsigned int program, const GPUClassicState *st)
 		}
 		if (op->scenedepth_on >= 0) {
 			glProgramUniform1f(program, op->scenedepth_on, gpu_scene_depth_is_on() ? 1.0f : 0.0f);
+		}
+		if (op->clipplane >= 0 || op->mirror_on >= 0 || op->sky_on >= 0 || op->ssr_on >= 0) {
+			int mirror, sky, ssr;
+			float size[2], plane[4];
+			GPU_probes_values(&mirror, size, &sky, plane, &ssr);
+			if (op->clipplane >= 0) glProgramUniform4fv(program, op->clipplane, 1, plane);
+			if (op->mirror_on >= 0) glProgramUniform1i(program, op->mirror_on, mirror);
+			if (op->mirror_size >= 0) glProgramUniform2fv(program, op->mirror_size, 1, size);
+			if (op->sky_on >= 0) glProgramUniform1i(program, op->sky_on, sky);
+			if (op->ssr_on >= 0) glProgramUniform1i(program, op->ssr_on, ssr);
 		}
 	}
 

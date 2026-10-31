@@ -543,7 +543,34 @@ public:
 	 */
 	void			Resize();
 
+	/* BGE-Remix P8 Part B (P8.18): the planar mirror an object reads (-1: none) */
+	int MirrorIndex(KX_GameObject *obj) const;
+
 protected:
+	/* BGE-Remix P8 Part B (P8.18): reflections. Probes (Empties with
+	 * "bge_probe", and the viewpoints of Static and Animated env maps) draw
+	 * their cubes when due; planar mirrors draw the main camera's view
+	 * mirrored before the scene; a view drawn into the current target */
+	struct ProbeEntry {
+		KX_GameObject *obj;   /* held (AddRef) */
+		int slot;
+		int rate;             /* frames between pictures (0: once) */
+		float reach;
+		int age;
+		bool drawn;
+	};
+	std::vector<ProbeEntry> m_probes;
+	KX_Scene *m_probes_scene;
+	int m_probes_scan;
+	std::vector<std::pair<KX_GameObject *, int> > m_mirror_objects;
+	bool m_mirror_drawing;
+	void ScanProbes(KX_Scene *scene);
+	void ReleaseProbes();
+	void RenderProbes(KX_Scene *scene);
+	void RenderMirrors(KX_Scene *scene, KX_Camera *cam);
+	void RenderView(KX_Scene *scene, const MT_Matrix4x4 &view, const MT_Matrix4x4 &proj, KX_GameObject *hide,
+	                bool cull = true);
+
 	/**
 	 * Processes all scheduled scene activity.
 	 * At the end, if the scene lists have changed,

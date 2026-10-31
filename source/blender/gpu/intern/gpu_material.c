@@ -59,6 +59,7 @@
 #include "BKE_colortools.h"
 #include "BKE_global.h"
 #include "BKE_image.h"
+#include "BKE_idprop.h"
 #include "BKE_main.h"
 #include "BKE_node.h"
 #include "BKE_scene.h"
@@ -74,6 +75,7 @@
 #include "GPU_framebuffer.h"
 #include "GPU_layer.h"
 #include "GPU_lights.h"
+#include "GPU_probes.h"
 #include "GPU_material.h"
 #include "GPU_shader.h"
 #include "GPU_texture.h"
@@ -408,8 +410,10 @@ static void gpu_shared_buffers_bind(GPUMaterial *material)
 	if (!GLEW_VERSION_4_3) {
 		return;
 	}
-	/* BGE-Remix P8 Part B (P8.16): the shadow pool and the scene's depth */
+	/* BGE-Remix P8 Part B (P8.16): the shadow pool and the scene's depth;
+	 * (P8.18) the probes, the sky, a mirror, the last frame */
 	GPU_lights_bind_textures(gpu_scene_depth_code());
+	GPU_probes_bind();
 	const size_t lamp_bytes = sizeof(unsigned int) * GPU_LAMP_WORDS;
 
 	if (!gpu_shared.worldbuf) {
@@ -2251,6 +2255,29 @@ bool GPU_lamp_needs_own_code(Lamp *la)
 	return false;
 }
 
+/* BGE-Remix P8 Part B (P8.18): the material reads a planar mirror (its
+ * switch, or a Planar env map texture) */
+bool GPU_material_planar_mirror(Material *ma)
+{
+	if (!ma) {
+		return false;
+	}
+	IDProperty *props = IDP_GetProperties(&ma->id, false);
+	IDProperty *prop = props ? IDP_GetPropertyFromGroup(props, "bge_planar_mirror") : NULL;
+	if (prop && prop->type == IDP_INT && IDP_Int(prop)) {
+		return true;
+	}
+	for (int i = 0; i < MAX_MTEX; i++) {
+		MTex *mtex = ma->mtex[i];
+		if (mtex && mtex->tex && mtex->tex->type == TEX_ENVMAP && mtex->tex->env &&
+		    mtex->tex->env->stype == ENV_PLANE)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 /* a lamp of the material: its own code, or (clustered) the loop's */
 static void material_light(GPUShadeInput *shi, GPUShadeResult *shr, GPULamp *lamp)
 {
@@ -2640,6 +2667,16 @@ static void do_material_tex(GPUShadeInput *shi)
 			}
 			else if (procedural) {
 				rgbnor = gpu_procedural_eval(mat, tex, texvec, &tin, &trgb, &talpha);
+			}
+			else if (tex->type == TEX_ENVMAP && tex->env && tex->env->stype != ENV_LOAD &&
+			         mtex->texco == TEXCO_REFL)
+			{
+				/* BGE-Remix P8 Part B (P8.18): Static and Animated env maps
+				 * through probes, Planar ones through mirrors */
+				float planar = (tex->env->stype == ENV_PLANE) ? 1.0f : 0.0f;
+				GPU_link(mat, "mtex_probe_refl", GPU_builtin(GPU_VIEW_POSITION), shi->vn,
+				         GPU_builtin(GPU_INVERSE_VIEW_MATRIX), GPU_uniform(&planar), &tin, &trgb);
+				rgbnor = TEX_RGB;
 			}
 			else {
 				continue;
@@ -3319,7 +3356,7 @@ static void gpu_shade_physical(GPUShadeInput *shi, GPUShadeResult *shr)
 	else {
 		material_lights(shi, shr);
 		if (world) {
-			GPU_link(mat, "shade_pbr_ambient", shi->vn, shi->view, shi->pbr_diff, shi->pbr_f0, shi->roughness,
+			GPU_link(mat, "shade_pbr_ambient", GPU_builtin(GPU_VIEW_POSITION), shi->vn, shi->view, shi->pbr_diff, shi->pbr_f0, shi->roughness,
 			         shi->amb, GPU_dynamic_uniform(GPUWorld.ambcol, GPU_DYNAMIC_AMBIENT_COLOR, NULL),
 			         GPU_dynamic_uniform(GPUWorld.horicol, GPU_DYNAMIC_HORIZON_COLOR, NULL),
 			         GPU_dynamic_uniform(GPUWorld.zencol, GPU_DYNAMIC_ZENITH_COLOR, NULL),
@@ -3474,6 +3511,16 @@ void GPU_shaderesult_set(GPUShadeInput *shi, GPUShadeResult *shr)
 
 		if (ma->mode & MA_RAMP_COL) ramp_diffuse_result(shi, &shr->combined);
 		if (ma->mode & MA_RAMP_SPEC) ramp_spec_result(shi, &shr->spec);
+
+		/* BGE-Remix P8 Part B (P8.18): Ray Mirror reflects the probes, the sky,
+		 * a planar mirror (the material's switch) or the screen */
+		if ((ma->mode & MA_RAYMIRROR) && ma->ray_mirror > 0.0f) {
+			float mp[4] = {ma->ray_mirror, ma->fresnel_mir, ma->fresnel_mir_i, ma->gloss_mir};
+			float planar = GPU_material_planar_mirror(ma) ? 1.0f : 0.0f;
+			GPU_link(mat, "shade_ray_mirror", GPU_builtin(GPU_VIEW_POSITION), shi->vn, shi->view,
+			         GPU_builtin(GPU_INVERSE_VIEW_MATRIX), GPU_uniform(mp), GPU_uniform(&planar), shi->refcol,
+			         &shi->refcol);
+		}
 
 		if (GPU_link_changed(shi->refcol))
 			GPU_link(mat, "shade_add_mirror", shi->mir, shi->refcol, shr->combined, &shr->combined);
@@ -3932,28 +3979,14 @@ static const char *gpu_equirect_cs =
         "	imageStore(outimg, p, vec4(texture(cube, d).rgb, 1.0));\n"
         "}\n";
 
-bool GPU_world_equirect(struct Scene *scene, struct World *wo, int width, float *r_rgba)
+/* the world drawn into the six faces of a cube map (face x face) */
+bool gpu_world_cube_draw(struct Scene *scene, struct World *wo, bool linear, unsigned int cube, int face)
 {
-	static unsigned int prog = 0;
-	static bool failed = false;
-	if (failed || width < 8) {
+	if (!wo) {
 		return false;
 	}
-	if (!prog) {
-		prog = GPU_compute_program(gpu_equirect_cs, "BGE-Remix sky picture");
-		if (!prog) {
-			failed = true;
-			return false;
-		}
-	}
-	GPUMaterial *mat = gpu_material_world_ex(scene, wo, true, true);
-	const int height = width / 2, face = max_ii(32, width / 4);
-
-	GLuint cube = 0, fbo = 0, out = 0;
-	glCreateTextures(GL_TEXTURE_CUBE_MAP, 1, &cube);
-	glTextureStorage2D(cube, 1, GL_RGBA16F, face, face);
-	glTextureParameteri(cube, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	glTextureParameteri(cube, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	GPUMaterial *mat = gpu_material_world_ex(scene, wo, true, linear);
+	GLuint fbo = 0;
 	glCreateFramebuffers(1, &fbo);
 	GLint prevfb = 0, vp[4];
 	glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prevfb);
@@ -3992,7 +4025,31 @@ bool GPU_world_equirect(struct Scene *scene, struct World *wo, int width, float 
 	GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
 	glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)prevfb);
 	glViewport(vp[0], vp[1], vp[2], vp[3]);
+	glDeleteFramebuffers(1, &fbo);
+	return ok;
+}
 
+bool GPU_world_equirect(struct Scene *scene, struct World *wo, int width, float *r_rgba)
+{
+	static unsigned int prog = 0;
+	static bool failed = false;
+	if (failed || width < 8) {
+		return false;
+	}
+	if (!prog) {
+		prog = GPU_compute_program(gpu_equirect_cs, "BGE-Remix sky picture");
+		if (!prog) {
+			failed = true;
+			return false;
+		}
+	}
+	const int height = width / 2, face = max_ii(32, width / 4);
+	GLuint cube = 0, out = 0;
+	glCreateTextures(GL_TEXTURE_CUBE_MAP, 1, &cube);
+	glTextureStorage2D(cube, 1, GL_RGBA16F, face, face);
+	glTextureParameteri(cube, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTextureParameteri(cube, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	const bool ok = gpu_world_cube_draw(scene, wo, true, cube, face);
 	if (ok) {
 		glCreateTextures(GL_TEXTURE_2D, 1, &out);
 		glTextureStorage2D(out, 1, GL_RGBA32F, width, height);
@@ -4011,7 +4068,6 @@ bool GPU_world_equirect(struct Scene *scene, struct World *wo, int width, float 
 		glGetTextureImage(out, 0, GL_RGBA, GL_FLOAT, (GLsizei)(sizeof(float) * 4 * width * height), r_rgba);
 		glDeleteTextures(1, &out);
 	}
-	glDeleteFramebuffers(1, &fbo);
 	glDeleteTextures(1, &cube);
 	return ok;
 }

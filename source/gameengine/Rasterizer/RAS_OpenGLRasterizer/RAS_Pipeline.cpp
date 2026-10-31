@@ -39,6 +39,7 @@ extern "C" {
 #include "GPU_glcheck.h"
 #include "GPU_layer.h"
 #include "GPU_lights.h"
+#include "GPU_probes.h"
 #include "GPU_shader.h"
 }
 
@@ -376,6 +377,10 @@ void RAS_Pipeline::End(const float *view, const float *proj, const int *viewport
 		camz[1] = ortho ? (proj[14] - 1.0f) / proj[10] : proj[14] / (proj[10] + 1.0f);
 		camz[2] = ortho ? 1.0f : 0.0f;
 	}
+
+	/* P8.18: the frame for the next frame's screen-space reflections */
+	if (m_modern && GPU_ssr())
+		GPU_ssr_history_store(m_fbo, m_size[0], m_size[1]);
 
 	glBindFramebuffer(GL_FRAMEBUFFER, m_prevfb);
 	GPUShader *shader = Shader(m_samples > 1);

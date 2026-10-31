@@ -866,6 +866,108 @@ class WORLD_PT_game_mist(WorldButtonsPanel, Panel):
         row.prop(world.mist_settings, "depth")
 
         layout.prop(world.mist_settings, "intensity", text="Minimum Intensity")
+        # BGE-Remix P8 Part B (P8.17): the mist's height, as F12 uses it
+        layout.prop(world.mist_settings, "height")
+
+
+class WORLD_PT_game_reflections(WorldButtonsPanel, Panel):
+    """BGE-Remix P8 Part B (P8.18): reflections (probes are Empties, mirrors a material switch)"""
+    bl_label = "Reflections"
+    COMPAT_ENGINES = {'BLENDER_GAME'}
+
+    @classmethod
+    def poll(cls, context):
+        scene = context.scene
+        return (scene.world and scene.render.engine in cls.COMPAT_ENGINES)
+
+    @classmethod
+    def register(cls):
+        from bpy.props import BoolProperty, FloatProperty, IntProperty
+        bpy.types.World.bge_ssr = BoolProperty(
+            name="Screen-Space Reflections",
+            description="Modern scenes: reflections traced through the picture (probes and the sky where it "
+                        "shows nothing)",
+            default=True)
+        bpy.types.World.bge_mirror_scale = FloatProperty(
+            name="Mirror Resolution",
+            description="The size of a planar mirror's picture, as a part of the view's",
+            default=0.5, min=0.1, max=1.0)
+        bpy.types.Object.bge_probe = BoolProperty(
+            name="Reflection Probe",
+            description="An Empty whose surroundings nearby objects reflect",
+            default=False)
+        bpy.types.Object.bge_probe_reach = FloatProperty(
+            name="Reach",
+            description="How far the probe sees and reaches (objects nearer than this reflect it)",
+            default=10.0, min=0.1, soft_max=1000.0)
+        bpy.types.Object.bge_probe_rate = IntProperty(
+            name="Update Every",
+            description="Frames between the probe's pictures (0: once, when the game starts)",
+            default=0, min=0, soft_max=600)
+        bpy.types.Material.bge_planar_mirror = BoolProperty(
+            name="Planar Mirror",
+            description="The material's Ray Mirror reflects the scene drawn mirrored in the object's plane "
+                        "(its local Z axis the normal)",
+            default=False)
+
+    @classmethod
+    def unregister(cls):
+        for cls_, name in ((bpy.types.World, "bge_ssr"), (bpy.types.World, "bge_mirror_scale"),
+                           (bpy.types.Object, "bge_probe"), (bpy.types.Object, "bge_probe_reach"),
+                           (bpy.types.Object, "bge_probe_rate"), (bpy.types.Material, "bge_planar_mirror")):
+            if hasattr(cls_, name):
+                delattr(cls_, name)
+
+    def draw(self, context):
+        layout = self.layout
+        world = context.world
+        layout.prop(world, "bge_ssr")
+        layout.prop(world, "bge_mirror_scale")
+        layout.label("Probes: an Empty's Object tab; mirrors: a material's Mirror panel", icon='INFO')
+
+
+class OBJECT_PT_game_probe(Panel):
+    """BGE-Remix P8 Part B (P8.18): an Empty as a reflection probe"""
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'WINDOW'
+    bl_context = "object"
+    bl_label = "Reflection Probe"
+    COMPAT_ENGINES = {'BLENDER_GAME'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = context.object
+        return ob and ob.type == 'EMPTY' and context.scene.render.engine in cls.COMPAT_ENGINES
+
+    def draw_header(self, context):
+        self.layout.prop(context.object, "bge_probe", text="")
+
+    def draw(self, context):
+        layout = self.layout
+        ob = context.object
+        layout.active = ob.bge_probe
+        row = layout.row()
+        row.prop(ob, "bge_probe_reach")
+        row.prop(ob, "bge_probe_rate")
+
+
+class MATERIAL_PT_game_planar_mirror(Panel):
+    """BGE-Remix P8 Part B (P8.18): the material reads a planar mirror"""
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'WINDOW'
+    bl_context = "material"
+    bl_label = "Planar Mirror"
+    COMPAT_ENGINES = {'BLENDER_GAME'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.material and context.scene.render.engine in cls.COMPAT_ENGINES
+
+    def draw_header(self, context):
+        self.layout.prop(context.material, "bge_planar_mirror", text="")
+
+    def draw(self, context):
+        self.layout.label("Uses the Mirror panel's Reflectivity, Fresnel and Gloss", icon='INFO')
 
 
 class DataButtonsPanel:
@@ -1013,6 +1115,9 @@ classes = (
     WORLD_PT_game_world,
     WORLD_PT_game_environment_lighting,
     WORLD_PT_game_mist,
+    WORLD_PT_game_reflections,
+    OBJECT_PT_game_probe,
+    MATERIAL_PT_game_planar_mirror,
     DATA_PT_shadow_game,
     OBJECT_MT_lod_tools,
     OBJECT_PT_levels_of_detail,
