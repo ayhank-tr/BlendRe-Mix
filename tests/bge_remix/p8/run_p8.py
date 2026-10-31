@@ -363,7 +363,11 @@ def play(build, out, tag, blend, env=None, frames=300, seconds=0, debug=False, g
     note_gl(build, tag, text)
     r = {"exit": code, "seconds_total": round(secs, 1), "probe": p2.read_json(res), "stats": p2.read_json(stats),
          "screenshot": shot if os.path.isfile(shot) else None, "traceback_in_output": "Traceback" in text,
-         "text": text, "debugger": cmd[0] == CDB, "crashed": bool(CRASH_LINE.search(text)), "pageheap": pageheap}
+         "text": text, "debugger": cmd[0] == CDB, "crashed": bool(CRASH_LINE.search(text)), "pageheap": pageheap,
+         # the player's own crash report (module + offset per call)
+         "crash_report": [l.strip() for l in text.splitlines() if l.startswith("BGE-Remix crash")][:42]}
+    if r["crash_report"]:
+        r["crashed"] = True
     r["frames"] = r["probe"].get("frames", 0)
     r["ran"] = r["exit"] == 0 and r["frames"] >= frames and not r["traceback_in_output"] and not r["crashed"]
     return r
@@ -1811,9 +1815,10 @@ def t814_drawing(B, expected):
         cc, dd = compare_rects(a, b, E["rects"], TOL_OVERLAY, prefix="overlays: ")
         c.update(cc)
         d["overlays"] = dd
-        n = text_pixels(a, E["overlay"])
-        d["overlay_text_pixels"] = {"ours": n, "stock": text_pixels(b, E["overlay"])}
-        c["the frame rate, profile and debug property are drawn"] = n >= 300
+        # (bge.render.makeScreenshot takes the picture before the frame rate,
+        # profile and debug properties are drawn, in stock 2.79 too: those
+        # are checked by eye in the RTX run)
+        d["overlay_text_pixels"] = {"ours": text_pixels(a, E["overlay"]), "stock": text_pixels(b, E["overlay"])}
     base = shot_of(R.get("b_mt_storage_auto"))
     for kind in STORAGES[1:]:
         md = whole_diff(base, shot_of(R.get("b_mt_storage_" + kind)))
@@ -1932,9 +1937,18 @@ def t818_remix_mode(B, expected, out):
     r = B["runs"].get("b_game_overlays_remix", {})
     c["the player ran with Remix (fake runtime)"] = bool(r.get("ran"))
     if E:
-        n = text_pixels(shot_of(r), E["overlay"])
-        d["overlay_text_pixels"] = n
-        c["the overlays show over Remix's picture"] = n >= 300
+        # what the game draws over Remix's picture: drawLine's yellow square
+        # and the physics shapes' green lines
+        a = shot_of(r)
+        yellow = green = 0
+        if a is not None:
+            q = crop(a, E["rects"]["draw_line"])
+            yellow = int(((q[..., 0] > 180) & (q[..., 1] > 180) & (q[..., 2] < 120)).sum())
+            q = crop(a, E["rects"]["physics"])
+            green = int(((q[..., 1] > 180) & (q[..., 0] < 120) & (q[..., 2] < 120)).sum())
+        d["over_remix"] = {"yellow_line_pixels": yellow, "green_line_pixels": green}
+        c["drawLine's square shows over Remix's picture"] = yellow >= 40
+        c["the physics shapes show over Remix's picture"] = green >= 40
     d["shared_memory"] = "Vulkan memory sharing is checked in the RTX run"
     cc, dd = t820(out)
     for k, v in cc.items():

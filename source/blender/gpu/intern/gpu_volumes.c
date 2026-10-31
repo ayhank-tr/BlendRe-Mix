@@ -73,6 +73,7 @@ static const char *vol_frag_main =
         "uniform float scenedepth_on;\n"
         "uniform vec4 viewport;\n"
         "uniform int lamps_on;\n"
+        "uniform int shape;\n"
         "out vec4 fragcolor;\n"
         "float lum(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }\n"
         "float hg(float g, float ct)\n"
@@ -106,6 +107,10 @@ static const char *vol_frag_main =
         "	for (float t = t0 + 0.5 * stepl; t < t1; t += stepl) {\n"
         "		vec3 w = cam + dir * t;\n"
         "		vec3 po = (obinv * vec4(w, 1.0)).xyz;\n"
+        "		if (shape == 1) {\n"
+        "			vec3 q = (po - 0.5 * (bbmin + bbmax)) / max(0.5 * (bbmax - bbmin), vec3(1e-6));\n"
+        "			if (dot(q, q) > 1.0) continue;\n"
+        "		}\n"
         "		float dens = p0.x * p0.y;\n"
         "		vec3 emit = p1.rgb * p0.w;\n"
         "		if (p4.z > 0.5) {\n"
@@ -134,7 +139,7 @@ static const char *vol_frag_main =
         "					vec3 lc = lamp_light(L, pv, w, halo);\n"
         "					int type = int(L.co_type.w + 0.5);\n"
         "					vec3 lv = (type == 1 || type == 3) ? -L.vec_dist.xyz : normalize(L.co_type.xyz - w);\n"
-        "					scat += lc * hg(p2.w, dot(-dir, lv)) * 12.5663706;\n"
+        "					scat += lc * hg(p2.w, dot(-dir, lv)) * 3.14159265;\n"
         "				}\n"
         "			}\n"
         "			scat *= refl;\n"
@@ -242,6 +247,7 @@ void GPU_volume_draw(const GPUVolume *vol)
 	            vol->reflection_col[2], max_ff(vol->stepsize, 1e-3f));
 	glUniform4f(glGetUniformLocation(p, "p4"), vol->depth_cutoff, vol->shadeless ? 1.0f : 0.0f,
 	            vol->smoke_density ? 1.0f : 0.0f, vol->smoke_flame ? 1.0f : 0.0f);
+	glUniform1i(glGetUniformLocation(p, "shape"), vol->shape);
 	glUniform3fv(glGetUniformLocation(p, "smin"), 1, vol->smoke_min);
 	glUniform3fv(glGetUniformLocation(p, "smax"), 1, vol->smoke_max);
 	int vp[4];

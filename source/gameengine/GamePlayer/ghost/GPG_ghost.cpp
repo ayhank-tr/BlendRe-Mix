@@ -119,6 +119,10 @@ extern char datatoc_bmonofont_ttf[];
 
 #ifdef WIN32
 #  include <windows.h>
+#  include <stdint.h>
+#  include <stdio.h>
+#  include <stdlib.h>
+#  include <string.h>
 #  if !defined(DEBUG)
 #    include <wincon.h>
 #  endif // !defined(DEBUG)
@@ -130,6 +134,49 @@ extern char datatoc_bmonofont_ttf[];
 
 #ifdef WITH_SDL_DYNLOAD
 #  include "sdlew.h"
+#endif
+
+#if defined(WIN32) && defined(_M_X64)
+/* BGE-Remix P8: a crash prints where it happened and the calls that led
+ * there (module + offset each, read with blenderplayer.map), so a test's log
+ * says where without a debugger */
+static LONG WINAPI bge_remix_crash_filter(EXCEPTION_POINTERS *ep)
+{
+	static volatile LONG once = 0;
+	if (InterlockedExchange(&once, 1))
+		return EXCEPTION_CONTINUE_SEARCH;
+	fflush(stdout);
+	CONTEXT ctx = *ep->ContextRecord;
+	fprintf(stderr, "\nBGE-Remix crash: exception %08lx\n", (unsigned long)ep->ExceptionRecord->ExceptionCode);
+	for (int i = 0; i < 40 && ctx.Rip; i++) {
+		const DWORD64 pc = ctx.Rip;
+		HMODULE mod = NULL;
+		char name[MAX_PATH] = "?";
+		if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+		                       (LPCSTR)pc, &mod))
+		{
+			GetModuleFileNameA(mod, name, MAX_PATH);
+		}
+		const char *base = strrchr(name, '\\');
+		base = base ? base + 1 : name;
+		fprintf(stderr, "BGE-Remix crash frame %d: %s+0x%llx\n", i, base,
+		        (unsigned long long)(pc - (DWORD64)(uintptr_t)mod));
+		DWORD64 image = 0;
+		PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry(pc, &image, NULL);
+		if (!fn) {
+			/* a leaf function: the return address is on the stack */
+			ctx.Rip = *(DWORD64 *)(uintptr_t)ctx.Rsp;
+			ctx.Rsp += 8;
+		}
+		else {
+			PVOID data = NULL;
+			DWORD64 frame = 0;
+			RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, pc, fn, &ctx, &data, &frame, NULL);
+		}
+	}
+	fflush(stderr);
+	return EXCEPTION_CONTINUE_SEARCH;
+}
 #endif
 
 const int kMinWindowWidth = 100;
@@ -451,6 +498,19 @@ int main(
 #ifdef WIN32
 	char **argv;
 	int argv_num;
+
+#  if defined(_M_X64)
+	SetUnhandledExceptionFilter(bge_remix_crash_filter);
+#  endif
+	/* BGE-Remix P8: in the tests (no dialogs) the output is not buffered,
+	 * so a crash loses none of it */
+	{
+		const char *nd = getenv("BGE_REMIX_NO_DIALOGS");
+		if (nd && nd[0] == '1') {
+			setvbuf(stdout, NULL, _IONBF, 0);
+			setvbuf(stderr, NULL, _IONBF, 0);
+		}
+	}
 
 	/* We delay loading of openmp so we can set the policy here. */
 # if defined(_MSC_VER)

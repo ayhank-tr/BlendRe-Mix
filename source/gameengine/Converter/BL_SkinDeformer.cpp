@@ -468,6 +468,17 @@ void BL_SkinDeformer::SetRemixGPU(bool on)
 	m_remixGPU = on;
 }
 
+void BL_SkinDeformer::ForceCPUSkinning()
+{
+	if (m_gpustate == 1) {
+		delete m_gpuskin;
+		m_gpuskin = NULL;
+		ForceUpdate();
+		m_poseApplied = false;
+	}
+	m_gpustate = -1;
+}
+
 void BL_SkinDeformer::UpdateTransverts()
 {
 	RAS_MeshSlot::iterator it;

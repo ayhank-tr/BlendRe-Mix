@@ -291,9 +291,11 @@ bool RAS_GPUCulling::Cull(int count, const float center[3], float radius, const 
 	GLint prev_program = 0;
 	glGetIntegerv(GL_CURRENT_PROGRAM, &prev_program);
 	glUseProgram(m_prog_cull);
-	glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 10, command_buffer, command_offset, 5 * sizeof(unsigned int));
+	/* the whole buffer, the command found by its first word (a range at the
+	 * command's offset would break the storage buffers' offset alignment) */
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, command_buffer);
 	glUniform1i(glGetUniformLocation(m_prog_cull, "count"), count);
-	glUniform1ui(glGetUniformLocation(m_prog_cull, "cmdbase"), 0u);
+	glUniform1ui(glGetUniformLocation(m_prog_cull, "cmdbase"), (GLuint)(command_offset / sizeof(unsigned int)));
 	glUniform4f(glGetUniformLocation(m_prog_cull, "sphere"), center[0], center[1], center[2], radius);
 	glUniformMatrix4fv(glGetUniformLocation(m_prog_cull, "toprev"), 1, GL_FALSE, q);
 	glUniformMatrix4fv(glGetUniformLocation(m_prog_cull, "prevproj"), 1, GL_FALSE, m_prevproj);

@@ -1668,11 +1668,12 @@ def make_classic_look(folder, E):
 OVERLAY_SCRIPT = r'''
 # BGE-Remix P8 Part B: a render-to-texture screen, a bge.texture mirror and a
 # square drawn with bge.render.drawLine, each frame
+import os
 import bge
 from bge import texture as vt
 g = bge.logic.globalDict
 sc = bge.logic.getCurrentScene()
-if "p8_ov" not in g:
+if "p8_ov" not in g and "p8_ov_n" not in g:
     made = []
     screen, rcam = sc.objects["OV_screen"], sc.objects["OV_rttcam"]
     t = vt.Texture(screen, vt.materialID(screen, "MAOV_screen"))
@@ -1685,7 +1686,12 @@ if "p8_ov" not in g:
     m.source.capsize = (256, 256)
     made.append(m)
     g["p8_ov"] = made
-for t in g["p8_ov"]:
+# the textures let go before the game ends (the probe ends it at
+# BGE_REMIX_P2_FRAMES): freed while OpenGL is still there
+g["p8_ov_n"] = g.get("p8_ov_n", 0) + 1
+if g["p8_ov_n"] >= int(os.environ.get("BGE_REMIX_P2_FRAMES", "300")) - 2:
+    g.pop("p8_ov", None)
+for t in g.get("p8_ov", []):
     t.refresh(True)
 c = (1.0, 1.0, 0.0)
 pts = [(-0.7, -1.0, -2.9), (0.7, -1.0, -2.9), (0.7, -1.0, -1.5), (-0.7, -1.0, -1.5)]
@@ -2137,6 +2143,7 @@ def screen_rect(scene, lo, hi, shrink=0.8):
     seen by the scene's camera, shrunk to its inner part"""
     from bpy_extras.object_utils import world_to_camera_view
     from mathutils import Vector
+    scene.update()  # the camera's matrix as placed
     xs, ys = [], []
     for i in range(8):
         p = Vector((hi[0] if i & 1 else lo[0], hi[1] if i & 2 else lo[1], hi[2] if i & 4 else lo[2]))
@@ -2287,7 +2294,7 @@ n = g.get("p8_rf", 0) + 1
 g["p8_rf"] = n
 sc = bge.logic.getCurrentScene()
 cube = sc.objects["RF_mover"]
-cube.worldPosition = (0.0 if n < 60 else 2.6, -0.2, 0.3)
+cube.worldPosition = (0.0, -0.2, 0.3) if n < 60 else (-1.8, 0.4, 0.5)
 '''
 
 

@@ -3,8 +3,9 @@ name: windows
 # BGE-Remix Windows build and tests.
 # Builds Blender 2.79b (blender.exe + blenderplayer.exe) with Visual Studio 2022
 # (v143) against Blender 2.79's own pre-compiled vc14 libraries, with the
-# official release options. Then runs the phase 0 tests against official
-# Blender 2.79b, using Mesa's software OpenGL (the CI machines have no GPU).
+# official release options. The tests run on a PC with a graphics card
+# (tests/bge_remix/run_local.bat); the test job here, on Mesa's software
+# OpenGL, runs only when the workflow is started by hand.
 
 on:
   push:
@@ -203,6 +204,19 @@ jobs:
             build.log
           if-no-files-found: ignore
 
+      # The fake RTX Remix runtime the tests use, in the build's download
+      # (the tests run on a PC with a graphics card since P8 Part B)
+      - name: Build the fake Remix runtime (for the tests)
+        shell: pwsh
+        run: |
+          cmake -S blender/tests/bge_remix/p1/mock_remix -B mockbuild -G "Visual Studio 17 2022" -A x64
+          cmake --build mockbuild --config Release -- /m /v:minimal
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $m = "build/bin/Release/bge_remix_test_mock"
+          New-Item -ItemType Directory -Force "$m/mock", "$m/mock_shim" | Out-Null
+          Copy-Item mockbuild/Release/d3d9.dll "$m/mock/"
+          Copy-Item mockbuild/Release/d3d9.dll, mockbuild/Release/d3d9_x64.dll, mockbuild/Release/remixdep.dll "$m/mock_shim/"
+
       - uses: actions/upload-artifact@v4
         with:
           name: blendremix-win64
@@ -219,8 +233,12 @@ jobs:
           p6native/Release/p6_physx_checks.exe
           if ($LASTEXITCODE -ne 0) { Write-Output "::error title=PhysX native checks::some checks failed (see the log)"; exit 1 }
 
+  # Since P8 Part B the tests run on a PC with a graphics card
+  # (tests/bge_remix/run_local.bat); this job runs only when started by hand
+  # (Actions, "Run workflow")
   test:
     needs: build
+    if: github.event_name == 'workflow_dispatch'
     runs-on: windows-2022
     # P8 Part B plays about 150 more scenes on software OpenGL
     timeout-minutes: 300

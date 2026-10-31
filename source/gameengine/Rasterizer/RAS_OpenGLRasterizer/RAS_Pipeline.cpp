@@ -411,11 +411,14 @@ void RAS_Pipeline::End(const float *view, const float *proj, const int *viewport
 	glUniform1i(glGetUniformLocation(program, "bge_color"), 0);
 	glUniform1i(glGetUniformLocation(program, "bge_depth"), 1);
 	GLint loc;
-	if (m_modern && m_lut) {
+	/* every sampler on its own unit, used or not: samplers of different
+	 * kinds left on one unit (unit 0, the default) make the draw fail */
+	if ((loc = glGetUniformLocation(program, "bge_lut")) >= 0)
+		glUniform1i(loc, 2);
+	if ((loc = glGetUniformLocation(program, "bge_fogvol")) >= 0)
+		glUniform1i(loc, 3);
+	if (m_modern && m_lut)
 		glBindTextureUnit(2, m_lut);
-		if ((loc = glGetUniformLocation(program, "bge_lut")) >= 0)
-			glUniform1i(loc, 2);
-	}
 	if ((loc = glGetUniformLocation(program, "bge_samples")) >= 0)
 		glUniform1i(loc, m_samples);
 	if ((loc = glGetUniformLocation(program, "bge_modern")) >= 0)
@@ -428,7 +431,6 @@ void RAS_Pipeline::End(const float *view, const float *proj, const int *viewport
 		glUniform1i(loc, fogtex ? 1 : 0);
 	if (fogtex) {
 		glBindTextureUnit(3, fogtex);
-		glUniform1i(glGetUniformLocation(program, "bge_fogvol"), 3);
 		glUniform4fv(glGetUniformLocation(program, "bge_fogzr"), 1, fogzr);
 		glUniform3fv(glGetUniformLocation(program, "bge_camz"), 1, camz);
 		const int *vp = viewport ? viewport : m_area;

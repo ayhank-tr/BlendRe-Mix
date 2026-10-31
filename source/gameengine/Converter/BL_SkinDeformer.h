@@ -119,6 +119,9 @@ public:
 	void RemixBoneMatrices(std::vector<float> &r_matrices);
 	/* On: Update() leaves the CPU skinning out (Remix does it). */
 	void SetRemixGPU(bool on);
+	/* BGE-Remix P8 Part B: skin on the CPU from now on (Remix reads the
+	 * CPU's vertices when it does not skin the mesh itself) */
+	void ForceCPUSkinning();
 	bool GetRemixGPU() const { return m_remixGPU; }
 	BL_ArmatureObject *RemixArmature() { return m_armobj; }
 	virtual bool ShareVertexArray()

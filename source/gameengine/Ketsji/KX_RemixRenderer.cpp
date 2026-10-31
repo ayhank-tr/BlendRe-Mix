@@ -1379,6 +1379,7 @@ void KX_RemixRenderer::SkinCheck(KX_GameObject *obj, BL_SkinDeformer *skin, uint
 	Collect(m_scene, obj->GetMesh(0), NULL, &weights, rest, (uint32_t)skin->RemixGroupCount());
 
 	skin->SetRemixGPU(false);
+	skin->ForceCPUSkinning();
 	skin->ForceUpdate();
 	skin->Update();
 	Geometry g;
@@ -1449,6 +1450,8 @@ bool KX_RemixRenderer::DrawDeformed(KX_Scene *scene, KX_GameObject *obj, RAS_Def
 	/* bring BGE's own result up to date (it does nothing when it is) */
 	if (BL_SkinDeformer *skin = dynamic_cast<BL_SkinDeformer *>(def)) {
 		skin->SetRemixGPU(false);
+		/* P8 Part B: Remix reads the CPU's vertices (not OpenGL's skinning) */
+		skin->ForceCPUSkinning();
 	}
 #ifdef WITH_BULLET
 	if (KX_SoftBodyDeformer *soft = dynamic_cast<KX_SoftBodyDeformer *>(def)) {

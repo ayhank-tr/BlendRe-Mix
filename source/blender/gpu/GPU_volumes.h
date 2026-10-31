@@ -45,6 +45,9 @@ typedef struct GPUVolume {
 	float emission_col[3], transmission_col[3], reflection_col[3];
 	float reflection, asymmetry, stepsize, depth_cutoff;
 	int shadeless;
+	/* the object's shape: 0 its box, 1 the ellipsoid in its box (a sphere's
+	 * mesh); other meshes are stepped through their box */
+	int shape;
 	/* a smoke domain's grids (0: none), box and flame colour */
 	unsigned int smoke_density, smoke_flame;
 	float smoke_min[3], smoke_max[3];

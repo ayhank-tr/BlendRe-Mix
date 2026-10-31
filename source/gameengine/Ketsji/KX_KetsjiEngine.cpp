@@ -1771,6 +1771,22 @@ void KX_KetsjiEngine::RenderVolumes(KX_Scene *scene)
 			v.bbmin[0] = v.bbmin[1] = v.bbmin[2] = -1.0f;
 			v.bbmax[0] = v.bbmax[1] = v.bbmax[2] = 1.0f;
 		}
+		/* a mesh whose vertices all lie on the ellipsoid in its box (a
+		 * sphere) is stepped inside that ellipsoid, others in their box */
+		{
+			const Mesh *me = (const Mesh *)ob->data;
+			bool round = me && me->totvert > 8;
+			for (int k = 0; round && k < me->totvert; k++) {
+				float q = 0.0f;
+				for (int a = 0; a < 3; a++) {
+					const float half = 0.5f * (v.bbmax[a] - v.bbmin[a]);
+					const float c = (me->mvert[k].co[a] - 0.5f * (v.bbmax[a] + v.bbmin[a])) / max_ff(half, 1e-6f);
+					q += c * c;
+				}
+				round = fabsf(q - 1.0f) < 0.1f;
+			}
+			v.shape = round ? 1 : 0;
+		}
 		const VolumeSettings &vs = ma->vol;
 		v.density = vs.density;
 		v.density_scale = vs.density_scale;
