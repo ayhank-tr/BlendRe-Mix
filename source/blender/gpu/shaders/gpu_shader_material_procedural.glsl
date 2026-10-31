@@ -975,6 +975,17 @@ void proc_texture_node_band(
 #endif
 }
 
+/* the pixel's step per 2 x 2 block (coarse): the same on every driver (a
+ * driver's plain dFdx may be per pixel, and a fine step turns a fast-varying
+ * texture's bump into noise; checked against F12's) */
+#if __VERSION__ >= 450
+#  define BI_DFDX dFdxCoarse
+#  define BI_DFDY dFdyCoarse
+#else
+#  define BI_DFDX dFdx
+#  define BI_DFDY dFdy
+#endif
+
 /* bump: three samples per pixel, as the renderer's 3-tap bump does in 3D
  * (uvmode: the third channel is left out for UV coordinates) */
 void proc_bump_tap3(
@@ -982,7 +993,7 @@ void proc_bump_tap3(
         float uvmode, float hScale, out float dBs, out float dBt)
 {
 #ifdef BIT_OPERATIONS
-	vec3 dx = dFdx(texvec), dy = dFdy(texvec);
+	vec3 dx = BI_DFDX(texvec), dy = BI_DFDY(texvec);
 	vec3 ll = texvec, lr = texvec + dx, ul = texvec + dy;
 	if (uvmode != 0.0) {
 		ll.z = lr.z = ul.z = 0.0;
@@ -1003,7 +1014,7 @@ void proc_bump_tap3_band(
         sampler2D band, float uvmode, float hScale, out float dBs, out float dBt)
 {
 #ifdef BIT_OPERATIONS
-	vec3 dx = dFdx(texvec), dy = dFdy(texvec);
+	vec3 dx = BI_DFDX(texvec), dy = BI_DFDY(texvec);
 	vec3 ll = texvec, lr = texvec + dx, ul = texvec + dy;
 	if (uvmode != 0.0) {
 		ll.z = lr.z = ul.z = 0.0;

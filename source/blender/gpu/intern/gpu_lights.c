@@ -916,6 +916,16 @@ bool GPU_fog_grid(const float view[4][4], const float proj[4][4])
 	glBindImageTexture(0, fog.cells, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RGBA16F);
 	glDispatchCompute((GLuint)(grid[0] + 3) / 4, (GLuint)(grid[1] + 3) / 4, (GLuint)(grid[2] + 3) / 4);
 	glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+	{
+		/* (once: what the grid was given, for the tests' logs) */
+		static bool said = false;
+		if (!said) {
+			said = true;
+			printf("BGE-Remix fog grid: %dx%dx%d, depth %.2f..%.1f, mist %s (type %d, %.1f + %.1f), %d lamps%s\n",
+			       grid[0], grid[1], grid[2], fog.zr[0], fog.zr[1], mist[0] > 0.5f ? "on" : "off", (int)mist[1],
+			       mist[2], mist[3], cl.count, cl.halos ? ", halos" : "");
+		}
+	}
 
 	p = fog.prog_sum;
 	glUseProgram(p);

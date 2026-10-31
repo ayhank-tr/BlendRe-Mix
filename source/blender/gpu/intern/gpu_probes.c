@@ -435,6 +435,14 @@ void GPU_ssr_history_store(unsigned int framebuffer, int width, int height)
 	if (width <= 0 || height <= 0) {
 		return;
 	}
+	{
+		/* (once, for the tests' logs) */
+		static bool said = false;
+		if (!said) {
+			said = true;
+			printf("BGE-Remix screen-space reflections: the frame kept for the next (%dx%d)\n", width, height);
+		}
+	}
 	if (!pr.history || pr.historysize[0] != width || pr.historysize[1] != height) {
 		if (pr.history) {
 			glDeleteTextures(1, &pr.history);

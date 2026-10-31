@@ -428,8 +428,10 @@ def run_ci(args, out):
             if m:
                 rects.append(tuple(float(v) for v in m.groups()))
         c = {
+            # (on a driver that has the extension, the fake runtime is the
+            # reason: its Vulkan handles are made up)
             "without the extension: copy mode, with the reason": st_c.get("mode") == "copy" and
-            "GL_NV_draw_vulkan_image" in (st_c.get("copy_mode_reason") or ""),
+            any(w in (st_c.get("copy_mode_reason") or "") for w in ("GL_NV_draw_vulkan_image", "fake Remix runtime")),
             "the copy-mode game ran 120 frames": ran(rc, 120),
             "with the stand-in: direct mode": st_d.get("mode") == "direct",
             "Remix started without its window, with game settings":

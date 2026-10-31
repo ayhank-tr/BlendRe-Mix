@@ -2099,7 +2099,8 @@ def make_many_lamps(folder, E):
             if hasattr(la, "use_shadow"):
                 la.use_shadow = False
             lamps.append({"name": name, "kind": kinds[k], "at": ml_screen(x, y),
-                          "between": ml_screen(x + 0.5 * ML_LENGTH / ML_PER_ROW, y)})
+                          "between": ml_screen(x + 0.5 * ML_LENGTH / ML_PER_ROW, y),
+                          "between_left": ml_screen(x - 0.5 * ML_LENGTH / ML_PER_ROW, y)})
     # four lamps cast: the moon and three spots over posts
     moon = p2.lamp(scene, "ML_moon", 'SUN', (0.0, 0.0, 20.0), (math.radians(30.0), 0.0, math.radians(40.0)),
                    energy=0.05)

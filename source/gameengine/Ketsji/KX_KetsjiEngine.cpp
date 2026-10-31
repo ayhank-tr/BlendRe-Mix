@@ -1821,6 +1821,24 @@ void KX_KetsjiEngine::RenderVolumes(KX_Scene *scene)
 					res->release(res);
 				dm->release(dm);
 				blscene->r.cfra = cfra;
+				/* (once per volume: what the cache gave, for the tests' logs) */
+				static int smoke_said = 0;
+				if (smoke_said < 4) {
+					smoke_said++;
+					if (!sds->fluid) {
+						printf("BGE-Remix volume %s: smoke frame %d: nothing read from the cache (%s)\n",
+						       ob->id.name + 2, frame, (cache->flag & PTCACHE_BAKED) ? "baked" : "not baked");
+					}
+					else {
+						float mx = 0.0f;
+						const float *dd = smoke_get_density(sds->fluid);
+						const int n = sds->res[0] * sds->res[1] * sds->res[2];
+						for (int k = 0; dd && k < n; k++)
+							mx = std::max(mx, dd[k]);
+						printf("BGE-Remix volume %s: smoke frame %d: grid %dx%dx%d, densest %.3f\n", ob->id.name + 2,
+						       frame, sds->res[0], sds->res[1], sds->res[2], mx);
+					}
+				}
 				if (sds->fluid) {
 					const bool high = sds->wt != NULL;
 					int grid[3];

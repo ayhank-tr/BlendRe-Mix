@@ -1313,8 +1313,13 @@ def t83_shaders(expected, runs, shots, cf_dirs):
     c["the broken shader is reported with its line"] = not_built == 1 and "does not build" in text and \
         re.search(r"\d+:\d+\(\d+\): error|ERROR: \d+:\d+|\d+\(\d+\) : error", text) is not None
     a, b = picture(shots.get("custom_shaders")), picture(shots.get("stock_custom_shaders"))
-    rects = {k: v for k, v in E["rects"].items() if k != E["broken"]}
+    # ("Lighting" reads the fixed-function lamps, which stock 2.79's GLSL mode
+    # leaves to the driver: Mesa's defaults light it as ours does, NVIDIA's
+    # leave it dark; reported, not checked)
+    rects = {k: v for k, v in E["rects"].items() if k not in (E["broken"], "Lighting")}
     cc, dd = compare_rects(a, b, rects, TOL_SAME_CODE, prefix="custom shader ")
+    if "Lighting" in E["rects"]:
+        dd["Lighting (reported)"] = region_diff(a, b, E["rects"]["Lighting"])
     c.update(cc)
     d["custom_shader_differences"] = dd
     c["the custom shader pictures were made (ours, stock)"] = a is not None and b is not None
@@ -1815,8 +1820,14 @@ def t814_drawing(B, expected):
         c["the game_overlays scene was made"] = False
     else:
         a, b = shot_of(R.get("b_game_overlays")), shot_of(R.get("b_stock_game_overlays"))
-        cc, dd = compare_rects(a, b, E["rects"], TOL_OVERLAY, prefix="overlays: ")
+        # (stock 2.79's GLSL draws Face Texture text as white blocks, without
+        # the font's picture; ours draws the font as its Multitexture did,
+        # checked against that in T8.5)
+        rects = {k: v for k, v in E["rects"].items() if k != "face_text"}
+        cc, dd = compare_rects(a, b, rects, TOL_OVERLAY, prefix="overlays: ")
         c.update(cc)
+        if "face_text" in E["rects"]:
+            dd["face_text"] = region_diff(a, b, E["rects"]["face_text"])
         d["overlays"] = dd
         # (bge.render.makeScreenshot takes the picture before the frame rate,
         # profile and debug properties are drawn, in stock 2.79 too: those
@@ -1974,10 +1985,12 @@ def t820_many_lamps(B, expected):
     if a is not None:
         g = brightness(a)
         dark = []
+        def at(p):
+            return float(g[p[1] - 1:p[1] + 2, p[0] - 1:p[0] + 2].mean())
         for l in E["lamps"]:
-            (x, y), (bx, by) = l["at"], l["between"]
-            spot = float(g[y - 1:y + 2, x - 1:x + 2].mean())
-            gap = float(g[by - 1:by + 2, bx - 1:bx + 2].mean())
+            spot = at(l["at"])
+            # the darker gap beside it (a casting spot nearby lights one side)
+            gap = min(at(l["between"]), at(l.get("between_left", l["between"])))
             if spot < gap + 6.0:
                 dark.append({"lamp": l["name"], "spot": round(spot, 1), "between": round(gap, 1)})
         d["lamps_not_lighting"] = dark[:20]
@@ -2024,7 +2037,6 @@ def t821_crowd_shadows(B, expected):
 def t822_sky(B, expected):
     """each sky against F12, Modern as Classic, mist with distance and
     height, Remix's sky picture and fog, Modern's light shafts"""
-    import numpy as np
     c, d = {}, {}
     R = B["runs"]
     E = expected.get("world_sky")
@@ -2046,32 +2058,27 @@ def t822_sky(B, expected):
         c["%s: the ground as F12 (within %.0f)" % (name, TOL_SKY)] = ground is not None and ground <= TOL_SKY
         c["%s: Modern as Classic (within %.0f)" % (name, TOL_F12)] = modern is not None and modern <= TOL_F12
 
-    def fog_distance(a, rect, colour):
-        """how far a region's colour is from the mist's (0: all mist)"""
-        if a is None:
-            return None
-        return round(float(np.abs(crop(a, rect).reshape(-1, 3).mean(axis=0) - colour).mean()), 1)
-
     posts = E["posts"]
     d["mist"] = {}
     for f in W["mist"]:
         a = shot_of(R.get("b_" + f))
-        if a is None:
+        # the same view without mist (the blend sky, same pipeline): how much
+        # the mist changes each post (Modern's mist is lit fog, not the
+        # horizon's colour, so the change is measured, not the colour)
+        clear = shot_of(R.get("b_world_sky_blend_" + ("modern" if f.endswith("_modern") else "classic")))
+        if a is None or clear is None:
             c["%s played" % f] = False
             continue
-        # the mist's colour: the horizon at the picture's middle row
-        h = a.shape[0] // 2
-        colour = a[h - 40:h - 20, :, :].reshape(-1, 3).mean(axis=0)
-        near = fog_distance(a, posts["10"]["lower"], colour)
-        far = fog_distance(a, posts["80"]["lower"], colour)
-        d["mist"][f] = {"near_post": near, "far_post": far}
-        c["%s: the far post is mistier than the near one" % f] = None not in (near, far) and near > far + 10.0
+        change = lambda rect, pic=a: region_diff(pic, clear, rect)  # noqa: E731
+        near, far = change(posts["10"]["lower"]), change(posts["80"]["lower"])
+        d["mist"][f] = {"near_post_change": near, "far_post_change": far}
+        c["%s: the far post is mistier than the near one" % f] = None not in (near, far) and far > near + 5.0
         if "_height" in f:
             plain = shot_of(R.get("b_" + f.replace("_height", "")))
-            up = fog_distance(a, posts["80"]["upper"], colour)
-            up0 = fog_distance(plain, posts["80"]["upper"], colour)
-            d["mist"][f]["far_post_top"] = {"with_height": up, "without": up0}
-            c["%s: the mist thins with height" % f] = None not in (up, up0) and up > up0 + 3.0
+            up = change(posts["80"]["upper"])
+            up0 = None if plain is None else change(posts["80"]["upper"], plain)
+            d["mist"][f]["far_post_top_change"] = {"with_height": up, "without": up0}
+            c["%s: the mist thins with height" % f] = None not in (up, up0) and up < up0 - 3.0
     # Modern fog: halos become light shafts, shadowed by the posts
     sh, noh, nos = (shot_of(R.get("b_world_sky_%s_modern" % t)) for t in ("shafts", "shafts_nohalo",
                                                                           "shafts_noshadow"))
