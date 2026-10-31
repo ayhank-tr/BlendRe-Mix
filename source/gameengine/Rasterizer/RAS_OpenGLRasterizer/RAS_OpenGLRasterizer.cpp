@@ -32,6 +32,7 @@
  
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
  
 #include "RAS_OpenGLRasterizer.h"
 
@@ -142,10 +143,14 @@ RAS_OpenGLRasterizer::RAS_OpenGLRasterizer(RAS_ICanvas* canvas, RAS_STORAGE_TYPE
 	m_culling = new RAS_GPUCulling();
 	m_mainview_drawn = false;
 	m_scene_first = false;
-	static_cast<RAS_StorageBatch *>(m_storage)->SetCulling(m_culling);
+	memset(m_mainview_view, 0, sizeof(m_mainview_view));
+	memset(m_mainview_proj, 0, sizeof(m_mainview_proj));
+	memset(m_mainview_vp, 0, sizeof(m_mainview_vp));
 	GPU_classic_state_default(&m_state);
 	m_storage = new RAS_StorageBatch(&m_texco_num, m_texco, &m_attrib_num, m_attrib, m_attrib_layer, &m_classic,
 	                                 &m_state);
+	/* (after the storage is made) */
+	static_cast<RAS_StorageBatch *>(m_storage)->SetCulling(m_culling);
 
 	/* BGE-Remix P8 Part B: eight lamps, as the old fixed-function lighting had */
 	m_numgllights = 8;
