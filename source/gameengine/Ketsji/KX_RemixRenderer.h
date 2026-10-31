@@ -301,6 +301,9 @@ private:
 	uint64_t m_skykey;
 	std::wstring m_skypath;
 	std::string m_fogsent;
+	/* P8.19: volume objects (held; found again every second) */
+	std::vector<KX_GameObject *> m_volume_objs;
+	int m_volume_scan;
 	const wchar_t *SkyTexture(KX_Scene *scene, uint64_t *r_key);
 	void UpdateFog(KX_Scene *scene);
 	int m_materials_waiting;   /* entries with waiting set */

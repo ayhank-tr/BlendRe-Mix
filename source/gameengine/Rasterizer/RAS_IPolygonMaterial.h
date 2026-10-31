@@ -183,6 +183,9 @@ public:
 	/* BGE-Remix P8 Part B (P8.11): objects of one mesh may be drawn as instances */
 	virtual bool		CanInstance() const { return false; }
 	virtual bool		OnlyShadow() const;
+	/* BGE-Remix P8 Part B (P8.19): a volume material (drawn by the volume
+	 * pass, not as a surface) */
+	bool				IsVolume() const;
 
 	virtual void		Replace_IScene(SCA_IScene *val) {} /* overridden by KX_BlenderMaterial */
 

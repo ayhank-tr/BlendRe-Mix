@@ -88,6 +88,7 @@
 #include "GPU_glcheck.h" /* BGE-Remix P8.1 */
 #include "GPU_layer.h"   /* BGE-Remix P8.2 */
 #include "GPU_probes.h"  /* BGE-Remix P8 Part B */
+#include "GPU_volumes.h"
 extern "C" {
 #include "BKE_scene.h"  /* BGE-Remix P8 Part B: the pipeline */
 #include "BKE_idprop.h"
@@ -96,6 +97,19 @@ extern "C" {
 #include "BKE_main.h"
 #include "DNA_material_types.h"
 #include "DNA_texture_types.h"
+#include "DNA_mesh_types.h"
+#include "DNA_modifier_types.h"
+#include "DNA_smoke_types.h"
+#include "DNA_object_force.h"
+#include "BKE_object.h"
+#include "BKE_modifier.h"
+#include "BKE_cdderivedmesh.h"
+#include "BKE_DerivedMesh.h"
+#include "BLI_math.h"
+#ifdef WITH_SMOKE
+#  include "BKE_smoke.h"
+#  include "smoke_API.h"
+#endif
 }
 #include <algorithm>
 #include <map>
@@ -1441,6 +1455,12 @@ void KX_KetsjiEngine::ReleaseProbes()
 	for (size_t i = 0; i < m_mirror_objects.size(); i++)
 		m_mirror_objects[i].first->Release();
 	m_mirror_objects.clear();
+	for (size_t i = 0; i < m_volumes.size(); i++) {
+		GPU_volume_grid_free(&m_volumes[i].density);
+		GPU_volume_grid_free(&m_volumes[i].flame);
+		m_volumes[i].obj->Release();
+	}
+	m_volumes.clear();
 	m_probes_scene = NULL;
 }
 
@@ -1467,6 +1487,7 @@ void KX_KetsjiEngine::ScanProbes(KX_Scene *scene)
 	}
 	CListValue *objects = scene->GetObjectList();
 	std::vector<ProbeEntry> keep;
+	std::vector<bool> volume_seen(m_volumes.size(), false);
 	std::vector<std::pair<KX_GameObject *, int> > mirrors;
 	for (int i = 0; i < objects->GetCount(); i++) {
 		KX_GameObject *obj = (KX_GameObject *)objects->GetValue(i);
@@ -1499,6 +1520,29 @@ void KX_KetsjiEngine::ScanProbes(KX_Scene *scene)
 				}
 			}
 		}
+		/* a volume object (its material's type) */
+		if (obj->GetMeshCount() > 0) {
+			bool volume = false;
+			for (int c = 1; c <= ob->totcol && !volume; c++) {
+				Material *ma = give_current_material(ob, c);
+				volume = ma && ma->material_type == MA_TYPE_VOLUME;
+			}
+			bool known = false;
+			for (size_t k = 0; k < m_volumes.size(); k++) {
+				if (m_volumes[k].obj == obj && k < volume_seen.size()) {
+					known = true;
+					volume_seen[k] = true;
+				}
+			}
+			if (volume && !known) {
+				VolumeEntry v;
+				memset(&v, 0, sizeof(v));
+				v.obj = obj;
+				v.frame = -1;
+				obj->AddRef();
+				m_volumes.push_back(v);
+			}
+		}
 		/* an object whose material reads a planar mirror */
 		if (obj->GetMeshCount() > 0) {
 			for (int c = 1; c <= ob->totcol; c++) {
@@ -1519,6 +1563,15 @@ void KX_KetsjiEngine::ScanProbes(KX_Scene *scene)
 		}
 	}
 	m_probes.swap(keep);
+	/* volumes whose objects are gone */
+	for (size_t k = volume_seen.size(); k-- > 0;) {
+		if (!volume_seen[k]) {
+			GPU_volume_grid_free(&m_volumes[k].density);
+			GPU_volume_grid_free(&m_volumes[k].flame);
+			m_volumes[k].obj->Release();
+			m_volumes.erase(m_volumes.begin() + k);
+		}
+	}
 	for (size_t k = 0; k < m_mirror_objects.size(); k++)
 		m_mirror_objects[k].first->Release();
 	m_mirror_objects.swap(mirrors);
@@ -1665,6 +1718,107 @@ void KX_KetsjiEngine::RenderMirrors(KX_Scene *scene, KX_Camera *cam)
 	m_rasterizer->SetViewMatrix(view, cam->NodeGetWorldOrientation(), cam->NodeGetWorldPosition(),
 	                            cam->NodeGetLocalScaling(), cam->GetCameraData()->m_perspective);
 	scene->CalculateVisibleMeshes(m_rasterizer, cam);
+}
+
+/* BGE-Remix P8 Part B (P8.19): volumes after the scene, over it */
+void KX_KetsjiEngine::RenderVolumes(KX_Scene *scene)
+{
+	if (scene != m_probes_scene || m_volumes.empty() ||
+	    m_rasterizer->GetDrawingMode() != RAS_IRasterizer::KX_TEXTURED)
+	{
+		return;
+	}
+	Scene *blscene = scene->GetBlenderScene();
+	for (size_t i = 0; i < m_volumes.size(); i++) {
+		VolumeEntry &e = m_volumes[i];
+		KX_GameObject *obj = e.obj;
+		Object *ob = obj->GetBlenderObject();
+		if (!ob || !obj->GetVisible() || ob->type != OB_MESH)
+			continue;
+		Material *ma = NULL;
+		for (int c = 1; c <= ob->totcol && !ma; c++) {
+			Material *m = give_current_material(ob, c);
+			if (m && m->material_type == MA_TYPE_VOLUME)
+				ma = m;
+		}
+		if (!ma)
+			continue;
+		GPUVolume v;
+		memset(&v, 0, sizeof(v));
+		obj->GetOpenGLMatrix();
+		const float *glm = obj->GetOpenGLMatrixPtr()->getPointer();
+		for (int k = 0; k < 16; k++)
+			(&v.obmat[0][0])[k] = glm[k];
+		BoundBox *bb = BKE_object_boundbox_get(ob);
+		if (bb) {
+			INIT_MINMAX(v.bbmin, v.bbmax);
+			for (int k = 0; k < 8; k++)
+				minmax_v3v3_v3(v.bbmin, v.bbmax, bb->vec[k]);
+		}
+		else {
+			v.bbmin[0] = v.bbmin[1] = v.bbmin[2] = -1.0f;
+			v.bbmax[0] = v.bbmax[1] = v.bbmax[2] = 1.0f;
+		}
+		const VolumeSettings &vs = ma->vol;
+		v.density = vs.density;
+		v.density_scale = vs.density_scale;
+		v.scattering = vs.scattering;
+		v.emission = vs.emission;
+		copy_v3_v3(v.emission_col, vs.emission_col);
+		copy_v3_v3(v.transmission_col, vs.transmission_col);
+		copy_v3_v3(v.reflection_col, vs.reflection_col);
+		v.reflection = vs.reflection;
+		v.asymmetry = vs.asymmetry;
+		v.stepsize = vs.stepsize;
+		v.depth_cutoff = vs.depth_cutoff;
+		v.shadeless = (vs.shade_type == MA_VOL_SHADE_SHADELESS);
+
+#ifdef WITH_SMOKE
+		/* a baked smoke and fire simulation: the cache frame at the game's
+		 * time (looping over the cache) */
+		SmokeModifierData *smd = (SmokeModifierData *)modifiers_findByType(ob, eModifierType_Smoke);
+		if (smd && (smd->type & MOD_SMOKE_TYPE_DOMAIN) && smd->domain && smd->domain->point_cache[0]) {
+			SmokeDomainSettings *sds = smd->domain;
+			PointCache *cache = sds->point_cache[0];
+			const int start = cache->startframe, end = std::max(cache->endframe, cache->startframe);
+			const double fps = (double)blscene->r.frs_sec / (double)std::max(blscene->r.frs_sec_base, 1e-6f);
+			const int frame = start + (int)(m_clockTime * fps) % (end - start + 1);
+			if (frame != e.frame) {
+				e.frame = frame;
+				const int cfra = blscene->r.cfra;
+				blscene->r.cfra = frame;
+				DerivedMesh *dm = CDDM_from_mesh((Mesh *)ob->data);
+				DerivedMesh *res = smokeModifier_do(smd, blscene, ob, dm);
+				if (res && res != dm)
+					res->release(res);
+				dm->release(dm);
+				blscene->r.cfra = cfra;
+				if (sds->fluid) {
+					const bool high = sds->wt != NULL;
+					int grid[3];
+					copy_v3_v3_int(grid, high ? sds->res_wt : sds->res);
+					float *density = high ? smoke_turbulence_get_density(sds->wt) : smoke_get_density(sds->fluid);
+					if (density && grid[0] > 0 && grid[1] > 0 && grid[2] > 0)
+						GPU_volume_grid(&e.density, grid, density);
+					if (!high && smoke_has_fuel(sds->fluid)) {
+						float *flame = smoke_get_flame(sds->fluid);
+						if (flame)
+							GPU_volume_grid(&e.flame, grid, flame);
+					}
+					for (int k = 0; k < 3; k++) {
+						e.smin[k] = sds->p0[k] + sds->cell_size[k] * sds->res_min[k];
+						e.smax[k] = sds->p0[k] + sds->cell_size[k] * sds->res_max[k];
+					}
+				}
+			}
+		}
+#endif
+		v.smoke_density = e.density;
+		v.smoke_flame = e.flame;
+		copy_v3_v3(v.smoke_min, e.smin);
+		copy_v3_v3(v.smoke_max, e.smax);
+		GPU_volume_draw(&v);
+	}
 }
 
 int KX_KetsjiEngine::MirrorIndex(KX_GameObject *obj) const
@@ -1873,7 +2027,7 @@ void KX_KetsjiEngine::RenderFrame(KX_Scene* scene, KX_Camera* cam)
 
 		/* BGE-Remix P8.10: the scene's depth first, for contact shadows */
 		const bool depth = m_rasterizer->GetDrawingMode() == RAS_IRasterizer::KX_TEXTURED &&
-		                   (scene_needs_depth(scene) || ssr);
+		                   (scene_needs_depth(scene) || ssr || HasVolumes(scene));
 		if (depth) {
 			const int drawmode = m_rasterizer->GetDrawingMode();
 			GPU_scene_depth_begin(viewport.GetWidth() + 1, viewport.GetHeight() + 1);
@@ -1890,6 +2044,9 @@ void KX_KetsjiEngine::RenderFrame(KX_Scene* scene, KX_Camera* cam)
 			scene->GetWorldInfo()->RenderBackground(m_rasterizer);
 
 		scene->RenderBuckets(camtrans, m_rasterizer);
+
+		/* BGE-Remix P8 Part B (P8.19): volumes over the scene */
+		RenderVolumes(scene);
 
 		/* BGE-Remix P8.10: nothing else reads it (other cameras, the 3D view) */
 		if (depth)

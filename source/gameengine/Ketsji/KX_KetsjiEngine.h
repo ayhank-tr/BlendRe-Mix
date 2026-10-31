@@ -545,6 +545,9 @@ public:
 
 	/* BGE-Remix P8 Part B (P8.18): the planar mirror an object reads (-1: none) */
 	int MirrorIndex(KX_GameObject *obj) const;
+	/* BGE-Remix P8 Part B (P8.19): whether the scene has volumes (the volume
+	 * pass needs the scene's depth) */
+	bool HasVolumes(KX_Scene *scene) const { return scene == m_probes_scene && !m_volumes.empty(); }
 
 protected:
 	/* BGE-Remix P8 Part B (P8.18): reflections. Probes (Empties with
@@ -563,6 +566,15 @@ protected:
 	KX_Scene *m_probes_scene;
 	int m_probes_scan;
 	std::vector<std::pair<KX_GameObject *, int> > m_mirror_objects;
+	/* BGE-Remix P8 Part B (P8.19): volume objects (held), their smoke grids */
+	struct VolumeEntry {
+		KX_GameObject *obj;
+		int frame;                 /* the smoke cache frame in the grids (-1: none) */
+		unsigned int density, flame;
+		float smin[3], smax[3];
+	};
+	std::vector<VolumeEntry> m_volumes;
+	void RenderVolumes(KX_Scene *scene);
 	bool m_mirror_drawing;
 	void ScanProbes(KX_Scene *scene);
 	void ReleaseProbes();

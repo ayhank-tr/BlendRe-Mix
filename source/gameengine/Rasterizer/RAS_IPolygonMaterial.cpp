@@ -286,6 +286,12 @@ bool RAS_IPolyMaterial::CastsShadows() const
 	return (m_flag & RAS_CASTSHADOW) != 0;
 }
 
+bool RAS_IPolyMaterial::IsVolume() const
+{
+	Material *ma = GetBlenderMaterial();
+	return ma && ma->material_type == MA_TYPE_VOLUME;
+}
+
 bool RAS_IPolyMaterial::OnlyShadow() const
 {
 	return (m_flag & RAS_ONLYSHADOW) != 0;

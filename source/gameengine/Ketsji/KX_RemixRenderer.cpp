@@ -84,6 +84,8 @@ extern "C" {
 #  include "DNA_world_types.h"
 #  include "DNA_texture_types.h"
 #  include "DNA_image_types.h"
+#  include "BKE_object.h"
+#  include "BKE_material.h"
 }
 #include "GPU_material.h"
 
@@ -328,6 +330,7 @@ KX_RemixRenderer::KX_RemixRenderer(RAS_ICanvas *canvas, bool window_mode_allowed
 {
 	m_cache = new brmx::TextureCache();
 	m_skykey = 0;
+	m_volume_scan = 0;
 	m_materials_waiting = 0;
 	m_materials_swapped = 0;
 	m_material_notes = 0;
@@ -383,6 +386,9 @@ KX_RemixRenderer::KX_RemixRenderer(RAS_ICanvas *canvas, bool window_mode_allowed
 
 KX_RemixRenderer::~KX_RemixRenderer()
 {
+	for (size_t i = 0; i < m_volume_objs.size(); i++)
+		m_volume_objs[i]->Release();
+	m_volume_objs.clear();
 	Trace("game end: writing stats");
 	WriteStats();
 	if (m_bridge && m_running) {
@@ -973,6 +979,10 @@ void KX_RemixRenderer::Collect(KX_Scene *scene, RAS_MeshObject *mesh, void *clie
 			continue;
 		}
 		const int mode = pm ? pm->GetDrawingMode() : 0;
+		/* BGE-Remix P8 Part B (P8.19): a volume is Remix's fog inside it, not a surface */
+		if (pm && pm->IsVolume()) {
+			continue;
+		}
 		if (mode & RAS_IPolyMaterial::SHADOW) {
 			/* fake blob shadows, cast to the ground in OpenGL: Remix casts real ones */
 			g.shadow_faces++;
@@ -1109,6 +1119,10 @@ void KX_RemixRenderer::CollectDerived(KX_Scene *scene, RAS_MeshObject *mesh, Der
 	for (std::list<RAS_MeshMaterial>::iterator mit = mesh->GetFirstMaterial(); mit != mesh->GetLastMaterial(); ++mit) {
 		RAS_IPolyMaterial *pm = mit->m_bucket ? mit->m_bucket->GetPolyMaterial() : NULL;
 		const int mode = pm ? pm->GetDrawingMode() : 0;
+		/* BGE-Remix P8 Part B (P8.19): a volume is Remix's fog inside it, not a surface */
+		if (pm && pm->IsVolume()) {
+			continue;
+		}
 		if (mode & RAS_IPolyMaterial::SHADOW) {
 			g.shadow_faces++;
 			continue;
@@ -1939,27 +1953,87 @@ void KX_RemixRenderer::UpdateFog(KX_Scene *scene)
 	KX_WorldInfo *world = scene->GetWorldInfo();
 	Scene *sce = scene->GetBlenderScene();
 	World *wo = sce ? sce->world : NULL;
-	if (!world || !world->hasWorld() || !wo || !(wo->mode & WO_MIST)) {
-		return;
+	char key[256] = "";
+	float distance = 0.0f, transmit[3] = {0.05f, 0.05f, 0.05f}, albedo[3] = {1.0f, 1.0f, 1.0f};
+
+	/* P8.19: the volume object the camera is in: its density and colours */
+	if ((m_volume_scan++ % 60) == 0) {
+		for (size_t i = 0; i < m_volume_objs.size(); i++)
+			m_volume_objs[i]->Release();
+		m_volume_objs.clear();
+		CListValue *objects = scene->GetObjectList();
+		for (int i = 0; i < objects->GetCount(); i++) {
+			KX_GameObject *obj = (KX_GameObject *)objects->GetValue(i);
+			Object *ob = obj->GetBlenderObject();
+			for (int c = 1; ob && ob->type == OB_MESH && c <= ob->totcol; c++) {
+				Material *ma = give_current_material(ob, c);
+				if (ma && ma->material_type == MA_TYPE_VOLUME) {
+					obj->AddRef();
+					m_volume_objs.push_back(obj);
+					break;
+				}
+			}
+		}
 	}
-	/* mist reaches its full strength at start + distance: what passes that
-	 * far is 5 % (Remix measures it over a distance) */
-	const float distance = std::max(wo->miststa + wo->mistdist, 0.1f);
-	const float *col = world->getBackColor();
-	char key[256];
-	snprintf(key, sizeof(key), "%.4f|%.4f, %.4f, %.4f", distance, col[0], col[1], col[2]);
-	if (m_fogsent == key) {
-		return;
+	KX_Camera *cam = scene->GetActiveCamera();
+	for (size_t i = 0; cam && i < m_volume_objs.size() && !key[0]; i++) {
+		KX_GameObject *obj = m_volume_objs[i];
+		Object *ob = obj->GetBlenderObject();
+		BoundBox *bb = ob ? BKE_object_boundbox_get(ob) : NULL;
+		if (!bb || !obj->GetVisible())
+			continue;
+		MT_Transform t = obj->GetSGNode()->GetWorldTransform();
+		t.invert(t);
+		const MT_Point3 p = t(cam->NodeGetWorldPosition());
+		float lo[3], hi[3];
+		INIT_MINMAX(lo, hi);
+		for (int k = 0; k < 8; k++)
+			minmax_v3v3_v3(lo, hi, bb->vec[k]);
+		if (p[0] < lo[0] || p[1] < lo[1] || p[2] < lo[2] || p[0] > hi[0] || p[1] > hi[1] || p[2] > hi[2])
+			continue;
+		Material *ma = NULL;
+		for (int c = 1; c <= ob->totcol && !ma; c++) {
+			Material *m = give_current_material(ob, c);
+			ma = (m && m->material_type == MA_TYPE_VOLUME) ? m : NULL;
+		}
+		if (!ma)
+			continue;
+		/* the light left after one unit of density is the transmission
+		 * colour (as F12's absorption): Remix measures it over the distance
+		 * that holds one unit */
+		distance = 1.0f / std::max(ma->vol.density * ma->vol.density_scale, 1e-3f);
+		copy_v3_v3(transmit, ma->vol.transmission_col);
+		for (int k = 0; k < 3; k++)
+			albedo[k] = std::min(ma->vol.reflection * ma->vol.reflection_col[k], 1.0f);
+		snprintf(key, sizeof(key), "volume %s %.4f|%.3f %.3f %.3f|%.3f %.3f %.3f", ob->id.name + 2, distance,
+		         transmit[0], transmit[1], transmit[2], albedo[0], albedo[1], albedo[2]);
 	}
+
+	/* the world's mist: what passes start + distance is 5 % */
+	if (!key[0] && world && world->hasWorld() && wo && (wo->mode & WO_MIST)) {
+		distance = std::max(wo->miststa + wo->mistdist, 0.1f);
+		copy_v3_v3(albedo, world->getBackColor());
+		snprintf(key, sizeof(key), "mist %.4f|%.4f, %.4f, %.4f", distance, albedo[0], albedo[1], albedo[2]);
+	}
+	if (m_fogsent == key)
+		return;
 	m_fogsent = key;
 	char value[96];
+	if (!key[0]) {
+		/* neither: clear air again */
+		m_bridge->set_config("rtx.volumetrics.transmittanceMeasurementDistanceMeters", "10000.0");
+		m_bridge->set_config("rtx.volumetrics.transmittanceColor", "1.0, 1.0, 1.0");
+		printf("BGE-Remix: Remix's fog cleared\n");
+		return;
+	}
 	m_bridge->set_config("rtx.volumetrics.enable", "True");
 	snprintf(value, sizeof(value), "%.4f", distance);
 	m_bridge->set_config("rtx.volumetrics.transmittanceMeasurementDistanceMeters", value);
-	m_bridge->set_config("rtx.volumetrics.transmittanceColor", "0.05, 0.05, 0.05");
-	snprintf(value, sizeof(value), "%.4f, %.4f, %.4f", col[0], col[1], col[2]);
+	snprintf(value, sizeof(value), "%.4f, %.4f, %.4f", transmit[0], transmit[1], transmit[2]);
+	m_bridge->set_config("rtx.volumetrics.transmittanceColor", value);
+	snprintf(value, sizeof(value), "%.4f, %.4f, %.4f", albedo[0], albedo[1], albedo[2]);
 	m_bridge->set_config("rtx.volumetrics.singleScatteringAlbedo", value);
-	printf("BGE-Remix: the world's mist sent to Remix as fog (%s)\n", key);
+	printf("BGE-Remix: Remix's fog from the %s\n", key);
 }
 
 void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Matrix4x4 &view,

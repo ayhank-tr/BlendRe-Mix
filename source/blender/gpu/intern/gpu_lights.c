@@ -626,41 +626,11 @@ void GPU_lights_cluster(const void *records, int count, size_t record_size, unsi
         "	vec4 cl_viewport; vec4 cl_depth; uvec4 cl_counts; };\n" \
         "layout(std430, binding = 13) readonly buffer BgeClusterMasks { uint cl_mask[]; };\n"
 
-static const char *fog_inject_cs =
-        "layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;\n"
-        "layout(rgba16f, binding = 0) uniform writeonly image3D cells;\n"
+/* the lamps (records, clusters) and their light at a point, for compute
+ * passes and the volumes (gpu_volumes.c) */
+static const char *lamp_glsl =
         FOG_LAMP_DECL
         "uniform sampler2DArray pool;\n"
-        "uniform mat4 projinv, viewinv, view;\n"
-        "uniform ivec3 grid;\n"
-        "uniform vec4 zr;\n"         /* near, far, ln(far / near), orthographic */
-        "uniform vec4 mist0;\n"      /* on, type, start, distance */
-        "uniform vec4 mist1;\n"      /* intensity, height */
-        "uniform vec3 mistcol;\n"
-        "uniform int lamps_on;\n"
-        "float slice_z(float k) { return zr.x * exp(zr.z * k / float(grid.z)); }\n"
-        "vec3 at_depth(vec2 ndc, float z)\n"
-        "{\n"
-        "	vec4 a = projinv * vec4(ndc, -1.0, 1.0);\n"
-        "	vec4 b = projinv * vec4(ndc, 1.0, 1.0);\n"
-        "	a /= a.w;\n"
-        "	b /= b.w;\n"
-        "	return mix(a.xyz, b.xyz, (-z - a.z) / (b.z - a.z));\n"
-        "}\n"
-        /* the mist's visibility at a point (F12's mistfactor) */
-        "float mist_vis(vec3 p)\n"
-        "{\n"
-        "	if (mist0.x < 0.5) return 1.0;\n"
-        "	float zc = (zr.w > 0.5) ? -p.z : length(p);\n"
-        "	float f = clamp((zc - mist0.z) / max(mist0.w, 1e-6), 0.0, 1.0);\n"
-        "	if (mist0.y < 0.5) f *= f; else if (mist0.y > 1.5) f = sqrt(f);\n"
-        "	if (mist1.y != 0.0 && f != 0.0) {\n"
-        "		float hi = (viewinv * vec4(p, 1.0)).z;\n"
-        "		if (hi > mist1.y) f = 0.0;\n"
-        "		else if (hi > 0.0) { hi = (mist1.y - hi) / mist1.y; f *= hi * hi; }\n"
-        "	}\n"
-        "	return (1.0 - f) * (1.0 - mist1.x);\n"
-        "}\n"
         "float linear_depth(float d, vec3 clip)\n"
         "{\n"
         "	if (clip.z > 0.5) return clip.x + d * (clip.y - clip.x);\n"
@@ -731,6 +701,46 @@ static const char *fog_inject_cs =
         "	}\n"
         "	if (v <= 0.0) return vec3(0.0);\n"
         "	return col * v * lamp_shadow(L, w);\n"
+        "}\n"
+;
+
+const char *gpu_lights_lamp_glsl(void)
+{
+	return lamp_glsl;
+}
+
+static const char *fog_inject_cs_main =
+        "layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;\n"
+        "layout(rgba16f, binding = 0) uniform writeonly image3D cells;\n"
+        "uniform mat4 projinv, viewinv, view;\n"
+        "uniform ivec3 grid;\n"
+        "uniform vec4 zr;\n"         /* near, far, ln(far / near), orthographic */
+        "uniform vec4 mist0;\n"      /* on, type, start, distance */
+        "uniform vec4 mist1;\n"      /* intensity, height */
+        "uniform vec3 mistcol;\n"
+        "uniform int lamps_on;\n"
+        "float slice_z(float k) { return zr.x * exp(zr.z * k / float(grid.z)); }\n"
+        "vec3 at_depth(vec2 ndc, float z)\n"
+        "{\n"
+        "	vec4 a = projinv * vec4(ndc, -1.0, 1.0);\n"
+        "	vec4 b = projinv * vec4(ndc, 1.0, 1.0);\n"
+        "	a /= a.w;\n"
+        "	b /= b.w;\n"
+        "	return mix(a.xyz, b.xyz, (-z - a.z) / (b.z - a.z));\n"
+        "}\n"
+        /* the mist's visibility at a point (F12's mistfactor) */
+        "float mist_vis(vec3 p)\n"
+        "{\n"
+        "	if (mist0.x < 0.5) return 1.0;\n"
+        "	float zc = (zr.w > 0.5) ? -p.z : length(p);\n"
+        "	float f = clamp((zc - mist0.z) / max(mist0.w, 1e-6), 0.0, 1.0);\n"
+        "	if (mist0.y < 0.5) f *= f; else if (mist0.y > 1.5) f = sqrt(f);\n"
+        "	if (mist1.y != 0.0 && f != 0.0) {\n"
+        "		float hi = (viewinv * vec4(p, 1.0)).z;\n"
+        "		if (hi > mist1.y) f = 0.0;\n"
+        "		else if (hi > 0.0) { hi = (mist1.y - hi) / mist1.y; f *= hi * hi; }\n"
+        "	}\n"
+        "	return (1.0 - f) * (1.0 - mist1.x);\n"
         "}\n"
         "void main()\n"
         "{\n"
@@ -829,7 +839,15 @@ bool GPU_fog_grid(const float view[4][4], const float proj[4][4])
 		return false;
 	}
 	if (!fog.prog_inject) {
-		fog.prog_inject = GPU_compute_program(fog_inject_cs, "BGE-Remix fog cells");
+		/* the work group's size first, then the lamps, then the pass */
+		const char *nl = strchr(fog_inject_cs_main, '\n') + 1;
+		const size_t n1 = (size_t)(nl - fog_inject_cs_main);
+		char *src = MEM_mallocN(strlen(fog_inject_cs_main) + strlen(lamp_glsl) + 1, "fog source");
+		memcpy(src, fog_inject_cs_main, n1);
+		strcpy(src + n1, lamp_glsl);
+		strcat(src, nl);
+		fog.prog_inject = GPU_compute_program(src, "BGE-Remix fog cells");
+		MEM_freeN(src);
 		fog.prog_sum = GPU_compute_program(fog_sum_cs, "BGE-Remix fog sums");
 		if (!fog.prog_inject || !fog.prog_sum) {
 			fog.failed = true;

@@ -61,6 +61,7 @@ int GPU_layer_selftest(const char *dir);
 void gpu_lights_views_get(int *r_count, const float **r_mats, int *r_layer);
 bool gpu_scene_depth_is_on(void);
 void gpu_world_mist_get(float r[9]);
+const char *gpu_lights_lamp_glsl(void);
 struct Scene;
 struct World;
 bool gpu_world_cube_draw(struct Scene *scene, struct World *wo, bool linear, unsigned int cube, int face);

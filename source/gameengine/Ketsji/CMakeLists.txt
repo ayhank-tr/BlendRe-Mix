@@ -265,6 +265,14 @@ if(WITH_REMIX)
 	add_definitions(-DWITH_REMIX)
 endif()
 
+# BGE-Remix P8 Part B (P8.19): baked smoke and fire as volumes
+if(WITH_MOD_SMOKE)
+	list(APPEND INC
+		../../../intern/smoke/extern
+	)
+	add_definitions(-DWITH_SMOKE)
+endif()
+
 if(WITH_BULLET)
 	list(APPEND INC
 		../Physics/Bullet
