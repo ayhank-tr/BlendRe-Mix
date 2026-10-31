@@ -47,6 +47,7 @@ set(INC
 	../../blender/imbuf
 	../../blender/makesdna
 	../../blender/makesrna
+	../../blender/render/extern/include
 	../../blender/windowmanager
 	../../../intern/container
 	../../../intern/glew-mx
