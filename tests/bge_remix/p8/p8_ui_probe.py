@@ -70,6 +70,8 @@ def lamp_types():
     space = o["area"].spaces.active
     lamp = bpy.data.objects.get("Lamp") or [ob for ob in bpy.data.objects if ob.type == 'LAMP'][0]
     props = [a for a in win.screen.areas if a.type == 'PROPERTIES']
+    # the startup lamp's shadow (a hemi lamp, the last type below, has none)
+    shadow = getattr(lamp.data, "shadow_method", None)
     shots = []
     order = ["HEMI", "POINT", "HEMI", "SUN", "HEMI", "AREA", "HEMI", "SPOT", "HEMI"]
     for shade in ("MATERIAL", "TEXTURED"):
@@ -86,7 +88,7 @@ def lamp_types():
     return {"shots": shots, "window": {"width": win.width, "height": win.height},
             "view": region_rect(o["region"]),
             "properties": region_rect([r for r in props[0].regions if r.type == 'WINDOW'][0]) if props else None,
-            "lamp": lamp.name, "shadow": lamp.data.shadow_method}
+            "lamp": lamp.name, "shadow": shadow}
 
 
 def play():
