@@ -66,6 +66,9 @@ void GPU_stream_frame_end(void);
 void GPU_stream_written(unsigned int buffer);
 /* the most one GPU_stream_alloc takes from the ring (0: no ring) */
 size_t GPU_stream_part_size(void);
+/* changes whenever data written earlier may since have been written over:
+ * what is kept in the streaming buffer across draws is written again then */
+unsigned int GPU_stream_generation(void);
 
 /* BGE-Remix P8.29: what the drawing sent since the last reset (the editors'
  * benchmark reads it through Python's gpu.draw_stats) */
@@ -74,6 +77,7 @@ typedef struct GPUDrawStats {
 	int stream_allocs, stream_big, stream_waits;
 	double stream_wait_ms;        /* waiting for the card to finish with a part */
 	double emu_draws, emu_vertices, emu_bytes, emu_pieces;  /* the old calls' emulation */
+	double emu_blocks;            /* its fixed-function blocks written */
 } GPUDrawStats;
 void GPU_draw_stats(GPUDrawStats *r, bool reset);
 

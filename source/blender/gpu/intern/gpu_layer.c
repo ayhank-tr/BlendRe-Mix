@@ -109,6 +109,7 @@ static struct {
 	GLuint big[8];
 	int nbig;
 	/* for GPU_draw_stats */
+	unsigned int generation;  /* counts the parts left and the frames' own buffers freed */
 	size_t stat_bytes;
 	int stat_allocs, stat_big, stat_waits;
 	double stat_wait_s;
@@ -135,6 +136,7 @@ static void stream_next_part(void)
 	}
 	gpu_stream.fences[gpu_stream.part] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
 	gpu_stream.part = (gpu_stream.part + 1) % STREAM_PARTS;
+	gpu_stream.generation++;
 	gpu_stream.used = 0;
 	GLsync wait = gpu_stream.fences[gpu_stream.part];
 	if (wait) {
@@ -186,6 +188,11 @@ void *GPU_stream_alloc(size_t size, unsigned int *r_buffer, size_t *r_offset)
 	return gpu_stream.mapped + *r_offset;
 }
 
+unsigned int GPU_stream_generation(void)
+{
+	return gpu_stream.generation;
+}
+
 size_t GPU_stream_part_size(void)
 {
 	stream_init();
@@ -200,7 +207,7 @@ void GPU_draw_stats(GPUDrawStats *r, bool reset)
 	r->stream_big = gpu_stream.stat_big;
 	r->stream_waits = gpu_stream.stat_waits;
 	r->stream_wait_ms = gpu_stream.stat_wait_s * 1000.0;
-	gpu_lgl_stats(&r->emu_draws, &r->emu_vertices, &r->emu_bytes, &r->emu_pieces, reset);
+	gpu_lgl_stats(&r->emu_draws, &r->emu_vertices, &r->emu_bytes, &r->emu_pieces, &r->emu_blocks, reset);
 	if (reset) {
 		gpu_stream.stat_bytes = 0;
 		gpu_stream.stat_allocs = gpu_stream.stat_big = gpu_stream.stat_waits = 0;
@@ -239,6 +246,7 @@ void GPU_stream_frame_end(void)
 	if (gpu_stream.nbig) {
 		glDeleteBuffers(gpu_stream.nbig, gpu_stream.big);
 		gpu_stream.nbig = 0;
+		gpu_stream.generation++;
 	}
 	if (gpu_stream.used) {
 		stream_next_part();
@@ -261,7 +269,9 @@ static void stream_exit(void)
 	}
 	glUnmapNamedBuffer(gpu_stream.id);
 	glDeleteBuffers(1, &gpu_stream.id);
+	const unsigned int generation = gpu_stream.generation;
 	memset(&gpu_stream, 0, sizeof(gpu_stream));
+	gpu_stream.generation = generation + 1;  /* nothing written before is there any more */
 }
 
 /* ------------------------------------------------------------------------ */

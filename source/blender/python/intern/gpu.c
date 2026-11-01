@@ -319,7 +319,8 @@ PyDoc_STRVAR(GPU_draw_stats_doc,
 "\n"
 "   What the drawing sent since the last reset: the streaming buffer's bytes,\n"
 "   allocations, buffers of their own and waits for the card; the old OpenGL\n"
-"   calls' emulation's draws, vertices, bytes and pieces.\n"
+"   calls' emulation's draws, immediate-mode vertices, bytes, pieces and the\n"
+"   fixed-function blocks it wrote.\n"
 "\n"
 "   :rtype: dict\n"
 );
@@ -343,6 +344,7 @@ static PyObject *GPU_draw_stats_py(PyObject *UNUSED(self), PyObject *args, PyObj
 	ADD("emulated_vertices", st.emu_vertices);
 	ADD("emulated_bytes", st.emu_bytes);
 	ADD("emulated_pieces", st.emu_pieces);
+	ADD("emulated_blocks", st.emu_blocks);
 #undef ADD
 	return d;
 }

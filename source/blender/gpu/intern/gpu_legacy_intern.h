@@ -229,6 +229,10 @@ typedef struct LglState {
 	float last_mv[16], last_proj[16], last_texmat[LGL_FF_UNITS][16];
 	LglBlock block;
 	int block_valid;
+	/* where the block was last written in the streaming buffer */
+	unsigned int block_buf, block_gen;
+	size_t block_off;
+	double stat_blocks;
 } LglState;
 
 extern LglState lgl;

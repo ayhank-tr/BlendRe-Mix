@@ -52,8 +52,10 @@ void gpu_lgl_init(int core_profile);
 void gpu_lgl_exit(void);
 
 /* GPU_draw_stats: the emulation's draws, immediate-mode vertices, bytes it
- * streamed and the pieces large blocks were drawn in */
-void gpu_lgl_stats(double *r_draws, double *r_vertices, double *r_bytes, double *r_pieces, int reset);
+ * streamed, the pieces large blocks were drawn in, the fixed-function blocks
+ * it wrote */
+void gpu_lgl_stats(double *r_draws, double *r_vertices, double *r_bytes, double *r_pieces, double *r_blocks,
+                   int reset);
 
 #ifdef __cplusplus
 }

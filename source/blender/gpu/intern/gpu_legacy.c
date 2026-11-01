@@ -121,6 +121,12 @@ typedef struct LglContext {
 	int vp[4], vp_valid;
 	float point_size;
 	int point_size_valid;
+	/* what is bound in the context, to leave out binding it again:
+	 * the vertex array, the program, the fixed-function block's range */
+	GLuint vao_bound, program_bound;
+	int vao_known, program_known;
+	GLuint ubo_buf;
+	size_t ubo_off;
 } LglContext;
 
 #define LGL_CONTEXTS 16
@@ -177,7 +183,6 @@ typedef struct LglProg {
 #define LGL_PROGS 32
 static LglProg lgl_progs[LGL_PROGS];
 static int lgl_nprogs = 0;
-static GLuint lgl_ubo = 0;
 
 static GLuint lgl_compile(GLenum type, const char **src, int n, const char *what)
 {
@@ -462,8 +467,10 @@ static void lgl_mat_eq(float a[16], const float b[4][4], int *changed)
 	}
 }
 
-/* the block of the fixed-function look, given anew where it changed */
-static void lgl_update_block(void)
+/* the block of the fixed-function look: written anew to the streaming
+ * buffer where it changed (the card may still read the one before, so it is
+ * not written over), then bound where it is */
+static void lgl_update_block(LglContext *lc)
 {
 	float mv[4][4], proj[4][4], tm[4][4];
 	int changed = lgl.dirty || !lgl.block_valid;
@@ -475,40 +482,55 @@ static void lgl_update_block(void)
 		GPU_texture_matrix_get(u, tm);
 		lgl_mat_eq(lgl.last_texmat[u], tm, &changed);
 	}
-	if (!changed) {
-		return;
-	}
-	if (!lgl_ubo) {
-		glCreateBuffers(1, &lgl_ubo);
-		glNamedBufferData(lgl_ubo, sizeof(LglBlock), NULL, GL_DYNAMIC_DRAW);
-	}
-	LglBlock b;
-	lgl_build_block(&b);
-	if (!lgl.block_valid) {
-		glNamedBufferSubData(lgl_ubo, 0, sizeof(LglBlock), &b);
-	}
-	else {
-		/* the part that changed */
-		const unsigned char *x = (const unsigned char *)&b, *y = (const unsigned char *)&lgl.block;
-		size_t lo = 0, hi = sizeof(LglBlock);
-		while (lo < hi && x[lo] == y[lo]) {
-			lo++;
+	int write = !lgl.block_buf || lgl.block_gen != GPU_stream_generation();
+	if (changed) {
+		LglBlock b;
+		lgl_build_block(&b);
+		if (!lgl.block_valid || memcmp(&b, &lgl.block, sizeof(b)) != 0) {
+			memcpy(&lgl.block, &b, sizeof(b));
+			write = 1;
 		}
-		while (hi > lo && x[hi - 1] == y[hi - 1]) {
-			hi--;
-		}
-		if (hi > lo) {
-			lo &= ~(size_t)15;
-			hi = (hi + 15) & ~(size_t)15;
-			if (hi > sizeof(LglBlock)) {
-				hi = sizeof(LglBlock);
-			}
-			glNamedBufferSubData(lgl_ubo, (GLintptr)lo, (GLsizeiptr)(hi - lo), x + lo);
-		}
+		lgl.block_valid = 1;
+		lgl.dirty = 0;
 	}
-	memcpy(&lgl.block, &b, sizeof(b));
-	lgl.block_valid = 1;
-	lgl.dirty = 0;
+	if (write) {
+		GLuint buf = 0;
+		size_t off = 0;
+		void *dst = GPU_stream_alloc(sizeof(LglBlock), &buf, &off);
+		if (!dst) {
+			return;
+		}
+		memcpy(dst, &lgl.block, sizeof(LglBlock));
+		GPU_stream_written(buf);
+		lgl.block_buf = buf;
+		lgl.block_off = off;
+		lgl.block_gen = GPU_stream_generation();
+		lgl.stat_blocks += 1.0;
+	}
+	if (lc->ubo_buf != lgl.block_buf || lc->ubo_off != lgl.block_off) {
+		glBindBufferRange(GL_UNIFORM_BUFFER, 15, lgl.block_buf, (GLintptr)lgl.block_off, sizeof(LglBlock));
+		lc->ubo_buf = lgl.block_buf;
+		lc->ubo_off = lgl.block_off;
+	}
+}
+
+/* the vertex array and program, bound unless they are */
+static void lgl_bind_vao(LglContext *lc, GLuint vao)
+{
+	if (!lc->vao_known || lc->vao_bound != vao) {
+		glBindVertexArray(vao);
+		lc->vao_bound = vao;
+		lc->vao_known = 1;
+	}
+}
+
+static void lgl_use_program(LglContext *lc, GLuint program)
+{
+	if (!lc->program_known || lc->program_bound != program) {
+		glUseProgram(program);
+		lc->program_bound = program;
+		lc->program_known = 1;
+	}
 }
 
 /* the extra clip planes for the application's programs (translated ones
@@ -547,7 +569,8 @@ static void lgl_submit(GLenum prim, GLint first, GLsizei count, GLenum itype, GL
 		return;
 	}
 	LglContext *lc = lgl_context();
-	glBindVertexArray(lc->vao);
+	lgl_bind_vao(lc, lc->vao);
+	lgl.stat_draws += 1.0;
 
 	const LglSrc *at[16];
 	memset(at, 0, sizeof(at));
@@ -581,7 +604,7 @@ static void lgl_submit(GLenum prim, GLint first, GLsizei count, GLenum itype, GL
 		lgl_classic_state(&st);
 		GPU_old_builtins(program, &st);
 		lgl_user_clip(up);
-		glUseProgram(program);
+		lgl_use_program(lc, program);
 	}
 	else {
 		LglProg *lp = lgl_program(lgl_program_key());
@@ -589,9 +612,8 @@ static void lgl_submit(GLenum prim, GLint first, GLsizei count, GLenum itype, GL
 		if (!program) {
 			return;
 		}
-		lgl_update_block();
-		glBindBufferBase(GL_UNIFORM_BUFFER, 15, lgl_ubo);
-		glUseProgram(program);
+		lgl_update_block(lc);
+		lgl_use_program(lc, program);
 		if (lp->prim != prim_class) {
 			glProgramUniform1i(program, lp->loc_prim, prim_class);
 			lp->prim = prim_class;
@@ -780,6 +802,7 @@ static GLuint lgl_upload(const void *data, size_t size, GLintptr *r_offset)
 	if (dst) {
 		memcpy(dst, data, size);
 	}
+	lgl.stat_bytes += (double)size;
 	GPU_stream_written(buf);
 	*r_offset = (GLintptr)off;
 	return buf;
@@ -1162,7 +1185,6 @@ static void lgl_emit(GLenum prim, int start, int n, const LglPack *pk, int prim_
 	}
 #undef ARRAY
 
-	lgl.stat_draws += 1.0;
 	lgl.stat_verts += (double)n;
 	if (lgl_needs_conversion(prim)) {
 		GLenum p2;
@@ -1171,7 +1193,6 @@ static void lgl_emit(GLenum prim, int start, int n, const LglPack *pk, int prim_
 		if (count > 0) {
 			GLintptr ioff;
 			const GLuint ib = lgl_upload(lgl_idx, sizeof(unsigned int) * (size_t)count, &ioff);
-			lgl.stat_bytes += (double)(sizeof(unsigned int) * (size_t)count);
 			lgl_submit(p2, 0, count, GL_UNSIGNED_INT, ib, ioff, 0, 1, fixed, gen, cls, 0);
 		}
 	}
@@ -1291,14 +1312,16 @@ void GPU_lgl_End(void)
 	lgl_draw_immediate();
 }
 
-void gpu_lgl_stats(double *r_draws, double *r_vertices, double *r_bytes, double *r_pieces, int reset)
+void gpu_lgl_stats(double *r_draws, double *r_vertices, double *r_bytes, double *r_pieces, double *r_blocks,
+                   int reset)
 {
 	*r_draws = lgl.stat_draws;
 	*r_vertices = lgl.stat_verts;
 	*r_bytes = lgl.stat_bytes;
 	*r_pieces = lgl.stat_pieces;
+	*r_blocks = lgl.stat_blocks;
 	if (reset) {
-		lgl.stat_draws = lgl.stat_verts = lgl.stat_bytes = lgl.stat_pieces = 0.0;
+		lgl.stat_draws = lgl.stat_verts = lgl.stat_bytes = lgl.stat_pieces = lgl.stat_blocks = 0.0;
 	}
 }
 
@@ -1662,9 +1685,23 @@ static void lgl_draw_arrays(GLenum mode, GLint first, GLsizei count, GLenum ityp
 	}
 }
 
+/* the application's own vertex array draws: its array and program bound
+ * (the emulation's draws in between bound its own) */
+static void lgl_app_bindings(void)
+{
+	if (GPU_lgl_on) {
+		LglContext *lc = lgl_context();
+		lgl_bind_vao(lc, lgl.app_vao);
+		if (lgl.app_program) {
+			lgl_use_program(lc, lgl.app_program);
+		}
+	}
+}
+
 void GPU_lgl_DrawArrays(GLenum mode, GLint first, GLsizei count)
 {
 	if (lgl.app_vao) {
+		lgl_app_bindings();
 		glDrawArrays(mode, first, count);
 		return;
 	}
@@ -1674,6 +1711,7 @@ void GPU_lgl_DrawArrays(GLenum mode, GLint first, GLsizei count)
 void GPU_lgl_DrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices)
 {
 	if (lgl.app_vao) {
+		lgl_app_bindings();
 		glDrawElements(mode, count, type, indices);
 		return;
 	}
@@ -1684,6 +1722,7 @@ void GPU_lgl_DrawRangeElements(GLenum mode, GLuint start, GLuint end, GLsizei co
                                const void *indices)
 {
 	if (!GPU_lgl_on || lgl.app_vao) {
+		lgl_app_bindings();
 		glDrawRangeElements(mode, start, end, count, type, indices);
 		return;
 	}
@@ -1693,6 +1732,7 @@ void GPU_lgl_DrawRangeElements(GLenum mode, GLuint start, GLuint end, GLsizei co
 void GPU_lgl_DrawArraysInstanced(GLenum mode, GLint first, GLsizei count, GLsizei instances)
 {
 	if (!GPU_lgl_on || lgl.app_vao) {
+		lgl_app_bindings();
 		glDrawArraysInstanced(mode, first, count, instances);
 		return;
 	}
@@ -1703,6 +1743,7 @@ void GPU_lgl_DrawElementsInstanced(GLenum mode, GLsizei count, GLenum type, cons
                                    GLsizei instances)
 {
 	if (!GPU_lgl_on || lgl.app_vao) {
+		lgl_app_bindings();
 		glDrawElementsInstanced(mode, count, type, indices, instances);
 		return;
 	}
@@ -1749,7 +1790,7 @@ void lgl_draw_quad_pixels(int mode, unsigned int texture, const float corners[4]
 	/* the fixed-function texturing is off for them */
 	lgl_submit(GL_TRIANGLE_FAN, 0, 4, 0, 0, 0, 0, 1, fixed, gen, 2, mode);
 	lgl.app_program = app_program;
-	glUseProgram(app_program);
+	lgl_use_program(lgl_context(), app_program);
 	glBindTextureUnit(LGL_PX_UNIT, lgl_unit15_texture());
 }
 
@@ -1874,6 +1915,8 @@ void GPU_lgl_UseProgram(GLuint program)
 {
 	if (GPU_lgl_on) {
 		lgl.app_program = program;
+		lgl_use_program(lgl_context(), program);
+		return;
 	}
 	glUseProgram(program);
 }
@@ -1885,15 +1928,21 @@ void GPU_lgl_BindVertexArray(GLuint vao)
 		return;
 	}
 	lgl.app_vao = vao;
-	glBindVertexArray(vao ? vao : lgl_context()->vao);
+	LglContext *lc = lgl_context();
+	lgl_bind_vao(lc, vao ? vao : lc->vao);
 }
 
 void GPU_lgl_DeleteVertexArrays(GLsizei n, const GLuint *arrays)
 {
 	if (GPU_lgl_on) {
+		LglContext *lc = lgl_context();
 		for (GLsizei i = 0; i < n; i++) {
 			if (arrays[i] && arrays[i] == lgl.app_vao) {
 				lgl.app_vao = 0;
+			}
+			if (arrays[i] && arrays[i] == lc->vao_bound) {
+				/* deleting the bound vertex array binds none */
+				lc->vao_known = 0;
 			}
 		}
 	}
@@ -1908,7 +1957,7 @@ void GPU_lgl_BindBuffer(GLenum target, GLuint buffer)
 			 * holds the binding (glBufferData and the like use it) */
 			LglContext *lc = lgl_context();
 			lgl.app_ebo = buffer;
-			glBindVertexArray(lc->vao);
+			lgl_bind_vao(lc, lc->vao);
 			glBindBuffer(target, buffer);
 			lc->ebo = buffer;
 			return;
@@ -2298,7 +2347,8 @@ void gpu_lgl_init(int core_profile)
 		printf("BGE-Remix GL: the old OpenGL calls are emulated (%s)\n",
 		       core_profile ? "core context" : "BGE_REMIX_GL_EMULATE=1");
 		/* the default vertex array as the application sees it */
-		glBindVertexArray(lgl_context()->vao);
+		LglContext *lc = lgl_context();
+		lgl_bind_vao(lc, lc->vao);
 	}
 }
 
@@ -2310,10 +2360,6 @@ void gpu_lgl_exit(void)
 		}
 	}
 	lgl_nprogs = 0;
-	if (lgl_ubo) {
-		glDeleteBuffers(1, &lgl_ubo);
-		lgl_ubo = 0;
-	}
 	if (lgl_default_vs) {
 		glDeleteShader(lgl_default_vs);
 		lgl_default_vs = 0;
@@ -2359,4 +2405,5 @@ void gpu_lgl_exit(void)
 		lgl_texfmts = NULL;
 	}
 	lgl.block_valid = 0;
+	lgl.block_buf = 0;
 }
