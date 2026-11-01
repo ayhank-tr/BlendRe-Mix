@@ -8,6 +8,9 @@ C:\\BGE-Remix\\transfer\\p0-results.zip, as GitHub's runs did.
 
   run_local.bat              every phase (P0 to P8)
   run_local.bat p8           only P8 (any list works: p4 p8)
+  run_local.bat p8rtx        P8's RTX run: the real RTX Remix runtime, every
+                             benchmark target, the picture sheets (also
+                             run_p8_rtx.bat in the p8 folder)
 
 Needs, once: Python 3 with pillow and numpy (python -m pip install pillow
 numpy), and the official Blender 2.79b unpacked into
@@ -36,6 +39,7 @@ MOCK_SHIM = os.path.join(LOCAL, "mock_shim")
 RESULTS = os.path.join(LOCAL, "results")
 HERE = os.path.dirname(os.path.abspath(__file__))
 PHASES = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"]
+EXTRA = ["p8rtx"]  # only when asked for
 
 
 def say(text=""):
@@ -108,6 +112,11 @@ def commands():
         "p6": run("p6", "run_p6.py") + ["--ours", OURS] + off + ["--out", os.path.join(RESULTS, "p6")],
         "p7": run("p7", "run_p7.py") + ["--ours", OURS] + off + ["--mock", MOCK, "--out", os.path.join(RESULTS, "p7")],
         "p8": run("p8", "run_p8.py") + ["--ours", OURS] + off + ["--mock", MOCK, "--out", os.path.join(RESULTS, "p8")],
+        # the earlier phases' RTX pictures (made by the build before P8) are
+        # in C:\BGE-Remix\results
+        "p8rtx": run("p8", "run_p8.py") + ["--ours", OURS] + off +
+                 ["--mock", MOCK, "--rtx", "--before", os.path.join(ROOT, "results"),
+                  "--out", os.path.join(RESULTS, "p8rtx")],
     }
 
 
@@ -197,7 +206,7 @@ def crash_reports():
 def main():
     say("BGE-Remix tests on this PC")
     say("=" * 40)
-    wanted = [a.lower() for a in sys.argv[1:] if a.lower() in PHASES] or PHASES
+    wanted = [a.lower() for a in sys.argv[1:] if a.lower() in PHASES + EXTRA] or PHASES
     check_python()
     if not os.path.isfile(os.path.join(OFFICIAL, "blender.exe")):
         stop("the official Blender 2.79b is not in %s.\nUnpack blender-2.79b-windows64.zip (from "
@@ -222,7 +231,7 @@ def main():
         f.write("BGE-Remix tests on this PC, %s\n" % time.strftime("%Y-%m-%d %H:%M"))
         f.write("build: %s\n" % os.path.basename(build))
         for phase, code, minutes, line in done:
-            f.write("%-3s exit %-3d %6.1f min  %s\n" % (phase.upper(), code, minutes, line))
+            f.write("%-5s exit %-3d %6.1f min  %s\n" % (phase.upper(), code, minutes, line))
         f.write("total %.1f min\n" % ((time.time() - total) / 60.0))
     target = os.path.join(TRANSFER, "p0-results.zip")
     if os.path.isfile(target):

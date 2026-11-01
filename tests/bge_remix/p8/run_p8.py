@@ -87,12 +87,14 @@ T8.34 regression: P0-P7 unchanged (T8.20)
 B8.1-B8.5, B8.10 (shadows) reported; their targets are for the RTX run
 
   python run_p8.py --ours <build> --official <stock 2.79b> --mock <fake runtime> --out <dir>   (CI)
+  python run_p8.py ... --rtx --before C:\BGE-Remix\results   (P8.30's RTX run: run_p8_rtx.bat)
 """
 
 import argparse
 import json
 import os
 import re
+import time
 import shutil
 import sys
 
@@ -2975,24 +2977,419 @@ def editor_benchmarks(U):
             "B8.15 what a core redraw sends": stats}
 
 
+# ---------------------------------------------------------------------------
+# P8.30: the RTX run (your RTX card, the real RTX Remix runtime)
+#
+# T8.36 Remix: the old test scenes' Remix pictures as the build before P8
+#       made them (the earlier phases' RTX runs, C:\BGE-Remix\results); every
+#       new scene drawn by Remix; Add blending reaching Remix as emissive
+# Part B's items: the sky picture the right way up in Remix's dome; Modern's
+#       brightness against Remix's; speed against stock 2.79 (B8.6)
+# Every benchmark against its target; the picture sheets for the sign-off
+
+FRAME_60 = 1000.0 / 60.0
+TOL_BEFORE = 12.0  # a Remix picture against the build before P8's (path traced, denoised; blurred first)
+REMIX_SECONDS = 15
+# Remix compiles every shader it lacks before its first frame, so the
+# pictures are ray traced (P2's RTX runs)
+REMIX_ENV = {"RTX_ENABLE_ASYNC_COMPILATION": "0"}
+
+REMIX_VARIANT = r'''
+# a copy of each scene with RTX Remix on (scene property bge_remix)
+import bpy, os, sys
+argv = sys.argv[sys.argv.index("--") + 1:]
+folder, names = argv[0], argv[1:]
+for name in names:
+    path = os.path.join(folder, name + ".blend")
+    if not os.path.isfile(path):
+        continue
+    bpy.ops.wm.open_mainfile(filepath=path)
+    for sc in bpy.data.scenes:
+        sc["bge_remix"] = 1
+    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, name + "_rtx.blend"), check_existing=False)
+'''
+
+# each new scene four ways: the game in Classic and in Modern, F12, Remix
+# ("+name": a copy of name with Remix on)
+RTX_SCENES = [
+    ("proc_textures", "proc_textures_gl", None, "proc_textures_gl", "proc_textures"),
+    ("pbr_spheres", "pbr_spheres_gl", "pbr_spheres_modern_filmic", "pbr_spheres_gl", "pbr_spheres"),
+    ("classic_remix", "classic_remix_gl", None, "classic_remix_gl", "classic_remix"),
+    ("lamps", "lamps_gl", None, "lamps_gl", "lamps"),
+    ("shadows", "shadows", None, "shadows", "+shadows"),
+    ("many_lamps", "many_lamps", None, None, "+many_lamps"),
+    ("sky: blend", "world_sky_blend_classic", "world_sky_blend_modern", "world_sky_blend_classic",
+     "world_sky_blend_remix"),
+    ("sky: real", "world_sky_real_classic", "world_sky_real_modern", "world_sky_real_classic",
+     "+world_sky_real_classic"),
+    ("Sky & Atmosphere", "world_sky_atmosphere_middle_classic", "world_sky_atmosphere_middle_modern",
+     "world_sky_atmosphere_middle_classic", "+world_sky_atmosphere_middle_classic"),
+    ("mist", "world_sky_mist_linear_height_classic", "world_sky_mist_linear_height_modern",
+     "world_sky_mist_linear_height_classic", "world_sky_mist_remix"),
+    ("reflections", "reflections", "reflections_modern", "reflections", "+reflections"),
+    ("volumes", "volumes", "volumes_modern", "volumes_nosmoke", "+volumes"),
+    ("hair_particles", "hair_particles", "hair_particles_modern", "hair_particles", "hair_particles_remix"),
+    ("transparency", "transparency", "transparency_modern", "transparency", "+transparency"),
+    ("left_out", None, "left_out", "left_out", "left_out_remix"),
+    ("camera_fx", "camera_fx_none", "camera_fx_all", "camera_fx_none", "camera_fx_all_remix"),
+    ("remix_extras", None, "remix_extras", "remix_extras", "remix_extras_remix"),
+    ("game_overlays", "game_overlays", None, None, "game_overlays_remix"),
+]
+
+# the earlier phases' RTX pictures, made by the build before P8: (phase,
+# picture, how it was taken)
+BEFORE = [("p2", "T2.1_room", "the P2 room (1920 x 1080)"),
+          ("p3", "T3.2_room", "the P3 textured room (1280 x 720)"),
+          ("p4", "T4.1_remix_default", "the P4 characters, frozen at tic 90 (1280 x 720)")]
+
+
+def grid_sheet(rows, heads, target):
+    """rows of pictures under column heads (the four-way sheet)"""
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        return None
+    w, h, top = 480, 270, 24
+    cols = len(heads)
+    sheet = Image.new("RGB", (w * cols, top + (h + top) * len(rows)), (0, 0, 0))
+    d = ImageDraw.Draw(sheet)
+    for c, head in enumerate(heads):
+        d.text((c * w + 8, 6), head, fill=(255, 255, 0))
+    for r, (label, paths) in enumerate(rows):
+        y = top + r * (h + top)
+        d.text((8, y + 6), label, fill=(255, 255, 255))
+        for c, path in enumerate(paths):
+            if path and os.path.isfile(path):
+                img = Image.open(path).convert("RGB").resize((w, h))
+            else:
+                img = Image.new("RGB", (w, h), (30, 30, 30))
+                ImageDraw.Draw(img).text((8, 8), "(none)" if not path else "(missing)", fill=(160, 160, 160))
+            sheet.paste(img, (c * w, y + top))
+    try:
+        sheet.save(target)
+    except OSError:
+        base, ext = os.path.splitext(target)
+        target = "%s_%s%s" % (base, time.strftime("%H%M%S"), ext)
+        sheet.save(target)
+    return target
+
+
+def picture_diff(path_a, path_b):
+    """mean difference of two pictures at the first one's size, both
+    blurred a little (path tracing's grain)"""
+    a, b = picture(path_a), picture(path_b)
+    if a is None or b is None:
+        return None
+    if a.shape != b.shape:
+        from PIL import Image
+        import numpy as np
+        b = np.asarray(Image.fromarray(b.clip(0, 255).astype("uint8")).resize((a.shape[1], a.shape[0])),
+                       dtype=np.float64)
+    return whole_diff(blurred(a, 2.0), blurred(b, 2.0))
+
+
+def band_colour(a, rect):
+    left, top, right, bottom = rect
+    return a[top:bottom, left:right].reshape(-1, 3).mean(axis=0)
+
+
+def linear_mean(path):
+    a = picture(path)
+    if a is None:
+        return None
+    lin = srgb_to_linear(a)
+    return float((0.2126 * lin[..., 0] + 0.7152 * lin[..., 1] + 0.0722 * lin[..., 2]).mean())
+
+
+def rtx_before(args, out, before):
+    """T8.36: the earlier phases' Remix pictures taken again, as their RTX
+    runs took them, against the ones the build before P8 made"""
+    sys.path.insert(0, os.path.join(os.path.dirname(HERE), "p4"))
+    import run_p4 as p4  # noqa: E402
+    clean = {"BGE_REMIX_RUNTIME_DIR": None, "BGE_REMIX_MOCK_LOG": None}
+    res = {}
+
+    def timed(seconds, extra=None):
+        e = dict(clean)
+        e.update({"BGE_REMIX_P2_SECONDS": str(seconds), "BGE_REMIX_P2_FRAMES": "60",
+                  "BGE_REMIX_P2_SHOT_FRAME": "30"})
+        e.update(extra or {})
+        return e
+
+    def keep(phase, name, run):
+        ref = os.path.join(before, phase, name + ".png") if before else None
+        res[phase] = {"now": run.get("screenshot"), "before": ref if ref and os.path.isfile(ref) else None,
+                      "running": run.get("stats", {}).get("running") is True,
+                      "picture": bool(p2.has_picture(run.get("screenshot"))[0]) if run.get("screenshot") else False}
+        res[phase]["difference"] = picture_diff(res[phase]["now"], res[phase]["before"]) \
+            if res[phase]["before"] else None
+
+    try:
+        d = os.path.join(out, "before_p2")
+        os.makedirs(d, exist_ok=True)
+        sc, _ = p2.make_scenes(args.ours, d)
+        keep("p2", "T2.1_room", p2.player(args.ours, d, "T2.1_room", os.path.join(sc, "p2_room.blend"), timed(40),
+                                          size=(1920, 1080), cwd=d))
+    except BaseException as ex:  # a SystemExit from a scene maker included
+        res["p2"] = {"error": repr(ex)}
+    try:
+        d = os.path.join(out, "before_p3")
+        os.makedirs(d, exist_ok=True)
+        sc, _ = p3.make_scenes(args.ours, d)
+        cache = p3.fresh(os.path.join(d, "cache_room"))
+        room = os.path.join(sc, "p3_room.blend")
+        p2.player(args.ours, d, "T3.6_cold", room, timed(25, {"BGE_REMIX_CACHE_DIR": cache}), size=(1280, 720), cwd=d)
+        keep("p3", "T3.2_room", p2.player(args.ours, d, "T3.2_room", room, timed(25, {"BGE_REMIX_CACHE_DIR": cache}),
+                                          size=(1280, 720), cwd=d))
+    except BaseException as ex:
+        res["p3"] = {"error": repr(ex)}
+    try:
+        d = os.path.join(out, "before_p4")
+        os.makedirs(d, exist_ok=True)
+        sc, _ = p4.make_scenes(args.ours, d)
+        env = timed(10, {"BGE_REMIX_CACHE_DIR": os.path.join(d, "cache"), "RTX_ENABLE_ASYNC_COMPILATION": "0",
+                         "BGE_REMIX_P4_FREEZE": "90"})
+        keep("p4", "T4.1_remix_default", p4.player(args.ours, d, "T4.1_remix_default",
+                                                   os.path.join(sc, "p4_characters.blend"), env, size=(1280, 720),
+                                                   cwd=d))
+    except BaseException as ex:
+        res["p4"] = {"error": repr(ex)}
+    return res
+
+
+def judge_benchmarks(bench):
+    """each benchmark against its plan target (60 FPS: 16.7 ms a frame)"""
+    c, d = {}, {}
+
+    def get(name, *keys):
+        for k, v in bench.items():
+            if k.startswith(name + " "):
+                for key in keys:
+                    v = v.get(key) if isinstance(v, dict) else None
+                return v
+        return None
+
+    def fps60(label, ms):
+        d[label] = ms
+        c["%s: 60 FPS (%s ms a frame)" % (label, "%.2f" % ms if ms is not None else "?")] = \
+            ms is not None and ms <= FRAME_60
+
+    fps60("B8.1 mt_bench", get("B8.1", "ours"))
+    fps60("B8.3 proc_textures with bump", get("B8.3", "with_bump"))
+    fps60("B8.7 crowd, instancing and GPU culling on", get("B8.7", "on"))
+    fps60("B8.8 glsl_features, Modern", get("B8.8", "glsl_features modern"))
+    fps60("B8.8 pbr_spheres, Modern", get("B8.8", "pbr_spheres modern"))
+    fps60("B8.9 256 lamps", get("B8.9", "256"))
+    fps60("B8.10 4 casting lamps", get("B8.10", "4"))
+    fps60("B8.11 1 probe every 10 frames", get("B8.11", "p1_r10"))
+    fps60("B8.11 4 probes every 10 frames", get("B8.11", "p4_r10"))
+    for key in ("volumes", "mist", "shafts"):
+        fps60("B8.12 " + key, get("B8.12", key))
+    for key in ("hair_particles", "transparency"):
+        fps60("B8.13 " + key, get("B8.13", key))
+    fps60("B8.14 every screen effect", get("B8.14", "all"))
+    ours, stock = get("B8.6", "mt_bench", "ours"), get("B8.6", "mt_bench", "stock")
+    c["B8.6 mt_bench not slower than stock 2.79 (%s against %s ms)" % (ours, stock)] = \
+        ours is not None and stock is not None and ours <= stock
+    d["B8.6 the P2 room with Remix off (reported: P8's fixed cost)"] = get("B8.6", "p2_room")
+    core, st = get("B8.15", "core", "edit_ms"), get("B8.15", "stock", "edit_ms")
+    # (the same redraw timed twice differs by a few per cent)
+    c["B8.15 edit mode not slower than stock 2.79 (%s against %s ms, 5%% allowed)" % (core, st)] = \
+        core is not None and st is not None and core <= st * 1.05
+    d["B8.15 a whole-window redraw (reported: a known difference)"] = \
+        {"core": get("B8.15", "core", "window_ms"), "stock": get("B8.15", "stock", "window_ms")}
+    return c, d
+
+
+def run_rtx(args, out):
+    scenes, expected = make_scenes(args, out)
+    S = lambda n: os.path.join(scenes, n + ".blend")  # noqa: E731
+    have = lambda n: bool(n) and os.path.isfile(S(n))  # noqa: E731
+    tests, bench = {}, {}
+
+    # the scenes with Remix on that the CI tests had no need of
+    plus = [r[4][1:] for r in RTX_SCENES if r[4] and r[4].startswith("+")]
+    blender_script(args.ours, out, "remix_variants", REMIX_VARIANT, [scenes] + plus)
+
+    # each new scene four ways
+    print("RTX run: the new scenes in the game, F12 and RTX Remix...", flush=True)
+    rows, remix_runs = [], {}
+    for label, classic, modern, f12, remix in RTX_SCENES:
+        key = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
+        paths = []
+        for kind, name in (("classic", classic), ("modern", modern)):
+            r = play(args.ours, out, "rtx_%s_%s" % (key, kind), S(name), frames=110, gl_debug=False) \
+                if have(name) else {}
+            paths.append(r.get("screenshot"))
+        f12_path = None
+        if have(f12):
+            f12_path = os.path.join(out, "rtx_%s_f12.png" % key)
+            blender_script(args.ours, out, "rtx_%s_f12" % key, RENDER, [f12_path], blend=S(f12), timeout=1800)
+        paths.append(f12_path if f12_path and os.path.isfile(f12_path) else None)
+        name = (remix[1:] + "_rtx") if remix and remix.startswith("+") else remix
+        r = play(args.ours, out, "rtx_%s_remix" % key, S(name), dict(REMIX_ENV), frames=60, seconds=REMIX_SECONDS,
+                 gl_debug=False) if have(name) else {}
+        remix_runs[key] = r
+        paths.append(r.get("screenshot"))
+        rows.append((label, paths))
+    sheet_scenes = grid_sheet(rows, ["game: Classic", "game: Modern", "F12", "RTX Remix"],
+                              os.path.join(out, "sheet_p8_rtx_scenes.png"))
+
+    # T8.36
+    print("RTX run: the earlier phases' Remix pictures again...", flush=True)
+    before = rtx_before(args, out, args.before)
+    c, d = {}, {"before": before, "new_scenes": {}}
+    for phase, label, what in BEFORE:
+        b = before.get(phase, {})
+        if b.get("error"):
+            c["%s: taken again" % what] = False
+            continue
+        c["%s: drawn by Remix" % what] = bool(b.get("running")) and bool(b.get("picture"))
+        if b.get("before"):
+            diff = b.get("difference")
+            c["%s: as the build before P8 drew it (within %.0f; %s)" % (what, TOL_BEFORE, diff)] = \
+                diff is not None and diff <= TOL_BEFORE
+        else:
+            d.setdefault("no_picture_from_before", []).append(what)
+    missing = []
+    for key, r in remix_runs.items():
+        s = r.get("stats", {})
+        ok, look = p2.has_picture(r.get("screenshot")) if r.get("screenshot") else (False, {})
+        d["new_scenes"][key] = {"running": s.get("running"), "errors": s.get("errors"),
+                                "draws": s.get("draws_last_frame"), "picture": look}
+        if not (r.get("ran") and s.get("running") is True and not s.get("errors") and ok):
+            missing.append(key)
+    d["not_drawn_by_remix"] = missing
+    c["every new scene drawn by Remix (a picture, Remix running, no Remix errors)"] = not missing and bool(remix_runs)
+    # Add blending as Remix's emissive blending: the sphere glows orange
+    # over the background beside it
+    shot = picture(remix_runs.get("classic_remix", {}).get("screenshot"))
+    add = next((e for e in expected.get("classic_remix", []) if e.get("name") == "add"), None)
+    if shot is not None and add:
+        left, top, right, bottom = add["rect"]
+        inside = band_colour(shot, add["rect"])
+        beside = band_colour(shot, [left, max(0, top - 60), right, max(1, top - 40)])
+        d["add"] = {"inside": [round(float(x), 1) for x in inside], "above": [round(float(x), 1) for x in beside]}
+        c["Add blending reaches Remix as emissive: the sphere glows orange"] = \
+            float(inside.mean()) > float(beside.mean()) + 10.0 and float(inside[0]) > float(inside[2]) + 20.0
+    else:
+        c["Add blending reaches Remix as emissive: the sphere glows orange"] = False
+    tests["T8.36 Remix (RTX run)"] = {"ok": all(c.values()), "checks": c, "detail": d}
+
+    # Part B's items left for this run
+    c, d = {}, {}
+    sky = expected.get("world_sky", {}).get("sky_rect", [0, 0, SIZE[0], SIZE[1] // 2])
+    sky_row = dict(rows).get("sky: blend", [None] * 4)
+    game, remix = picture(sky_row[0]), picture(sky_row[3])
+    if game is not None and remix is not None:
+        left, top, right, bottom = sky
+        h = bottom - top
+        upper, lower = [left, top, right, top + h // 5], [left, bottom - h // 5, right, bottom]
+        dg = band_colour(game, upper) - band_colour(game, lower)
+        dr = band_colour(remix, upper) - band_colour(remix, lower)
+        import numpy as np
+        cos = float(np.dot(dg, dr) / (np.linalg.norm(dg) * np.linalg.norm(dr) + 1e-6))
+        d["sky"] = {"game_top_minus_horizon": [round(float(x), 1) for x in dg],
+                    "remix_top_minus_horizon": [round(float(x), 1) for x in dr], "agreement": round(cos, 2)}
+        c["the sky picture is the right way up in Remix's dome (zenith at the top)"] = cos > 0.3
+    else:
+        c["the sky picture is the right way up in Remix's dome (zenith at the top)"] = False
+    ratios = {}
+    for label in ("sky: blend", "pbr_spheres"):
+        row = dict(rows).get(label, [None] * 4)
+        m, r = linear_mean(row[1]), linear_mean(row[3])
+        ratios[label] = round(m / r, 2) if m and r else None
+    d["modern_over_remix_brightness"] = ratios
+    c["Modern's brightness within a stop of Remix's (sky: blend, pbr_spheres)"] = \
+        all(v is not None and 0.5 <= v <= 2.0 for v in ratios.values())
+    tests["Part B's items (RTX run)"] = {"ok": all(c.values()), "checks": c, "detail": d}
+
+    # the benchmarks, and where the crowd's frame goes
+    print("RTX run: the benchmarks...", flush=True)
+    bench = benchmarks(args, out, scenes, {})
+    bench.update(partb_benchmarks(args, out, S, expected))
+    bench.update(partc_benchmarks(args, out, S))
+    cache_dir = os.path.join(out, "shader_cache_b82")
+    shutil.rmtree(cache_dir, ignore_errors=True)
+    starts = [play(args.ours, out, "rtx_b82_%s" % k, S("glsl_features"), {"BGE_REMIX_SHADER_CACHE": cache_dir},
+                   frames=60, gl_debug=False).get("seconds_total") for k in ("first", "second")]
+    bench["B8.2 start with the shader cache (s): first, second"] = starts
+    prof = os.path.join(out, "rtx_crowd_profile.json")
+    if os.path.isfile(prof):
+        os.remove(prof)
+    play(args.ours, out, "rtx_crowd_profile", S("crowd"), {"BGE_REMIX_P8_STATS": prof}, frames=90, gl_debug=False)
+    bench["B8.7 the crowd's frame by category (ms, percent)"] = p2.read_json(prof)
+    startup = os.path.join(out, "editor_startup.blend")
+    if os.path.isfile(startup):
+        os.remove(startup)
+    blender_script(args.ours, out, "editor_startup", STARTUP_SAVE, [startup])
+    U = editor_runs(args, out, S, expected, startup)
+    bench.update(editor_benchmarks(U))
+    c, d = judge_benchmarks(bench)
+    c["B8.2 the second start faster (%s)" % starts] = None not in starts and starts[1] < starts[0]
+    tests["Benchmark targets (RTX run)"] = {"ok": all(c.values()), "checks": c, "detail": d}
+
+    # the other sheets: mt_features before (stock 2.79's Multitexture) and
+    # after; the editors in stock 2.79 and in P8; the old scenes before and now
+    sheets = {"scenes": sheet_scenes}
+    if args.official and have("mt_features"):
+        a = play(args.official, out, "rtx_stock_mt_features", S("mt_features"), frames=150, gl_debug=False)
+        b = play(args.ours, out, "rtx_mt_features", S("mt_features"), frames=150, gl_debug=False)
+        sheets["mt_features"] = p2.contact_sheet([("mt_features before: stock 2.79 Multitexture", a.get("screenshot")),
+                                                  ("mt_features after: P8", b.get("screenshot"))],
+                                                 os.path.join(out, "sheet_p8_rtx_mt_features.png"))
+    items = []
+    for screen in expected.get("editors_ui", {}).get("screens", []) + ["Default", "Default_edit"]:
+        if any(screen == x[0].split(": ")[0] for x in items):
+            continue
+        items.append(("%s: stock 2.79" % screen, U["shot"].get(("stock", screen))))
+        items.append(("%s: P8 (core)" % screen, U["shot"].get(("core", screen))))
+    sheets["editors"] = p2.contact_sheet(items, os.path.join(out, "sheet_p8_rtx_editors.png"))
+    old = []
+    for phase, label, what in BEFORE:
+        b = before.get(phase, {})
+        old += [("%s: before P8" % what, b.get("before")), ("%s: P8" % what, b.get("now"))]
+    sheets["before"] = p2.contact_sheet(old, os.path.join(out, "sheet_p8_rtx_before.png"))
+
+    res = {"tests": tests, "bench": bench, "sheets": sheets, "all_ok": all(t["ok"] for t in tests.values())}
+    lines = ["BGE-Remix P8 RTX run (your RTX card, the real RTX Remix runtime)", "=" * 70, ""]
+    for name, t in tests.items():
+        lines.append("%-34s %s" % (name, p2.mark(t["ok"])))
+        for check, ok in t["checks"].items():
+            lines.append("      %s %s" % ("ok    " if ok else "FAILED", check))
+    lines += ["", "Benchmarks:"]
+    for name, v in bench.items():
+        lines.append("  %-26s %s" % (name, json.dumps(v)))
+    lines += ["", "Picture sheets for your sign-off:"]
+    for name, path in sheets.items():
+        lines.append("  %-12s %s" % (name, path))
+    lines += ["", "ALL PASSED" if res["all_ok"] else "SOMETHING FAILED (see results_p8_rtx.json and the .log files)"]
+    return res, lines
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ours", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--official")
-    ap.add_argument("--mock", required=True)
+    ap.add_argument("--mock")
+    ap.add_argument("--rtx", action="store_true", help="the RTX run: the real RTX Remix runtime (P8.30)")
+    ap.add_argument("--before", help="the earlier phases' RTX results (C:\\BGE-Remix\\results)")
     args = ap.parse_args()
+    if not args.rtx and not args.mock:
+        ap.error("--mock is needed (the fake RTX Remix runtime) unless --rtx")
     args.ours = os.path.abspath(args.ours)
     OURS["build"] = args.ours
     if args.official:
         args.official = os.path.abspath(args.official)
     out = os.path.abspath(args.out)
     os.makedirs(out, exist_ok=True)
-    res, lines = run(args, out)
-    with open(os.path.join(out, "results_p8a.json"), "w") as f:
+    res, lines = run_rtx(args, out) if args.rtx else run(args, out)
+    name = "p8_rtx" if args.rtx else "p8a"
+    with open(os.path.join(out, "results_%s.json" % name), "w") as f:
         json.dump(res, f, indent=2, default=str)
     text = "\n".join(lines) + "\n"
-    with open(os.path.join(out, "summary_p8a.txt"), "w") as f:
+    with open(os.path.join(out, "summary_%s.txt" % name), "w") as f:
         f.write(text)
     print(text)
     sys.exit(0 if res["all_ok"] else 1)

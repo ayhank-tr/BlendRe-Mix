@@ -1892,7 +1892,8 @@ out = os.environ.get("BGE_REMIX_P8_STATS")
 if out and n == 80:
     info = bge.logic.getProfileInfo()
     with open(out, "w") as f:
-        json.dump({k: list(info[k]) for k in ("Culling", "Instancing") if k in info}, f)
+        # every category (the RTX run reports where the crowd's frame goes)
+        json.dump({k: list(v) for k, v in info.items()}, f)
 '''
 
 
