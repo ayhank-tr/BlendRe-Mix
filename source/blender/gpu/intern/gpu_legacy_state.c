@@ -1764,6 +1764,107 @@ void GPU_lgl_TexParameterfv(GLenum target, GLenum pname, const GLfloat *params)
 	glTexParameterfv(target, pname, params);
 }
 
+/* the old texture parameters core OpenGL no longer knows; 1 if pname was one */
+static int get_tex_param_special(GLenum target, GLenum pname, GLint *r)
+{
+	if (pname == GL_GENERATE_MIPMAP) {
+		*r = (lgl_tex_base_format(bound_texture(target)) & B_GENMIPMAP) ? GL_TRUE : GL_FALSE;
+		return 1;
+	}
+	if (pname == GL_DEPTH_TEXTURE_MODE) {
+		GLint s[4];
+		glGetTexParameteriv(swizzle_target(target), GL_TEXTURE_SWIZZLE_RGBA, s);
+		*r = (s[0] == GL_ZERO) ? GL_ALPHA : (s[3] == GL_ONE) ? GL_LUMINANCE :
+		     (s[0] == GL_RED && s[3] == GL_RED) ? GL_INTENSITY : GL_LUMINANCE;
+		return 1;
+	}
+	if (pname == GL_TEXTURE_PRIORITY) {
+		*r = 2147483647;  /* 1.0, as an integer query gives it */
+		return 1;
+	}
+	if (pname == GL_TEXTURE_RESIDENT) {
+		*r = GL_TRUE;
+		return 1;
+	}
+	return 0;
+}
+
+void GPU_lgl_GetTexParameteriv(GLenum target, GLenum pname, GLint *params)
+{
+	if (!get_tex_param_special(target, pname, params)) {
+		glGetTexParameteriv(target, pname, params);
+	}
+}
+
+void GPU_lgl_GetTexParameterfv(GLenum target, GLenum pname, GLfloat *params)
+{
+	GLint v;
+	if (pname == GL_TEXTURE_PRIORITY) {
+		params[0] = 1.0f;
+	}
+	else if (get_tex_param_special(target, pname, &v)) {
+		params[0] = (GLfloat)v;
+	}
+	else {
+		glGetTexParameterfv(target, pname, params);
+	}
+}
+
+/* GL_TEXTURE_BORDER and the luminance/intensity sizes, from the format the
+ * emulation chose (R8 for luminance and so on) */
+static int get_tex_level_special(GLenum target, GLint level, GLenum pname, GLint *r)
+{
+	GLenum real = 0;
+	switch (pname) {
+		case GL_TEXTURE_BORDER:
+			*r = 0;
+			return 1;
+		case GL_TEXTURE_LUMINANCE_SIZE: case GL_TEXTURE_INTENSITY_SIZE:
+		case GL_TEXTURE_RED_SIZE: case GL_TEXTURE_GREEN_SIZE: case GL_TEXTURE_BLUE_SIZE:
+		case GL_TEXTURE_ALPHA_SIZE:
+			break;
+		default:
+			return 0;
+	}
+	const int base = lgl_tex_base_format(bound_texture(target)) & ~B_GENMIPMAP;
+	const int old = (base == B_LUM || base == B_ALPHA || base == B_LUM_ALPHA || base == B_INTENSITY);
+	if (pname == GL_TEXTURE_LUMINANCE_SIZE) {
+		real = (base == B_LUM || base == B_LUM_ALPHA) ? GL_TEXTURE_RED_SIZE : 0;
+	}
+	else if (pname == GL_TEXTURE_INTENSITY_SIZE) {
+		real = (base == B_INTENSITY) ? GL_TEXTURE_RED_SIZE : 0;
+	}
+	else if (!old) {
+		return 0;  /* an ordinary format: OpenGL answers */
+	}
+	else if (pname == GL_TEXTURE_ALPHA_SIZE) {
+		real = (base == B_ALPHA) ? GL_TEXTURE_RED_SIZE : (base == B_LUM_ALPHA) ? GL_TEXTURE_GREEN_SIZE : 0;
+	}
+	*r = 0;
+	if (real) {
+		glGetTexLevelParameteriv(target, level, real, r);
+	}
+	return 1;
+}
+
+void GPU_lgl_GetTexLevelParameteriv(GLenum target, GLint level, GLenum pname, GLint *params)
+{
+	if (!get_tex_level_special(target, level, pname, params)) {
+		glGetTexLevelParameteriv(target, level, pname, params);
+	}
+}
+
+void GPU_lgl_GetTexLevelParameterfv(GLenum target, GLint level, GLenum pname, GLfloat *params)
+{
+	GLint v;
+	if (get_tex_level_special(target, level, pname, &v)) {
+		params[0] = (GLfloat)v;
+	}
+	else {
+		glGetTexLevelParameterfv(target, level, pname, params);
+	}
+}
+
 /* ------------------------------------------------------------------------ */
 /* the block of the fixed-function look */
 

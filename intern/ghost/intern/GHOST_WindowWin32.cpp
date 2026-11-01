@@ -645,8 +645,11 @@ GHOST_Context *GHOST_WindowWin32::newDrawingContext(GHOST_TDrawingContextType ty
 		 * --gl-compat (BGE_REMIX_GL_COMPAT=1), or when the core one fails. */
 		const char *gl_debug_env = getenv("BGE_REMIX_GL_DEBUG");
 		const bool gl_debug = m_debug_context || (gl_debug_env && gl_debug_env[0] == '1');
-		const char *gl_compat_env = getenv("BGE_REMIX_GL_COMPAT");
-		const bool gl_compat = (gl_compat_env && gl_compat_env[0] == '1');
+		/* the process environment, not the C library's copy: --gl-compat sets
+		 * it with SetEnvironmentVariableW (BLI_setenv), which getenv misses */
+		char gl_compat_env[8] = "";
+		::GetEnvironmentVariableA("BGE_REMIX_GL_COMPAT", gl_compat_env, sizeof(gl_compat_env));
+		const bool gl_compat = (gl_compat_env[0] == '1');
 		for (int attempt = gl_compat ? 1 : 0; attempt < 2; attempt++) {
 			GHOST_Context *context45 = new GHOST_ContextWGL(
 			        m_wantStereoVisual,

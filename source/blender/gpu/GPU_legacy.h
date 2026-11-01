@@ -117,6 +117,10 @@ void GPU_lgl_TexParameteri(GLenum a, GLenum b, GLint c);
 void GPU_lgl_TexParameterf(GLenum a, GLenum b, GLfloat c);
 void GPU_lgl_TexParameteriv(GLenum a, GLenum b, const GLint *c);
 void GPU_lgl_TexParameterfv(GLenum a, GLenum b, const GLfloat *c);
+void GPU_lgl_GetTexParameteriv(GLenum a, GLenum b, GLint *c);
+void GPU_lgl_GetTexParameterfv(GLenum a, GLenum b, GLfloat *c);
+void GPU_lgl_GetTexLevelParameteriv(GLenum a, GLint b, GLenum c, GLint *d);
+void GPU_lgl_GetTexLevelParameterfv(GLenum a, GLint b, GLenum c, GLfloat *d);
 void GPU_lgl_TexEnvi(GLenum a, GLenum b, GLint c);
 void GPU_lgl_TexEnvf(GLenum a, GLenum b, GLfloat c);
 void GPU_lgl_TexEnviv(GLenum a, GLenum b, const GLint *c);
@@ -483,6 +487,10 @@ void GPU_lgl_VertexAttrib4Nub(GLuint a, GLubyte b, GLubyte c, GLubyte d, GLubyte
 #define glTexParameterf(...) (GPU_lgl_on ? GPU_lgl_TexParameterf(__VA_ARGS__) : glTexParameterf(__VA_ARGS__))
 #define glTexParameteriv(...) (GPU_lgl_on ? GPU_lgl_TexParameteriv(__VA_ARGS__) : glTexParameteriv(__VA_ARGS__))
 #define glTexParameterfv(...) (GPU_lgl_on ? GPU_lgl_TexParameterfv(__VA_ARGS__) : glTexParameterfv(__VA_ARGS__))
+#define glGetTexParameteriv(...) (GPU_lgl_on ? GPU_lgl_GetTexParameteriv(__VA_ARGS__) : glGetTexParameteriv(__VA_ARGS__))
+#define glGetTexParameterfv(...) (GPU_lgl_on ? GPU_lgl_GetTexParameterfv(__VA_ARGS__) : glGetTexParameterfv(__VA_ARGS__))
+#define glGetTexLevelParameteriv(...) (GPU_lgl_on ? GPU_lgl_GetTexLevelParameteriv(__VA_ARGS__) : glGetTexLevelParameteriv(__VA_ARGS__))
+#define glGetTexLevelParameterfv(...) (GPU_lgl_on ? GPU_lgl_GetTexLevelParameterfv(__VA_ARGS__) : glGetTexLevelParameterfv(__VA_ARGS__))
 #define glTexEnvi(...) (GPU_lgl_on ? GPU_lgl_TexEnvi(__VA_ARGS__) : glTexEnvi(__VA_ARGS__))
 #define glTexEnvf(...) (GPU_lgl_on ? GPU_lgl_TexEnvf(__VA_ARGS__) : glTexEnvf(__VA_ARGS__))
 #define glTexEnviv(...) (GPU_lgl_on ? GPU_lgl_TexEnviv(__VA_ARGS__) : glTexEnviv(__VA_ARGS__))

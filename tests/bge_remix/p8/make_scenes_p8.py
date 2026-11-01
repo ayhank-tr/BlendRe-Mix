@@ -3073,7 +3073,10 @@ def make_select_pick(folder, E):
                                     rotation=(math.radians(90.0), 0.0, 0.0))
     grid = bpy.context.object
     grid.name = "SP_grid"
-    p2.lamp(scene, "SP_sun", 'SUN', (0.0, -10.0, 5.0), (math.radians(60.0), 0.0, 0.0))
+    sun = p2.lamp(scene, "SP_sun", 'SUN', (0.0, -10.0, 5.0), (math.radians(60.0), 0.0, 0.0))
+    # the lamp lights the boxes but takes no clicks: from the camera it sits
+    # in front of the third column
+    sun.hide_select = True
     for ob in scene.objects:
         ob.select = False
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, "select_pick.blend"), check_existing=False)
