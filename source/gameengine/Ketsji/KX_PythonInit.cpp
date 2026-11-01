@@ -1113,7 +1113,8 @@ static PyObject *gPySetSpeedFeature(PyObject *, PyObject *args)
 		return NULL;
 	if (!GPU_speed_feature_set(name, on != 0)) {
 		PyErr_Format(PyExc_ValueError, "bge.render.setSpeedFeature: unknown feature \"%s\" "
-		             "(instancing, gpu_culling, gpu_skinning, layered_shadows, clustered_lights)", name);
+		             "(instancing, gpu_culling, gpu_skinning, layered_shadows, clustered_lights, oit, tessellation, "
+		             "screen_effects, texture_cache)", name);
 		return NULL;
 	}
 	Py_RETURN_NONE;
