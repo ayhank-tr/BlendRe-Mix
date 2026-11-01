@@ -166,6 +166,9 @@ typedef struct LglState {
 	int pos_w;                   /* a position in this block has w other than 1 */
 	int color_ub;                /* the current colour came as bytes */
 	int col_ub;                  /* every colour of this block came as bytes */
+	int flush_overlap;           /* a large block is drawn as it comes (-1: only at its end); the
+	                              * vertices a strip's next part starts with */
+	float dist_start;            /* a stippled strip's distance where its next part starts */
 	/* GPU_draw_stats */
 	double stat_draws, stat_verts, stat_bytes, stat_pieces;
 

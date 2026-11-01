@@ -2041,16 +2041,27 @@ void lgl_build_block(LglBlock *b)
 		}
 	}
 
-	/* the stipple: rows from the bottom, the high bit of each byte first */
-	for (int y = 0; y < 32; y++) {
-		unsigned int row = 0;
-		for (int x = 0; x < 32; x++) {
-			const unsigned char byte = lgl.poly_stipple[y * 4 + (x >> 3)];
-			if (byte & (0x80 >> (x & 7))) {
-				row |= 1u << x;
+	/* the stipple: rows from the bottom, the high bit of each byte first
+	 * (each byte's bits reversed through a table: this runs for every
+	 * matrix change) */
+	static unsigned char rev[256];
+	static int rev_made = 0;
+	if (!rev_made) {
+		for (int i = 0; i < 256; i++) {
+			unsigned char r = 0;
+			for (int k = 0; k < 8; k++) {
+				if (i & (1 << k)) {
+					r |= (unsigned char)(0x80 >> k);
+				}
 			}
+			rev[i] = r;
 		}
-		b->pstip[y >> 2][y & 3] = row;
+		rev_made = 1;
+	}
+	for (int y = 0; y < 32; y++) {
+		const unsigned char *p = &lgl.poly_stipple[y * 4];
+		b->pstip[y >> 2][y & 3] = (unsigned int)rev[p[0]] | ((unsigned int)rev[p[1]] << 8) |
+		                          ((unsigned int)rev[p[2]] << 16) | ((unsigned int)rev[p[3]] << 24);
 	}
 	memcpy(b->px_scale, lgl.px_scale, sizeof(float[4]));
 	memcpy(b->px_bias, lgl.px_bias, sizeof(float[4]));

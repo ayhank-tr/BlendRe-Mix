@@ -811,6 +811,14 @@ static GLuint lgl_upload(const void *data, size_t size, GLintptr *r_offset)
 /* ------------------------------------------------------------------------ */
 /* immediate mode */
 
+/* a large block is drawn in parts of this many vertices as it is given
+ * (divisible by 1, 2, 3 and 4): the card starts on it while the rest comes,
+ * and the vertices waiting stay in the processor's cache */
+#define LGL_FLUSH 65520
+
+static void lgl_draw_immediate(void);
+static void lgl_flush_part(void);
+
 /* the lowest bit set */
 static int lgl_lowbit(unsigned int m)
 {
@@ -903,12 +911,20 @@ void lgl_vertex4f(float x, float y, float z, float w)
 		lgl.pos_w = 1;
 	}
 	unsigned int m = lgl.xused;
+	if (m & (1u << X_COL)) {
+		/* the usual one (a colour per vertex) without the loop */
+		memcpy(&lgl.xs[X_COL][i * 4], lgl.color, sizeof(float[4]));
+		m &= ~(1u << X_COL);
+	}
 	while (m) {
 		const int s = lgl_lowbit(m);
 		m &= m - 1;
 		lgl_slot_value(s, &lgl.xs[s][i * 4]);
 	}
 	lgl.nverts++;
+	if (lgl.nverts >= LGL_FLUSH && lgl.flush_overlap >= 0) {
+		lgl_flush_part();
+	}
 }
 
 static void lgl_color_set(const float c[4], int ub)
@@ -1012,7 +1028,9 @@ static void lgl_stipple_distances(GLenum prim, int n)
 		lgl_reserve(256);
 		lgl.dist = MEM_mallocN(sizeof(float) * (size_t)lgl.cap, "lgl distances");
 	}
-	float prev[2] = {0, 0}, dist = 0.0f;
+	/* a strip's later part goes on from where the one before ended (its
+	 * first vertex is the one before's last) */
+	float prev[2] = {0, 0}, dist = (prim == GL_LINE_STRIP) ? lgl.dist_start : 0.0f;
 	for (int i = 0; i < n; i++) {
 		float xy[2];
 		lgl_window_xy(mvp, vp, &lgl.verts[i * 4], xy);
@@ -1026,6 +1044,7 @@ static void lgl_stipple_distances(GLenum prim, int n)
 		prev[0] = xy[0];
 		prev[1] = xy[1];
 	}
+	lgl.dist_start = dist;
 }
 
 /* the block's vertices replaced by the ones "idx" names (an outline's edges
@@ -1300,6 +1319,41 @@ void GPU_lgl_Begin(GLenum mode)
 	lgl.xused = 0;
 	lgl.pos_w = 0;
 	lgl.col_ub = 0;
+	lgl.dist_start = 0.0f;
+	/* which blocks can be drawn as they come */
+	switch (mode) {
+		case GL_POINTS: case GL_LINES: case GL_TRIANGLES: case GL_QUADS: lgl.flush_overlap = 0; break;
+		case GL_LINE_STRIP: lgl.flush_overlap = 1; break;
+		case GL_TRIANGLE_STRIP: case GL_QUAD_STRIP: lgl.flush_overlap = 2; break;
+		default: lgl.flush_overlap = -1; break;  /* loops, fans, polygons */
+	}
+	if (lgl_needs_conversion(mode) && lgl.poly_mode[0] == GL_LINE && (lgl.en & E_LINE_STIPPLE)) {
+		lgl.flush_overlap = -1;  /* a stippled outline is redone as a whole */
+	}
+}
+
+/* the block so far drawn; a strip keeps its last vertices to go on from */
+static void lgl_flush_part(void)
+{
+	lgl_draw_immediate();
+	lgl.stat_pieces += 1.0;
+	const int n = lgl.nverts, keep = lgl.flush_overlap;
+	if (keep > 0) {
+		memmove(lgl.verts, &lgl.verts[(n - keep) * 4], sizeof(float[4]) * (size_t)keep);
+		for (int s = 0; s < X_SLOTS; s++) {
+			if (lgl.xused & (1u << s)) {
+				memmove(lgl.xs[s], &lgl.xs[s][(n - keep) * 4], sizeof(float[4]) * (size_t)keep);
+			}
+		}
+		lgl.nverts = keep;
+	}
+	else {
+		/* the values now current are the next part's (until they change) */
+		lgl.nverts = 0;
+		lgl.xused = 0;
+		lgl.pos_w = 0;
+		lgl.col_ub = 0;
+	}
 }
 
 void GPU_lgl_End(void)
