@@ -48,9 +48,14 @@ enum {
 	S_FIXED
 };
 
-/* extra per-vertex slots of immediate mode: texture units 1-3, generics */
-#define X_TEX1 0
-#define X_GEN0 3
+/* per-vertex slots of immediate mode besides the position: a slot is kept
+ * only when its value changes within the block (otherwise the block draws
+ * with the value as a constant) */
+#define X_COL 0
+#define X_NOR 1
+#define X_TEX0 2             /* texture units 0-3: X_TEX0 + unit */
+#define X_TEX1 3
+#define X_GEN0 6
 #define X_SLOTS (X_GEN0 + LGL_GENERIC)
 
 /* feature bits of the fixed-function look (gpu_shader_legacy.glsl) */
@@ -153,10 +158,16 @@ typedef struct LglState {
 	/* immediate mode */
 	int in_begin;
 	unsigned int prim;
-	float *verts;                /* 16 floats each: pos 4, colour 4, normal 3, distance 1, texture 4 */
-	float *xs[X_SLOTS];          /* extra slots, 4 floats each */
+	float *verts;                /* the positions, 4 floats each */
+	float *xs[X_SLOTS];          /* the slots, 4 floats each */
+	float *dist;                 /* line stipple distances, 1 float each */
 	int nverts, cap;
-	unsigned int xused;          /* slots set in this block */
+	unsigned int xused;          /* slots changed in this block */
+	int pos_w;                   /* a position in this block has w other than 1 */
+	int color_ub;                /* the current colour came as bytes */
+	int col_ub;                  /* every colour of this block came as bytes */
+	/* GPU_draw_stats */
+	double stat_draws, stat_verts, stat_bytes, stat_pieces;
 
 	/* client arrays (VAO 0 as the application sees it) */
 	LglArray arr_pos, arr_col, arr_nor, arr_tex[LGL_UNITS];
@@ -228,6 +239,7 @@ void lgl_note_once(const char *what);
 void lgl_dirty(void);
 void lgl_current_mvp(float r_mvp[16]);
 void lgl_viewport(int r_vp[4]);
+float lgl_point_size(void);
 void lgl_draw_quad_pixels(int mode, unsigned int texture, const float corners[4][4], const float uv[4][2],
                           const float color[4]);
 int lgl_tex_base_format(unsigned int texture);

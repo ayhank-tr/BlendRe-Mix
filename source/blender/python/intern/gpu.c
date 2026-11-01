@@ -49,6 +49,7 @@
 #include "../generic/py_capi_utils.h"
 
 #include "GPU_material.h"
+#include "GPU_layer.h"
 
 #include "gpu.h"
 
@@ -312,6 +313,44 @@ static PyObject *GPU_export_shader(PyObject *UNUSED(self), PyObject *args, PyObj
 	return result;
 }
 
+/* BGE-Remix P8.29: what the drawing sent (the editors' benchmark) */
+PyDoc_STRVAR(GPU_draw_stats_doc,
+"draw_stats(reset=True)\n"
+"\n"
+"   What the drawing sent since the last reset: the streaming buffer's bytes,\n"
+"   allocations, buffers of their own and waits for the card; the old OpenGL\n"
+"   calls' emulation's draws, vertices, bytes and pieces.\n"
+"\n"
+"   :rtype: dict\n"
+);
+static PyObject *GPU_draw_stats_py(PyObject *UNUSED(self), PyObject *args, PyObject *kwds)
+{
+	static const char *kwlist[] = {"reset", NULL};
+	int reset = 1;
+	if (!PyArg_ParseTupleAndKeywords(args, kwds, "|p:draw_stats", (char **)(kwlist), &reset)) {
+		return NULL;
+	}
+	GPUDrawStats st;
+	GPU_draw_stats(&st, reset != 0);
+	PyObject *d = PyDict_New();
+#define ADD(name, val) { PyObject *v = PyFloat_FromDouble((double)(val)); PyDict_SetItemString(d, name, v); Py_DECREF(v); } (void)0
+	ADD("stream_bytes", st.stream_bytes);
+	ADD("stream_allocs", st.stream_allocs);
+	ADD("stream_own_buffers", st.stream_big);
+	ADD("stream_waits", st.stream_waits);
+	ADD("stream_wait_ms", st.stream_wait_ms);
+	ADD("emulated_draws", st.emu_draws);
+	ADD("emulated_vertices", st.emu_vertices);
+	ADD("emulated_bytes", st.emu_bytes);
+	ADD("emulated_pieces", st.emu_pieces);
+#undef ADD
+	return d;
+}
+
+static PyMethodDef meth_draw_stats[] = {
+	{"draw_stats", (PyCFunction)GPU_draw_stats_py, METH_VARARGS | METH_KEYWORDS, GPU_draw_stats_doc}
+};
+
 static PyMethodDef meth_export_shader[] = {
 	{"export_shader", (PyCFunction)GPU_export_shader, METH_VARARGS | METH_KEYWORDS, GPU_export_shader_doc}
 };
@@ -328,6 +367,7 @@ PyObject *GPU_initPython(void)
 	module = PyInit_gpu();
 
 	PyModule_AddObject(module, "export_shader", (PyObject *)PyCFunction_New(meth_export_shader, NULL));
+	PyModule_AddObject(module, "draw_stats", (PyObject *)PyCFunction_New(meth_draw_stats, NULL));
 
 	/* gpu.offscreen */
 	PyModule_AddObject(module, "offscreen", (submodule = BPyInit_gpu_offscreen()));

@@ -35,6 +35,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(_MSC_VER)
+#  include <intrin.h>  /* _BitScanForward */
+#endif
 
 #ifdef _WIN32
 #  ifndef WIN32_LEAN_AND_MEAN
@@ -104,6 +107,8 @@ typedef struct LglAttrCache {
 	int normalized, integer;
 	GLuint divisor;
 	int valid;
+	float value[4];      /* the constant value last given (value_valid) */
+	int value_valid;
 } LglAttrCache;
 
 typedef struct LglContext {
@@ -111,6 +116,11 @@ typedef struct LglContext {
 	GLuint vao;
 	GLuint ebo;
 	LglAttrCache attr[16];
+	/* the viewport and point size as last set through the emulation (so
+	 * drawing need not ask the driver, which may wait for its own thread) */
+	int vp[4], vp_valid;
+	float point_size;
+	int point_size_valid;
 } LglContext;
 
 #define LGL_CONTEXTS 16
@@ -349,13 +359,18 @@ static int lgl_type_size(GLenum type)
 	}
 }
 
-static void lgl_attr_set(LglContext *lc, int loc, const LglSrc *s)
+/* an attribute location as "s" has it: an array (its binding's buffer
+ * noted in the cache and its bit set in "changed", the bindings given
+ * together afterwards) or a constant value */
+static void lgl_attr_set(LglContext *lc, int loc, const LglSrc *s, unsigned int *changed)
 {
 	LglAttrCache *c = &lc->attr[loc];
 	if (s && s->on) {
 		if (!c->valid || !c->enabled) {
 			glEnableVertexArrayAttrib(lc->vao, (GLuint)loc);
 			c->enabled = 1;
+			/* the current value is not to be relied on after drawing from an array */
+			c->value_valid = 0;
 		}
 		if (!c->valid || c->size != s->size || c->type != s->type || c->normalized != s->normalized ||
 		    c->integer != s->integer)
@@ -374,10 +389,10 @@ static void lgl_attr_set(LglContext *lc, int loc, const LglSrc *s)
 			c->integer = s->integer;
 		}
 		if (!c->valid || c->buffer != s->buffer || c->offset != s->offset || c->stride != s->stride) {
-			glVertexArrayVertexBuffer(lc->vao, (GLuint)loc, s->buffer, s->offset, s->stride);
 			c->buffer = s->buffer;
 			c->offset = s->offset;
 			c->stride = s->stride;
+			*changed |= (1u << loc);
 		}
 		if (!c->valid || c->divisor != s->divisor) {
 			glVertexArrayBindingDivisor(lc->vao, (GLuint)loc, s->divisor);
@@ -391,9 +406,51 @@ static void lgl_attr_set(LglContext *lc, int loc, const LglSrc *s)
 			c->enabled = 0;
 			c->valid = 1;
 		}
-		if (s) {
+		if (s && (!c->value_valid || memcmp(c->value, s->value, sizeof(float[4])) != 0)) {
 			glVertexAttrib4fv((GLuint)loc, s->value);
+			memcpy(c->value, s->value, sizeof(float[4]));
+			c->value_valid = 1;
 		}
+	}
+}
+
+/* the buffers of the bindings that changed, a call for each run of
+ * neighbouring ones (a binding left as it was may name a buffer deleted since) */
+static void lgl_attr_bind(LglContext *lc, unsigned int changed)
+{
+	int loc = 0;
+	while (changed >> loc) {
+		if (!((changed >> loc) & 1u)) {
+			loc++;
+			continue;
+		}
+		GLuint bufs[16];
+		GLintptr offs[16];
+		GLsizei strides[16];
+		const int first = loc;
+		int n = 0;
+		for (; loc < 16 && ((changed >> loc) & 1u); loc++, n++) {
+			const LglAttrCache *c = &lc->attr[loc];
+			bufs[n] = c->buffer;
+			offs[n] = c->offset;
+			strides[n] = c->stride;
+		}
+		if (n == 1) {
+			glVertexArrayVertexBuffer(lc->vao, (GLuint)first, bufs[0], offs[0], strides[0]);
+		}
+		else {
+			glVertexArrayVertexBuffers(lc->vao, (GLuint)first, n, bufs, offs, strides);
+		}
+	}
+}
+
+/* glVertexAttrib outside glBegin: the cache knows the value */
+static void lgl_attr_value_changed(unsigned int index, const float v[4])
+{
+	LglContext *lc = lgl_context();
+	if (index < 16) {
+		memcpy(lc->attr[index].value, v, sizeof(float[4]));
+		lc->attr[index].value_valid = 1;
 	}
 }
 
@@ -547,7 +604,7 @@ static void lgl_submit(GLenum prim, GLint first, GLsizei count, GLenum itype, GL
 			/* points: where the old rules put their centres */
 			float point[4] = {1.0f, 0.0f, 0.0f, 0.0f}, vp[4];
 			int ivp[4];
-			glGetFloatv(GL_POINT_SIZE, &point[0]);
+			point[0] = lgl_point_size();
 			point[1] = (lgl.en & E_POINT_SMOOTH) ? 0.0f : 1.0f;
 			lgl_viewport(ivp);
 			for (int k = 0; k < 4; k++) {
@@ -567,9 +624,11 @@ static void lgl_submit(GLenum prim, GLint first, GLsizei count, GLenum itype, GL
 		}
 	}
 
+	unsigned int changed = 0;
 	for (int loc = 0; loc < 16; loc++) {
-		lgl_attr_set(lc, loc, at[loc]);
+		lgl_attr_set(lc, loc, at[loc], &changed);
 	}
+	lgl_attr_bind(lc, changed);
 
 	if (itype) {
 		if (lc->ebo != ibuf) {
@@ -729,7 +788,17 @@ static GLuint lgl_upload(const void *data, size_t size, GLintptr *r_offset)
 /* ------------------------------------------------------------------------ */
 /* immediate mode */
 
-#define VF 16  /* floats per vertex */
+/* the lowest bit set */
+static int lgl_lowbit(unsigned int m)
+{
+#if defined(_MSC_VER)
+	unsigned long i;
+	_BitScanForward(&i, m);
+	return (int)i;
+#else
+	return __builtin_ctz(m);
+#endif
+}
 
 static void lgl_reserve(int n)
 {
@@ -740,29 +809,56 @@ static void lgl_reserve(int n)
 	while (cap < n) {
 		cap *= 2;
 	}
-	lgl.verts = MEM_reallocN_id(lgl.verts, sizeof(float) * VF * (size_t)cap, "lgl vertices");
+	lgl.verts = MEM_reallocN_id(lgl.verts, sizeof(float[4]) * (size_t)cap, "lgl vertices");
 	for (int s = 0; s < X_SLOTS; s++) {
 		if (lgl.xs[s]) {
-			lgl.xs[s] = MEM_reallocN_id(lgl.xs[s], sizeof(float[4]) * (size_t)cap, "lgl extra");
+			lgl.xs[s] = MEM_reallocN_id(lgl.xs[s], sizeof(float[4]) * (size_t)cap, "lgl slot");
 		}
+	}
+	if (lgl.dist) {
+		lgl.dist = MEM_reallocN_id(lgl.dist, sizeof(float) * (size_t)cap, "lgl distances");
 	}
 	lgl.cap = cap;
 }
 
-/* an extra slot set within the block: the vertices before it get the value it had */
-static void lgl_slot_use(int slot, const float before[4])
+/* the current value a slot takes from */
+static void lgl_slot_value(int s, float r[4])
 {
-	if (lgl.xused & (1u << slot)) {
+	if (s == X_COL) {
+		memcpy(r, lgl.color, sizeof(float[4]));
+	}
+	else if (s == X_NOR) {
+		memcpy(r, lgl.normal, sizeof(float[3]));
+		r[3] = 0.0f;
+	}
+	else if (s < X_GEN0) {
+		memcpy(r, lgl.tex[s - X_TEX0], sizeof(float[4]));
+	}
+	else {
+		memcpy(r, lgl.generic[s - X_GEN0], sizeof(float[4]));
+	}
+}
+
+/* a slot's value about to change within the block: from now on the slot is
+ * sent per vertex, the vertices before keep the value they had. Before the
+ * block's first vertex nothing changes: the new value is the block's. */
+static void lgl_slot_use(int slot)
+{
+	if (!lgl.in_begin || lgl.nverts == 0 || (lgl.xused & (1u << slot))) {
 		return;
 	}
 	if (!lgl.xs[slot]) {
-		lgl.xs[slot] = MEM_mallocN(sizeof(float[4]) * (size_t)(lgl.cap ? lgl.cap : 256), "lgl extra");
-		if (!lgl.cap) {
-			lgl_reserve(256);
-		}
+		lgl_reserve(256);
+		lgl.xs[slot] = MEM_mallocN(sizeof(float[4]) * (size_t)lgl.cap, "lgl slot");
 	}
+	float before[4];
+	lgl_slot_value(slot, before);
+	float *x = lgl.xs[slot];
 	for (int i = 0; i < lgl.nverts; i++) {
-		memcpy(&lgl.xs[slot][i * 4], before, sizeof(float[4]));
+		memcpy(&x[i * 4], before, sizeof(float[4]));
+	}
+	if (slot == X_COL) {
+		lgl.col_ub = lgl.color_ub;
 	}
 	lgl.xused |= (1u << slot);
 }
@@ -774,40 +870,58 @@ void lgl_vertex4f(float x, float y, float z, float w)
 	if (!lgl.in_begin) {
 		return;
 	}
-	lgl_reserve(lgl.nverts + 1);
-	float *v = &lgl.verts[lgl.nverts * VF];
+	if (lgl.nverts >= lgl.cap) {
+		lgl_reserve(lgl.nverts + 1);
+	}
+	const int i = lgl.nverts;
+	float *v = &lgl.verts[i * 4];
 	v[0] = x; v[1] = y; v[2] = z; v[3] = w;
-	memcpy(v + 4, lgl.color, sizeof(float[4]));
-	memcpy(v + 8, lgl.normal, sizeof(float[3]));
-	v[11] = 0.0f;
-	memcpy(v + 12, lgl.tex[0], sizeof(float[4]));
-	if (lgl.xused) {
-		for (int s = 0; s < X_SLOTS; s++) {
-			if (lgl.xused & (1u << s)) {
-				const float *val = (s < X_GEN0) ? lgl.tex[1 + s] : lgl.generic[s - X_GEN0];
-				memcpy(&lgl.xs[s][lgl.nverts * 4], val, sizeof(float[4]));
-			}
-		}
+	if (w != 1.0f) {
+		lgl.pos_w = 1;
+	}
+	unsigned int m = lgl.xused;
+	while (m) {
+		const int s = lgl_lowbit(m);
+		m &= m - 1;
+		lgl_slot_value(s, &lgl.xs[s][i * 4]);
 	}
 	lgl.nverts++;
+}
+
+static void lgl_color_set(const float c[4], int ub)
+{
+	if (lgl.in_begin) {
+		lgl_slot_use(X_COL);
+		if (lgl.xused & (1u << X_COL)) {
+			lgl.col_ub &= ub;
+		}
+	}
+	memcpy(lgl.color, c, sizeof(float[4]));
+	lgl.color_ub = ub;
+	/* colour material follows the colour */
+	lgl_color_changed();
 }
 
 void lgl_color4f(float r, float g, float b, float a)
 {
 	const float f[4] = {r, g, b, a};
 	LGL_RECORD(LOP_COLOR, NULL, 0, f, 4);
-	lgl.color[0] = r;
-	lgl.color[1] = g;
-	lgl.color[2] = b;
-	lgl.color[3] = a;
-	/* colour material follows the colour */
-	lgl_color_changed();
+	lgl_color_set(f, 0);
+}
+
+void lgl_color4ub(unsigned char r, unsigned char g, unsigned char b, unsigned char a)
+{
+	const float f[4] = {(float)r / 255.0f, (float)g / 255.0f, (float)b / 255.0f, (float)a / 255.0f};
+	const unsigned int ub = 1;
+	LGL_RECORD(LOP_COLOR, &ub, 1, f, 4);
+	lgl_color_set(f, 1);
 }
 
 void lgl_normal3f(float x, float y, float z)
 {
 	const float f[3] = {x, y, z};
 	LGL_RECORD(LOP_NORMAL, NULL, 0, f, 3);
+	lgl_slot_use(X_NOR);
 	lgl.normal[0] = x;
 	lgl.normal[1] = y;
 	lgl.normal[2] = z;
@@ -821,8 +935,8 @@ void lgl_texcoord4f(int unit, float s, float t, float r, float q)
 	const unsigned int e = (unsigned int)unit;
 	const float f[4] = {s, t, r, q};
 	LGL_RECORD(LOP_TEXCOORD, &e, 1, f, 4);
-	if (lgl.in_begin && unit >= 1 && unit < LGL_FF_UNITS) {
-		lgl_slot_use(X_TEX1 + unit - 1, lgl.tex[unit]);
+	if (unit < LGL_FF_UNITS) {
+		lgl_slot_use(X_TEX0 + unit);
 	}
 	lgl.tex[unit][0] = s;
 	lgl.tex[unit][1] = t;
@@ -842,15 +956,14 @@ void lgl_attrib4f(unsigned int index, float x, float y, float z, float w)
 	}
 	const float f[4] = {x, y, z, w};
 	LGL_RECORD(LOP_ATTRIB, &index, 1, f, 4);
-	if (lgl.in_begin) {
-		lgl_slot_use(X_GEN0 + (int)index, lgl.generic[index]);
-	}
+	lgl_slot_use(X_GEN0 + (int)index);
 	lgl.generic[index][0] = x;
 	lgl.generic[index][1] = y;
 	lgl.generic[index][2] = z;
 	lgl.generic[index][3] = w;
 	if (!lgl.in_begin) {
 		glVertexAttrib4f(index, x, y, z, w);
+		lgl_attr_value_changed(index, f);
 	}
 }
 
@@ -872,18 +985,21 @@ static void lgl_stipple_distances(GLenum prim, int n)
 	int vp[4];
 	lgl_current_mvp(mvp);
 	lgl_viewport(vp);
+	if (!lgl.dist) {
+		lgl_reserve(256);
+		lgl.dist = MEM_mallocN(sizeof(float) * (size_t)lgl.cap, "lgl distances");
+	}
 	float prev[2] = {0, 0}, dist = 0.0f;
 	for (int i = 0; i < n; i++) {
-		float *v = &lgl.verts[i * VF];
 		float xy[2];
-		lgl_window_xy(mvp, vp, v, xy);
+		lgl_window_xy(mvp, vp, &lgl.verts[i * 4], xy);
 		if (prim == GL_LINES && (i & 1) == 0) {
 			dist = 0.0f;
 		}
 		else if (i > 0) {
 			dist += fmaxf(fabsf(xy[0] - prev[0]), fabsf(xy[1] - prev[1]));
 		}
-		v[11] = dist;
+		lgl.dist[i] = dist;
 		prev[0] = xy[0];
 		prev[1] = xy[1];
 	}
@@ -893,8 +1009,8 @@ static void lgl_stipple_distances(GLenum prim, int n)
  * each with its own two vertices) */
 static void lgl_expand(const unsigned int *idx, int count)
 {
-	float *old = MEM_mallocN(sizeof(float) * VF * (size_t)lgl.nverts, "lgl expand");
-	memcpy(old, lgl.verts, sizeof(float) * VF * (size_t)lgl.nverts);
+	float *old = MEM_mallocN(sizeof(float[4]) * (size_t)lgl.nverts, "lgl expand");
+	memcpy(old, lgl.verts, sizeof(float[4]) * (size_t)lgl.nverts);
 	float *oldx[X_SLOTS];
 	for (int s = 0; s < X_SLOTS; s++) {
 		oldx[s] = NULL;
@@ -905,7 +1021,7 @@ static void lgl_expand(const unsigned int *idx, int count)
 	}
 	lgl_reserve(count);
 	for (int i = 0; i < count; i++) {
-		memcpy(&lgl.verts[i * VF], &old[idx[i] * VF], sizeof(float) * VF);
+		memcpy(&lgl.verts[i * 4], &old[idx[i] * 4], sizeof(float[4]));
 		for (int s = 0; s < X_SLOTS; s++) {
 			if (oldx[s]) {
 				memcpy(&lgl.xs[s][i * 4], &oldx[s][idx[i] * 4], sizeof(float[4]));
@@ -918,6 +1034,149 @@ static void lgl_expand(const unsigned int *idx, int count)
 		if (oldx[s]) {
 			MEM_freeN(oldx[s]);
 		}
+	}
+}
+
+/* how a block is sent: the position with 3 or 4 values, the slots that
+ * changed within it (colours as bytes when they all came as bytes), the
+ * stipple distances */
+typedef struct LglPack {
+	int pos_size;
+	unsigned int slots;
+	int col_ub;
+	int dist;
+	size_t bpv;  /* bytes per vertex */
+} LglPack;
+
+static size_t lgl_slot_bytes(const LglPack *pk, int s)
+{
+	if (s == X_COL && pk->col_ub) {
+		return 4;
+	}
+	return (s == X_NOR) ? sizeof(float[3]) : sizeof(float[4]);
+}
+
+/* vertices start..start+n-1 of the block, drawn as "prim" */
+static void lgl_emit(GLenum prim, int start, int n, const LglPack *pk, int prim_class)
+{
+	const size_t size = pk->bpv * (size_t)n;
+	GLuint buf = 0;
+	size_t off = 0;
+	unsigned char *dst = GPU_stream_alloc(size, &buf, &off);
+	if (!dst) {
+		return;
+	}
+	size_t at = 0;
+	size_t offs[X_SLOTS], pos_off = 0, dist_off = 0;
+	/* the positions */
+	if (pk->pos_size == 3) {
+		float *d = (float *)dst;
+		const float *v = &lgl.verts[start * 4];
+		for (int i = 0; i < n; i++, d += 3, v += 4) {
+			d[0] = v[0];
+			d[1] = v[1];
+			d[2] = v[2];
+		}
+		at = sizeof(float[3]) * (size_t)n;
+	}
+	else {
+		memcpy(dst, &lgl.verts[start * 4], sizeof(float[4]) * (size_t)n);
+		at = sizeof(float[4]) * (size_t)n;
+	}
+	/* the slots */
+	unsigned int m = pk->slots;
+	while (m) {
+		const int s = lgl_lowbit(m);
+		m &= m - 1;
+		const float *x = &lgl.xs[s][start * 4];
+		offs[s] = at;
+		if (s == X_COL && pk->col_ub) {
+			unsigned char *d = dst + at;
+			for (int i = 0; i < n * 4; i++) {
+				d[i] = (unsigned char)(x[i] * 255.0f + 0.5f);
+			}
+		}
+		else if (s == X_NOR) {
+			float *d = (float *)(dst + at);
+			for (int i = 0; i < n; i++, d += 3, x += 4) {
+				d[0] = x[0];
+				d[1] = x[1];
+				d[2] = x[2];
+			}
+		}
+		else {
+			memcpy(dst + at, x, sizeof(float[4]) * (size_t)n);
+		}
+		at += lgl_slot_bytes(pk, s) * (size_t)n;
+	}
+	/* the distances */
+	if (pk->dist) {
+		dist_off = at;
+		memcpy(dst + at, &lgl.dist[start], sizeof(float) * (size_t)n);
+		at += sizeof(float) * (size_t)n;
+	}
+	GPU_stream_written(buf);
+	lgl.stat_bytes += (double)size;
+
+	LglSrc fixed[S_FIXED], gen[LGL_GENERIC];
+	memset(fixed, 0, sizeof(fixed));
+	memset(gen, 0, sizeof(gen));
+#define ARRAY(src, o, sz, tp, norm, str) { \
+		(src).on = 1; (src).buffer = buf; (src).offset = (GLintptr)(off + (o)); (src).size = (sz); \
+		(src).type = (tp); (src).normalized = (norm); (src).stride = (GLsizei)(str); } (void)0
+	ARRAY(fixed[S_POS], pos_off, pk->pos_size, GL_FLOAT, 0, sizeof(float) * (size_t)pk->pos_size);
+	if (pk->slots & (1u << X_COL)) {
+		if (pk->col_ub) {
+			ARRAY(fixed[S_COL], offs[X_COL], 4, GL_UNSIGNED_BYTE, 1, 4);
+		}
+		else {
+			ARRAY(fixed[S_COL], offs[X_COL], 4, GL_FLOAT, 0, sizeof(float[4]));
+		}
+	}
+	else {
+		memcpy(fixed[S_COL].value, lgl.color, sizeof(float[4]));
+	}
+	if (pk->slots & (1u << X_NOR)) {
+		ARRAY(fixed[S_NOR], offs[X_NOR], 3, GL_FLOAT, 0, sizeof(float[3]));
+	}
+	else {
+		memcpy(fixed[S_NOR].value, lgl.normal, sizeof(float[3]));
+	}
+	for (int u = 0; u < LGL_FF_UNITS; u++) {
+		const int s = X_TEX0 + u;
+		if (pk->slots & (1u << s)) {
+			ARRAY(fixed[S_TEX0 + u], offs[s], 4, GL_FLOAT, 0, sizeof(float[4]));
+		}
+		else {
+			memcpy(fixed[S_TEX0 + u].value, lgl.tex[u], sizeof(float[4]));
+		}
+	}
+	if (pk->dist) {
+		ARRAY(fixed[S_DIST], dist_off, 1, GL_FLOAT, 0, sizeof(float));
+	}
+	for (int g = 0; g < LGL_GENERIC; g++) {
+		const int s = X_GEN0 + g;
+		if (pk->slots & (1u << s)) {
+			ARRAY(gen[g], offs[s], 4, GL_FLOAT, 0, sizeof(float[4]));
+		}
+	}
+#undef ARRAY
+
+	lgl.stat_draws += 1.0;
+	lgl.stat_verts += (double)n;
+	if (lgl_needs_conversion(prim)) {
+		GLenum p2;
+		int cls;
+		const int count = lgl_convert(prim, NULL, n, &p2, &cls);
+		if (count > 0) {
+			GLintptr ioff;
+			const GLuint ib = lgl_upload(lgl_idx, sizeof(unsigned int) * (size_t)count, &ioff);
+			lgl.stat_bytes += (double)(sizeof(unsigned int) * (size_t)count);
+			lgl_submit(p2, 0, count, GL_UNSIGNED_INT, ib, ioff, 0, 1, fixed, gen, cls, 0);
+		}
+	}
+	else {
+		lgl_submit(prim, 0, n, 0, 0, 0, 0, 1, fixed, gen, prim_class, 0);
 	}
 }
 
@@ -939,13 +1198,13 @@ static void lgl_draw_immediate(void)
 		prim = GL_LINES;
 	}
 	int n = lgl.nverts;
-	int prim_class = lgl_prim_class(prim);
+	const int prim_class = lgl_prim_class(prim);
 	const int stipple = (prim_class == 1) && (lgl.en & E_LINE_STIPPLE);
 	if (stipple) {
 		if (prim == GL_LINE_LOOP && n >= 2) {
 			/* a loop as a strip back to its start (the stipple runs on) */
 			lgl_reserve(n + 1);
-			memcpy(&lgl.verts[n * VF], &lgl.verts[0], sizeof(float) * VF);
+			memcpy(&lgl.verts[n * 4], &lgl.verts[0], sizeof(float[4]));
 			for (int s = 0; s < X_SLOTS; s++) {
 				if (lgl.xused & (1u << s)) {
 					memcpy(&lgl.xs[s][n * 4], &lgl.xs[s][0], sizeof(float[4]));
@@ -957,86 +1216,52 @@ static void lgl_draw_immediate(void)
 		lgl_stipple_distances(prim, n);
 	}
 
-	/* the vertices, then each extra slot */
-	size_t size = sizeof(float) * VF * (size_t)n;
-	int nslots = 0;
+	LglPack pk;
+	pk.pos_size = lgl.pos_w ? 4 : 3;
+	pk.slots = lgl.xused;
+	pk.col_ub = (lgl.xused & (1u << X_COL)) ? lgl.col_ub : 0;
+	pk.dist = stipple;
+	pk.bpv = sizeof(float) * (size_t)pk.pos_size + (stipple ? sizeof(float) : 0);
 	for (int s = 0; s < X_SLOTS; s++) {
-		if (lgl.xused & (1u << s)) {
-			nslots++;
+		if (pk.slots & (1u << s)) {
+			pk.bpv += lgl_slot_bytes(&pk, s);
 		}
 	}
-	size += sizeof(float[4]) * (size_t)n * (size_t)nslots;
-	GLuint buf = 0;
-	size_t off = 0;
-	unsigned char *dst = GPU_stream_alloc(size, &buf, &off);
-	if (!dst) {
+
+	/* a block too large for the streaming buffer's parts, drawn in pieces
+	 * where the primitive allows (strips overlap by a vertex or two, and
+	 * start on an even vertex so their triangles keep their facing) */
+	int unit = 0, overlap = 0;
+	switch (prim) {
+		case GL_POINTS: unit = 1; break;
+		case GL_LINES: unit = 2; break;
+		case GL_TRIANGLES: unit = 3; break;
+		case GL_QUADS: unit = 4; break;
+		case GL_LINE_STRIP: unit = 1; overlap = 1; break;
+		case GL_TRIANGLE_STRIP: case GL_QUAD_STRIP: unit = 2; overlap = 2; break;
+		default: break;
+	}
+	const size_t part = GPU_stream_part_size();
+	int piece = 0;
+	if (unit && part && pk.bpv * (size_t)n > part) {
+		piece = (int)(part / pk.bpv);
+		piece -= piece % unit;
+		if (piece <= overlap + unit) {
+			piece = 0;
+		}
+	}
+	if (!piece) {
+		lgl_emit(prim, 0, n, &pk, prim_class);
 		return;
 	}
-	memcpy(dst, lgl.verts, sizeof(float) * VF * (size_t)n);
-	size_t xoff[X_SLOTS];
-	size_t at = sizeof(float) * VF * (size_t)n;
-	for (int s = 0; s < X_SLOTS; s++) {
-		if (lgl.xused & (1u << s)) {
-			memcpy(dst + at, lgl.xs[s], sizeof(float[4]) * (size_t)n);
-			xoff[s] = at;
-			at += sizeof(float[4]) * (size_t)n;
+	for (int start = 0; start < n; ) {
+		const int c = (n - start < piece) ? n - start : piece;
+		lgl_emit(prim, start, c, &pk, prim_class);
+		lgl.stat_pieces += 1.0;
+		if (start + c >= n) {
+			break;
 		}
-	}
-	GPU_stream_written(buf);
-
-	LglSrc fixed[S_FIXED], gen[LGL_GENERIC];
-	memset(fixed, 0, sizeof(fixed));
-	memset(gen, 0, sizeof(gen));
-	const GLsizei stride = (GLsizei)(sizeof(float) * VF);
-	static const int offs[S_FIXED] = {0, 16, 32, 48, 0, 0, 0, 44};
-	static const int sizes[S_FIXED] = {4, 4, 3, 4, 4, 4, 4, 1};
-	for (int i = 0; i < S_FIXED; i++) {
-		if (i >= S_TEX1 && i <= S_TEX3) {
-			const int slot = X_TEX1 + (i - S_TEX1);
-			if (lgl.xused & (1u << slot)) {
-				fixed[i].on = 1;
-				fixed[i].buffer = buf;
-				fixed[i].offset = (GLintptr)(off + xoff[slot]);
-				fixed[i].stride = (GLsizei)sizeof(float[4]);
-				fixed[i].size = 4;
-				fixed[i].type = GL_FLOAT;
-			}
-			else {
-				memcpy(fixed[i].value, lgl.tex[i - S_TEX0], sizeof(float[4]));
-			}
-			continue;
-		}
-		fixed[i].on = 1;
-		fixed[i].buffer = buf;
-		fixed[i].offset = (GLintptr)(off + (size_t)offs[i]);
-		fixed[i].stride = stride;
-		fixed[i].size = sizes[i];
-		fixed[i].type = GL_FLOAT;
-	}
-	for (int g = 0; g < LGL_GENERIC; g++) {
-		const int slot = X_GEN0 + g;
-		if (lgl.xused & (1u << slot)) {
-			gen[g].on = 1;
-			gen[g].buffer = buf;
-			gen[g].offset = (GLintptr)(off + xoff[slot]);
-			gen[g].stride = (GLsizei)sizeof(float[4]);
-			gen[g].size = 4;
-			gen[g].type = GL_FLOAT;
-		}
-	}
-
-	if (lgl_needs_conversion(prim)) {
-		GLenum p2;
-		int cls;
-		const int count = lgl_convert(prim, NULL, n, &p2, &cls);
-		if (count > 0) {
-			GLintptr ioff;
-			const GLuint ib = lgl_upload(lgl_idx, sizeof(unsigned int) * (size_t)count, &ioff);
-			lgl_submit(p2, 0, count, GL_UNSIGNED_INT, ib, ioff, 0, 1, fixed, gen, cls, 0);
-		}
-	}
-	else {
-		lgl_submit(prim, 0, n, 0, 0, 0, 0, 1, fixed, gen, prim_class, 0);
+		start += c - overlap;
 	}
 }
 
@@ -1052,6 +1277,8 @@ void GPU_lgl_Begin(GLenum mode)
 	lgl.prim = mode;
 	lgl.nverts = 0;
 	lgl.xused = 0;
+	lgl.pos_w = 0;
+	lgl.col_ub = 0;
 }
 
 void GPU_lgl_End(void)
@@ -1062,6 +1289,17 @@ void GPU_lgl_End(void)
 	}
 	lgl.in_begin = 0;
 	lgl_draw_immediate();
+}
+
+void gpu_lgl_stats(double *r_draws, double *r_vertices, double *r_bytes, double *r_pieces, int reset)
+{
+	*r_draws = lgl.stat_draws;
+	*r_vertices = lgl.stat_verts;
+	*r_bytes = lgl.stat_bytes;
+	*r_pieces = lgl.stat_pieces;
+	if (reset) {
+		lgl.stat_draws = lgl.stat_verts = lgl.stat_bytes = lgl.stat_pieces = 0.0;
+	}
 }
 
 void lgl_rect4f(float x1, float y1, float x2, float y2)
@@ -1477,7 +1715,7 @@ void GPU_lgl_DrawElementsInstanced(GLenum mode, GLsizei count, GLenum type, cons
 void lgl_draw_quad_pixels(int mode, unsigned int texture, const float corners[4][4], const float uv[4][2],
                           const float color[4])
 {
-	float verts[4][VF];
+	float verts[4][16];  /* pos 4, colour 4, normal 3, distance 1, texture 4 */
 	memset(verts, 0, sizeof(verts));
 	for (int i = 0; i < 4; i++) {
 		memcpy(verts[i], corners[i], sizeof(float[4]));
@@ -1500,7 +1738,7 @@ void lgl_draw_quad_pixels(int mode, unsigned int texture, const float corners[4]
 		fixed[i].on = 1;
 		fixed[i].buffer = buf;
 		fixed[i].offset = off + offs[i];
-		fixed[i].stride = (GLsizei)sizeof(float) * VF;
+		fixed[i].stride = (GLsizei)sizeof(float[16]);
 		fixed[i].size = sizes[i];
 		fixed[i].type = GL_FLOAT;
 	}
@@ -1533,7 +1771,41 @@ void lgl_current_mvp(float r_mvp[16])
 
 void lgl_viewport(int r_vp[4])
 {
-	glGetIntegerv(GL_VIEWPORT, r_vp);
+	LglContext *lc = lgl_context();
+	if (!lc->vp_valid) {
+		glGetIntegerv(GL_VIEWPORT, lc->vp);
+		lc->vp_valid = 1;
+	}
+	memcpy(r_vp, lc->vp, sizeof(int[4]));
+}
+
+float lgl_point_size(void)
+{
+	LglContext *lc = lgl_context();
+	if (!lc->point_size_valid) {
+		glGetFloatv(GL_POINT_SIZE, &lc->point_size);
+		lc->point_size_valid = 1;
+	}
+	return lc->point_size;
+}
+
+void GPU_lgl_Viewport(GLint x, GLint y, GLsizei w, GLsizei h)
+{
+	glViewport(x, y, w, h);
+	LglContext *lc = lgl_context();
+	lc->vp[0] = x;
+	lc->vp[1] = y;
+	lc->vp[2] = w;
+	lc->vp[3] = h;
+	lc->vp_valid = 1;
+}
+
+void GPU_lgl_PointSize(GLfloat size)
+{
+	glPointSize(size);
+	LglContext *lc = lgl_context();
+	lc->point_size = size;
+	lc->point_size_valid = 1;
 }
 
 /* the base formats of textures the application made with the old formats */
@@ -2063,6 +2335,10 @@ void gpu_lgl_exit(void)
 			MEM_freeN(lgl.xs[s]);
 			lgl.xs[s] = NULL;
 		}
+	}
+	if (lgl.dist) {
+		MEM_freeN(lgl.dist);
+		lgl.dist = NULL;
 	}
 	lgl.cap = 0;
 	if (lgl_idx) {

@@ -37,7 +37,10 @@
 #include "GPU_layer.h"
 #include "GPU_shader.h"
 
+#include "PIL_time.h"
+
 #include "gpu_private.h"
+#include "gpu_legacy_private.h"
 
 #ifndef M_PI
 #  define M_PI 3.14159265358979323846
@@ -93,7 +96,7 @@ size_t GPU_buf_size(const GPUBuf *buf)
  * when left and waited for before it is written again */
 
 #define STREAM_PARTS 3
-#define STREAM_PART_SIZE ((size_t)4 * 1024 * 1024)
+#define STREAM_PART_SIZE ((size_t)16 * 1024 * 1024)
 #define STREAM_ALIGN 256
 
 static struct {
@@ -105,6 +108,10 @@ static struct {
 	/* requests larger than a part get their own buffer for the frame */
 	GLuint big[8];
 	int nbig;
+	/* for GPU_draw_stats */
+	size_t stat_bytes;
+	int stat_allocs, stat_big, stat_waits;
+	double stat_wait_s;
 } gpu_stream = {0};
 
 static void stream_init(void)
@@ -132,8 +139,14 @@ static void stream_next_part(void)
 	GLsync wait = gpu_stream.fences[gpu_stream.part];
 	if (wait) {
 		/* the card may still read this part: wait for it */
-		while (glClientWaitSync(wait, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000) == GL_TIMEOUT_EXPIRED) {
-			/* keep waiting */
+		GLenum r = glClientWaitSync(wait, GL_SYNC_FLUSH_COMMANDS_BIT, 0);
+		if (r == GL_TIMEOUT_EXPIRED) {
+			const double t0 = PIL_check_seconds_timer();
+			while (glClientWaitSync(wait, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000) == GL_TIMEOUT_EXPIRED) {
+				/* keep waiting */
+			}
+			gpu_stream.stat_waits++;
+			gpu_stream.stat_wait_s += PIL_check_seconds_timer() - t0;
 		}
 		glDeleteSync(wait);
 		gpu_stream.fences[gpu_stream.part] = NULL;
@@ -143,7 +156,10 @@ static void stream_next_part(void)
 void *GPU_stream_alloc(size_t size, unsigned int *r_buffer, size_t *r_offset)
 {
 	stream_init();
+	gpu_stream.stat_bytes += size;
+	gpu_stream.stat_allocs++;
 	if (!gpu_stream.mapped || size > STREAM_PART_SIZE) {
+		gpu_stream.stat_big++;
 		/* too large (or no mapping): a buffer of its own, freed at the frame's end */
 		if (gpu_stream.nbig == 8) {
 			GPU_stream_frame_end();
@@ -168,6 +184,28 @@ void *GPU_stream_alloc(size_t size, unsigned int *r_buffer, size_t *r_offset)
 	*r_buffer = gpu_stream.id;
 	*r_offset = (size_t)gpu_stream.part * STREAM_PART_SIZE + offset;
 	return gpu_stream.mapped + *r_offset;
+}
+
+size_t GPU_stream_part_size(void)
+{
+	stream_init();
+	return gpu_stream.mapped ? STREAM_PART_SIZE - STREAM_ALIGN : 0;
+}
+
+void GPU_draw_stats(GPUDrawStats *r, bool reset)
+{
+	memset(r, 0, sizeof(*r));
+	r->stream_bytes = (double)gpu_stream.stat_bytes;
+	r->stream_allocs = gpu_stream.stat_allocs;
+	r->stream_big = gpu_stream.stat_big;
+	r->stream_waits = gpu_stream.stat_waits;
+	r->stream_wait_ms = gpu_stream.stat_wait_s * 1000.0;
+	gpu_lgl_stats(&r->emu_draws, &r->emu_vertices, &r->emu_bytes, &r->emu_pieces, reset);
+	if (reset) {
+		gpu_stream.stat_bytes = 0;
+		gpu_stream.stat_allocs = gpu_stream.stat_big = gpu_stream.stat_waits = 0;
+		gpu_stream.stat_wait_s = 0.0;
+	}
 }
 
 void GPU_stream_written(unsigned int buffer)

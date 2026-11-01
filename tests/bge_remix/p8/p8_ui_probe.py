@@ -414,32 +414,53 @@ def bench_setup():
     o["area"].spaces.active.viewport_shade = 'SOLID'
 
 
-def bench_time(o, kind, iterations):
+def draw_stats():
+    """what the drawing sent since the last call (BGE-Remix only; None in
+    stock 2.79)"""
+    try:
+        import gpu
+    except ImportError:
+        return None
+    f = getattr(gpu, "draw_stats", None)
+    return f(reset=True) if f else None
+
+
+def bench_time(o, kind, iterations, stats=None, key=None):
+    draw_stats()
     t0 = time.perf_counter()
     if kind == 'DRAW_WIN_SWAP':
         bpy.ops.wm.redraw_timer(type=kind, iterations=iterations)
     else:
         bpy.ops.wm.redraw_timer(o, type=kind, iterations=iterations)
-    return round((time.perf_counter() - t0) * 1000.0 / iterations, 3)
+    ms = round((time.perf_counter() - t0) * 1000.0 / iterations, 3)
+    s = draw_stats()
+    if s is not None and stats is not None:
+        # per redraw; bytes as megabytes
+        stats[key] = {k.replace("bytes", "mb"): round(v / iterations / (1048576.0 if "bytes" in k else 1.0), 2)
+                      for k, v in s.items()}
+    return ms
 
 
 def bench_run():
     o = view3d()
     space = o["area"].spaces.active
     r = {"faces": BENCH_STATE.get("faces")}
+    stats = {}
     bench_time(o, 'DRAW_SWAP', 2)
-    r["solid_ms"] = bench_time(o, 'DRAW_SWAP', 10)
+    r["solid_ms"] = bench_time(o, 'DRAW_SWAP', 10, stats, "solid")
     space.viewport_shade = 'WIREFRAME'
     bench_time(o, 'DRAW_SWAP', 2)
-    r["wire_ms"] = bench_time(o, 'DRAW_SWAP', 10)
+    r["wire_ms"] = bench_time(o, 'DRAW_SWAP', 10, stats, "wire")
     space.viewport_shade = 'SOLID'
     t0 = time.perf_counter()
     bpy.ops.object.mode_set(o, mode='EDIT')
     r["enter_edit_s"] = round(time.perf_counter() - t0, 2)
     bench_time(o, 'DRAW_SWAP', 2)
-    r["edit_ms"] = bench_time(o, 'DRAW_SWAP', 5)
+    r["edit_ms"] = bench_time(o, 'DRAW_SWAP', 5, stats, "edit")
     bpy.ops.object.mode_set(o, mode='OBJECT')
-    r["window_ms"] = bench_time(o, 'DRAW_WIN_SWAP', 10)
+    r["window_ms"] = bench_time(o, 'DRAW_WIN_SWAP', 10, stats, "window")
+    if stats:
+        r["stats"] = stats
     result["bench"] = r
     with open(BENCH, "w") as f:
         json.dump(r, f, indent=1)

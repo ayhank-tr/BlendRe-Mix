@@ -395,7 +395,16 @@ static void list_play(const LglList *l)
 			case LOP_BEGIN: GPU_lgl_Begin(c->e[0]); break;
 			case LOP_END: GPU_lgl_End(); break;
 			case LOP_VERTEX: lgl_vertex4f(f[0], f[1], f[2], f[3]); break;
-			case LOP_COLOR: lgl_color4f(f[0], f[1], f[2], f[3]); break;
+			case LOP_COLOR:
+				if (c->ne && c->e[0]) {
+					/* recorded from bytes */
+					lgl_color4ub((unsigned char)(f[0] * 255.0f + 0.5f), (unsigned char)(f[1] * 255.0f + 0.5f),
+					             (unsigned char)(f[2] * 255.0f + 0.5f), (unsigned char)(f[3] * 255.0f + 0.5f));
+				}
+				else {
+					lgl_color4f(f[0], f[1], f[2], f[3]);
+				}
+				break;
 			case LOP_NORMAL: lgl_normal3f(f[0], f[1], f[2]); break;
 			case LOP_TEXCOORD: lgl_texcoord4f((int)c->e[0], f[0], f[1], f[2], f[3]); break;
 			case LOP_ATTRIB: lgl_attrib4f(c->e[0], f[0], f[1], f[2], f[3]); break;

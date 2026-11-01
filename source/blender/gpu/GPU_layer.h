@@ -64,6 +64,18 @@ void GPU_stream_frame_end(void);
 /* after writing what GPU_stream_alloc gave: a request too large for the
  * streaming buffer got a buffer of its own, mapped until this is called */
 void GPU_stream_written(unsigned int buffer);
+/* the most one GPU_stream_alloc takes from the ring (0: no ring) */
+size_t GPU_stream_part_size(void);
+
+/* BGE-Remix P8.29: what the drawing sent since the last reset (the editors'
+ * benchmark reads it through Python's gpu.draw_stats) */
+typedef struct GPUDrawStats {
+	double stream_bytes;          /* through the streaming buffer */
+	int stream_allocs, stream_big, stream_waits;
+	double stream_wait_ms;        /* waiting for the card to finish with a part */
+	double emu_draws, emu_vertices, emu_bytes, emu_pieces;  /* the old calls' emulation */
+} GPUDrawStats;
+void GPU_draw_stats(GPUDrawStats *r, bool reset);
 
 /* ---- vertex formats ---- */
 

@@ -206,12 +206,12 @@ void GPU_lgl_Color3dv(const GLdouble *v)
 
 void GPU_lgl_Color3ub(GLubyte r, GLubyte g, GLubyte b)
 {
-	lgl_color4f((float)(r) / 255.0f, (float)(g) / 255.0f, (float)(b) / 255.0f, 1.0f);
+	lgl_color4ub(r, g, b, 255);
 }
 
 void GPU_lgl_Color3ubv(const GLubyte *v)
 {
-	lgl_color4f((float)(v[0]) / 255.0f, (float)(v[1]) / 255.0f, (float)(v[2]) / 255.0f, 1.0f);
+	lgl_color4ub(v[0], v[1], v[2], 255);
 }
 
 void GPU_lgl_Color3us(GLushort r, GLushort g, GLushort b)
@@ -286,12 +286,12 @@ void GPU_lgl_Color4dv(const GLdouble *v)
 
 void GPU_lgl_Color4ub(GLubyte r, GLubyte g, GLubyte b, GLubyte a)
 {
-	lgl_color4f((float)(r) / 255.0f, (float)(g) / 255.0f, (float)(b) / 255.0f, (float)(a) / 255.0f);
+	lgl_color4ub(r, g, b, a);
 }
 
 void GPU_lgl_Color4ubv(const GLubyte *v)
 {
-	lgl_color4f((float)(v[0]) / 255.0f, (float)(v[1]) / 255.0f, (float)(v[2]) / 255.0f, (float)(v[3]) / 255.0f);
+	lgl_color4ub(v[0], v[1], v[2], v[3]);
 }
 
 void GPU_lgl_Color4us(GLushort r, GLushort g, GLushort b, GLushort a)

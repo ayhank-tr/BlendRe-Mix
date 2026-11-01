@@ -37,6 +37,7 @@ extern int GPU_lgl_on;
 /* the per-vertex calls, every typed form ends in one of these */
 void lgl_vertex4f(float x, float y, float z, float w);
 void lgl_color4f(float r, float g, float b, float a);
+void lgl_color4ub(unsigned char r, unsigned char g, unsigned char b, unsigned char a);
 void lgl_normal3f(float x, float y, float z);
 void lgl_texcoord4f(int unit, float s, float t, float r, float q);
 void lgl_attrib4f(unsigned int index, float x, float y, float z, float w);
@@ -49,6 +50,10 @@ const char **gpu_lgl_unsupported_names(void);
 /* GPU_caps_init: the emulation on or off for this run */
 void gpu_lgl_init(int core_profile);
 void gpu_lgl_exit(void);
+
+/* GPU_draw_stats: the emulation's draws, immediate-mode vertices, bytes it
+ * streamed and the pieces large blocks were drawn in */
+void gpu_lgl_stats(double *r_draws, double *r_vertices, double *r_bytes, double *r_pieces, int reset);
 
 #ifdef __cplusplus
 }

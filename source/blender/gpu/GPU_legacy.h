@@ -193,6 +193,8 @@ void GPU_lgl_Fogi(GLenum a, GLint b);
 void GPU_lgl_Fogfv(GLenum a, const GLfloat *b);
 void GPU_lgl_Fogiv(GLenum a, const GLint *b);
 void GPU_lgl_PolygonMode(GLenum a, GLenum b);
+void GPU_lgl_Viewport(GLint a, GLint b, GLsizei c, GLsizei d);
+void GPU_lgl_PointSize(GLfloat a);
 GLint GPU_lgl_RenderMode(GLenum a);
 void GPU_lgl_SelectBuffer(GLsizei a, GLuint *b);
 void GPU_lgl_InitNames(void);
@@ -563,6 +565,8 @@ void GPU_lgl_VertexAttrib4Nub(GLuint a, GLubyte b, GLubyte c, GLubyte d, GLubyte
 #define glFogfv(...) (GPU_lgl_on ? GPU_lgl_Fogfv(__VA_ARGS__) : glFogfv(__VA_ARGS__))
 #define glFogiv(...) (GPU_lgl_on ? GPU_lgl_Fogiv(__VA_ARGS__) : glFogiv(__VA_ARGS__))
 #define glPolygonMode(...) (GPU_lgl_on ? GPU_lgl_PolygonMode(__VA_ARGS__) : glPolygonMode(__VA_ARGS__))
+#define glViewport(...) (GPU_lgl_on ? GPU_lgl_Viewport(__VA_ARGS__) : glViewport(__VA_ARGS__))
+#define glPointSize(...) (GPU_lgl_on ? GPU_lgl_PointSize(__VA_ARGS__) : glPointSize(__VA_ARGS__))
 #define glRenderMode(...) (GPU_lgl_on ? GPU_lgl_RenderMode(__VA_ARGS__) : glRenderMode(__VA_ARGS__))
 #define glSelectBuffer(...) (GPU_lgl_on ? GPU_lgl_SelectBuffer(__VA_ARGS__) : glSelectBuffer(__VA_ARGS__))
 #define glInitNames(...) (GPU_lgl_on ? GPU_lgl_InitNames(__VA_ARGS__) : glInitNames(__VA_ARGS__))

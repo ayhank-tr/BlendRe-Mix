@@ -137,6 +137,7 @@ void lgl_state_defaults(void)
 	for (int k = 0; k < 4; k++) {
 		lgl.color[k] = 1.0f;
 	}
+	lgl.color_ub = 1;  /* white is exact as bytes */
 	lgl.normal[2] = 1.0f;
 	for (int u = 0; u < LGL_UNITS; u++) {
 		lgl.tex[u][3] = 1.0f;
@@ -2273,14 +2274,14 @@ static void real_restore(const LglReal *r, GLbitfield mask)
 		glLineWidth(r->line_width);
 	}
 	if (mask & GL_POINT_BIT) {
-		glPointSize(r->point_size);
+		GPU_lgl_PointSize(r->point_size);
 	}
 	if (mask & GL_SCISSOR_BIT) {
 		real_enable(r, GL_SCISSOR_TEST);
 		glScissor(r->scissor[0], r->scissor[1], r->scissor[2], r->scissor[3]);
 	}
 	if (mask & GL_VIEWPORT_BIT) {
-		glViewport(r->viewport[0], r->viewport[1], r->viewport[2], r->viewport[3]);
+		GPU_lgl_Viewport(r->viewport[0], r->viewport[1], r->viewport[2], r->viewport[3]);
 		glDepthRange(r->depth_range[0], r->depth_range[1]);
 	}
 	if (mask & GL_STENCIL_BUFFER_BIT) {
@@ -2334,6 +2335,7 @@ void GPU_lgl_PopAttrib(void)
 
 	if (mask & GL_CURRENT_BIT) {
 		memcpy(lgl.color, s->color, sizeof(lgl.color));
+		lgl.color_ub = s->color_ub;
 		memcpy(lgl.normal, s->normal, sizeof(lgl.normal));
 		memcpy(lgl.tex, s->tex, sizeof(lgl.tex));
 		memcpy(lgl.raster, s->raster, sizeof(lgl.raster));

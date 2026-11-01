@@ -2958,8 +2958,18 @@ def t833_bgl(U, expected):
 
 
 def editor_benchmarks(U):
-    """B8.15"""
-    return {"B8.15 editor drawing, 1,000,000 faces (ms per redraw)": U.get("bench", {})}
+    """B8.15, and per redraw what the drawing sent in our core run (draws
+    and vertices through the emulation, megabytes streamed, waits for the
+    card)"""
+    bench = {k: dict(v) if isinstance(v, dict) else v for k, v in (U.get("bench") or {}).items()}
+    stats = {}
+    for kind, v in bench.items():
+        if isinstance(v, dict) and "stats" in v:
+            s = v.pop("stats")
+            if kind == "core":
+                stats = s
+    return {"B8.15 editor drawing, 1,000,000 faces (ms per redraw)": bench,
+            "B8.15 what a core redraw sends": stats}
 
 
 def main():
