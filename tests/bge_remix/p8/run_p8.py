@@ -87,7 +87,7 @@ T8.34 regression: P0-P7 unchanged (T8.20)
 B8.1-B8.5, B8.10 (shadows) reported; their targets are for the RTX run
 
   python run_p8.py --ours <build> --official <stock 2.79b> --mock <fake runtime> --out <dir>   (CI)
-  python run_p8.py ... --rtx --before C:\BGE-Remix\results   (P8.30's RTX run: run_p8_rtx.bat)
+  python run_p8.py ... --rtx --before C:\\BGE-Remix\\results   (P8.30's RTX run: run_p8_rtx.bat)
 """
 
 import argparse
