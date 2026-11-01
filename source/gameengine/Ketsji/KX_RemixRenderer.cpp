@@ -2203,13 +2203,16 @@ const wchar_t *KX_RemixRenderer::SkyTexture(KX_Scene *scene, uint64_t *r_key)
 	return m_skypath.c_str();
 }
 
-/* BGE-Remix P8 Part C (P8.23): the scene's depth of field (the camera's
- * focus and f-stop), motion blur (the Render tab's), bloom, auto exposure
- * and vignette (the Modern panel's) drive Remix's own */
+/* BGE-Remix P8 Part C (P8.23): in a Modern scene, motion blur (the Render
+ * tab's), bloom, auto exposure and vignette (the Modern panel's) drive
+ * Remix's own. A Classic scene leaves Remix's defaults alone (its bloom and
+ * auto exposure are on), as before P8: the P8.30 RTX run found older scenes
+ * brighter or darker in Remix once both were switched off for them. Remix's
+ * runtime has no depth of field option (rtx.dof.* is refused). */
 void KX_RemixRenderer::UpdateCameraEffects(KX_Scene *scene, KX_Camera *cam)
 {
 	Scene *sc = scene->GetBlenderScene();
-	if (!sc) {
+	if (!sc || BKE_scene_game_pipeline(sc) != 1) {
 		return;
 	}
 	const bool dof = BKE_scene_game_fx(sc, "depth_of_field", 0.0f) != 0.0f;
@@ -2243,11 +2246,6 @@ void KX_RemixRenderer::UpdateCameraEffects(KX_Scene *scene, KX_Camera *cam)
 	m_fx_sent = buf;
 	const char *on[2] = {"False", "True"};
 	char v[64];
-	m_bridge->set_config("rtx.dof.enable", on[dof]);
-	snprintf(v, sizeof(v), "%.3f", std::max(fstop, 0.1f));
-	m_bridge->set_config("rtx.dof.fNumber", v);
-	snprintf(v, sizeof(v), "%.3f", std::max(focus, 0.01f));
-	m_bridge->set_config("rtx.dof.focusDistance", v);
 	m_bridge->set_config("rtx.postfx.enable", on[mblur || vignette > 0.0f]);
 	m_bridge->set_config("rtx.postfx.enableMotionBlur", on[mblur]);
 	snprintf(v, sizeof(v), "%.3f", sc->r.blurfac);
@@ -2259,8 +2257,8 @@ void KX_RemixRenderer::UpdateCameraEffects(KX_Scene *scene, KX_Camera *cam)
 	snprintf(v, sizeof(v), "%.3f", bloom_intensity * 20.0f);
 	m_bridge->set_config("rtx.bloom.burnIntensity", v);
 	m_bridge->set_config("rtx.autoExposure.enabled", on[autoexp]);
-	printf("BGE-Remix: camera effects to Remix: depth of field %s, motion blur %s, bloom %s, auto exposure %s, "
-	       "vignette %.2f\n", on[dof], on[mblur], on[bloom], on[autoexp], vignette);
+	printf("BGE-Remix: camera effects to Remix: motion blur %s, bloom %s, auto exposure %s, vignette %.2f "
+	       "(depth of field %s: Remix has none)\n", on[mblur], on[bloom], on[autoexp], vignette, on[dof]);
 }
 
 /* BGE-Remix P8 Part B (P8.17): the world's mist as Remix's fog (its

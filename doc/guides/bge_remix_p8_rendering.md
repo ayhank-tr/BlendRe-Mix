@@ -109,7 +109,10 @@ Render > Shading > Pipeline (`scene.game_settings.render_pipeline`):
 Render > Camera Effects: bloom (intensity, threshold, radius), auto exposure
 (speed), vignette and depth of field (the camera's f-stop and focus). Motion
 blur uses the Render tab's shutter, and ambient occlusion the world's
-settings. Remix gets the same settings through its options.
+settings. In a Modern scene, Remix gets the same bloom, auto exposure,
+vignette and motion blur through its options; its runtime has no depth of
+field. A Classic scene leaves Remix's own defaults (its bloom and auto
+exposure on), as before P8.
 
 ## RTX Remix
 
@@ -203,6 +206,8 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
   Remix are the reference.
 - Remix's fog is exponential: linear and quadratic mist are approximated.
 - Remix's bakes use one UV map; meshes without one are reported.
+- Remix draws orthographic cameras wrongly (the picture comes out zoomed
+  in): use a perspective camera for scenes shown through Remix.
 - In the editors, lines and fonts can differ by a pixel from stock 2.79.
 - On a core context, a whole-window redraw takes about 22 ms on an RTX 3080,
   against about 19 ms in stock 2.79. Edit mode on a million faces is as fast

@@ -2669,7 +2669,8 @@ def t828_camera(C, expected):
     d["all"] = md
     c["every effect at once"] = md is not None and md > 1.0
     lines = C["remix"].get("c_camera_fx_all_remix", [])
-    want = {"rtx.dof.enable": "True", "rtx.postfx.enableMotionBlur": "True", "rtx.bloom.enable": "True",
+    # (Remix's runtime has no depth of field option: the RTX run found rtx.dof.* refused)
+    want = {"rtx.postfx.enableMotionBlur": "True", "rtx.bloom.enable": "True",
             "rtx.autoExposure.enabled": "True", "rtx.postfx.enableVignette": "True"}
     got = {k: config_values(lines, k) for k in want}
     d["remix_config"] = got
@@ -2989,14 +2990,19 @@ def editor_benchmarks(U):
 
 FRAME_60 = 1000.0 / 60.0
 TOL_BEFORE = 12.0  # a Remix picture against the build before P8's (path traced, denoised; blurred first)
-REMIX_SECONDS = 15
+REMIX_FRAMES = 320
 # Remix compiles every shader it lacks before its first frame, so the
-# pictures are ray traced (P2's RTX runs)
-REMIX_ENV = {"RTX_ENABLE_ASYNC_COMPILATION": "0"}
+# pictures are ray traced (P2's RTX runs); the picture at frame 300, once
+# Remix's denoiser has settled
+REMIX_ENV = {"RTX_ENABLE_ASYNC_COMPILATION": "0", "BGE_REMIX_P2_SHOT_FRAME": "300"}
 
 REMIX_VARIANT = r'''
-# a copy of each scene with RTX Remix on (scene property bge_remix)
-import bpy, os, sys
+# a copy of each scene for Remix: RTX Remix on (scene property bge_remix),
+# and an orthographic camera turned into a perspective one framing the same
+# plane (Remix draws orthographic cameras wrongly: the RTX run's first
+# pictures were zoomed far in)
+import bpy, math, os, sys
+from mathutils import Vector
 argv = sys.argv[sys.argv.index("--") + 1:]
 folder, names = argv[0], argv[1:]
 for name in names:
@@ -3006,11 +3012,21 @@ for name in names:
     bpy.ops.wm.open_mainfile(filepath=path)
     for sc in bpy.data.scenes:
         sc["bge_remix"] = 1
+        ob = sc.camera
+        if ob and ob.type == 'CAMERA' and ob.data.type == 'ORTHO':
+            cam = ob.data
+            view = ob.matrix_world.to_3x3() * Vector((0.0, 0.0, -1.0))
+            dist = max(view.normalized().dot(Vector((0.0, 0.0, 0.0)) - ob.matrix_world.translation), 1.0)
+            width = cam.ortho_scale
+            cam.type = 'PERSP'
+            cam.sensor_fit = 'HORIZONTAL'
+            cam.angle = 2.0 * math.atan(width * 0.5 / dist)
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, name + "_rtx.blend"), check_existing=False)
 '''
 
 # each new scene four ways: the game in Classic and in Modern, F12, Remix
-# ("+name": a copy of name with Remix on)
+# (the Remix column draws name_rtx, a copy for Remix; "+name": name had
+# Remix off)
 RTX_SCENES = [
     ("proc_textures", "proc_textures_gl", None, "proc_textures_gl", "proc_textures"),
     ("pbr_spheres", "pbr_spheres_gl", "pbr_spheres_modern_filmic", "pbr_spheres_gl", "pbr_spheres"),
@@ -3207,9 +3223,9 @@ def run_rtx(args, out):
     have = lambda n: bool(n) and os.path.isfile(S(n))  # noqa: E731
     tests, bench = {}, {}
 
-    # the scenes with Remix on that the CI tests had no need of
-    plus = [r[4][1:] for r in RTX_SCENES if r[4] and r[4].startswith("+")]
-    blender_script(args.ours, out, "remix_variants", REMIX_VARIANT, [scenes] + plus)
+    # every Remix scene's copy for Remix (Remix on, a perspective camera)
+    blender_script(args.ours, out, "remix_variants", REMIX_VARIANT,
+                   [scenes] + [r[4].lstrip("+") for r in RTX_SCENES if r[4]])
 
     # each new scene four ways
     print("RTX run: the new scenes in the game, F12 and RTX Remix...", flush=True)
@@ -3226,9 +3242,15 @@ def run_rtx(args, out):
             f12_path = os.path.join(out, "rtx_%s_f12.png" % key)
             blender_script(args.ours, out, "rtx_%s_f12" % key, RENDER, [f12_path], blend=S(f12), timeout=1800)
         paths.append(f12_path if f12_path and os.path.isfile(f12_path) else None)
-        name = (remix[1:] + "_rtx") if remix and remix.startswith("+") else remix
-        r = play(args.ours, out, "rtx_%s_remix" % key, S(name), dict(REMIX_ENV), frames=60, seconds=REMIX_SECONDS,
-                 gl_debug=False) if have(name) else {}
+        name = remix.lstrip("+") + "_rtx" if remix else None
+        # (also Remix's own copy of its frame, to tell a picture Remix did
+        # not make from one that did not reach the window)
+        bmp = os.path.join(out, "rtx_%s_remix_own.bmp" % key)
+        env = dict(REMIX_ENV, BGE_REMIX_SCREENSHOT=bmp, BGE_REMIX_SCREENSHOT_FRAME="300")
+        r = play(args.ours, out, "rtx_%s_remix" % key, S(name), env, frames=REMIX_FRAMES, gl_debug=False) \
+            if have(name) else {}
+        if r:
+            r["remix_own"] = p2.bmp_to_png(bmp)
         remix_runs[key] = r
         paths.append(r.get("screenshot"))
         rows.append((label, paths))
@@ -3255,8 +3277,11 @@ def run_rtx(args, out):
     for key, r in remix_runs.items():
         s = r.get("stats", {})
         ok, look = p2.has_picture(r.get("screenshot")) if r.get("screenshot") else (False, {})
+        own = p2.has_picture(r.get("remix_own"))[1] if r.get("remix_own") else {}
         d["new_scenes"][key] = {"running": s.get("running"), "errors": s.get("errors"),
-                                "draws": s.get("draws_last_frame"), "picture": look}
+                                "draws": s.get("draws_last_frame"), "picture": look, "remix_own_picture": own,
+                                "notes": [l for l in (r.get("text") or "").splitlines()
+                                          if "Remix's image" in l or "is not an RtxOption" in l][:4]}
         if not (r.get("ran") and s.get("running") is True and not s.get("errors") and ok):
             missing.append(key)
     d["not_drawn_by_remix"] = missing
@@ -3311,10 +3336,16 @@ def run_rtx(args, out):
     bench.update(partc_benchmarks(args, out, S))
     cache_dir = os.path.join(out, "shader_cache_b82")
     shutil.rmtree(cache_dir, ignore_errors=True)
-    starts = [play(args.ours, out, "rtx_b82_%s" % k, S("glsl_features"), {"BGE_REMIX_SHADER_CACHE": cache_dir},
-                   frames=60, gl_debug=False).get("seconds_total") for k in ("first", "second")]
-    bench["B8.2 start with the shader cache (s): first, second"] = starts
-    prof = os.path.join(out, "rtx_crowd_profile.json")
+    starts, built = [], []
+    for k in ("first", "second"):
+        r = play(args.ours, out, "rtx_b82_%s" % k, S("glsl_features"), {"BGE_REMIX_SHADER_CACHE": cache_dir},
+                 frames=60, gl_debug=False)
+        starts.append(r.get("seconds_total"))
+        m = re.findall(r"BGE-Remix shader cache: (\d+) loaded, (\d+) built", r.get("text") or "")
+        built.append([int(x) for x in m[-1]] if m else None)
+    bench["B8.2 start with the shader cache: seconds, [loaded, built]"] = {"first": [starts[0], built[0]],
+                                                                         "second": [starts[1], built[1]]}
+    prof = os.path.join(out, "rtx_crowd_categories.json")
     if os.path.isfile(prof):
         os.remove(prof)
     play(args.ours, out, "rtx_crowd_profile", S("crowd"), {"BGE_REMIX_P8_STATS": prof}, frames=90, gl_debug=False)
@@ -3326,7 +3357,10 @@ def run_rtx(args, out):
     U = editor_runs(args, out, S, expected, startup)
     bench.update(editor_benchmarks(U))
     c, d = judge_benchmarks(bench)
-    c["B8.2 the second start faster (%s)" % starts] = None not in starts and starts[1] < starts[0]
+    # (both starts take about 0.6 s, below what the timing can tell apart:
+    # faster means the second builds no shader the first built)
+    c["B8.2 the second start builds no shader the first built (%s)" % built] = \
+        None not in built and built[0][1] > 0 and built[1][1] == 0 and built[1][0] > 0
     tests["Benchmark targets (RTX run)"] = {"ok": all(c.values()), "checks": c, "detail": d}
 
     # the other sheets: mt_features before (stock 2.79's Multitexture) and
