@@ -187,6 +187,11 @@ unsigned int GPU_select_end(void)
  */
 bool GPU_select_query_check_active(void)
 {
+	/* BGE-Remix P8.28: the old GL_SELECT mode is not emulated: occlusion
+	 * queries select on a core context, whatever the preference says */
+	if (GPU_lgl_on) {
+		return true;
+	}
 	return ((U.gpu_select_method == USER_SELECT_USE_OCCLUSION_QUERY) ||
 	        ((U.gpu_select_method == USER_SELECT_AUTO) &&
 	         (GPU_type_matches(GPU_DEVICE_ATI, GPU_OS_ANY, GPU_DRIVER_ANY) ||

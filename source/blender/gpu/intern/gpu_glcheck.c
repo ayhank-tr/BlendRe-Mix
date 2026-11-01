@@ -42,6 +42,8 @@
 #include "GPU_glew.h"
 #include "GPU_glcheck.h"
 
+#include "gpu_legacy_private.h"
+
 #include "gpu_private.h"
 
 static GPUCaps gpu_caps = {0};
@@ -240,6 +242,9 @@ void GPU_caps_init(void)
 	             vendor ? vendor : "?", renderer ? renderer : "?", version ? version : "?");
 	printf("BGE-Remix GL: %s\n", gpu_caps.text);
 
+	/* BGE-Remix P8.26: the old calls emulated on a core context */
+	gpu_lgl_init(gpu_caps.core_profile);
+
 	/* driver messages, in debug contexts */
 	if (gpu_caps.debug && (GLEW_VERSION_4_3 || GLEW_KHR_debug)) {
 		gpu_msgs.on = true;
@@ -432,7 +437,7 @@ void GPU_state_snapshot(GPUStateSnapshot *snap)
 	glGetIntegerv(GL_TEXTURE_BINDING_2D, &v[SC_TEXTURE_2D]);
 	glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &v[SC_VERTEX_ARRAY]);
 	glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &v[SC_ARRAY_BUFFER]);
-	if (!gpu_caps.core_profile) {
+	if (!gpu_caps.core_profile || GPU_lgl_on) {
 		glGetIntegerv(GL_MATRIX_MODE, &v[SC_MATRIX_MODE]);
 		v[SC_LIGHTING] = glIsEnabled(GL_LIGHTING);
 		v[SC_TEXTURE_2D_ON] = glIsEnabled(GL_TEXTURE_2D);
@@ -460,7 +465,7 @@ void GPU_state_snapshot(GPUStateSnapshot *snap)
 	glGetIntegerv(GL_DRAW_BUFFER, &v[SC_DRAW_BUFFER]);
 	glGetIntegerv(GL_VIEWPORT, &v[SC_VIEWPORT]);
 	glGetIntegerv(GL_SCISSOR_BOX, &v[SC_SCISSOR_BOX]);
-	if (!gpu_caps.core_profile) {
+	if (!gpu_caps.core_profile || GPU_lgl_on) {
 		glGetFloatv(GL_MODELVIEW_MATRIX, &snap->floats[0]);
 		glGetFloatv(GL_PROJECTION_MATRIX, &snap->floats[16]);
 	}

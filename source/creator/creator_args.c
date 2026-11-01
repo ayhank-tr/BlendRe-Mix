@@ -552,6 +552,7 @@ static int arg_handle_print_help(int UNUSED(argc), const char **UNUSED(argv), vo
 	BLI_argsPrintArgDoc(ba, "--debug-depsgraph-no-threads");
 
 	BLI_argsPrintArgDoc(ba, "--debug-gpumem");
+	BLI_argsPrintArgDoc(ba, "--gl-compat");
 	BLI_argsPrintArgDoc(ba, "--debug-wm");
 	BLI_argsPrintArgDoc(ba, "--debug-all");
 	BLI_argsPrintArgDoc(ba, "--debug-io");
@@ -762,6 +763,16 @@ static const char arg_handle_debug_mode_io_doc[] =
 static int arg_handle_debug_mode_io(int UNUSED(argc), const char **UNUSED(argv), void *UNUSED(data))
 {
 	G.debug |= G_DEBUG_IO;
+	return 0;
+}
+
+static const char arg_handle_gl_compat_doc[] =
+"\n\tUse an OpenGL compatibility context instead of the core one (BGE-Remix: the old drawing calls\n"
+"\tthen go to the driver instead of the emulation)."
+;
+static int arg_handle_gl_compat(int UNUSED(argc), const char **UNUSED(argv), void *UNUSED(data))
+{
+	BLI_setenv("BGE_REMIX_GL_COMPAT", "1");
 	return 0;
 }
 
@@ -1828,6 +1839,9 @@ void main_args_setup(bContext *C, bArgs *ba, SYS_SystemHandle *syshandle)
 	BLI_argsAdd(ba, 1, NULL, "--debug-all", CB(arg_handle_debug_mode_all), NULL);
 
 	BLI_argsAdd(ba, 1, NULL, "--debug-io", CB(arg_handle_debug_mode_io), NULL);
+
+	/* BGE-Remix P8.29 */
+	BLI_argsAdd(ba, 1, NULL, "--gl-compat", CB(arg_handle_gl_compat), NULL);
 
 	BLI_argsAdd(ba, 1, NULL, "--debug-fpe",
 	            CB(arg_handle_debug_fpe_set), NULL);

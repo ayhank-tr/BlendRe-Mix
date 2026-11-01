@@ -46,6 +46,8 @@ struct BLFLayerDraw {
 };
 extern struct BLFLayerDraw blf_layer;
 void blf_color4fv(const float color[4]);
+/* BGE-Remix P8.27: the glyphs drawn so far (one glBegin/glEnd per texture) */
+void blf_glyph_quads_end(void);
 
 unsigned int blf_next_p2(unsigned int x);
 unsigned int blf_hash(unsigned int val);

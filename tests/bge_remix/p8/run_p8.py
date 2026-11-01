@@ -414,7 +414,7 @@ def mock_env(args, out, tag, cache, size=BAKE_TEST_SIZE, dump=None):
     return log, env
 
 
-def ui_probe(build, out, tag, blend, env, timeout=900):
+def ui_probe(build, out, tag, blend, env, timeout=900, extra=()):
     done = os.path.join(out, tag + "_ui.json")
     if os.path.isfile(done):
         os.remove(done)
@@ -424,7 +424,7 @@ def ui_probe(build, out, tag, blend, env, timeout=900):
     e.update(env)
     # without Blender's crash handler, so a crash leaves a dump (CI)
     # (no scene: Blender's own startup scene)
-    code, text, secs = p2.run([p2.exe(build, "blender"), "--disable-crash-handler"] + WINDOW +
+    code, text, secs = p2.run([p2.exe(build, "blender"), "--disable-crash-handler"] + list(extra) + WINDOW +
                               ([blend] if blend else ["--factory-startup"]) + ["--python", UI_PROBE], e,
                               os.path.join(out, tag + ".log"), timeout=timeout, cwd=out)
     note_gl(build, "ui_" + tag, text)
@@ -1257,6 +1257,14 @@ def t81_gl(gl):
     c["the player runs in OpenGL 4.5 or later (every run)"] = bool(player) and all(ok45(v) for v in player.values())
     c["Blender runs in OpenGL 4.5 or later"] = bool(ui) and all(ok45(v) for v in ui.values())
     c["the runs had debug contexts (driver messages on)"] = bool(player) and all(v["debug"] for v in player.values())
+    # Part C step 8: a core context unless --gl-compat asked for the other
+    compat_tags = {t for t in GL_LOG if "compat" in t}
+    core_runs = {t: v["profile"] for t, v in GL_LOG.items() if t not in compat_tags and t != "t81_fake_old_card"}
+    c["Blender and the player run in a core context"] = bool(core_runs) and \
+        all(p == "core" for p in core_runs.values())
+    c["--gl-compat gives a compatibility context"] = bool(compat_tags) and \
+        all(GL_LOG[t]["profile"] == "compatibility" for t in compat_tags)
+    d["not_core"] = sorted(t for t, p in core_runs.items() if p != "core")[:20]
     d["versions"] = sorted({v["line"] for v in GL_LOG.values() if v["line"]})
     d["runs_without_a_version_line"] = sorted(t for t, v in GL_LOG.items() if not v["line"])[:20]
 
@@ -1519,6 +1527,8 @@ def run(args, out):
     B = partb_runs(args, out, S, expected)
     # P8 v2 Part C
     C = partc_runs(args, out, S, expected)
+    # Part C steps 7-8: the editors on OpenGL 4.5 core
+    U = editor_runs(args, out, S, expected, startup)
 
     tests = {}
     plan = [("T8.4 One mode", lambda: t81(args, out, scenes, mt_ours, api)),
@@ -1552,7 +1562,10 @@ def run(args, out):
             ("T8.27 Left-out objects", lambda: t827_left_out(C, expected)),
             ("T8.28 Camera and colour", lambda: t828_camera(C, expected)),
             ("T8.29 Remix match", lambda: t829_match(C, expected)),
-            ("T8.30 Panels", lambda: t830_panels(C, expected))]
+            ("T8.30 Panels", lambda: t830_panels(C, expected)),
+            ("T8.31 Editors unchanged", lambda: t831_editors(U, expected)),
+            ("T8.32 Selection", lambda: t832_selection(U, expected)),
+            ("T8.33 bgl", lambda: t833_bgl(U, expected))]
     needs_official = ("T8.4", "T8.5", "T8.6", "T8.3", "Meshes", "T8.14")
     for name, fn in plan:
         if not args.official and name.split()[0] in needs_official:
@@ -1574,12 +1587,14 @@ def run(args, out):
         import traceback
         c, d = {"the test ran": False}, {"error": traceback.format_exc()}
     tests["T8.1 OpenGL 4.5"] = {"ok": bool(c) and all(bool(v) for v in c.values()), "checks": c, "detail": d}
-    ran = {k: bool(r.get("ran")) for k, r in list(runs.items()) + list(B["runs"].items()) + list(C["runs"].items())}
+    ran = {k: bool(r.get("ran")) for k, r in list(runs.items()) + list(B["runs"].items()) + list(C["runs"].items()) +
+           list(U["runs"].items())}
     tests["The game ran (every scene)"] = {"ok": all(ran.values()), "checks": ran, "detail": {}}
 
     bench = benchmarks(args, out, scenes, runs)
     bench.update(partb_benchmarks(args, out, S, expected))
     bench.update(partc_benchmarks(args, out, S))
+    bench.update(editor_benchmarks(U))
     res = {"tests": tests, "bench": bench, "all_ok": all(t["ok"] for t in tests.values())}
     # the self-test picture as PNG for the sheet
     try:
@@ -1640,7 +1655,18 @@ def run(args, out):
              ("camera_fx: 2D filter over Remix (fake runtime)",
               C["runs"].get("c_camera_fx_filter_remix", {}).get("screenshot")),
              ("remix_extras: game (shared texture cache)",
-              C["runs"].get("c_remix_extras_shared", {}).get("screenshot"))]
+              C["runs"].get("c_remix_extras_shared", {}).get("screenshot")),
+             ("editors_ui Default: core (emulated)", U["shot"].get(("core", "Default"))),
+             ("editors_ui Default: --gl-compat", U["shot"].get(("compat", "Default"))),
+             ("editors_ui Default: stock 2.79", U["shot"].get(("stock", "Default"))),
+             ("editors_ui Animation: core", U["shot"].get(("core", "Animation"))),
+             ("editors_ui Animation: stock 2.79", U["shot"].get(("stock", "Animation"))),
+             ("editors_ui Default, edit mode: core", U["shot"].get(("core", "Default_edit"))),
+             ("editors_ui Default, edit mode: stock 2.79", U["shot"].get(("stock", "Default_edit"))),
+             ("bgl in the 3D view: core", U["bgl_shot"].get("core")),
+             ("bgl in the 3D view: stock 2.79", U["bgl_shot"].get("stock")),
+             ("bgl in a game: core", U["runs"].get("u_bgl_game", {}).get("screenshot")),
+             ("bgl in a game: stock 2.79", U["runs"].get("u_stock_bgl_game", {}).get("screenshot"))]
     res["sheet"] = p2.contact_sheet(sheet, os.path.join(out, "sheet_p8a.png"))
 
     lines = ["BGE-Remix P8 tests, plan v2: Parts A, B and C (CI)", "=" * 70, ""]
@@ -2743,6 +2769,197 @@ def partc_benchmarks(args, out, S):
     b["B8.14 screen effects (ms)"] = {"none": ms("camera_fx_none", "b814_none"),
                                       "all": ms("camera_fx_all", "b814_all")}
     return b
+
+
+# ---------------------------------------------------------------------------
+# Part C steps 7-8: the editors on OpenGL 4.5 core (T8.31-T8.33, B8.15)
+
+TOL_UI_COMPAT = 1.5   # an editor drawn by the emulation against the driver's old OpenGL (mean)
+TOL_UI_STOCK = 4.0    # an editor against stock 2.79's (mean)
+TOL_BGL = 4.0         # bgl's drawing against stock 2.79's (mean)
+# editors BGE-Remix adds to (panels, menus, bricks): not compared with stock
+UI_OURS_ONLY = ("PROPERTIES", "INFO", "LOGIC_EDITOR", "USER_PREFERENCES")
+
+
+def editor_runs(args, out, S, expected, startup):
+    """the probe in our build (core and --gl-compat) and stock 2.79"""
+    U = {"runs": {}, "ui": {}, "shot": {}, "bgl_shot": {}, "select": {}, "bench": {}}
+    screens = expected.get("editors_ui", {}).get("screens", [])
+    builds = [("core", args.ours, ()), ("compat", args.ours, ("--gl-compat",))]
+    if args.official:
+        builds.append(("stock", args.official, ()))
+    for kind, build, extra in builds:
+        tag = "u_%s" % kind
+        if os.path.isfile(S("editors_ui")):
+            d = os.path.join(out, tag + "_screens")
+            shutil.rmtree(d, ignore_errors=True)
+            os.makedirs(d, exist_ok=True)
+            r = ui_probe(build, out, tag + "_editors", S("editors_ui"),
+                         {"BGE_REMIX_P8_SCREENS": d, "BGE_REMIX_P8_SCREEN_LIST": ",".join(screens),
+                          "BGE_REMIX_P8_BGL": d}, extra=extra)
+            U["runs"][tag + "_editors"] = r
+            U["ui"][kind] = r
+            for sh in r.get("screens", {}).get("shots", []):
+                U["shot"][(kind, sh["screen"])] = sh["path"] if sh.get("written") else None
+            U["bgl_shot"][kind] = r.get("bgl", {}).get("path")
+        if startup and os.path.isfile(startup):
+            d = os.path.join(out, tag + "_startup")
+            shutil.rmtree(d, ignore_errors=True)
+            os.makedirs(d, exist_ok=True)
+            bench = os.path.join(out, tag + "_bench.json")
+            r = ui_probe(build, out, tag + "_startup", startup,
+                         {"BGE_REMIX_P8_SCREENS": d, "BGE_REMIX_P8_SCREEN_LIST": "Default",
+                          "BGE_REMIX_P8_BENCH": bench}, extra=extra, timeout=1800)
+            U["runs"][tag + "_startup"] = r
+            U["ui"][kind + "_startup"] = r
+            U["bench"][kind] = r.get("bench")
+        if os.path.isfile(S("select_pick")):
+            sel = os.path.join(out, tag + "_select.json")
+            r = ui_probe(build, out, tag + "_select", S("select_pick"), {"BGE_REMIX_P8_SELECT": sel}, extra=extra)
+            U["runs"][tag + "_select"] = r
+            U["select"][kind] = r.get("select")
+    # bgl in a game: ours (core) and stock
+    if os.path.isfile(S("bgl_game")):
+        U["runs"]["u_bgl_game"] = play(args.ours, out, "u_bgl_game", S("bgl_game"))
+        if args.official:
+            U["runs"]["u_stock_bgl_game"] = play(args.official, out, "u_stock_bgl_game", S("bgl_game"))
+    return U
+
+
+def area_rect(area):
+    r = area.get("region")
+    if not r or r["width"] < 8 or r["height"] < 8:
+        return None
+    return [r["x"], r["y"], r["x"] + r["width"], r["y"] + r["height"]]
+
+
+def t831_editors(U, expected):
+    """each editor's main region: the emulation against the driver's old
+    OpenGL, and against stock 2.79"""
+    c, d = {}, {}
+    core = U["ui"].get("core", {})
+    shots = core.get("screens", {}).get("shots", []) + U["ui"].get("core_startup", {}).get("screens", {}).get("shots", [])
+    c["the probe ran in the core context"] = bool(core.get("ran")) and not core.get("errors")
+    d["probe_errors"] = (core.get("errors") or [])[:5]
+    wanted = expected.get("editors_ui", {}).get("screens", [])
+    drawn = {sh["screen"] for sh in core.get("screens", {}).get("shots", []) if sh.get("written")}
+    c["every screen drawn and saved"] = bool(wanted) and all(n in drawn for n in wanted) and \
+        "Default_edit" in drawn and "Default_wire" in drawn
+    d["drawn"] = sorted(drawn)
+    worst_compat, worst_stock, over_compat, over_stock = {}, {}, [], []
+    for i, sh in enumerate(shots):
+        startup = i >= len(core.get("screens", {}).get("shots", []))
+        key = ("startup " if startup else "") + sh["screen"]
+        a = picture(sh["path"])
+        for other, worst, over, tol in (("compat", worst_compat, over_compat, TOL_UI_COMPAT),
+                                        ("stock", worst_stock, over_stock, TOL_UI_STOCK)):
+            src = U["ui"].get(other + ("_startup" if startup else ""), {})
+            match = [x for x in src.get("screens", {}).get("shots", []) if x["screen"] == sh["screen"]]
+            b = picture(match[0]["path"]) if match else None
+            if b is None:
+                continue
+            for k, area in enumerate(sh.get("areas", [])):
+                if other == "stock" and area["type"] in UI_OURS_ONLY:
+                    continue
+                rect = area_rect(area)
+                if rect is None:
+                    continue
+                md = region_diff(a, b, rect)
+                name = "%s / %s %d" % (key, area["type"], k)
+                worst[name] = md
+                if md is None or md > tol:
+                    over.append(name)
+    c["each editor as with --gl-compat (within %.1f)" % TOL_UI_COMPAT] = bool(worst_compat) and not over_compat
+    c["each editor as stock 2.79 (within %.1f; BGE-Remix's own editors left out)" % TOL_UI_STOCK] = \
+        bool(worst_stock) and not over_stock
+    d["over_compat"] = {n: worst_compat[n] for n in over_compat}
+    d["over_stock"] = {n: worst_stock[n] for n in over_stock}
+    d["largest_compat"] = sorted(worst_compat.items(), key=lambda kv: -(kv[1] or 0))[:6]
+    d["largest_stock"] = sorted(worst_stock.items(), key=lambda kv: -(kv[1] or 0))[:6]
+    text = core.get("text", "")
+    d["emulation_notes"] = sorted(set(l for l in text.splitlines() if "GL emulation:" in l))[:20]
+    return c, d
+
+
+def t832_selection(U, expected):
+    """clicks select what is under them"""
+    c, d = {}, {}
+    E = expected.get("select_pick", {})
+    core = U["select"].get("core") or {}
+    clicks = {k["target"]: k for k in core.get("clicks", [])}
+    d["core"] = core
+    boxes = E.get("boxes", [])
+    c["each box click selects that box"] = bool(boxes) and \
+        all(clicks.get(n, {}).get("selected") == [n] for n in boxes)
+    c["the front box over the back one is selected"] = clicks.get(E.get("front"), {}).get("selected") == [E.get("front")]
+    c["the back box beside it is selected"] = clicks.get(E.get("back"), {}).get("selected") == [E.get("back")]
+    c["a click on nothing selects nothing"] = core.get("empty", {}).get("selected") == []
+    c["the box selection takes the top row"] = core.get("box", {}).get("selected") == \
+        sorted("SP_0_%d" % k for k in range(4))
+    edit = core.get("edit", [])
+    c["edit-mode clicks select the vertex under them"] = bool(edit) and \
+        all(e.get("selected") == [e["vertex"]] for e in edit)
+    for other in ("compat", "stock"):
+        o = U["select"].get(other)
+        if o is None:
+            continue
+        same = [k.get("selected") for k in core.get("clicks", [])] == [k.get("selected") for k in o.get("clicks", [])]
+        same = same and core.get("box", {}).get("selected") == o.get("box", {}).get("selected")
+        same = same and [e.get("selected") for e in edit] == [e.get("selected") for e in o.get("edit", [])]
+        c["the same selections as %s" % ("--gl-compat" if other == "compat" else "stock 2.79")] = same
+    return c, d
+
+
+def bgl_rect(r):
+    """what the handler draws: x 30-840, y 30-330 from the region's bottom"""
+    reg = r.get("region")
+    if not reg:
+        return None
+    left = reg["x"] + 30
+    right = min(reg["x"] + 840, reg["x"] + reg["width"])
+    bottom = reg["y"] + reg["height"] - 30
+    top = max(reg["y"], bottom - 300)
+    return [left, top, right, bottom]
+
+
+def t833_bgl(U, expected):
+    c, d = {}, {}
+    core = U["ui"].get("core", {}).get("bgl", {})
+    a = picture(core.get("path"))
+    rect = bgl_rect(core)
+    c["the 3D view's bgl drawing saved"] = a is not None and rect is not None
+    for other, tol in (("compat", TOL_UI_COMPAT * 2), ("stock", TOL_BGL)):
+        o = U["ui"].get(other, {}).get("bgl")
+        if o is None:
+            continue
+        md = region_diff(a, picture(o.get("path")), rect) if rect else None
+        d["editor_" + other] = md
+        c["bgl in the 3D view as %s (within %.1f)" % ("--gl-compat" if other == "compat" else "stock 2.79", tol)] = \
+            md is not None and md <= tol
+        q, oq = core.get("queries") or {}, o.get("queries") or {}
+        c["bgl's queries answer as %s" % ("--gl-compat" if other == "compat" else "stock 2.79")] = \
+            bool(q) and q.get("viewport") == oq.get("viewport") and q.get("modelview") == oq.get("modelview")
+        d["queries_" + other] = oq
+    d["queries_core"] = core.get("queries")
+    g = U["runs"].get("u_bgl_game", {})
+    s = U["runs"].get("u_stock_bgl_game", {})
+    c["the bgl game ran"] = bool(g.get("ran"))
+    rect = expected.get("bgl_game", {}).get("rect")
+    if s:
+        md = region_diff(picture(g.get("screenshot")), picture(s.get("screenshot")), rect)
+        d["game_stock"] = md
+        c["bgl in a game as stock 2.79 (within %.1f)" % TOL_BGL] = md is not None and md <= TOL_BGL
+    text = g.get("text", "")
+    note = [l for l in text.splitlines() if "bgl.glAccum is not emulated" in l]
+    d["note"] = note[:2]
+    c["the skipped old call is named with its script and line"] = bool(note) and "p8_bgl.py" in note[0] and \
+        re.search(r"line \d+", note[0]) is not None
+    return c, d
+
+
+def editor_benchmarks(U):
+    """B8.15"""
+    return {"B8.15 editor drawing, 1,000,000 faces (ms per redraw)": U.get("bench", {})}
 
 
 def main():

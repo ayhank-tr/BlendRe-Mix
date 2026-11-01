@@ -34,4 +34,8 @@
 
 #include "glew-mx.h"
 
+/* BGE-Remix P8.26: the old OpenGL calls redirected to the emulation (on a
+ * core context); GPU_LEGACY_NO_REDIRECT before this include keeps the real ones */
+#include "GPU_legacy.h"
+
 #endif /* __GPU_GLEW_H__ */

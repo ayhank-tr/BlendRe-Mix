@@ -43,6 +43,8 @@
 #include "GPU_material.h"
 #include "GPU_shader.h"
 
+#include "gpu_legacy_private.h"  /* BGE-Remix P8.26 */
+
 #include "intern/gpu_codegen.h"
 #include "intern/gpu_private.h"
 
@@ -99,6 +101,7 @@ void GPU_exit(void)
 	GPU_probes_exit();
 	GPU_volumes_exit();
 	GPU_sprites_exit();  /* BGE-Remix P8 Part C (P8.20) */
+	gpu_lgl_exit();      /* BGE-Remix P8.26 */
 	gpu_glcheck_exit();
 
 	gpu_codegen_exit();

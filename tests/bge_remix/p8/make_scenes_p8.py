@@ -55,6 +55,16 @@
 #   transparency*.blend    overlapping coloured glass panes, a smoke column of
 #                          particles, hair cards and a cut-out fence, made in
 #                          two orders (Classic and Modern)
+# Part C steps 7-8 (the editors on OpenGL 4.5 core) add:
+#   editors_ui.blend       Blender's startup screens with something in each
+#                          editor: an animated cube, a monkey, an armature, a
+#                          curve, text, an empty, a spot lamp, an image in the
+#                          UV editor, a text block, compositing nodes, strips
+#   select_pick.blend      twelve boxes in a grid, one box behind another, a
+#                          grid mesh: clicks select what is under them
+#   bgl_game.blend         a game whose Python draws with bgl after the scene
+#                          (lines, quads, points, pixels, a display list, an
+#                          old call the emulation skips)
 #   left_out*.blend        a curve, a NURBS surface, a metaball, text, a wire
 #                          material, a displaced plane, vertex colours, an
 #                          ocean (and a Remix copy)
@@ -2995,6 +3005,190 @@ def make_remix_extras(folder, E):
                          "categories": {"decal": 1 << 11, "water": 1 << 17, "terrain": 1 << 16}}
 
 
+# ---------------------------------------------------------------------------
+# Part C steps 7-8: the editors on OpenGL 4.5 core (T8.31-T8.33, B8.15)
+
+# the startup screens the editors test draws (2.79's own layouts)
+UI_SCREENS = ("Default", "Animation", "Compositing", "Scripting", "UV Editing", "Video Editing",
+              "Motion Tracking", "Game Logic")
+
+
+def make_editors_ui(folder, E):
+    """the startup file with something in every editor (the screens kept)"""
+    scene = bpy.context.scene
+    cube = scene.objects.get("Cube")
+    for frame, x in ((1, 0.0), (30, 1.5), (60, 0.0)):
+        cube.location.x = x
+        cube.keyframe_insert(data_path="location", frame=frame)
+    for frame, r in ((1, 0.0), (60, 1.2)):
+        cube.rotation_euler.z = r
+        cube.keyframe_insert(data_path="rotation_euler", index=2, frame=frame)
+    bpy.ops.mesh.primitive_monkey_add(location=(3.0, 0.0, 0.0))
+    bpy.context.object.modifiers.new("Sub", 'SUBSURF').levels = 1
+    bpy.ops.object.armature_add(location=(-3.0, 0.0, 0.0))
+    bpy.ops.curve.primitive_bezier_curve_add(location=(0.0, 3.0, 0.0))
+    bpy.ops.object.text_add(location=(0.0, -3.0, 0.0))
+    bpy.ops.object.empty_add(type='SPHERE', location=(3.0, 3.0, 0.0))
+    bpy.ops.object.lamp_add(type='SPOT', location=(-3.0, 3.0, 3.0))
+    img = p3.image("UI_checker", p3.checker)
+    txt = bpy.data.texts.new("ui_notes.py")
+    txt.write("# BGE-Remix P8: the editors on OpenGL 4.5 core\nimport bpy\n\nfor ob in bpy.data.objects:\n"
+              "    print(ob.name, ob.type)\n")
+    scene.use_nodes = True
+    ed = scene.sequence_editor_create()
+    a = ed.sequences.new_effect("Red", 'COLOR', 1, frame_start=1, frame_end=50)
+    a.color = (0.8, 0.2, 0.1)
+    b = ed.sequences.new_effect("Blue", 'COLOR', 2, frame_start=20, frame_end=80)
+    b.color = (0.1, 0.3, 0.8)
+    for sc in bpy.data.screens:
+        for area in sc.areas:
+            sp = area.spaces.active
+            if area.type == 'IMAGE_EDITOR':
+                sp.image = img
+            elif area.type == 'TEXT_EDITOR':
+                sp.text = txt
+    scene.frame_current = 15
+    scene.objects.active = cube
+    for ob in scene.objects:
+        ob.select = (ob == cube)
+    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, "editors_ui.blend"), check_existing=False)
+    E["editors_ui"] = {"screens": list(UI_SCREENS)}
+
+
+def make_select_pick(folder, E):
+    """boxes in a grid seen from the camera, one box behind another, and a
+    grid mesh (the edit-mode clicks)"""
+    scene = base("Select")
+    names = []
+    grey = classic("SP_grey", (0.6, 0.6, 0.6))
+    for r in range(3):
+        for c in range(4):
+            name = "SP_%d_%d" % (r, c)
+            box(scene, name, (-4.5 + c * 2.2, 0.0, 1.8 - r * 1.8), (1.0, 1.0, 1.0), grey)
+            names.append(name)
+    # in front of a larger one: the click on the front one selects it
+    box(scene, "SP_back", (3.4, 4.0, -2.6), (2.4, 1.0, 1.2), classic("SP_blue", (0.2, 0.3, 0.8)))
+    box(scene, "SP_front", (3.4, -2.0, -2.6), (0.8, 0.8, 0.8), classic("SP_red", (0.8, 0.2, 0.2)))
+    bpy.ops.mesh.primitive_grid_add(x_subdivisions=4, y_subdivisions=4, radius=1.0, location=(-3.4, 0.0, -2.6),
+                                    rotation=(math.radians(90.0), 0.0, 0.0))
+    grid = bpy.context.object
+    grid.name = "SP_grid"
+    p2.lamp(scene, "SP_sun", 'SUN', (0.0, -10.0, 5.0), (math.radians(60.0), 0.0, 0.0))
+    for ob in scene.objects:
+        ob.select = False
+    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, "select_pick.blend"), check_existing=False)
+    E["select_pick"] = {"boxes": names, "front": "SP_front", "back": "SP_back", "grid": "SP_grid"}
+
+
+BGL_GAME = r'''
+import bge, bgl
+
+def bgl_draw():
+    w, h = bge.render.getWindowWidth(), bge.render.getWindowHeight()
+    bgl.glMatrixMode(bgl.GL_PROJECTION)
+    bgl.glPushMatrix()
+    bgl.glLoadIdentity()
+    bgl.glOrtho(0, w, 0, h, -1, 1)
+    bgl.glMatrixMode(bgl.GL_MODELVIEW)
+    bgl.glPushMatrix()
+    bgl.glLoadIdentity()
+    bgl.glDisable(bgl.GL_DEPTH_TEST)
+    bgl.glDisable(bgl.GL_LIGHTING)
+    bgl.glDisable(bgl.GL_TEXTURE_2D)
+    bgl.glEnable(bgl.GL_BLEND)
+    bgl.glBlendFunc(bgl.GL_SRC_ALPHA, bgl.GL_ONE_MINUS_SRC_ALPHA)
+    # a translucent panel
+    bgl.glColor4f(0.1, 0.4, 0.9, 0.6)
+    bgl.glRectf(40, 40, 300, 200)
+    # wide lines
+    bgl.glLineWidth(3.0)
+    bgl.glColor4f(1.0, 1.0, 0.0, 1.0)
+    bgl.glBegin(bgl.GL_LINES)
+    for i in range(6):
+        bgl.glVertex2f(340.5, 40.5 + i * 30)
+        bgl.glVertex2f(600.5, 60.5 + i * 30)
+    bgl.glEnd()
+    bgl.glLineWidth(1.0)
+    # a fan of colours
+    bgl.glBegin(bgl.GL_TRIANGLE_FAN)
+    bgl.glColor4f(1.0, 1.0, 1.0, 1.0)
+    bgl.glVertex2f(760.0, 120.0)
+    for i in range(9):
+        a = i * 6.2831853 / 8.0
+        import math
+        bgl.glColor4f(0.5 + 0.5 * math.cos(a), 0.5 + 0.5 * math.sin(a), 0.3, 1.0)
+        bgl.glVertex2f(760.0 + 80.0 * math.cos(a), 120.0 + 80.0 * math.sin(a))
+    bgl.glEnd()
+    # points
+    bgl.glPointSize(6.0)
+    bgl.glBegin(bgl.GL_POINTS)
+    for i in range(10):
+        bgl.glColor4f(i / 9.0, 1.0 - i / 9.0, 0.5, 1.0)
+        bgl.glVertex2f(60.5 + i * 24, 260.5)
+    bgl.glEnd()
+    bgl.glPointSize(1.0)
+    # pixels from a Buffer
+    px = bgl.Buffer(bgl.GL_FLOAT, [32 * 32 * 4])
+    for y in range(32):
+        for x in range(32):
+            k = (y * 32 + x) * 4
+            px[k] = x / 31.0
+            px[k + 1] = y / 31.0
+            px[k + 2] = 1.0 if ((x // 4 + y // 4) % 2) else 0.2
+            px[k + 3] = 1.0
+    bgl.glRasterPos2f(360.0, 260.0)
+    bgl.glPixelZoom(2.0, 2.0)
+    bgl.glDrawPixels(32, 32, bgl.GL_RGBA, bgl.GL_FLOAT, px)
+    bgl.glPixelZoom(1.0, 1.0)
+    # a display list drawn twice
+    if not hasattr(bge.logic, "bgl_list"):
+        bge.logic.bgl_list = bgl.glGenLists(1)
+        bgl.glNewList(bge.logic.bgl_list, bgl.GL_COMPILE)
+        bgl.glBegin(bgl.GL_QUADS)
+        bgl.glVertex2f(0, 0)
+        bgl.glVertex2f(60, 0)
+        bgl.glVertex2f(60, 60)
+        bgl.glVertex2f(0, 60)
+        bgl.glEnd()
+        bgl.glEndList()
+    for i, col in enumerate(((0.9, 0.3, 0.1), (0.2, 0.8, 0.3))):
+        bgl.glPushMatrix()
+        bgl.glTranslatef(480.0 + i * 90.0, 260.0, 0.0)
+        bgl.glColor4f(col[0], col[1], col[2], 1.0)
+        bgl.glCallList(bge.logic.bgl_list)
+        bgl.glPopMatrix()
+    # an old call the emulation does not do (it says so, with this line)
+    bgl.glAccum(bgl.GL_LOAD, 1.0)
+    # queries
+    vp = bgl.Buffer(bgl.GL_INT, 4)
+    bgl.glGetIntegerv(bgl.GL_VIEWPORT, vp)
+    bge.logic.bgl_viewport = list(vp)
+    bgl.glDisable(bgl.GL_BLEND)
+    bgl.glMatrixMode(bgl.GL_PROJECTION)
+    bgl.glPopMatrix()
+    bgl.glMatrixMode(bgl.GL_MODELVIEW)
+    bgl.glPopMatrix()
+
+sc = bge.logic.getCurrentScene()
+if bgl_draw not in sc.post_draw and not getattr(bge.logic, "bgl_added", False):
+    sc.post_draw.append(bgl_draw)
+    bge.logic.bgl_added = True
+'''
+
+
+def make_bgl_game(folder, E):
+    scene = base("Bgl")
+    grey = classic("BG_grey", (0.5, 0.5, 0.5))
+    box(scene, "BG_box", (3.0, 0.0, 1.5), (1.5, 1.5, 1.5), grey)
+    p2.lamp(scene, "BG_sun", 'SUN', (0.0, -10.0, 5.0), (math.radians(60.0), 0.0, 0.0))
+    driver = bpy.data.objects.new("BG_driver", None)
+    scene.objects.link(driver)
+    logic(scene, driver, "p8_bgl.py", BGL_GAME)
+    save(scene, os.path.join(folder, "bgl_game.blend"), physical=False)
+    # what the drawing covers (pixels, top-left origin; the window is WIDTH x HEIGHT)
+    E["bgl_game"] = {"files": ["bgl_game"], "rect": [30, HEIGHT - 350, 860, HEIGHT - 30]}
+
+
 def main():
     folder = out_dir()
     E = {"width": WIDTH, "height": HEIGHT, "failed": {}}
@@ -3034,7 +3228,11 @@ def main():
                   ("transparency", lambda: make_transparency(folder, E)),
                   ("left_out", lambda: make_left_out(folder, E)),
                   ("camera_fx", lambda: make_camera_fx(folder, E)),
-                  ("remix_extras", lambda: make_remix_extras(folder, E))]
+                  ("remix_extras", lambda: make_remix_extras(folder, E)),
+                  # Part C steps 7-8: the editors on OpenGL 4.5 core
+                  ("editors_ui", lambda: make_editors_ui(folder, E)),
+                  ("select_pick", lambda: make_select_pick(folder, E)),
+                  ("bgl_game", lambda: make_bgl_game(folder, E))]
         target = os.path.join(folder, "p8_expected.json")
     for name, make in makers:
         try:

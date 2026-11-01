@@ -58,6 +58,11 @@ set(SRC
 	intern/gpu_glcheck.c
 	intern/gpu_init_exit.c
 	intern/gpu_layer.c
+	intern/gpu_legacy.c
+	intern/gpu_legacy_glu.c
+	intern/gpu_legacy_raster.c
+	intern/gpu_legacy_state.c
+	intern/gpu_legacy_variants.c
 	intern/gpu_lights.c
 	intern/gpu_probes.c
 	intern/gpu_volumes.c
@@ -106,6 +111,7 @@ set(SRC
 	GPU_glcheck.h
 	GPU_init_exit.h
 	GPU_layer.h
+	GPU_legacy.h
 	GPU_lights.h
 	GPU_probes.h
 	GPU_volumes.h
@@ -116,11 +122,14 @@ set(SRC
 	GPU_texture.h
 	GPU_translate.h
 	intern/gpu_codegen.h
+	intern/gpu_legacy_intern.h
+	intern/gpu_legacy_private.h
 	intern/gpu_private.h
 	intern/gpu_select_private.h
 )
 
 data_to_c_simple(shaders/gpu_shader_geometry.glsl SRC)
+data_to_c_simple(shaders/gpu_shader_legacy.glsl SRC)
 data_to_c_simple(shaders/gpu_shader_fire_frag.glsl SRC)
 data_to_c_simple(shaders/gpu_shader_smoke_frag.glsl SRC)
 data_to_c_simple(shaders/gpu_shader_smoke_vert.glsl SRC)

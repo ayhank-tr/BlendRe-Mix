@@ -326,6 +326,7 @@ static void usage(const char* program, bool isBlenderPlayer)
 	printf("  -c: keep console window open\n\n");
 #endif
 	printf("  -d: turn debugging on\n\n");
+	printf("  --gl-compat: an OpenGL compatibility context instead of the core one (BGE-Remix)\n\n");
 	printf("  -g: game engine options:\n\n");
 	printf("       Name                       Default      Description\n");
 	printf("       ------------------------------------------------------------------------\n");
@@ -644,6 +645,13 @@ int main(
 		validArguments = argc;
 
 
+	/* BGE-Remix P8.29: --gl-compat, before the window is made */
+	for (i = 1; i < validArguments; i++) {
+		if (strcmp(argv[i], "--gl-compat") == 0) {
+			BLI_setenv("BGE_REMIX_GL_COMPAT", "1");
+		}
+	}
+
 	/* Parsing command line arguments (can be set from WM_OT_blenderplayer_start) */
 #if defined(DEBUG)
 		printf("Parsing command line arguments...\n");
@@ -660,7 +668,11 @@ int main(
 #if defined(DEBUG)
 		printf("argv[%d] = '%s'\n", i, argv[i]);
 #endif
-		if (argv[i][0] == '-')
+		if (strcmp(argv[i], "--gl-compat") == 0) {
+			/* BGE-Remix P8.29: taken above */
+			i++;
+		}
+		else if (argv[i][0] == '-')
 		{
 			/* ignore all args after " - ", allow python to have own args */
 			if (argv[i][1]=='\0') {

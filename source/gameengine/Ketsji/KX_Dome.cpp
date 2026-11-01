@@ -42,7 +42,7 @@
 #include "RAS_CameraData.h"
 #include "BLI_math.h"
 
-#include "glew-mx.h"
+#include "GPU_glew.h"  /* BGE-Remix P8.26: the old calls redirected */
 
 // constructor
 

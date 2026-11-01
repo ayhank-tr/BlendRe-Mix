@@ -27,6 +27,7 @@ set(INC
 	.
 	../glew-mx
 	../guardedalloc
+	../../source/blender/gpu
 	../../source/blender/blenlib
 )
 

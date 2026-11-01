@@ -637,28 +637,33 @@ GHOST_Context *GHOST_WindowWin32::newDrawingContext(GHOST_TDrawingContextType ty
 		        GHOST_OPENGL_WGL_CONTEXT_FLAGS,
 		        GHOST_OPENGL_WGL_RESET_NOTIFICATION_STRATEGY);
 #elif defined(WITH_GL_PROFILE_COMPAT)
-		/* BGE-Remix P8.1: OpenGL 4.5 (compatibility profile while the old
-		 * drawing code remains), a debug context in test runs
+		/* BGE-Remix P8.1: OpenGL 4.5, a debug context in test runs
 		 * (BGE_REMIX_GL_DEBUG=1), driver resets reported. Without 4.5 the old
-		 * request is made, so Blender can say which version the card has. */
+		 * request is made, so Blender can say which version the card has.
+		 * BGE-Remix P8.29: the core profile (the old calls the editors still
+		 * make are emulated, GPU_legacy.h); the compatibility profile with
+		 * --gl-compat (BGE_REMIX_GL_COMPAT=1), or when the core one fails. */
 		const char *gl_debug_env = getenv("BGE_REMIX_GL_DEBUG");
 		const bool gl_debug = m_debug_context || (gl_debug_env && gl_debug_env[0] == '1');
-		{
+		const char *gl_compat_env = getenv("BGE_REMIX_GL_COMPAT");
+		const bool gl_compat = (gl_compat_env && gl_compat_env[0] == '1');
+		for (int attempt = gl_compat ? 1 : 0; attempt < 2; attempt++) {
 			GHOST_Context *context45 = new GHOST_ContextWGL(
 			        m_wantStereoVisual,
 			        m_wantAlphaBackground,
 			        m_wantNumOfAASamples,
 			        m_hWnd,
 			        m_hDC,
-			        WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB,
+			        attempt == 0 ? WGL_CONTEXT_CORE_PROFILE_BIT_ARB : WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB,
 			        4, 5,
 			        (gl_debug ? WGL_CONTEXT_DEBUG_BIT_ARB : 0),
 			        WGL_LOSE_CONTEXT_ON_RESET_ARB);
 			if (context45->initializeDrawingContext())
 				return context45;
 			delete context45;
-			fprintf(stderr, "BGE-Remix: no OpenGL 4.5 context; asking for the driver's default\n");
+			fprintf(stderr, "BGE-Remix: no OpenGL 4.5 %s context\n", attempt == 0 ? "core" : "compatibility");
 		}
+		fprintf(stderr, "BGE-Remix: asking for the driver's default OpenGL context\n");
 		GHOST_Context *context = new GHOST_ContextWGL(
 		        m_wantStereoVisual,
 		        m_wantAlphaBackground,

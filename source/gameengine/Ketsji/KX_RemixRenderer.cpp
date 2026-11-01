@@ -39,7 +39,7 @@
 #include <cstring>
 #include <set>
 
-#include "glew-mx.h"
+#include "GPU_glew.h"  /* BGE-Remix P8.26: the old calls redirected */
 
 #include "KX_RemixRenderer.h"
 #include "KX_Sprites.h"

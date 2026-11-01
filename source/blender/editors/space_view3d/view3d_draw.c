@@ -2190,7 +2190,10 @@ static void draw_dupli_objects_color(
 				     !bb_tmp ||
 				     draw_glsl_material(scene, dob->ob, v3d, dt) ||
 				     check_object_draw_texture(scene, v3d, dt) ||
-				     (v3d->flag2 & V3D_SOLID_MATCAP) != 0)
+				     (v3d->flag2 & V3D_SOLID_MATCAP) != 0 ||
+				     /* BGE-Remix P8.26: the emulation records the old calls only,
+				      * not the buffers and programs a whole object draws with */
+				     GPU_lgl_on)
 				{
 					// printf("draw_dupli_objects_color: skipping displist for %s\n", dob->ob->id.name + 2);
 					use_displist = false;

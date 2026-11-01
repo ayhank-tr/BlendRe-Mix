@@ -494,7 +494,8 @@ void GPU_classic_texenv_from_gl(GPUClassicState *st)
 {
 	st->texturing = false;
 	st->texenv = GPU_TEXENV_MODULATE;
-	if (GPU_caps()->core_profile) {
+	/* BGE-Remix P8.26: emulated, the old calls answer from the emulation */
+	if (GPU_caps()->core_profile && !GPU_lgl_on) {
 		return;
 	}
 	GLint active = GL_TEXTURE0;

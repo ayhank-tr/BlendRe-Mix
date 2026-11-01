@@ -40,6 +40,8 @@ extern "C" {
 enum {
 	GPU_TRANSLATE_VERTEX = 0,
 	GPU_TRANSLATE_FRAGMENT = 1,
+	/* BGE-Remix P8.26: old geometry stages (the editors' depth of field) */
+	GPU_TRANSLATE_GEOMETRY = 2,
 };
 
 /* the stage ready to compile (version, extensions, front end, translated

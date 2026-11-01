@@ -28,4 +28,10 @@
 #  define mxMakeCurrentContext(x) (x)
 #endif
 
+/* BGE-Remix P8.26: inside Blender the old calls (glDrawPixels, client
+ * arrays) go through its emulation on a core context */
+#ifdef WITH_BLENDER_GL_EMULATION
+#  include "GPU_legacy.h"
+#endif
+
 #endif /* __UTIL_OPENGL_H__ */

@@ -43,6 +43,9 @@
 #include "GPU_layer.h"
 #include "GPU_texture.h"
 #include "GPU_material.h"
+#include "GPU_translate.h"
+
+#include "BLI_dynstr.h"
 
 #include "gpu_private.h"
 
@@ -424,6 +427,7 @@ static const char *gpu_views_vert_front =
         "uniform int bge_view_layer;\n"
         "uniform mat4 bge_view_m[6];\n"
         "uniform vec4 bge_clipplane;\n"   /* P8.18: a planar mirror's view (eye space) */
+        "uniform vec4 bge_clipplanes[6];\n"  /* P8.26: the old clip planes 1-5 (eye space) */
         "#define main bge_user_main\n";
 
 static const char *gpu_views_vert_suffix =
@@ -431,7 +435,13 @@ static const char *gpu_views_vert_suffix =
         "void main()\n"
         "{\n"
         "	bge_user_main();\n"
-        "	gl_ClipDistance[0] = dot(bge_clipplane, bge_projinv * gl_Position);\n"
+        "	vec4 bge_eye_ = bge_projinv * gl_Position;\n"
+        "	gl_ClipDistance[0] = dot(bge_clipplane, bge_eye_);\n"
+        "	gl_ClipDistance[1] = dot(bge_clipplanes[1], bge_eye_);\n"
+        "	gl_ClipDistance[2] = dot(bge_clipplanes[2], bge_eye_);\n"
+        "	gl_ClipDistance[3] = dot(bge_clipplanes[3], bge_eye_);\n"
+        "	gl_ClipDistance[4] = dot(bge_clipplanes[4], bge_eye_);\n"
+        "	gl_ClipDistance[5] = dot(bge_clipplanes[5], bge_eye_);\n"
         "	if (bge_views > 0) {\n"
         "		gl_Position = bge_view_m[gl_InstanceID] * gl_Position;\n"
         "#ifdef BGE_LAYERED\n"
@@ -461,6 +471,37 @@ static const char *gpu_shader_version_ex(int flags, bool use_opensubdiv)
 		return (flags & GPU_SHADER_FLAGS_CORE) ? "#version 450 core\n" : "#version 450 compatibility\n";
 	}
 	return gpu_shader_version();
+}
+
+/* BGE-Remix P8.26: an old shader (GLSL 1.20-1.50 with the old built-ins)
+ * on a core context: each stage translated (GPU_translate.h) */
+static bool gpu_shader_compile_translated(GLuint stage, int which, const char **pieces, int n, const char *who)
+{
+	DynStr *ds = BLI_dynstr_new();
+	for (int i = 0; i < n; i++) {
+		if (pieces[i]) {
+			BLI_dynstr_append(ds, pieces[i]);
+		}
+	}
+	char *src = BLI_dynstr_get_cstring(ds);
+	BLI_dynstr_free(ds);
+	int problems = 0;
+	char *tr = GPU_glsl_translate(src, which, true, who, &problems);
+	MEM_freeN(src);
+	const char *one[1] = {tr};
+	GLint status = 0;
+	/* the real call: the source is translated already */
+	GLEW_GET_FUN(__glewShaderSource)(stage, 1, one, NULL);
+	glCompileShader(stage);
+	glGetShaderiv(stage, GL_COMPILE_STATUS, &status);
+	if (!status) {
+		GLchar log[5000];
+		GLsizei length = 0;
+		glGetShaderInfoLog(stage, sizeof(log), &length, log);
+		shader_print_errors("compile (translated)", log, one, 1);
+	}
+	MEM_freeN(tr);
+	return status != 0;
 }
 
 /* compiles one stage from its pieces; false (and the log printed) on failure */
@@ -507,9 +548,12 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 	char standard_defines[MAX_DEFINE_LENGTH] = "";
 	char standard_extensions[MAX_EXT_DEFINE_LENGTH] = "";
 	const bool glsl450 = (flags & GPU_SHADER_FLAGS_GLSL450) && !use_opensubdiv;
-	const bool core = glsl450 && (flags & GPU_SHADER_FLAGS_CORE);
+	/* BGE-Remix P8.26: on a core context (the emulation on) every GLSL 4.50
+	 * shader takes the core front end, and the old ones are translated */
+	const bool core = glsl450 && ((flags & GPU_SHADER_FLAGS_CORE) || GPU_lgl_on);
+	const bool translate = GPU_lgl_on && !glsl450 && !use_opensubdiv;
 	const bool frontend = (flags & GPU_SHADER_FLAGS_FRONTEND) != 0;
-	const char *version = gpu_shader_version_ex(flags, use_opensubdiv);
+	const char *version = gpu_shader_version_ex(core ? (flags | GPU_SHADER_FLAGS_CORE) : flags, use_opensubdiv);
 	const char *vert_front = frontend ? (core ? gpu_frontend_vert_core : gpu_frontend_vert_compat) : NULL;
 	const char *frag_front = frontend ? (core ? gpu_frontend_frag_core : gpu_frontend_frag_compat) : NULL;
 	const char *shared = (glsl450 && (flags & GPU_SHADER_FLAGS_SHARED)) ? gpu_frontend_shared : NULL;
@@ -546,7 +590,7 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 	if (core && frontend && !GPU_instancing_supported()) {
 		strcat(standard_defines, "#define BGE_NO_INSTANCING\n");
 	}
-	if (!glsl450) {
+	if (!glsl450 && !translate) {
 		gpu_shader_standard_extensions(standard_extensions, geocode != NULL);
 	}
 	else {
@@ -620,15 +664,31 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 		}
 	}
 
-	if (vertexcode && !gpu_shader_compile_stage(shader->vertex, vsrc, nv)) {
+	if (translate) {
+		/* the pieces after "#version" (the translation gives its own) */
+		if ((vertexcode && !gpu_shader_compile_translated(shader->vertex, GPU_TRANSLATE_VERTEX, vsrc + 1, nv - 1,
+		                                                    "GPU shader")) ||
+		    (fragcode && !gpu_shader_compile_translated(shader->fragment, GPU_TRANSLATE_FRAGMENT, fsrc + 1, nf - 1,
+		                                                  "GPU shader")) ||
+		    (geocode && !gpu_shader_compile_translated(shader->geometry, GPU_TRANSLATE_GEOMETRY, gsrc + 1, ng - 1,
+		                                                 "GPU shader")))
+		{
+			GPU_shader_free(shader);
+			return NULL;
+		}
+		if (vertexcode) {
+			glBindAttribLocation(shader->program, 0, "bge_pos");
+		}
+	}
+	else if (vertexcode && !gpu_shader_compile_stage(shader->vertex, vsrc, nv)) {
 		GPU_shader_free(shader);
 		return NULL;
 	}
-	if (fragcode && !gpu_shader_compile_stage(shader->fragment, fsrc, nf)) {
+	if (!translate && fragcode && !gpu_shader_compile_stage(shader->fragment, fsrc, nf)) {
 		GPU_shader_free(shader);
 		return NULL;
 	}
-	if (geocode) {
+	if (geocode && !translate) {
 		if (!gpu_shader_compile_stage(shader->geometry, gsrc, ng)) {
 			GPU_shader_free(shader);
 			return NULL;

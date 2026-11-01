@@ -661,7 +661,8 @@ void GPU_matrix_get(GPUMatrixMode mode, float r_m[4][4])
 void GPU_matrix_from_gl(void)
 {
 	mat_init();
-	if (GPU_caps()->core_profile) {
+	/* BGE-Remix P8.26: emulated, the old matrices are this stack */
+	if (GPU_caps()->core_profile || GPU_lgl_on) {
 		return;
 	}
 	glGetFloatv(GL_MODELVIEW_MATRIX, &gpu_mat.stack[0][gpu_mat.top[0]][0][0]);
@@ -671,7 +672,7 @@ void GPU_matrix_from_gl(void)
 void GPU_matrix_to_gl(void)
 {
 	mat_init();
-	if (GPU_caps()->core_profile) {
+	if (GPU_caps()->core_profile || GPU_lgl_on) {
 		return;
 	}
 	GLint mode;
@@ -877,7 +878,7 @@ void GPU_state_scope_begin(GPUStateScope *scope)
 	glGetIntegerv(GL_PACK_ALIGNMENT, &v[SS_PACK_ALIGN]);
 	glGetIntegerv(GL_VIEWPORT, &v[SS_VIEWPORT]);
 	glGetIntegerv(GL_SCISSOR_BOX, &v[SS_SCISSOR_BOX]);
-	scope->legacy = !GPU_caps()->core_profile;
+	scope->legacy = !GPU_caps()->core_profile && !GPU_lgl_on;
 	if (scope->legacy) {
 		glGetIntegerv(GL_MATRIX_MODE, &v[SS_MATRIX_MODE]);
 		glGetFloatv(GL_MODELVIEW_MATRIX, &scope->matrices[0]);

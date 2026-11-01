@@ -27,6 +27,9 @@
  * #extension lines move to the top.
  */
 
+/* BGE-Remix P8.26: the real functions (the emulation calls these) */
+#define GPU_LEGACY_NO_REDIRECT
+
 #include <ctype.h>
 #include <stdio.h>
 #include <string.h>
@@ -240,6 +243,8 @@ static const char *keeps[] = {
 	"gl_FragDepth", "gl_VertexID", "gl_InstanceID", "gl_PrimitiveID", "gl_Layer", "gl_SampleID",
 	"gl_SamplePosition", "gl_DepthRange", "gl_MaxDrawBuffers", "gl_MaxTextureImageUnits",
 	"gl_MaxVertexAttribs", "gl_MaxClipDistances", "gl_ViewportIndex",
+	/* BGE-Remix P8.26: geometry stages */
+	"gl_in", "gl_PerVertex", "gl_PrimitiveIDIn", "gl_InvocationID",
 };
 
 /* names old GLSL allowed that GLSL 4.50 reserves (a user's "sample" or
@@ -292,6 +297,7 @@ char *GPU_glsl_translate(const char *source, int stage, bool core, const char *w
 	DynStr *body = BLI_dynstr_new();
 	DynStr *exts = BLI_dynstr_new();
 	const bool frag = (stage == GPU_TRANSLATE_FRAGMENT);
+	const bool geom = (stage == GPU_TRANSLATE_GEOMETRY);
 	int problems = 0, line = 1, depth = 0;
 	int wrap_depth[MAX_WRAP], nwrap = 0;   /* parenthesis depths to close an extra ")" at */
 	bool uses_fragdata = false, uses_fragcolor = false, at_line_start = true;
@@ -396,6 +402,10 @@ char *GPU_glsl_translate(const char *source, int stage, bool core, const char *w
 				}
 			}
 
+			if (r && geom && STREQ(r->from, "varying")) {
+				/* "varying in" and "varying out": the qualifier after it says */
+				continue;
+			}
 			if (r) {
 				const char *to = (frag && r->frag) ? r->frag : r->vert;
 				BLI_dynstr_append(body, to);
@@ -445,11 +455,14 @@ char *GPU_glsl_translate(const char *source, int stage, bool core, const char *w
 	char *ext = BLI_dynstr_get_cstring(exts);
 	BLI_dynstr_append(out, ext);
 	MEM_freeN(ext);
-	if (core && !frag) {
+	if (core && !frag && !geom) {
 		BLI_dynstr_append(out, GPU_shader_views_vert_ext());
 	}
 	BLI_dynstr_append(out, core ? tfe_uniforms_core : tfe_uniforms_compat);
-	if (frag) {
+	if (geom) {
+		/* the uniforms only */
+	}
+	else if (frag) {
 		BLI_dynstr_append(out, core ? tfe_frag_core : tfe_frag_compat);
 		if (core) {
 			if (uses_fragdata) {
@@ -470,7 +483,7 @@ char *GPU_glsl_translate(const char *source, int stage, bool core, const char *w
 	char *text = BLI_dynstr_get_cstring(body);
 	BLI_dynstr_append(out, text);
 	MEM_freeN(text);
-	if (core && !frag) {
+	if (core && !frag && !geom) {
 		BLI_dynstr_append(out, GPU_shader_views_vert_suffix());
 	}
 	char *result = BLI_dynstr_get_cstring(out);

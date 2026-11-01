@@ -328,6 +328,20 @@ void blf_glyph_free(GlyphBLF *g)
 	MEM_freeN(g);
 }
 
+/* BGE-Remix P8.27: a string's glyphs drawn in one glBegin/glEnd while their
+ * texture stays the same (the colour may change between them, as the
+ * shadows' and blurs' do); ended before a texture is bound or written, and
+ * at the end of the string (blf_draw_gl__end) */
+static int blf_quads_open = 0;
+
+void blf_glyph_quads_end(void)
+{
+	if (blf_quads_open) {
+		glEnd();
+		blf_quads_open = 0;
+	}
+}
+
 static void blf_texture_draw(float uv[2][2], float dx, float y1, float dx1, float y2)
 {
 	if (blf_layer.on) {
@@ -347,7 +361,10 @@ static void blf_texture_draw(float uv[2][2], float dx, float y1, float dx1, floa
 		GPU_imm_end();
 		return;
 	}
-	glBegin(GL_QUADS);
+	if (!blf_quads_open) {
+		glBegin(GL_QUADS);
+		blf_quads_open = 1;
+	}
 	glTexCoord2f(uv[0][0], uv[0][1]);
 	glVertex2f(dx, y1);
 	
@@ -359,7 +376,6 @@ static void blf_texture_draw(float uv[2][2], float dx, float y1, float dx1, floa
 	
 	glTexCoord2f(uv[1][0], uv[0][1]);
 	glVertex2f(dx1, y1);
-	glEnd();
 }
 
 static void blf_texture5_draw(const float shadow_col[4], float uv[2][2], float x1, float y1, float x2, float y2)
@@ -432,6 +448,8 @@ void blf_glyph_render(FontBLF *font, GlyphBLF *g, float x, float y)
 	if (g->build_tex == 0) {
 		GlyphCacheBLF *gc = font->glyph_cache;
 
+		blf_glyph_quads_end();
+
 		if (font->max_tex_size == -1)
 			glGetIntegerv(GL_MAX_TEXTURE_SIZE, (GLint *)&font->max_tex_size);
 
@@ -502,6 +520,7 @@ void blf_glyph_render(FontBLF *font, GlyphBLF *g, float x, float y)
 	}
 
 	if (font->tex_bind_state != g->tex) {
+		blf_glyph_quads_end();
 		glBindTexture(GL_TEXTURE_2D, (font->tex_bind_state = g->tex));
 	}
 

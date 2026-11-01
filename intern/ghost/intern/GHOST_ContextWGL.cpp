@@ -788,6 +788,7 @@ GHOST_TSuccess GHOST_ContextWGL::initializeDrawingContext()
 
 	HGLRC prevHGLRC;
 	HDC   prevHDC;
+	bool shared_at_creation = false;  /* BGE-Remix P8.29 */
 
 	int iPixelFormat;
 	int lastPFD;
@@ -902,8 +903,17 @@ GHOST_TSuccess GHOST_ContextWGL::initializeDrawingContext()
 
 		iAttributes.push_back(0);
 
-		if (!s_singleContextMode || s_sharedHGLRC == NULL)
-			m_hGLRC = ::wglCreateContextAttribsARB(m_hDC, NULL, &(iAttributes[0]));
+		if (!s_singleContextMode || s_sharedHGLRC == NULL) {
+			/* BGE-Remix P8.29: shared with the first context when made (a core
+			 * context may not take wglShareLists afterwards) */
+			m_hGLRC = ::wglCreateContextAttribsARB(m_hDC, s_sharedHGLRC, &(iAttributes[0]));
+			if (m_hGLRC == NULL && s_sharedHGLRC != NULL) {
+				m_hGLRC = ::wglCreateContextAttribsARB(m_hDC, NULL, &(iAttributes[0]));
+			}
+			else if (m_hGLRC != NULL && s_sharedHGLRC != NULL) {
+				shared_at_creation = true;
+			}
+		}
 		else
 			m_hGLRC = s_sharedHGLRC;
 	}
@@ -933,7 +943,9 @@ GHOST_TSuccess GHOST_ContextWGL::initializeDrawingContext()
 
 	s_sharedCount++;
 
-	if (!s_singleContextMode && s_sharedHGLRC != m_hGLRC && !WIN32_CHK(::wglShareLists(s_sharedHGLRC, m_hGLRC))) {
+	if (!s_singleContextMode && s_sharedHGLRC != m_hGLRC && !shared_at_creation &&
+	    !WIN32_CHK(::wglShareLists(s_sharedHGLRC, m_hGLRC)))
+	{
 		::wglMakeCurrent(prevHDC, prevHGLRC);
 		return GHOST_kFailure;
 	}

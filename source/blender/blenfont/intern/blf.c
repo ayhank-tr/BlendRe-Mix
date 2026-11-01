@@ -596,6 +596,9 @@ static void blf_draw_gl__start(FontBLF *font, GLint *mode)
 
 static void blf_draw_gl__end(GLint mode)
 {
+	/* BGE-Remix P8.27: the string's glyphs drawn */
+	blf_glyph_quads_end();
+
 	if (blf_layer.on) {
 		blf_draw_layer__end();
 		return;

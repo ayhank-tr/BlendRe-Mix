@@ -38,6 +38,9 @@
 #include <string.h>
 
 #include "glew-mx.h"
+/* BGE-Remix P8.26: the old calls (and the GLSL 1.30 shader) through the
+ * emulation on a core context */
+#include "GPU_legacy.h"
 
 #ifdef _MSC_VER
 #  pragma warning(push)
