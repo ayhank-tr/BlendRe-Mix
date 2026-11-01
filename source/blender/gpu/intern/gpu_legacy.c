@@ -1099,8 +1099,30 @@ static size_t lgl_slot_bytes(const LglPack *pk, int s)
 }
 
 /* vertices start..start+n-1 of the block, drawn as "prim" */
+/* a quad, quad strip or polygon block up to this many vertices is drawn as
+ * the triangles (or outline lines) it makes, gathered vertex by vertex,
+ * instead of through an index buffer (saving the index upload and the
+ * element buffer's binding and rebinding: the interface draws thousands) */
+#define LGL_GATHER 64
+
 static void lgl_emit(GLenum prim, int start, int n, const LglPack *pk, int prim_class)
 {
+	const unsigned int *gidx = NULL;
+	GLenum gprim = prim;
+	int gcls = prim_class;
+	if (lgl_needs_conversion(prim) && n <= LGL_GATHER) {
+		const int c = lgl_convert(prim, NULL, n, &gprim, &gcls);
+		if (c <= 0) {
+			return;
+		}
+		gidx = lgl_idx;
+		lgl.stat_verts += (double)n;
+		n = c;  /* the gathered vertices from here on */
+	}
+	else {
+		lgl.stat_verts += (double)n;
+	}
+#define SRC(k) (start + (gidx ? (int)gidx[k] : (k)))
 	const size_t size = pk->bpv * (size_t)n;
 	GLuint buf = 0;
 	size_t off = 0;
@@ -1113,8 +1135,8 @@ static void lgl_emit(GLenum prim, int start, int n, const LglPack *pk, int prim_
 	/* the positions */
 	if (pk->pos_size == 3) {
 		float *d = (float *)dst;
-		const float *v = &lgl.verts[start * 4];
-		for (int i = 0; i < n; i++, d += 3, v += 4) {
+		for (int i = 0; i < n; i++, d += 3) {
+			const float *v = &lgl.verts[SRC(i) * 4];
 			d[0] = v[0];
 			d[1] = v[1];
 			d[2] = v[2];
@@ -1122,7 +1144,15 @@ static void lgl_emit(GLenum prim, int start, int n, const LglPack *pk, int prim_
 		at = sizeof(float[3]) * (size_t)n;
 	}
 	else {
-		memcpy(dst, &lgl.verts[start * 4], sizeof(float[4]) * (size_t)n);
+		if (gidx) {
+			float *d = (float *)dst;
+			for (int i = 0; i < n; i++) {
+				memcpy(&d[i * 4], &lgl.verts[SRC(i) * 4], sizeof(float[4]));
+			}
+		}
+		else {
+			memcpy(dst, &lgl.verts[start * 4], sizeof(float[4]) * (size_t)n);
+		}
 		at = sizeof(float[4]) * (size_t)n;
 	}
 	/* the slots */
@@ -1130,31 +1160,44 @@ static void lgl_emit(GLenum prim, int start, int n, const LglPack *pk, int prim_
 	while (m) {
 		const int s = lgl_lowbit(m);
 		m &= m - 1;
-		const float *x = &lgl.xs[s][start * 4];
+		const float *xs = lgl.xs[s];
 		offs[s] = at;
 		if (s == X_COL && pk->col_ub) {
 			unsigned char *d = dst + at;
-			for (int i = 0; i < n * 4; i++) {
-				d[i] = (unsigned char)(x[i] * 255.0f + 0.5f);
+			for (int i = 0; i < n; i++, d += 4) {
+				const float *x = &xs[SRC(i) * 4];
+				for (int k = 0; k < 4; k++) {
+					d[k] = (unsigned char)(x[k] * 255.0f + 0.5f);
+				}
 			}
 		}
 		else if (s == X_NOR) {
 			float *d = (float *)(dst + at);
-			for (int i = 0; i < n; i++, d += 3, x += 4) {
+			for (int i = 0; i < n; i++, d += 3) {
+				const float *x = &xs[SRC(i) * 4];
 				d[0] = x[0];
 				d[1] = x[1];
 				d[2] = x[2];
 			}
 		}
+		else if (gidx) {
+			float *d = (float *)(dst + at);
+			for (int i = 0; i < n; i++) {
+				memcpy(&d[i * 4], &xs[SRC(i) * 4], sizeof(float[4]));
+			}
+		}
 		else {
-			memcpy(dst + at, x, sizeof(float[4]) * (size_t)n);
+			memcpy(dst + at, &xs[start * 4], sizeof(float[4]) * (size_t)n);
 		}
 		at += lgl_slot_bytes(pk, s) * (size_t)n;
 	}
 	/* the distances */
 	if (pk->dist) {
 		dist_off = at;
-		memcpy(dst + at, &lgl.dist[start], sizeof(float) * (size_t)n);
+		float *d = (float *)(dst + at);
+		for (int i = 0; i < n; i++) {
+			d[i] = lgl.dist[SRC(i)];
+		}
 		at += sizeof(float) * (size_t)n;
 	}
 	GPU_stream_written(buf);
@@ -1204,8 +1247,11 @@ static void lgl_emit(GLenum prim, int start, int n, const LglPack *pk, int prim_
 	}
 #undef ARRAY
 
-	lgl.stat_verts += (double)n;
-	if (lgl_needs_conversion(prim)) {
+#undef SRC
+	if (gidx) {
+		lgl_submit(gprim, 0, n, 0, 0, 0, 0, 1, fixed, gen, gcls, 0);
+	}
+	else if (lgl_needs_conversion(prim)) {
 		GLenum p2;
 		int cls;
 		const int count = lgl_convert(prim, NULL, n, &p2, &cls);
@@ -1648,6 +1694,32 @@ static void lgl_draw_arrays(GLenum mode, GLint first, GLsizei count, GLenum ityp
 			if (lgl.arr_gen[g].buffer) any_buffer = 1; else any_client = 1;
 		}
 	}
+	/* a small quad, quad strip or polygon from the processor's memory: through
+	 * immediate mode, which draws it without an index buffer (the current
+	 * values the arrays set on the way are put back) */
+	if (lgl_needs_conversion(mode) && count <= LGL_GATHER && !any_buffer && instances == 1) {
+		float color[4], normal[3], tex[LGL_UNITS][4], generic[LGL_GENERIC][4];
+		const int color_ub = lgl.color_ub;
+		memcpy(color, lgl.color, sizeof(color));
+		memcpy(normal, lgl.normal, sizeof(normal));
+		memcpy(tex, lgl.tex, sizeof(tex));
+		memcpy(generic, lgl.generic, sizeof(generic));
+		lgl_draw_by_elements(mode, first, count, itype, cpu_indices);
+		const int color_back = memcmp(color, lgl.color, sizeof(color)) != 0;
+		memcpy(lgl.color, color, sizeof(color));
+		lgl.color_ub = color_ub;
+		memcpy(lgl.normal, normal, sizeof(normal));
+		memcpy(lgl.tex, tex, sizeof(tex));
+		memcpy(lgl.generic, generic, sizeof(generic));
+		if (color_back) {
+			lgl_color_changed();
+		}
+		if (cpu_owned) {
+			MEM_freeN(cpu_owned);
+		}
+		return;
+	}
+
 	/* client memory is copied from "base" (all of it from 0 when buffers are
 	 * also read, as they are read where they are) */
 	const GLuint base = (any_client && !any_buffer) ? vmin : 0;
