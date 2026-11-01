@@ -441,20 +441,20 @@ void GPU_lgl_VertexAttrib4Nub(GLuint a, GLubyte b, GLubyte c, GLubyte d, GLubyte
 #ifndef GPU_LEGACY_NO_REDIRECT
 
 #define glBegin(...) (GPU_lgl_on ? GPU_lgl_Begin(__VA_ARGS__) : glBegin(__VA_ARGS__))
-#define glEnd() (GPU_lgl_on ? GPU_lgl_End() : glEnd())
+#define glEnd(...) (GPU_lgl_on ? GPU_lgl_End(__VA_ARGS__) : glEnd(__VA_ARGS__))
 #define glBitmap(...) (GPU_lgl_on ? GPU_lgl_Bitmap(__VA_ARGS__) : glBitmap(__VA_ARGS__))
 #define glDrawPixels(...) (GPU_lgl_on ? GPU_lgl_DrawPixels(__VA_ARGS__) : glDrawPixels(__VA_ARGS__))
 #define glPixelTransferf(...) (GPU_lgl_on ? GPU_lgl_PixelTransferf(__VA_ARGS__) : glPixelTransferf(__VA_ARGS__))
 #define glPixelTransferi(...) (GPU_lgl_on ? GPU_lgl_PixelTransferi(__VA_ARGS__) : glPixelTransferi(__VA_ARGS__))
 #define glPixelZoom(...) (GPU_lgl_on ? GPU_lgl_PixelZoom(__VA_ARGS__) : glPixelZoom(__VA_ARGS__))
 #define glMatrixMode(...) (GPU_lgl_on ? GPU_lgl_MatrixMode(__VA_ARGS__) : glMatrixMode(__VA_ARGS__))
-#define glLoadIdentity() (GPU_lgl_on ? GPU_lgl_LoadIdentity() : glLoadIdentity())
+#define glLoadIdentity(...) (GPU_lgl_on ? GPU_lgl_LoadIdentity(__VA_ARGS__) : glLoadIdentity(__VA_ARGS__))
 #define glLoadMatrixf(...) (GPU_lgl_on ? GPU_lgl_LoadMatrixf((const GLfloat *)(__VA_ARGS__)) : glLoadMatrixf((const GLfloat *)(__VA_ARGS__)))
 #define glLoadMatrixd(...) (GPU_lgl_on ? GPU_lgl_LoadMatrixd((const GLdouble *)(__VA_ARGS__)) : glLoadMatrixd((const GLdouble *)(__VA_ARGS__)))
 #define glMultMatrixf(...) (GPU_lgl_on ? GPU_lgl_MultMatrixf((const GLfloat *)(__VA_ARGS__)) : glMultMatrixf((const GLfloat *)(__VA_ARGS__)))
 #define glMultMatrixd(...) (GPU_lgl_on ? GPU_lgl_MultMatrixd((const GLdouble *)(__VA_ARGS__)) : glMultMatrixd((const GLdouble *)(__VA_ARGS__)))
-#define glPushMatrix() (GPU_lgl_on ? GPU_lgl_PushMatrix() : glPushMatrix())
-#define glPopMatrix() (GPU_lgl_on ? GPU_lgl_PopMatrix() : glPopMatrix())
+#define glPushMatrix(...) (GPU_lgl_on ? GPU_lgl_PushMatrix(__VA_ARGS__) : glPushMatrix(__VA_ARGS__))
+#define glPopMatrix(...) (GPU_lgl_on ? GPU_lgl_PopMatrix(__VA_ARGS__) : glPopMatrix(__VA_ARGS__))
 #define glTranslatef(...) (GPU_lgl_on ? GPU_lgl_Translatef(__VA_ARGS__) : glTranslatef(__VA_ARGS__))
 #define glTranslated(...) (GPU_lgl_on ? GPU_lgl_Translated(__VA_ARGS__) : glTranslated(__VA_ARGS__))
 #define glRotatef(...) (GPU_lgl_on ? GPU_lgl_Rotatef(__VA_ARGS__) : glRotatef(__VA_ARGS__))
@@ -523,9 +523,9 @@ void GPU_lgl_VertexAttrib4Nub(GLuint a, GLubyte b, GLubyte c, GLubyte d, GLubyte
 #define glClipPlane(...) (GPU_lgl_on ? GPU_lgl_ClipPlane(__VA_ARGS__) : glClipPlane(__VA_ARGS__))
 #define glGetClipPlane(...) (GPU_lgl_on ? GPU_lgl_GetClipPlane(__VA_ARGS__) : glGetClipPlane(__VA_ARGS__))
 #define glPushAttrib(...) (GPU_lgl_on ? GPU_lgl_PushAttrib(__VA_ARGS__) : glPushAttrib(__VA_ARGS__))
-#define glPopAttrib() (GPU_lgl_on ? GPU_lgl_PopAttrib() : glPopAttrib())
+#define glPopAttrib(...) (GPU_lgl_on ? GPU_lgl_PopAttrib(__VA_ARGS__) : glPopAttrib(__VA_ARGS__))
 #define glPushClientAttrib(...) (GPU_lgl_on ? GPU_lgl_PushClientAttrib(__VA_ARGS__) : glPushClientAttrib(__VA_ARGS__))
-#define glPopClientAttrib() (GPU_lgl_on ? GPU_lgl_PopClientAttrib() : glPopClientAttrib())
+#define glPopClientAttrib(...) (GPU_lgl_on ? GPU_lgl_PopClientAttrib(__VA_ARGS__) : glPopClientAttrib(__VA_ARGS__))
 #define glEnableClientState(...) (GPU_lgl_on ? GPU_lgl_EnableClientState(__VA_ARGS__) : glEnableClientState(__VA_ARGS__))
 #define glDisableClientState(...) (GPU_lgl_on ? GPU_lgl_DisableClientState(__VA_ARGS__) : glDisableClientState(__VA_ARGS__))
 #define glVertexPointer(...) (GPU_lgl_on ? GPU_lgl_VertexPointer(__VA_ARGS__) : glVertexPointer(__VA_ARGS__))
@@ -537,7 +537,7 @@ void GPU_lgl_VertexAttrib4Nub(GLuint a, GLubyte b, GLubyte c, GLubyte d, GLubyte
 #define glDrawArrays(...) (GPU_lgl_on ? GPU_lgl_DrawArrays(__VA_ARGS__) : glDrawArrays(__VA_ARGS__))
 #define glDrawElements(...) (GPU_lgl_on ? GPU_lgl_DrawElements(__VA_ARGS__) : glDrawElements(__VA_ARGS__))
 #define glNewList(...) (GPU_lgl_on ? GPU_lgl_NewList(__VA_ARGS__) : glNewList(__VA_ARGS__))
-#define glEndList() (GPU_lgl_on ? GPU_lgl_EndList() : glEndList())
+#define glEndList(...) (GPU_lgl_on ? GPU_lgl_EndList(__VA_ARGS__) : glEndList(__VA_ARGS__))
 #define glCallList(...) (GPU_lgl_on ? GPU_lgl_CallList(__VA_ARGS__) : glCallList(__VA_ARGS__))
 #define glCallLists(...) (GPU_lgl_on ? GPU_lgl_CallLists(__VA_ARGS__) : glCallLists(__VA_ARGS__))
 #define glGenLists(...) (GPU_lgl_on ? GPU_lgl_GenLists(__VA_ARGS__) : glGenLists(__VA_ARGS__))
@@ -557,10 +557,10 @@ void GPU_lgl_VertexAttrib4Nub(GLuint a, GLubyte b, GLubyte c, GLubyte d, GLubyte
 #define glPolygonMode(...) (GPU_lgl_on ? GPU_lgl_PolygonMode(__VA_ARGS__) : glPolygonMode(__VA_ARGS__))
 #define glRenderMode(...) (GPU_lgl_on ? GPU_lgl_RenderMode(__VA_ARGS__) : glRenderMode(__VA_ARGS__))
 #define glSelectBuffer(...) (GPU_lgl_on ? GPU_lgl_SelectBuffer(__VA_ARGS__) : glSelectBuffer(__VA_ARGS__))
-#define glInitNames() (GPU_lgl_on ? GPU_lgl_InitNames() : glInitNames())
+#define glInitNames(...) (GPU_lgl_on ? GPU_lgl_InitNames(__VA_ARGS__) : glInitNames(__VA_ARGS__))
 #define glLoadName(...) (GPU_lgl_on ? GPU_lgl_LoadName(__VA_ARGS__) : glLoadName(__VA_ARGS__))
 #define glPushName(...) (GPU_lgl_on ? GPU_lgl_PushName(__VA_ARGS__) : glPushName(__VA_ARGS__))
-#define glPopName() (GPU_lgl_on ? GPU_lgl_PopName() : glPopName())
+#define glPopName(...) (GPU_lgl_on ? GPU_lgl_PopName(__VA_ARGS__) : glPopName(__VA_ARGS__))
 #define glHint(...) (GPU_lgl_on ? GPU_lgl_Hint(__VA_ARGS__) : glHint(__VA_ARGS__))
 #define glBindTexture(...) (GPU_lgl_on ? GPU_lgl_BindTexture(__VA_ARGS__) : glBindTexture(__VA_ARGS__))
 #define glDeleteTextures(...) (GPU_lgl_on ? GPU_lgl_DeleteTextures(__VA_ARGS__) : glDeleteTextures(__VA_ARGS__))
@@ -1165,22 +1165,24 @@ void GPU_lgl_VertexAttrib4Nub(GLuint a, GLubyte b, GLubyte c, GLubyte d, GLubyte
 #define glVertexAttrib4NubARB glVertexAttrib4Nub
 
 /* GLU */
+/* (object-like: MSVC's preprocessor gives bgl's expanded argument lists to
+ * a function-like macro as one argument) */
 #undef gluNewQuadric
 #undef gluDeleteQuadric
-#define gluNewQuadric() GPU_glu_NewQuadric()
-#define gluDeleteQuadric(q) GPU_glu_DeleteQuadric((void *)(q))
-#define gluQuadricDrawStyle(q, s) GPU_glu_QuadricDrawStyle((void *)(q), s)
-#define gluQuadricNormals(q, n) GPU_glu_QuadricNormals((void *)(q), n)
-#define gluQuadricOrientation(q, o) GPU_glu_QuadricOrientation((void *)(q), o)
-#define gluQuadricTexture(q, t) GPU_glu_QuadricTexture((void *)(q), t)
-#define gluSphere(q, r, sl, st) GPU_glu_Sphere((void *)(q), r, sl, st)
-#define gluCylinder(q, b, t, h, sl, st) GPU_glu_Cylinder((void *)(q), b, t, h, sl, st)
-#define gluDisk(q, i, o, sl, l) GPU_glu_Disk((void *)(q), i, o, sl, l)
-#define gluPartialDisk(q, i, o, sl, l, s, w) GPU_glu_PartialDisk((void *)(q), i, o, sl, l, s, w)
-#define gluPerspective(a, b, c, d) GPU_glu_Perspective(a, b, c, d)
-#define gluOrtho2D(a, b, c, d) GPU_glu_Ortho2D(a, b, c, d)
-#define gluLookAt(a, b, c, d, e, f, g, h, i) GPU_glu_LookAt(a, b, c, d, e, f, g, h, i)
-#define gluPickMatrix(a, b, c, d, e) GPU_glu_PickMatrix(a, b, c, d, e)
+#define gluNewQuadric GPU_glu_NewQuadric
+#define gluDeleteQuadric GPU_glu_DeleteQuadric
+#define gluQuadricDrawStyle GPU_glu_QuadricDrawStyle
+#define gluQuadricNormals GPU_glu_QuadricNormals
+#define gluQuadricOrientation GPU_glu_QuadricOrientation
+#define gluQuadricTexture GPU_glu_QuadricTexture
+#define gluSphere GPU_glu_Sphere
+#define gluCylinder GPU_glu_Cylinder
+#define gluDisk GPU_glu_Disk
+#define gluPartialDisk GPU_glu_PartialDisk
+#define gluPerspective GPU_glu_Perspective
+#define gluOrtho2D GPU_glu_Ortho2D
+#define gluLookAt GPU_glu_LookAt
+#define gluPickMatrix GPU_glu_PickMatrix
 
 #endif  /* GPU_LEGACY_NO_REDIRECT */
 

@@ -27,6 +27,8 @@
  */
 
 #define GPU_LEGACY_NO_REDIRECT
+#include <stddef.h>
+
 #include "GPU_glew.h"
 
 #include "gpu_legacy_private.h"
