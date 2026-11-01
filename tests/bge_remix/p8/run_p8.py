@@ -2314,15 +2314,16 @@ def benchmarks(args, out, scenes, runs):
         if os.path.isfile(path):
             shadows[name] = ms(play(args.ours, out, "b87_" + name, path, frames=600, gl_debug=False))
     b["B8.10 shadows (ms): casting point lamps 0/1/4/8, the sun only, 8 hard"] = shadows
-    # B8.6 early reading: the game's drawing with batches; against the build
-    # before P8 in the RTX run (here: stock 2.79's vertex arrays beside it)
-    room = os.path.join(out, "..", "p2", "scenes", "p2_room.blend")
+    # B8.6: the game's drawing with batches against stock 2.79's vertex
+    # arrays; the P2 room with RTX Remix off (the P2 file itself draws
+    # through Remix, which stock 2.79 does not)
+    room = S("room_gl")
     b6 = {"mt_bench": {"ours": ms(ours), "stock": ms(stock) if stock else None}}
     if os.path.isfile(room):
         r_ours = play(args.ours, out, "b86_room_ours", room, frames=600, gl_debug=False)
         r_stock = play(args.official, out, "b86_room_stock", room, frames=600, gl_debug=False) if args.official else {}
         b6["p2_room"] = {"ours": ms(r_ours), "stock": ms(r_stock) if r_stock else None}
-    b["B8.6 game drawing (ms, early reading)"] = b6
+    b["B8.6 game drawing (ms)"] = b6
     return b
 
 
@@ -2809,7 +2810,9 @@ def editor_runs(args, out, S, expected, startup):
             bench = os.path.join(out, tag + "_bench.json")
             r = ui_probe(build, out, tag + "_startup", startup,
                          {"BGE_REMIX_P8_SCREENS": d, "BGE_REMIX_P8_SCREEN_LIST": "Default",
-                          "BGE_REMIX_P8_BENCH": bench}, extra=extra, timeout=1800)
+                          "BGE_REMIX_P8_BENCH": bench,
+                          # B8.15 timed as people run it: no debug context
+                          "BGE_REMIX_GL_DEBUG": "0"}, extra=extra, timeout=1800)
             U["runs"][tag + "_startup"] = r
             U["ui"][kind + "_startup"] = r
             U["bench"][kind] = r.get("bench")

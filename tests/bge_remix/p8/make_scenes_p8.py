@@ -3192,6 +3192,19 @@ def make_bgl_game(folder, E):
     E["bgl_game"] = {"files": ["bgl_game"], "rect": [30, HEIGHT - 350, 860, HEIGHT - 30]}
 
 
+def make_room_gl(folder):
+    """B8.6: the P2 room with RTX Remix off (the P2 file draws through Remix),
+    so the game's own drawing is timed against stock 2.79's"""
+    import shutil
+    tmp = os.path.join(folder, "_room_tmp")
+    os.makedirs(tmp, exist_ok=True)
+    p2.make_room(tmp)
+    bpy.ops.wm.open_mainfile(filepath=os.path.join(tmp, "p2_room.blend"))
+    bpy.context.scene["bge_remix"] = 0
+    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, "room_gl.blend"), check_existing=False)
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     folder = out_dir()
     E = {"width": WIDTH, "height": HEIGHT, "failed": {}}
@@ -3235,7 +3248,9 @@ def main():
                   # Part C steps 7-8: the editors on OpenGL 4.5 core
                   ("editors_ui", lambda: make_editors_ui(folder, E)),
                   ("select_pick", lambda: make_select_pick(folder, E)),
-                  ("bgl_game", lambda: make_bgl_game(folder, E))]
+                  ("bgl_game", lambda: make_bgl_game(folder, E)),
+                  # P8.30: B8.6 with Remix off
+                  ("room_gl", lambda: make_room_gl(folder))]
         target = os.path.join(folder, "p8_expected.json")
     for name, make in makers:
         try:
