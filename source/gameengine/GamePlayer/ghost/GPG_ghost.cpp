@@ -67,6 +67,7 @@ extern "C"
 #include "BLO_runtime.h"
 
 #include "BKE_appdir.h"
+#include "BKE_font.h"
 #include "BKE_blender.h"
 #include "BKE_depsgraph.h"
 #include "BKE_global.h"
@@ -96,6 +97,9 @@ extern int datatoc_bfont_ttf_size;
 extern char datatoc_bfont_ttf[];
 extern int datatoc_bmonofont_ttf_size;
 extern char datatoc_bmonofont_ttf[];
+/* BGE-Remix P8.22: the builtin font of text objects (their shape for Remix) */
+extern int datatoc_bfont_pfb_size;
+extern char datatoc_bfont_pfb[];
 
 #ifdef __cplusplus
 }
@@ -583,6 +587,8 @@ int main(
 	BLF_load_mem("default", (unsigned char*)datatoc_bfont_ttf, datatoc_bfont_ttf_size);
 	if (blf_mono_font == -1)
 		blf_mono_font = BLF_load_mem_unique("monospace", (unsigned char*)datatoc_bmonofont_ttf, datatoc_bmonofont_ttf_size);
+	/* BGE-Remix P8.22: as creator.c, so text objects can be made into shapes */
+	BKE_vfont_builtin_register(datatoc_bfont_pfb, datatoc_bfont_pfb_size);
 
 	// Parse command line options
 #if defined(DEBUG)
