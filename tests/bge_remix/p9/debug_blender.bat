@@ -13,11 +13,8 @@ set OURS=C:\BGE-Remix\tests-local\ours
 set OUT=C:\BGE-Remix\tests-local\results\debug_blender
 set FILE=%~1
 if "%FILE%"=="" set FILE=C:\Users\ayhan\Downloads\Rally Cross BGE\RG_update_blend\RG_update.blend
-if not exist "%CDB%" (
-  echo The Windows debugger is not installed: %CDB%
-  pause
-  exit /b 1
-)
+rem (no parenthesised block: the ")" of "(x86)" would end it)
+if not exist "%CDB%" goto nodebugger
 if exist "%OUT%" rmdir /s /q "%OUT%"
 mkdir "%OUT%\tmp"
 rem Blender's and Remix's own logs and crash reports go into the results too
@@ -32,3 +29,9 @@ echo.
 echo Finished. The report is in %OUT%
 echo Say "ready" to Claude.
 pause
+exit /b 0
+
+:nodebugger
+echo The Windows debugger is not installed: "%CDB%"
+pause
+exit /b 1
