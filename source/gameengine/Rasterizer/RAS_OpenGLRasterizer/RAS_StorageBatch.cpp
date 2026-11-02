@@ -770,13 +770,17 @@ bool RAS_StorageBatch::IndexPrimitivesInstanced(std::vector<RAS_MeshSlot *>& slo
 				GPU_shader_unbind();
 			return start > 0;
 		}
-		MT_Matrix4x4 v;
-		v.setValue(view);
+		/* (P8.30: in floats, column by column; the crowd's tens of thousands
+		 * of instances a frame made the double matrices a cost) */
 		for (size_t i = 0; i < n; i++) {
-			MT_Matrix4x4 o;
-			o.setValue(slots[start + i]->m_OpenGLMatrix);
-			MT_Matrix4x4 mv = v * o;
-			mv.getValue(&mats[i * 16]);
+			const float *o = slots[start + i]->m_OpenGLMatrix;
+			float mv[16];
+			for (int c = 0; c < 4; c++) {
+				const float o0 = o[c * 4 + 0], o1 = o[c * 4 + 1], o2 = o[c * 4 + 2], o3 = o[c * 4 + 3];
+				for (int r = 0; r < 4; r++)
+					mv[c * 4 + r] = view[r] * o0 + view[4 + r] * o1 + view[8 + r] * o2 + view[12 + r] * o3;
+			}
+			memcpy(&mats[i * 16], mv, sizeof(mv));
 		}
 		GPU_stream_written(buffer);
 		glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 8, buffer, (GLintptr)offset, (GLsizeiptr)(n * 16 * sizeof(float)));

@@ -134,6 +134,15 @@ static void glew_core_flags(void)
 #endif
 }
 
+/* BGE-Remix P8.30: glewInit asks a core context for the old extension
+ * string, an invalid enum: not left for the next error check (Remix's
+ * present found it, before the debug output was on) */
+static void glew_drain_errors(void)
+{
+	for (int i = 0; i < 16 && glGetError() != GL_NO_ERROR; i++) {
+	}
+}
+
 MXContext *mxCreateContext(void)
 {
 	/* BGE-Remix P8.29: a core context lists no extensions in the old
@@ -147,6 +156,7 @@ MXContext *mxCreateContext(void)
 		_mx_context = new_ctx;
 		GLEW_CHK(glewInit());
 		glew_core_flags();
+		glew_drain_errors();
 		_mx_context = cur_ctx;
 	}
 
@@ -154,6 +164,7 @@ MXContext *mxCreateContext(void)
 #else
 	GLEW_CHK(glewInit());
 	glew_core_flags();
+	glew_drain_errors();
 	return NULL;
 #endif
 }

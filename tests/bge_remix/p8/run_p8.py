@@ -1798,11 +1798,12 @@ def partb_runs(args, out, S, expected):
         R[tag] = play(args.official, out, tag, S(name), frames=frames, gl_debug=False)
         return R[tag]
 
-    def remix(tag, name, frames=B_FRAMES):
+    def remix(tag, name, frames=B_FRAMES, extra=None):
         if not have(name):
             return {}
         cache = p3.fresh(os.path.join(out, "cache_" + tag))
         log, env = mock_env(args, out, tag, cache)
+        env.update(extra or {})
         R[tag] = play(args.ours, out, tag, S(name), env, frames=frames)
         B["remix"][tag] = mock_lines(log)
         return R[tag]
@@ -1862,6 +1863,9 @@ def partb_runs(args, out, S, expected):
             f12("b_f12_" + f, f)
     for f in W.get("remix", []):
         remix("b_" + f, f)
+    # P8.30: the mist reaches Remix as fog only when asked (Remix's fog
+    # turned the RTX run's picture black)
+    remix("b_world_sky_mist_remix_fog", "world_sky_mist_remix", extra={"BGE_REMIX_MIST_FOG": "1"})
 
     # T8.23: reflections
     for f in expected.get("reflections", {}).get("files", []):
@@ -2163,12 +2167,16 @@ def t822_sky(B, expected):
     domes = [l for l in lines if l.startswith("CreateLight") and "type=dome" in l]
     d["remix_sky"] = domes[:3]
     c["Remix gets the sky as a picture"] = any("texture=1" in l for l in domes)
-    lines = B["remix"].get("b_world_sky_mist_remix", [])
-    dist = config_values(lines, "rtx.volumetrics.transmittanceMeasurementDistanceMeters")
     want = E["mist"]["start"] + E["mist"]["depth"]
-    d["remix_fog"] = {"distance": dist, "expected": want,
-                      "enable": config_values(lines, "rtx.volumetrics.enable")}
-    c["Remix gets the mist as fog"] = any(abs(float(v) - want) < 0.01 for v in dist if v)
+    lines = B["remix"].get("b_world_sky_mist_remix", [])
+    off = config_values(lines, "rtx.volumetrics.enable")
+    lines = B["remix"].get("b_world_sky_mist_remix_fog", [])
+    dist = config_values(lines, "rtx.volumetrics.transmittanceMeasurementDistanceMeters")
+    d["remix_fog"] = {"distance": dist, "expected": want, "enable": config_values(lines, "rtx.volumetrics.enable"),
+                      "enable_by_default": off}
+    c["Remix leaves the mist out by default (its fog turned the picture black)"] = \
+        bool(B["remix"].get("b_world_sky_mist_remix")) and not any(v == "True" for v in off)
+    c["Remix gets the mist as fog with BGE_REMIX_MIST_FOG=1"] = any(abs(float(v) - want) < 0.01 for v in dist if v)
     return c, d
 
 
@@ -2987,16 +2995,14 @@ def editor_benchmarks(U):
 # Part B's items: the sky picture the right way up in Remix's dome; Modern's
 #       brightness against Remix's; speed against stock 2.79 (B8.6)
 # Every benchmark against its target; the picture sheets for the sign-off
-# Remix tuning (measured for the next step, P8.30 fix 3): the lamps' light
-#       scale against Cycles and the game, the mist's fog against the game's
-#       mist, one Remix run with OpenGL's debug output (the error left before
-#       Remix's image is drawn)
+# Remix fixes (P8.30 fix 4): no OpenGL error left before Remix's image is
+#       drawn (and one Remix run with OpenGL's debug output); the mist left out
+#       of Remix. (Fix 3 measured the lamps' light scale: 0.125 stays, the P2
+#       room nearest Cycles; and the mist's fog: black at any distance.)
 
 FRAME_60 = 1000.0 / 60.0
 TOL_BEFORE = 12.0  # a Remix picture against the build before P8's (path traced, denoised; blurred first)
 TOL_CYCLES = 2.0   # the P2 room against Cycles: no further than the build before P8 (and this much)
-LIGHT_SCALES = [1.0, 0.5, 0.25]  # tried besides the default (0.125)
-MIST_FOG = ["off", "4", "16"]    # BGE_REMIX_MIST_FOG tried besides the default (1)
 REMIX_FRAMES = 320
 # Remix compiles every shader it lacks before its first frame, so the
 # pictures are ray traced (P2's RTX runs); the picture at frame 300, once
@@ -3007,7 +3013,9 @@ REMIX_VARIANT = r'''
 # a copy of each scene for Remix: RTX Remix on (scene property bge_remix),
 # and an orthographic camera turned into a perspective one framing the same
 # plane (Remix draws orthographic cameras wrongly: the RTX run's first
-# pictures were zoomed far in)
+# pictures were zoomed far in). The lamps scene's copy leaves its hemi lamp
+# out: Remix lights the whole scene with a hemi (as sky), and keeps no lamp
+# to its own layer, so it washed out every other lamp's cell
 import bpy, math, os, sys
 from mathutils import Vector
 argv = sys.argv[sys.argv.index("--") + 1:]
@@ -3019,6 +3027,9 @@ for name in names:
     bpy.ops.wm.open_mainfile(filepath=path)
     for sc in bpy.data.scenes:
         sc["bge_remix"] = 1
+        if name == "lamps":
+            for o in [o for o in sc.objects if o.type == 'LAMP' and o.data.type == 'HEMI']:
+                sc.objects.unlink(o)
         ob = sc.camera
         if ob and ob.type == 'CAMERA' and ob.data.type == 'ORTHO':
             cam = ob.data
@@ -3029,20 +3040,6 @@ for name in names:
             cam.sensor_fit = 'HORIZONTAL'
             cam.angle = 2.0 * math.atan(width * 0.5 / dist)
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, name + "_rtx.blend"), check_existing=False)
-'''
-
-PROP_VARIANT = r'''
-# a copy of a scene with scene properties set (key=value; a value with a
-# point is a float)
-import bpy, sys
-argv = sys.argv[sys.argv.index("--") + 1:]
-src, dst, pairs = argv[0], argv[1], argv[2:]
-bpy.ops.wm.open_mainfile(filepath=src)
-for sc in bpy.data.scenes:
-    for p in pairs:
-        k, v = p.split("=", 1)
-        sc[k] = float(v) if "." in v else int(v)
-bpy.ops.wm.save_as_mainfile(filepath=dst, check_existing=False)
 '''
 
 # each new scene four ways: the game in Classic and in Modern, F12, Remix
@@ -3167,17 +3164,6 @@ def rtx_before(args, out, before):
         sc, _ = p2.make_scenes(args.ours, d)
         room = os.path.join(sc, "p2_room.blend")
         keep("p2", "T2.1_room", p2.player(args.ours, d, "T2.1_room", room, timed(40), size=(1920, 1080), cwd=d))
-        # the lamps' light scale tried (P8.30 fix 3): the same room
-        scales = {}
-        for scale in LIGHT_SCALES:
-            tag = "T2.1_room_scale_%s" % scale
-            variant = os.path.join(sc, "p2_room_scale_%s.blend" % scale)
-            blender_script(args.ours, d, "variant_" + tag, PROP_VARIANT,
-                           [room, variant, "bge_remix_light_scale=%r" % float(scale)])
-            r = p2.player(args.ours, d, tag, variant, timed(40), size=(1920, 1080), cwd=d) \
-                if os.path.isfile(variant) else {}
-            scales[scale] = r.get("screenshot")
-        res["p2"]["scales"] = scales
     except BaseException as ex:  # a SystemExit from a scene maker included
         res.setdefault("p2", {})["error"] = repr(ex)
     try:
@@ -3249,103 +3235,24 @@ def judge_benchmarks(bench):
     return c, d
 
 
-def cell_ratios(a, cells):
-    """each lamp cell's linear brightness over the whole picture's"""
-    if a is None:
-        return {}
-    lin = srgb_to_linear(a)
-    lum = 0.2126 * lin[..., 0] + 0.7152 * lin[..., 1] + 0.0722 * lin[..., 2]
-    whole = float(lum.mean()) or 1e-6
-    out = {}
-    for name, cell in cells.items():
-        left, top, right, bottom = cell["rect"]
-        part = lum[max(top, 0):max(bottom, 0), max(left, 0):max(right, 0)]
-        if part.size:
-            out[name] = float(part.mean()) / whole
-    return out
-
-
-def ratio_score(a, b):
-    """how far two sets of cell ratios are apart: the mean of |log2(a / b)|"""
-    import math
-    keys = [k for k in a if k in b and a[k] > 0 and b[k] > 0]
-    if not keys:
-        return None
-    return round(sum(abs(math.log2(a[k] / b[k])) for k in keys) / len(keys), 3)
-
-
-def rtx_tuning(args, out, S, have, expected, rows, before, cycles):
-    """P8.30 fix 3's measurements: the lamps' light scale (the P2 room
-    against Cycles, the lamps scene against the game), the mist's fog
-    against the game's mist, one Remix run with OpenGL's debug output"""
+def rtx_fixes(args, out, S, have, remix_runs):
+    """P8.30 fix 4: no OpenGL error left before Remix's image is drawn (every
+    Remix run; one more with OpenGL's debug output, whose driver messages
+    would name the call); the mist left out of Remix"""
     c, d = {}, {}
-    sheet = []
-    shot_of_run = lambda r: r.get("screenshot") if r else None  # noqa: E731
-
-    # the P2 room at each light scale against Cycles (the default from T8.36)
-    room = {0.125: before.get("p2", {}).get("now")}
-    room.update(before.get("p2", {}).get("scales") or {})
-    d["p2_room_from_cycles"] = {str(k): picture_diff(v, cycles) if v and cycles else None
-                                for k, v in sorted(room.items())}
-    d["p2_room_brightness_over_cycles"] = {str(k): round(linear_mean(v) / linear_mean(cycles), 2)
-                                           if v and cycles and linear_mean(v) and linear_mean(cycles) else None
-                                           for k, v in sorted(room.items())}
-    sheet.append(("P2 room: Cycles", cycles))
-    for k, v in sorted(room.items()):
-        sheet.append(("P2 room: light scale %s" % k, v))
-    c["the P2 room drawn at every light scale"] = all(v and p2.has_picture(v)[0] for v in room.values())
-
-    # the lamps scene at each light scale against the game (cell by cell)
-    cells = expected.get("lamps", {}).get("cells", {})
-    lamps_row = dict(rows).get("lamps", [None] * 4)
-    game = cell_ratios(picture(lamps_row[0]), cells)
-    lamps = {0.125: lamps_row[3]}
-    for scale in LIGHT_SCALES:
-        variant = S("lamps_rtx_scale_%s" % scale)
-        blender_script(args.ours, out, "variant_lamps_scale_%s" % scale, PROP_VARIANT,
-                       [S("lamps_rtx"), variant, "bge_remix_light_scale=%r" % float(scale)])
-        r = play(args.ours, out, "rtx_lamps_scale_%s" % scale, variant, REMIX_ENV, frames=REMIX_FRAMES,
-                 gl_debug=False) if os.path.isfile(variant) else {}
-        lamps[scale] = shot_of_run(r)
-    d["lamps_cells_from_game"] = {str(k): ratio_score(cell_ratios(picture(v), cells), game)
-                                  for k, v in sorted(lamps.items())}
-    d["lamps_cells"] = {"game": {k: round(v, 2) for k, v in game.items()}}
-    for k, v in sorted(lamps.items()):
-        d["lamps_cells"][str(k)] = {n: round(x, 2) for n, x in cell_ratios(picture(v), cells).items()}
-    sheet.append(("lamps: the game (Classic)", lamps_row[0]))
-    for k, v in sorted(lamps.items()):
-        sheet.append(("lamps: light scale %s" % k, v))
-    c["the lamps scene drawn at every light scale"] = all(v and p2.has_picture(v)[0] for v in lamps.values())
-
-    # the mist's fog: off, and thinner, against the game's mist
-    mist_row = dict(rows).get("mist", [None] * 4)
-    mist = {"1": mist_row[3]}
-    for value in MIST_FOG:
-        r = play(args.ours, out, "rtx_mist_fog_%s" % value, S("world_sky_mist_remix_rtx"),
-                 dict(REMIX_ENV, BGE_REMIX_MIST_FOG=value), frames=REMIX_FRAMES, gl_debug=False) \
-            if have("world_sky_mist_remix_rtx") else {}
-        mist[value] = shot_of_run(r)
-    d["mist_from_game"] = {k: picture_diff(v, mist_row[0]) if v and mist_row[0] else None for k, v in mist.items()}
-    d["mist_from_f12"] = {k: picture_diff(v, mist_row[2]) if v and mist_row[2] else None for k, v in mist.items()}
-    d["mist_brightness"] = {k: round(linear_mean(v), 3) if v and linear_mean(v) is not None else None
-                            for k, v in mist.items()}
-    d["mist_brightness"]["game"] = round(linear_mean(mist_row[0]), 3) if mist_row[0] and \
-        linear_mean(mist_row[0]) is not None else None
-    sheet.append(("mist: the game (Classic)", mist_row[0]))
-    sheet.append(("mist: F12", mist_row[2]))
-    for k in ["1"] + MIST_FOG:
-        sheet.append(("mist: BGE_REMIX_MIST_FOG %s" % k, mist[k]))
-    c["the mist scene drawn with every fog setting"] = all(v and p2.has_picture(v)[0] for v in mist.values())
-
-    # one Remix run with OpenGL's debug output: which call leaves the error
-    # found before Remix's image is drawn
+    left = [k for k, r in remix_runs.items() if "left before Remix's image" in (r.get("text") or "")]
+    d["left_before_remix"] = left
+    c["no OpenGL error left before Remix's image is drawn (every new scene)"] = bool(remix_runs) and not left
     r = play(args.ours, out, "rtx_lamps_gl_debug", S("lamps_rtx"), REMIX_ENV, frames=120, gl_debug=True) \
         if have("lamps_rtx") else {}
     text = r.get("text") or ""
     d["gl_debug"] = {"errors": GL_ERROR.findall(text)[:8],
                      "left_before_remix": [l for l in text.splitlines() if "left before Remix's image" in l][:3]}
-    c["the OpenGL debug run ran"] = bool(r.get("ran"))
-    return {"ok": all(c.values()), "checks": c, "detail": d}, sheet
+    c["the OpenGL debug run: no driver error, none left before Remix's image"] = \
+        bool(r.get("ran")) and not d["gl_debug"]["errors"] and not d["gl_debug"]["left_before_remix"]
+    mist = remix_runs.get("mist", {}).get("text") or ""
+    c["the mist is left out of Remix (said in the log)"] = "mist is left out of Remix" in mist
+    return {"ok": all(c.values()), "checks": c, "detail": d}
 
 
 def run_rtx(args, out):
@@ -3446,10 +3353,9 @@ def run_rtx(args, out):
         c["Add blending reaches Remix as emissive: the sphere glows orange"] = False
     tests["T8.36 Remix (RTX run)"] = {"ok": all(c.values()), "checks": c, "detail": d}
 
-    # Remix tuning: measured for the next step
-    print("RTX run: Remix tuning (light scale, mist, OpenGL debug)...", flush=True)
-    tests["Remix tuning (RTX run, measured)"], tuning_rows = rtx_tuning(args, out, S, have, expected, rows,
-                                                                      before, cycles)
+    # P8.30 fix 4
+    print("RTX run: the Remix fixes (OpenGL debug)...", flush=True)
+    tests["Remix fixes (RTX run)"] = rtx_fixes(args, out, S, have, remix_runs)
 
     # Part B's items left for this run
     c, d = {}, {}
@@ -3534,7 +3440,6 @@ def run_rtx(args, out):
         b = before.get(phase, {})
         old += [("%s: before P8" % what, b.get("before")), ("%s: P8" % what, b.get("now"))]
     sheets["before"] = p2.contact_sheet(old, os.path.join(out, "sheet_p8_rtx_before.png"))
-    sheets["tuning"] = p2.contact_sheet(tuning_rows, os.path.join(out, "sheet_p8_rtx_tuning.png"))
 
     res = {"tests": tests, "bench": bench, "sheets": sheets, "all_ok": all(t["ok"] for t in tests.values())}
     lines = ["BGE-Remix P8 RTX run (your RTX card, the real RTX Remix runtime)", "=" * 70, ""]

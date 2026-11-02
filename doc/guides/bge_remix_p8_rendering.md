@@ -77,8 +77,11 @@ Render > Shading > Pipeline (`scene.game_settings.render_pipeline`):
 - The world is the game's sky: Blend Sky, Paper Sky, Real Sky, image skies
   and Sky & Atmosphere. Remix gets the same sky as its dome picture.
 - Mist gets a height (World > Mist > Height; `mistHeight` on the game
-  scene's `world` in Python). Remix gets it as its fog, which is
-  exponential, so linear and quadratic mist are approximated there.
+  scene's `world` in Python). The world's mist is left out of Remix: Remix's
+  fog turned the whole picture black on the RTX 3080, however thin.
+  `BGE_REMIX_MIST_FOG` sends it anyway (exponential there, so linear and
+  quadratic mist are approximated). A volume object the camera is inside
+  still reaches Remix as fog.
 - Reflections: reflection probes (Object > Reflection Probe, with a reach and
   an update rate), planar mirrors (Material > Planar Mirror) and screen-space
   reflections (World > Reflections).
@@ -180,6 +183,7 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
 | `BGE_REMIX_SHADER_CACHE=off` or a folder | No shader cache, or the cache in that folder |
 | `BGE_REMIX_PROBE_SIZE=<pixels>` | Reflection probe size (default 128) |
 | `BGE_REMIX_FOG_GRID=WxHxD` | Volumetric fog grid size (default 160x90x64) |
+| `BGE_REMIX_MIST_FOG=<factor>` | Send the world's mist to Remix as fog, its distance times the factor (1: as set) |
 
 ## Python additions
 
@@ -204,7 +208,10 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
 - The game, F12 and Remix are close, not identical: procedurals, sky and lamps
   differ slightly. F12 only approximates the physical values; the game and
   Remix are the reference.
-- Remix's fog is exponential: linear and quadratic mist are approximated.
+- The world's mist is not shown in Remix (see Sky, mist, reflections,
+  volumes).
+- In Remix a hemi lamp is sky light: it lights the whole scene, and no lamp
+  keeps to its own layer.
 - Remix's bakes use one UV map; meshes without one are reported.
 - Remix draws orthographic cameras wrongly (the picture comes out zoomed
   in): use a perspective camera for scenes shown through Remix.
@@ -278,3 +285,8 @@ Metal. AMD and Intel cards are not tested.
   OpenSubdiv draws on the processor.
 - The old code paths stay in the program for `--gl-compat`; they are skipped
   on a core context.
+- The release's RTX runs: shadow maps were added to instancing (crowd's
+  frame went from 63 to about 17 ms); the lamps' light scale for Remix stays
+  0.125 (the P2 room nearest its Cycles render; 0.25, 0.5 and 1 were
+  measured); the world's mist was left out of Remix (black at any fog
+  distance).

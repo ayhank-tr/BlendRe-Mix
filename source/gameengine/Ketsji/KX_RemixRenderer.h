@@ -313,6 +313,7 @@ private:
 	/* P8.19: volume objects (held; found again every second) */
 	std::vector<KX_GameObject *> m_volume_objs;
 	int m_volume_scan;
+	bool m_mist_said;  /* P8.30: the mist left out of Remix, said once */
 	const wchar_t *SkyTexture(KX_Scene *scene, uint64_t *r_key);
 	void UpdateFog(KX_Scene *scene);
 	/* P8.23: the camera and screen effects' settings as Remix's options

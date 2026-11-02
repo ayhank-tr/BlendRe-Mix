@@ -339,6 +339,7 @@ KX_RemixRenderer::KX_RemixRenderer(RAS_ICanvas *canvas, bool window_mode_allowed
 	m_cache = new brmx::TextureCache();
 	m_skykey = 0;
 	m_volume_scan = 0;
+	m_mist_said = false;
 	m_materials_waiting = 0;
 	m_materials_swapped = 0;
 	m_material_notes = 0;
@@ -2326,23 +2327,29 @@ void KX_RemixRenderer::UpdateFog(KX_Scene *scene)
 	}
 
 	/* the world's mist: what passes start + distance is 5 %.
-	 * P8.30: BGE_REMIX_MIST_FOG "off" leaves it out, a number scales the
-	 * distance (larger: thinner fog), for tuning against the game's mist */
-	static float mist_factor = -2.0f;
-	if (mist_factor == -2.0f) {
+	 * P8.30: left out unless BGE_REMIX_MIST_FOG asks for it: Remix's fog
+	 * turned the RTX run's whole picture black, however thin. A number
+	 * sends it, scaling its distance (larger: thinner fog) */
+	static float mist_factor = -1.0f;
+	if (mist_factor < 0.0f) {
 		const char *env = getenv("BGE_REMIX_MIST_FOG");
-		mist_factor = 1.0f;
+		const float f = (env && env[0]) ? (float)atof(env) : 0.0f;
+		mist_factor = (f > 0.0f && f < 1e4f) ? f : 0.0f;
 		if (env && env[0]) {
-			const float f = (float)atof(env);
-			mist_factor = (strcmp(env, "off") == 0) ? 0.0f : (f > 0.0f && f < 1e4f) ? f : 1.0f;
-			printf("BGE-Remix: BGE_REMIX_MIST_FOG %s: the mist's fog %s\n", env,
-			       mist_factor == 0.0f ? "is left out" : "distance scaled");
+			printf("BGE-Remix: BGE_REMIX_MIST_FOG %s: the world's mist %s\n", env,
+			       mist_factor > 0.0f ? "goes to Remix as fog" : "is left out of Remix");
 		}
 	}
-	if (!key[0] && mist_factor > 0.0f && world && world->hasWorld() && wo && (wo->mode & WO_MIST)) {
+	const bool mist = !key[0] && world && world->hasWorld() && wo && (wo->mode & WO_MIST);
+	if (mist && mist_factor > 0.0f) {
 		distance = std::max(wo->miststa + wo->mistdist, 0.1f) * mist_factor;
 		copy_v3_v3(albedo, world->getBackColor());
 		snprintf(key, sizeof(key), "mist %.4f|%.4f, %.4f, %.4f", distance, albedo[0], albedo[1], albedo[2]);
+	}
+	else if (mist && !m_mist_said) {
+		printf("BGE-Remix: the world's mist is left out of Remix (Remix's fog turns the picture black; "
+		       "BGE_REMIX_MIST_FOG=1 sends it)\n");
+		m_mist_said = true;
 	}
 	if (m_fogsent == key)
 		return;
