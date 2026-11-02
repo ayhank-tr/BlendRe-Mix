@@ -302,6 +302,11 @@ KX_RemixRenderer::Settings KX_RemixRenderer::GetSettings(KX_Scene *scene, int ov
 	if (override_fast >= 0) {
 		s.window_mode = override_fast != 0;
 	}
+	/* P8.30 diagnostics: BGE_REMIX_LIGHT_SCALE overrides the scene's */
+	const char *ls = getenv("BGE_REMIX_LIGHT_SCALE");
+	if (ls && ls[0]) {
+		s.light_scale = (float)atof(ls);
+	}
 	if (!(s.light_scale >= 0.0f) || s.light_scale > 1e6f) {
 		s.light_scale = DEFAULT_LIGHT_SCALE;
 	}
@@ -1875,6 +1880,38 @@ bool KX_RemixRenderer::DrawEmitters(KX_Scene *scene, KX_GameObject *obj, Object 
 		if (part->draw & PART_DRAW_EMITTER) {
 			hide = false;
 		}
+		/* P8.30 diagnostics: BGE_REMIX_PARTICLE_TEST=1 sends plain, large,
+		 * slow, opaque white particles; the description said once */
+		const char *ptest = getenv("BGE_REMIX_PARTICLE_TEST");
+		if (ptest && ptest[0] == '1') {
+			p.max_particles = 500;
+			p.spawn_rate = 50.0f;
+			p.lifetime_min = 3.0f;
+			p.lifetime_max = 4.0f;
+			p.speed_normal = 1.0f;
+			p.cone_angle_deg = 20.0f;
+			p.speed_from_motion = 0.0f;
+			p.gravity = 0.0f;
+			p.drag = 0.0f;
+			p.size_min = p.size_max = 0.3f;
+			p.size_end_scale = 1.0f;
+			for (int k = 0; k < 4; k++) {
+				p.color_start[k] = p.color_end[k] = 1.0f;
+			}
+			p.rotation_speed = 0.0f;
+			p.collide = 0;
+			p.billboard = 0;
+			p.align_to_velocity = 0;
+		}
+		if (m_particles_said.insert(psys).second) {
+			printf("BGE-Remix particles \"%s\" to Remix%s: max %u, %.1f/s, life %.2f-%.2f s, speed %.3f, cone %.1f, "
+			       "gravity %.2f, drag %.2f, size %.3f-%.3f (end x%.2f), colour %.2f %.2f %.2f %.2f -> %.2f %.2f %.2f %.2f, "
+			       "billboard %d, velocity-aligned %d\n", psys->name, (ptest && ptest[0] == '1') ? " (test values)" : "",
+			       p.max_particles, p.spawn_rate, p.lifetime_min, p.lifetime_max, p.speed_normal, p.cone_angle_deg,
+			       p.gravity, p.drag, p.size_min, p.size_max, p.size_end_scale, p.color_start[0], p.color_start[1],
+			       p.color_start[2], p.color_start[3], p.color_end[0], p.color_end[1], p.color_end[2], p.color_end[3],
+			       p.billboard, p.align_to_velocity);
+		}
 		brb_draw_desc d;
 		memset(&d, 0, sizeof(d));
 		d.mesh = me->hash;
@@ -2066,14 +2103,40 @@ void KX_RemixRenderer::UpdateLights(KX_Scene *scene, float light_scale)
 	KX_WorldInfo *world = scene->GetWorldInfo();
 	uint64_t skykey = 0;
 	const wchar_t *sky = SkyTexture(scene, &skykey);
+	/* P8.30 diagnostics: BGE_REMIX_DOME "ambient" lights with what lights
+	 * the game (the world's ambient colour, plus its horizon colour times
+	 * Environment Lighting's energy when that is on), a number scales the
+	 * dome */
+	const char *dome_env = getenv("BGE_REMIX_DOME");
+	const bool dome_ambient = dome_env && strcmp(dome_env, "ambient") == 0;
+	const float dome_scale = (dome_env && dome_env[0] && !dome_ambient) ? (float)atof(dome_env) : 1.0f;
+	Scene *dome_sce = scene->GetBlenderScene();
+	World *dome_wo = dome_sce ? dome_sce->world : NULL;
 	if (sky) {
 		dome[0] = dome[1] = dome[2] = 1.0f;
+	}
+	else if (dome_ambient && dome_wo) {
+		const float amb[3] = {dome_wo->ambr, dome_wo->ambg, dome_wo->ambb};
+		const float env = (dome_wo->mode & WO_ENV_LIGHT) ? dome_wo->ao_env_energy : 0.0f;
+		for (int k = 0; k < 3; k++) {
+			dome[k] += amb[k] + (&dome_wo->horr)[k] * env;
+		}
 	}
 	else if (world && world->hasWorld()) {
 		const float *bg = world->getBackColor();
 		for (int k = 0; k < 3; k++) {
 			dome[k] += bg[k];
 		}
+	}
+	if (dome_env && dome_env[0] && !dome_ambient) {
+		for (int k = 0; k < 3; k++) {
+			dome[k] *= std::max(dome_scale, 0.0f);
+		}
+	}
+	static bool dome_said = false;
+	if (dome_env && dome_env[0] && !dome_said) {
+		printf("BGE-Remix: BGE_REMIX_DOME %s: the dome %.4f %.4f %.4f\n", dome_env, dome[0], dome[1], dome[2]);
+		dome_said = true;
 	}
 	brb_light_desc d;
 	memset(&d, 0, sizeof(d));
@@ -2213,6 +2276,11 @@ const wchar_t *KX_RemixRenderer::SkyTexture(KX_Scene *scene, uint64_t *r_key)
 void KX_RemixRenderer::UpdateCameraEffects(KX_Scene *scene, KX_Camera *cam)
 {
 	Scene *sc = scene->GetBlenderScene();
+	static bool forced = false;  /* P8.30 diagnostics: Classic scenes too */
+	if (!forced) {
+		ForcedAutoExposure();
+		forced = true;
+	}
 	if (!sc || BKE_scene_game_pipeline(sc) != 1) {
 		return;
 	}
@@ -2258,8 +2326,24 @@ void KX_RemixRenderer::UpdateCameraEffects(KX_Scene *scene, KX_Camera *cam)
 	snprintf(v, sizeof(v), "%.3f", bloom_intensity * 20.0f);
 	m_bridge->set_config("rtx.bloom.burnIntensity", v);
 	m_bridge->set_config("rtx.autoExposure.enabled", on[autoexp]);
+	ForcedAutoExposure();
 	printf("BGE-Remix: camera effects to Remix: motion blur %s, bloom %s, auto exposure %s, vignette %.2f "
 	       "(depth of field %s: Remix has none)\n", on[mblur], on[bloom], on[autoexp], vignette, on[dof]);
+}
+
+/* P8.30 diagnostics: BGE_REMIX_AUTOEXPOSURE 0 or 1 forces Remix's auto
+ * exposure, in any scene */
+void KX_RemixRenderer::ForcedAutoExposure()
+{
+	const char *env = getenv("BGE_REMIX_AUTOEXPOSURE");
+	if (env && (env[0] == '0' || env[0] == '1')) {
+		m_bridge->set_config("rtx.autoExposure.enabled", env[0] == '1' ? "True" : "False");
+		static bool said = false;
+		if (!said) {
+			printf("BGE-Remix: BGE_REMIX_AUTOEXPOSURE %s: Remix's auto exposure forced\n", env);
+			said = true;
+		}
+	}
 }
 
 /* BGE-Remix P8 Part B (P8.17): the world's mist as Remix's fog (its

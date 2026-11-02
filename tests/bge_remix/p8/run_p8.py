@@ -3008,6 +3008,10 @@ REMIX_FRAMES = 320
 # pictures are ray traced (P2's RTX runs); the picture at frame 300, once
 # Remix's denoiser has settled
 REMIX_ENV = {"RTX_ENABLE_ASYNC_COMPILATION": "0", "BGE_REMIX_P2_SHOT_FRAME": "300"}
+# scenes whose textures take longer than REMIX_FRAMES to reach Remix the
+# first time (the third RTX run: proc_textures' 38 bakes were still being
+# encoded at frame 300, so most tiles were plain grey)
+REMIX_LONG = {"proc_textures": 1800}
 
 REMIX_VARIANT = r'''
 # a copy of each scene for Remix: RTX Remix on (scene property bge_remix),
@@ -3021,6 +3025,9 @@ from mathutils import Vector
 argv = sys.argv[sys.argv.index("--") + 1:]
 folder, names = argv[0], argv[1:]
 for name in names:
+    # "keep:name": the camera kept as it is (name_rtxortho)
+    keep = name.startswith("keep:")
+    name = name[5:] if keep else name
     path = os.path.join(folder, name + ".blend")
     if not os.path.isfile(path):
         continue
@@ -3031,7 +3038,7 @@ for name in names:
             for o in [o for o in sc.objects if o.type == 'LAMP' and o.data.type == 'HEMI']:
                 sc.objects.unlink(o)
         ob = sc.camera
-        if ob and ob.type == 'CAMERA' and ob.data.type == 'ORTHO':
+        if ob and ob.type == 'CAMERA' and ob.data.type == 'ORTHO' and not keep:
             cam = ob.data
             view = ob.matrix_world.to_3x3() * Vector((0.0, 0.0, -1.0))
             dist = max(view.normalized().dot(Vector((0.0, 0.0, 0.0)) - ob.matrix_world.translation), 1.0)
@@ -3039,7 +3046,8 @@ for name in names:
             cam.type = 'PERSP'
             cam.sensor_fit = 'HORIZONTAL'
             cam.angle = 2.0 * math.atan(width * 0.5 / dist)
-    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, name + "_rtx.blend"), check_existing=False)
+    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, name + ("_rtxortho" if keep else "_rtx") + ".blend"),
+                                check_existing=False)
 '''
 
 # each new scene four ways: the game in Classic and in Modern, F12, Remix
@@ -3284,9 +3292,13 @@ def run_rtx(args, out):
         # (also Remix's own copy of its frame, to tell a picture Remix did
         # not make from one that did not reach the window)
         bmp = os.path.join(out, "rtx_%s_remix_own.bmp" % key)
-        env = dict(REMIX_ENV, BGE_REMIX_SCREENSHOT=bmp, BGE_REMIX_SCREENSHOT_FRAME="300")
-        r = play(args.ours, out, "rtx_%s_remix" % key, S(name), env, frames=REMIX_FRAMES, gl_debug=False) \
+        frames = REMIX_LONG.get(key, REMIX_FRAMES)
+        shot = str(frames - 20)
+        env = dict(REMIX_ENV, BGE_REMIX_SCREENSHOT=bmp, BGE_REMIX_SCREENSHOT_FRAME=shot, BGE_REMIX_P2_SHOT_FRAME=shot)
+        r = play(args.ours, out, "rtx_%s_remix" % key, S(name), env, frames=frames, gl_debug=False) \
             if have(name) else {}
+        if r:
+            r["shot_frame"] = int(shot)
         if r:
             r["remix_own"] = p2.bmp_to_png(bmp)
         remix_runs[key] = r
@@ -3325,18 +3337,24 @@ def run_rtx(args, out):
             diff = b.get("difference")
             c["%s: as the build before P8 drew it (within %.0f; %s)" % (what, TOL_BEFORE, diff)] = \
                 diff is not None and diff <= TOL_BEFORE
-    missing = []
+    missing, late = [], []
     for key, r in remix_runs.items():
         s = r.get("stats", {})
         ok, look = p2.has_picture(r.get("screenshot")) if r.get("screenshot") else (False, {})
         own = p2.has_picture(r.get("remix_own"))[1] if r.get("remix_own") else {}
-        d["new_scenes"][key] = {"running": s.get("running"), "errors": s.get("errors"),
+        textured = s.get("first_textured_frame")
+        if textured is None or textured < 0 or textured > r.get("shot_frame", REMIX_FRAMES):
+            late.append("%s (%s)" % (key, textured))
+        d["new_scenes"][key] = {"running": s.get("running"), "errors": s.get("errors"), "textured_frame": textured,
                                 "draws": s.get("draws_last_frame"), "picture": look, "remix_own_picture": own,
                                 "notes": [l for l in (r.get("text") or "").splitlines()
                                           if "Remix's image" in l or "is not an RtxOption" in l][:4]}
         if not (r.get("ran") and s.get("running") is True and not s.get("errors") and ok):
             missing.append(key)
     d["not_drawn_by_remix"] = missing
+    d["textures_late"] = late
+    c["every new scene's textures in Remix before its picture (%s late)" % (", ".join(late) or "none")] = \
+        not late and bool(remix_runs)
     c["every new scene drawn by Remix (a picture, Remix running, no Remix errors)"] = not missing and bool(remix_runs)
     # Add blending as Remix's emissive blending: the sphere glows orange
     # over the background beside it
@@ -3457,6 +3475,102 @@ def run_rtx(args, out):
     return res, lines
 
 
+# ---------------------------------------------------------------------------
+# P8.30 fix 5, step 1: the diagnostic RTX run (run_p8_diag.bat). Remix's
+# pictures with one setting changed at a time, for the four differences
+# left at the sign-off: dark worlds washed out, particles missing, many_lamps
+# dim, the overlays' white squares
+
+DIAG = [
+    # (row, game picture's scene, Remix scene, [(label, environment)])
+    ("lamps", "lamps_gl", "lamps_rtx",
+     [("as now", {}), ("dome off", {"BGE_REMIX_DOME": "0"}), ("dome x0.1", {"BGE_REMIX_DOME": "0.1"}),
+      ("dome from ambient", {"BGE_REMIX_DOME": "ambient"}), ("light scale 1", {"BGE_REMIX_LIGHT_SCALE": "1"})]),
+    ("classic_remix", "classic_remix_gl", "classic_remix_rtx",
+     [("as now", {}), ("dome off", {"BGE_REMIX_DOME": "0"}), ("dome x0.1", {"BGE_REMIX_DOME": "0.1"}),
+      ("dome from ambient", {"BGE_REMIX_DOME": "ambient"})]),
+    ("sky: blend", "world_sky_blend_classic", "world_sky_blend_remix_rtx",
+     [("as now", {}), ("dome from ambient", {"BGE_REMIX_DOME": "ambient"})]),
+    ("transparency (smoke)", "transparency", "transparency_rtx",
+     [("as now", {}), ("test particles", {"BGE_REMIX_PARTICLE_TEST": "1"}),
+      ("units 1", {"BGE_REMIX_PARTICLE_UNITS": "1"}),
+      ("test particles, units 1", {"BGE_REMIX_PARTICLE_TEST": "1", "BGE_REMIX_PARTICLE_UNITS": "1"})]),
+    ("hair_particles", "hair_particles", "hair_particles_remix_rtx",
+     [("as now", {}), ("test particles", {"BGE_REMIX_PARTICLE_TEST": "1"}),
+      ("units 1", {"BGE_REMIX_PARTICLE_UNITS": "1"}),
+      ("test particles, units 1", {"BGE_REMIX_PARTICLE_TEST": "1", "BGE_REMIX_PARTICLE_UNITS": "1"})]),
+    ("many_lamps", "many_lamps", "many_lamps_rtx",
+     [("as now", {}), ("auto exposure on", {"BGE_REMIX_AUTOEXPOSURE": "1"}),
+      ("light scale 1", {"BGE_REMIX_LIGHT_SCALE": "1"}),
+      ("both", {"BGE_REMIX_AUTOEXPOSURE": "1", "BGE_REMIX_LIGHT_SCALE": "1"})]),
+    ("game_overlays", "game_overlays", "game_overlays_remix_rtx",
+     [("as now (perspective copy)", {})]),
+    ("game_overlays", None, "game_overlays_remix_rtxortho",
+     [("its own orthographic camera", {})]),
+]
+DIAG_NOTES = ("BGE_REMIX_", "BGE-Remix particles", "Remix's fog", "camera effects to Remix")
+
+
+def run_diag(args, out):
+    scenes, expected = make_scenes(args, out)
+    S = lambda n: os.path.join(scenes, n + ".blend")  # noqa: E731
+    have = lambda n: bool(n) and os.path.isfile(S(n))  # noqa: E731
+    names = sorted({r[2][:-4] for r in DIAG if r[2].endswith("_rtx")})
+    blender_script(args.ours, out, "remix_variants", REMIX_VARIANT, [scenes] + names + ["keep:game_overlays_remix"])
+    cells = expected.get("lamps", {}).get("cells", {})
+    items, detail = [], {}
+    for row, game, remix, variants in DIAG:
+        key = re.sub(r"[^a-z0-9]+", "_", row.lower()).strip("_")
+        if game:
+            r = play(args.ours, out, "diag_%s_game" % key, S(game), frames=110, gl_debug=False) if have(game) else {}
+            items.append(("%s: the game" % row, r.get("screenshot")))
+            detail.setdefault(row, {})["game"] = {"picture": p2.has_picture(r.get("screenshot"))[1]
+                                                  if r.get("screenshot") else None}
+        for label, env in variants:
+            vkey = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
+            tag = "diag_%s_%s" % (key, vkey)
+            r = play(args.ours, out, tag, S(remix), dict(REMIX_ENV, **env), frames=REMIX_FRAMES, gl_debug=False) \
+                if have(remix) else {}
+            shot = r.get("screenshot")
+            items.append(("%s: Remix, %s" % (row, label), shot))
+            st = r.get("stats", {})
+            v = {"env": env, "running": st.get("running"), "errors": st.get("errors"),
+                 "picture": p2.has_picture(shot)[1] if shot else None,
+                 "lights": st.get("lights_last_frame"), "gpu_emitters": st.get("gpu_emitters"),
+                 "notes": [l for l in (r.get("text") or "").splitlines() if l.startswith(DIAG_NOTES)
+                           or "BGE-Remix: BGE_REMIX" in l or "BGE-Remix particles" in l][:6]}
+            if row == "lamps" and shot:
+                v["cells"] = {n: round(x, 2) for n, x in cell_ratios(picture(shot), cells).items()}
+            detail.setdefault(row, {})[label] = v
+    if detail.get("lamps", {}).get("game") is not None:
+        g = [x for x in items if x[0] == "lamps: the game"]
+        if g and g[0][1]:
+            detail["lamps"]["game"]["cells"] = {n: round(x, 2) for n, x in cell_ratios(picture(g[0][1]), cells).items()}
+    sheet = p2.contact_sheet(items, os.path.join(out, "sheet_p8_diag.png"))
+    ran = sum(1 for row in detail.values() for k, v in row.items() if k != "game" and v.get("running"))
+    total = sum(len(r[3]) for r in DIAG)
+    lines = ["BGE-Remix P8.30 diagnostic RTX run", "=" * 70, "",
+             "Remix pictures with one setting changed at a time: %d of %d ran" % (ran, total), "",
+             "Picture sheet: %s" % sheet, "", "ALL PASSED" if ran == total else "SOMETHING FAILED (see results_p8_diag.json)"]
+    return {"detail": detail, "sheet": sheet, "all_ok": ran == total}, lines
+
+
+def cell_ratios(a, cells):
+    """each lamp cell's linear brightness over the whole picture's"""
+    if a is None:
+        return {}
+    lin = srgb_to_linear(a)
+    lum = 0.2126 * lin[..., 0] + 0.7152 * lin[..., 1] + 0.0722 * lin[..., 2]
+    whole = float(lum.mean()) or 1e-6
+    res = {}
+    for name, cell in cells.items():
+        left, top, right, bottom = cell["rect"]
+        part = lum[max(top, 0):max(bottom, 0), max(left, 0):max(right, 0)]
+        if part.size:
+            res[name] = float(part.mean()) / whole
+    return res
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ours", required=True)
@@ -3465,8 +3579,9 @@ def main():
     ap.add_argument("--mock")
     ap.add_argument("--rtx", action="store_true", help="the RTX run: the real RTX Remix runtime (P8.30)")
     ap.add_argument("--before", help="the earlier phases' RTX results (C:\\BGE-Remix\\results)")
+    ap.add_argument("--diag", action="store_true", help="the diagnostic RTX run (P8.30 fix 5)")
     args = ap.parse_args()
-    if not args.rtx and not args.mock:
+    if not args.rtx and not args.mock and not args.diag:
         ap.error("--mock is needed (the fake RTX Remix runtime) unless --rtx")
     args.ours = os.path.abspath(args.ours)
     OURS["build"] = args.ours
@@ -3474,8 +3589,12 @@ def main():
         args.official = os.path.abspath(args.official)
     out = os.path.abspath(args.out)
     os.makedirs(out, exist_ok=True)
-    res, lines = run_rtx(args, out) if args.rtx else run(args, out)
-    name = "p8_rtx" if args.rtx else "p8a"
+    if args.diag:
+        res, lines = run_diag(args, out)
+        name = "p8_diag"
+    else:
+        res, lines = run_rtx(args, out) if args.rtx else run(args, out)
+        name = "p8_rtx" if args.rtx else "p8a"
     with open(os.path.join(out, "results_%s.json" % name), "w") as f:
         json.dump(res, f, indent=2, default=str)
     text = "\n".join(lines) + "\n"

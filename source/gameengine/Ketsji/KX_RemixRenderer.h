@@ -316,6 +316,8 @@ private:
 	bool m_mist_said;  /* P8.30: the mist left out of Remix, said once */
 	const wchar_t *SkyTexture(KX_Scene *scene, uint64_t *r_key);
 	void UpdateFog(KX_Scene *scene);
+	void ForcedAutoExposure();
+	std::set<const void *> m_particles_said;  /* P8.30 diagnostics */
 	/* P8.23: the camera and screen effects' settings as Remix's options
 	 * (sent when they change) */
 	void UpdateCameraEffects(KX_Scene *scene, KX_Camera *cam);

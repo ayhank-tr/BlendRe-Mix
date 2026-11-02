@@ -11,6 +11,9 @@ C:\\BGE-Remix\\transfer\\p0-results.zip, as GitHub's runs did.
   run_local.bat p8rtx        P8's RTX run: the real RTX Remix runtime, every
                              benchmark target, the picture sheets (also
                              run_p8_rtx.bat in the p8 folder)
+  run_local.bat p8diag       P8.30's diagnostic RTX run: Remix's pictures
+                             with one setting changed at a time (also
+                             run_p8_diag.bat in the p8 folder)
 
 Needs, once: Python 3 with pillow and numpy (python -m pip install pillow
 numpy), and the official Blender 2.79b unpacked into
@@ -39,7 +42,7 @@ MOCK_SHIM = os.path.join(LOCAL, "mock_shim")
 RESULTS = os.path.join(LOCAL, "results")
 HERE = os.path.dirname(os.path.abspath(__file__))
 PHASES = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"]
-EXTRA = ["p8rtx"]  # only when asked for
+EXTRA = ["p8rtx", "p8diag"]  # only when asked for
 
 
 def say(text=""):
@@ -117,6 +120,7 @@ def commands():
         "p8rtx": run("p8", "run_p8.py") + ["--ours", OURS] + off +
                  ["--mock", MOCK, "--rtx", "--before", os.path.join(ROOT, "results"),
                   "--out", os.path.join(RESULTS, "p8rtx")],
+        "p8diag": run("p8", "run_p8.py") + ["--ours", OURS, "--diag", "--out", os.path.join(RESULTS, "p8diag")],
     }
 
 

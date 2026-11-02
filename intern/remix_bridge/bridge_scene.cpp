@@ -229,8 +229,25 @@ struct ParticleExt {
 	remixapi_Float3D velocity[2];
 };
 
+/* P8.30 diagnostics: BGE_REMIX_PARTICLE_UNITS replaces the centimetres */
+static float particle_units()
+{
+	static float units = -1.0f;
+	if (units < 0.0f) {
+		char buf[32];
+		const DWORD n = GetEnvironmentVariableA("BGE_REMIX_PARTICLE_UNITS", buf, sizeof(buf));
+		const float f = (n > 0 && n < sizeof(buf)) ? (float)atof(buf) : 0.0f;
+		units = (f > 0.0f) ? f : CM;
+		if (f > 0.0f) {
+			log("BGE_REMIX_PARTICLE_UNITS: particle lengths times %g", units);
+		}
+	}
+	return units;
+}
+
 static void fill_particles(const brb_particle_desc &d, ParticleExt &p)
 {
+	const float CM = particle_units();
 	remixapi_InstanceInfoParticleSystemEXT &i = p.info;
 	i = remixapi_InstanceInfoParticleSystemEXT();
 	i.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_PARTICLE_SYSTEM_EXT;
