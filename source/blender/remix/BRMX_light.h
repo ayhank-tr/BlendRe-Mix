@@ -95,6 +95,14 @@ int dome_light(const float color[3], brb_light_desc &r_desc);
  * only when it differs from what was sent last. */
 void apply_exposure(const BRMX_Bridge *bridge, float stops);
 
+/* P8.30: the camera as Remix gets it (OpenGL matrices, column major). Remix
+ * reads a perspective camera's angle from its projection, so an
+ * orthographic camera came out zoomed far in (ColorCopy's menus): it is
+ * sent as a perspective camera far behind it with a narrow angle framing
+ * the same view, which looks practically orthographic. Others go through
+ * as they are. Returns true when the camera was orthographic. */
+bool camera_for_remix(const float view[16], const float proj[16], float r_view[16], float r_proj[16]);
+
 }  /* namespace brmx */
 
 #endif  /* __BRMX_LIGHT_H__ */

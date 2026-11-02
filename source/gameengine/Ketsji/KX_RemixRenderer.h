@@ -85,8 +85,13 @@ public:
 		int enabled;        /* 1: render through Remix */
 		int window_mode;    /* 1: present into a child window (blenderplayer) */
 		float light_scale;  /* brightness factor for lamps */
-		float exposure;     /* stops added to Remix's automatic exposure (default +2) */
+		float exposure;     /* stops added to Remix's exposure (P8.30: default 0) */
+		int explicit_off;   /* P8.30: the scene turns Remix off itself (bge_remix 0) */
 	};
+	/* P8.30: once a game has drawn through Remix, the scenes and files it
+	 * switches to keep Remix on, unless they turn it off themselves; a new
+	 * game (Blender's embedded player) starts afresh */
+	static void ResetKeepOn();
 
 	/* Scene settings: the custom properties bge_remix, bge_remix_fast and
 	 * bge_remix_light_scale of the Blender scene (Render panel), unless the

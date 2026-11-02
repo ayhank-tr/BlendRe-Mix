@@ -541,7 +541,10 @@ public:
 	                const std::vector<uint32_t> &highlight)
 	{
 		b->frame_begin();
-		b->frame_camera(view, proj);
+		/* P8.30: an orthographic view as a distant perspective one */
+		float rv[16], rp[16];
+		brmx::camera_for_remix(view, proj, rv, rp);
+		b->frame_camera(rv, rp);
 		for (const DrawItem &it : m_draws) {
 			brb_draw_desc d;
 			memset(&d, 0, sizeof(d));

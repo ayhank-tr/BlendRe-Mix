@@ -1777,6 +1777,47 @@ for i in range(4):
 '''
 
 
+KEEP_SWITCH = r'''
+import bge
+g = bge.logic.globalDict
+scene = bge.logic.getCurrentScene()
+key = "p8_keep_" + scene.name
+g[key] = g.get(key, 0) + 1
+if g[key] == 40:
+    scene.replace({"KeepA": "KeepB", "KeepB": "KeepC"}[scene.name])
+'''
+
+
+def make_remix_keep(folder, E):
+    """P8.30: three scenes played one after another: KeepA with Remix on,
+    KeepB without a setting (stays in Remix), KeepC with Remix turned off"""
+    first = base("KeepA")
+    cam = first.camera
+    grey = classic("K_grey", (0.6, 0.6, 0.6))
+    scenes = [first]
+    for name in ("KeepB", "KeepC"):
+        sc = bpy.data.scenes.new(name)
+        sc.render.engine = 'BLENDER_GAME'
+        sc.game_settings.resolution_x, sc.game_settings.resolution_y = WIDTH, HEIGHT
+        if not STOCK:
+            sc.game_settings.material_mode = 'GLSL'
+        sc.world = first.world
+        sc.objects.link(cam)
+        sc.camera = cam
+        scenes.append(sc)
+    for k, sc in enumerate(scenes):
+        box(sc, "K_box_%d" % k, (k - 1.0, 0.0, 0.0), (1.0, 1.0, 1.0), grey)
+        p2.lamp(sc, "K_sun_%d" % k, 'SUN', (0.0, -5.0, 5.0), (math.radians(45.0), 0.0, 0.0), energy=1.0)
+        if sc.name != "KeepC":
+            driver = bpy.data.objects.new("K_switch_%d" % k, None)
+            sc.objects.link(driver)
+            logic(sc, driver, "p8_keep_switch_%d.py" % k, KEEP_SWITCH)
+    first["bge_remix"] = 1
+    scenes[2]["bge_remix"] = 0
+    E["remix_keep"] = {"switch_at": 40, "scenes": ["KeepA", "KeepB", "KeepC"]}
+    save(scenes[2], os.path.join(folder, "remix_keep.blend"))
+
+
 def make_game_overlays(folder, E):
     scene = base("Overlays")
     gs = scene.game_settings
@@ -3275,6 +3316,7 @@ def main():
                   # P8 v2 Part B: the new scenes
                   ("classic_look", lambda: make_classic_look(folder, E)),
                   ("game_overlays", lambda: make_game_overlays(folder, E)),
+                  ("remix_keep", lambda: make_remix_keep(folder, E)),
                   ("pipelines", lambda: make_pipelines(folder, E)),
                   ("crowd_small", lambda: make_crowd_small(folder, E)),
                   ("crowd", lambda: make_crowd(folder, E)),

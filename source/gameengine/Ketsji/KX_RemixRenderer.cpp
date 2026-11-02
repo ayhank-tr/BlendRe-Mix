@@ -285,14 +285,23 @@ static bool frame_listed(const std::string &list, int frame)
 /* ------------------------------------------------------------------------- */
 /* Settings */
 
+/* P8.30: Remix stays on across scene and file switches (KX_RemixRenderer.h) */
+static bool g_remix_keep_on = false;
+
+void KX_RemixRenderer::ResetKeepOn()
+{
+	g_remix_keep_on = false;
+}
+
 KX_RemixRenderer::Settings KX_RemixRenderer::GetSettings(KX_Scene *scene, int override_enabled, int override_fast)
 {
-	Settings s = {0, 0, DEFAULT_LIGHT_SCALE, DEFAULT_EXPOSURE};
+	Settings s = {0, 0, DEFAULT_LIGHT_SCALE, DEFAULT_EXPOSURE, 0};
 	Scene *bscene = scene ? scene->GetBlenderScene() : NULL;
 	IDProperty *props = bscene ? bscene->id.properties : NULL;
 	/* P5: a scene rendered with the RTX Remix engine plays with Remix too */
 	s.enabled = idprop_int(props, "bge_remix", 0) != 0 || (bscene && strcmp(bscene->r.engine, "RTX_REMIX") == 0);
 	s.window_mode = idprop_int(props, "bge_remix_fast", 0) != 0;
+	s.explicit_off = !s.enabled && idprop_int(props, "bge_remix", -1) == 0;
 	s.light_scale = idprop_float(props, "bge_remix_light_scale", DEFAULT_LIGHT_SCALE);
 	s.exposure = idprop_float(props, "bge_remix_exposure", DEFAULT_EXPOSURE);
 	if (override_enabled >= 0) {
@@ -629,11 +638,22 @@ KX_Scene *KX_RemixRenderer::PickSceneImpl(const std::vector<KX_Scene *> &scenes,
 	/* The first scene (bottom of the stack) with Remix on gets it. Only one:
 	 * Remix draws one picture per frame. */
 	KX_Scene *wanted = NULL;
-	Settings settings = {0, 0, DEFAULT_LIGHT_SCALE, DEFAULT_EXPOSURE};
+	Settings settings = {0, 0, DEFAULT_LIGHT_SCALE, DEFAULT_EXPOSURE, 0};
 	bool first = true;
 	for (KX_Scene *s : scenes) {
 		/* the -g override applies to the first scene only */
 		settings = GetSettings(s, first ? override_enabled : -1, first ? override_fast : -1);
+		/* P8.30: a game that has drawn through Remix keeps it (a scene or
+		 * file it switched to, unless that turns Remix off itself) */
+		if (!settings.enabled && g_remix_keep_on && !settings.explicit_off && !(first && override_enabled == 0)) {
+			settings.enabled = 1;
+			static bool said = false;
+			if (!said) {
+				printf("BGE-Remix: scene \"%s\" stays in RTX Remix (the game started in it)\n",
+				       s->GetName().ReadPtr());
+				said = true;
+			}
+		}
 		first = false;
 		if (settings.enabled) {
 			wanted = s;
@@ -648,6 +668,7 @@ KX_Scene *KX_RemixRenderer::PickSceneImpl(const std::vector<KX_Scene *> &scenes,
 		m_scene = wanted;
 		m_settings = settings;
 		ApplyExposure(settings);
+		g_remix_keep_on = true;
 		return m_scene;
 	}
 	if (m_tried) {
@@ -661,7 +682,11 @@ KX_Scene *KX_RemixRenderer::PickSceneImpl(const std::vector<KX_Scene *> &scenes,
 	}
 	const int w = std::max(m_canvas->GetWidth(), 8);
 	const int h = std::max(m_canvas->GetHeight(), 8);
-	return Start(wanted, w, h, settings) ? m_scene : NULL;
+	if (!Start(wanted, w, h, settings)) {
+		return NULL;
+	}
+	g_remix_keep_on = true;
+	return m_scene;
 }
 
 void KX_RemixRenderer::RemoveScene(KX_Scene *scene)
@@ -2772,10 +2797,18 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 	UpdateBakes(scene);
 	UpdateTextures(scene);
 
-	float v[16], p[16];
+	float v[16], p[16], rv[16], rp[16];
 	view.getValue(v);
 	proj.getValue(p);
-	m_bridge->frame_camera(v, p);
+	/* P8.30: an orthographic camera as a distant, narrow perspective one */
+	if (brmx::camera_for_remix(v, p, rv, rp)) {
+		static bool said = false;
+		if (!said) {
+			printf("BGE-Remix: an orthographic camera reaches Remix as a distant, narrow-angle perspective one\n");
+			said = true;
+		}
+	}
+	m_bridge->frame_camera(rv, rp);
 
 	int draws = 0;
 	m_vp_x0 = x;

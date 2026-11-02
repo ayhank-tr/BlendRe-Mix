@@ -174,6 +174,46 @@ int dome_light(const float color[3], brb_light_desc &d)
 	return 1;
 }
 
+bool camera_for_remix(const float view[16], const float proj[16], float r_view[16], float r_proj[16])
+{
+	memcpy(r_view, view, sizeof(float[16]));
+	memcpy(r_proj, proj, sizeof(float[16]));
+	/* orthographic: no perspective divide (the last row is 0 0 0 1) */
+	if (!(std::fabs(proj[3]) < 1e-6f && std::fabs(proj[7]) < 1e-6f && std::fabs(proj[11]) < 1e-6f &&
+	      std::fabs(proj[15] - 1.0f) < 1e-6f))
+	{
+		return false;
+	}
+	const float sx = proj[0], sy = proj[5], sz = proj[10], tx = proj[12], ty = proj[13], tz = proj[14];
+	if (sx == 0.0f || sy == 0.0f || sz == 0.0f) {
+		return false;
+	}
+	/* the box: x in l..r, y in b..t, depth n..f in front of the camera */
+	const float l = (-1.0f - tx) / sx, r = (1.0f - tx) / sx;
+	const float b = (-1.0f - ty) / sy, t = (1.0f - ty) / sy;
+	const float n = (tz + 1.0f) / sz, f = (tz - 1.0f) / sz;
+	const float extent = std::max(std::fabs(r - l), std::fabs(t - b));
+	/* the camera moved this far back along its view (100 times the view's
+	 * size: a 1 % size change across a depth of one view size), the box's
+	 * size kept where the scene usually is: a little in front of the near
+	 * plane */
+	const float back = 100.0f * std::max(extent, 0.01f);
+	const float keep = std::max(n, 0.0f) + 0.5f * std::min(std::max(f - n, 0.0f), 2.0f * extent);
+	const float zn = std::max(n, 0.0f) + back, zf = std::max(f, n + 1e-3f) + back;
+	const float k = zn / (keep + back);
+	const float l2 = l * k, r2 = r * k, b2 = b * k, t2 = t * k;
+	r_view[14] = view[14] - back;
+	memset(r_proj, 0, sizeof(float[16]));
+	r_proj[0] = 2.0f * zn / (r2 - l2);
+	r_proj[5] = 2.0f * zn / (t2 - b2);
+	r_proj[8] = (r2 + l2) / (r2 - l2);
+	r_proj[9] = (t2 + b2) / (t2 - b2);
+	r_proj[10] = -(zf + zn) / (zf - zn);
+	r_proj[11] = -1.0f;
+	r_proj[14] = -2.0f * zf * zn / (zf - zn);
+	return true;
+}
+
 void apply_exposure(const BRMX_Bridge *bridge, float stops)
 {
 	/* Remix's default tone mapper (rtx.tonemappingMode Local) ignores

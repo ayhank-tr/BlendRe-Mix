@@ -130,6 +130,10 @@ field. A Classic scene leaves Remix's bloom on and its auto exposure off.
   own Light Scale or Exposure keep them.
 - A shadeless material with an image glows with its image. Face Texture
   (bitmap) text reaches Remix letter by letter.
+- Once a game draws through Remix, the scenes it switches to and the files it
+  loads (Scene and Game actuators, Python) stay in Remix, unless they turn
+  RTX Remix off themselves. The standalone player's `-g remix = 1` turns it
+  on from the first scene.
 - The property tabs show one panel per idea, shared by the game, F12 and
   Remix. In a game scene, options that do nothing are hidden; options that
   work in only some renderers carry an "OpenGL only", "Remix only" or "F12
@@ -226,8 +230,9 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
   not glow or blend as the game's do, so smoke and sparks look darker, or
   barely show, in dark scenes.
 - Remix's bakes use one UV map; meshes without one are reported.
-- Remix draws orthographic cameras wrongly (the picture comes out zoomed
-  in): use a perspective camera for scenes shown through Remix.
+- Remix has no orthographic camera: an orthographic camera reaches it as a
+  distant, narrow perspective camera framing the same view (within about
+  1 % of the size across the view's depth).
 - In the editors, lines and fonts can differ by a pixel from stock 2.79.
 - On a core context, a whole-window redraw takes about 22 ms on an RTX 3080,
   against about 19 ms in stock 2.79. Edit mode on a million faces is as fast

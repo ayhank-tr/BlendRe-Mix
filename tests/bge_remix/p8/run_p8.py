@@ -1565,6 +1565,7 @@ def run(args, out):
             ("T8.28 Camera and colour", lambda: t828_camera(C, expected)),
             ("T8.29 Remix match", lambda: t829_match(C, expected)),
             ("T8.30 Panels", lambda: t830_panels(C, expected)),
+            ("T8.37 Remix across scene switches", lambda: t837_keep(C, expected)),
             ("T8.31 Editors unchanged", lambda: t831_editors(U, expected)),
             ("T8.32 Selection", lambda: t832_selection(U, expected)),
             ("T8.33 bgl", lambda: t833_bgl(U, expected))]
@@ -2501,6 +2502,8 @@ def partc_runs(args, out, S, expected):
         C["match"] = tagged(text, "P8-MATCH")
         code, text, _ = blender_script(args.ours, out, "c_panels", PANELS_CHECK, blend=S("remix_extras"))
         C["panels"] = tagged(text, "P8-PANELS")
+    # T8.37 (P8.30): Remix kept across scene switches; orthographic cameras
+    remix("c_remix_keep", "remix_keep", frames=60)
     return C
 
 
@@ -2736,6 +2739,29 @@ GAME_HIDDEN = {"MATERIAL_PT_options": ("use_raytrace", "use_full_oversampling", 
                "MATERIAL_PT_shading": ("translucency", "use_cubic")}
 GAME_MARKED = {"MATERIAL_PT_mirror": "F12 and Remix only", "MATERIAL_PT_sss": "F12 and Remix only",
                "MATERIAL_PT_remix_fields": "Remix only", "DATA_PT_lamp": "Not in Remix"}
+
+
+def t837_keep(C, expected):
+    """P8.30: a game that started in Remix keeps it in the scene it switches
+    to (no setting of its own), not in one that turns Remix off; its
+    orthographic camera reaches Remix as a distant perspective one"""
+    c, d = {}, {}
+    E = expected.get("remix_keep")
+    if not E:
+        return {"the remix_keep scene was made": False}, {}
+    r = C["runs"].get("c_remix_keep", {})
+    text = r.get("text") or ""
+    frames = (r.get("stats") or {}).get("frames")
+    d["remix_frames"] = frames
+    d["notes"] = [l for l in text.splitlines() if "stays in RTX Remix" in l or "orthographic camera" in l][:4]
+    c["the game played its three scenes"] = bool(r.get("ran"))
+    c["KeepB (no setting) stays in Remix"] = 'scene "KeepB" stays in RTX Remix' in text
+    # (KeepA and KeepB play 40 frames each, KeepC 60)
+    c["KeepC (Remix turned off) is not drawn by Remix (%s Remix frames)" % frames] = \
+        frames is not None and 60 <= frames <= 2 * E["switch_at"] + 20
+    c["the orthographic camera reaches Remix as a perspective one"] = \
+        "an orthographic camera reaches Remix as a distant" in text
+    return c, d
 
 
 def t830_panels(C, expected):
@@ -3014,10 +3040,10 @@ REMIX_ENV = {"RTX_ENABLE_ASYNC_COMPILATION": "0", "BGE_REMIX_P2_SHOT_FRAME": "30
 REMIX_LONG = {"proc_textures": 45}
 
 REMIX_VARIANT = r'''
-# a copy of each scene for Remix: RTX Remix on (scene property bge_remix),
-# and an orthographic camera turned into a perspective one framing the same
-# plane (Remix draws orthographic cameras wrongly: the RTX run's first
-# pictures were zoomed far in). The lamps scene's copy leaves its hemi lamp
+# a copy of each scene for Remix: RTX Remix on (scene property bge_remix);
+# orthographic cameras stay (P8.30: the engine sends them as distant
+# perspective ones; BGE_REMIX_TEST_PERSP=1 turns them into perspective ones
+# here, as before). The lamps scene's copy leaves its hemi lamp
 # out: Remix lights the whole scene with a hemi (as sky), and keeps no lamp
 # to its own layer, so it washed out every other lamp's cell
 import bpy, math, os, sys
@@ -3038,7 +3064,9 @@ for name in names:
             for o in [o for o in sc.objects if o.type == 'LAMP' and o.data.type == 'HEMI']:
                 sc.objects.unlink(o)
         ob = sc.camera
-        if ob and ob.type == 'CAMERA' and ob.data.type == 'ORTHO' and not keep:
+        # (P8.30: the engine now sends orthographic cameras to Remix itself;
+        # the conversion here only on request)
+        if ob and ob.type == 'CAMERA' and ob.data.type == 'ORTHO' and os.environ.get("BGE_REMIX_TEST_PERSP"):
             cam = ob.data
             view = ob.matrix_world.to_3x3() * Vector((0.0, 0.0, -1.0))
             dist = max(view.normalized().dot(Vector((0.0, 0.0, 0.0)) - ob.matrix_world.translation), 1.0)

@@ -49,6 +49,9 @@
 #include "BL_Material.h"
 
 #include "KX_KetsjiEngine.h"
+#ifdef WITH_REMIX
+#  include "KX_RemixRenderer.h"  /* P8.30: ResetKeepOn */
+#endif
 #include "KX_BlenderSceneConverter.h"
 #include "KX_Light.h"
 #include "KX_PythonInit.h"
@@ -264,6 +267,12 @@ extern "C" void StartKetsjiShell(struct bContext *C, struct ARegion *ar, rcti *c
 	 * editor stays in the compatibility context until Part C) */
 	GPUStateScope gl_scope;
 	GPU_state_scope_begin(&gl_scope);
+
+#ifdef WITH_REMIX
+	/* P8.30: a new game: Remix only where its first scene asks (it then
+	 * stays on across the game's scene and file switches) */
+	KX_RemixRenderer::ResetKeepOn();
+#endif
 
 	do
 	{
