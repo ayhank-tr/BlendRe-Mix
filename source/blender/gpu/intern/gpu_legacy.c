@@ -2058,6 +2058,19 @@ void GPU_lgl_BindVertexArray(GLuint vao)
 	lgl_bind_vao(lc, vao ? vao : lc->vao);
 }
 
+/* BGE-Remix P8.1: a call that changes the application's own vertex array
+ * goes to that array. The emulation's draws in between bind its own one
+ * (lgl_submit), so without this the call landed in the emulation's array:
+ * an element buffer or an attribute (a client pointer) the emulation's
+ * caches did not know of, which a later draw read (Rally Cross: the 3D
+ * view crashed in glDrawElements after the game) */
+static void lgl_app_vao_current(void)
+{
+	if (GPU_lgl_on && lgl.app_vao) {
+		lgl_bind_vao(lgl_context(), lgl.app_vao);
+	}
+}
+
 void GPU_lgl_DeleteVertexArrays(GLsizei n, const GLuint *arrays)
 {
 	if (GPU_lgl_on) {
@@ -2090,6 +2103,9 @@ void GPU_lgl_BindBuffer(GLenum target, GLuint buffer)
 		}
 		if (target == GL_ARRAY_BUFFER) {
 			lgl.app_array_buffer = buffer;
+		}
+		if (target == GL_ELEMENT_ARRAY_BUFFER) {
+			lgl_app_vao_current();
 		}
 	}
 	glBindBuffer(target, buffer);
@@ -2128,6 +2144,7 @@ void GPU_lgl_VertexAttribPointer(GLuint index, GLint size, GLenum type, GLboolea
                                  const void *pointer)
 {
 	if (!GPU_lgl_on || lgl.app_vao || index >= LGL_GENERIC) {
+		lgl_app_vao_current();
 		glVertexAttribPointer(index, size, type, normalized, stride, pointer);
 		return;
 	}
@@ -2137,6 +2154,7 @@ void GPU_lgl_VertexAttribPointer(GLuint index, GLint size, GLenum type, GLboolea
 void GPU_lgl_VertexAttribIPointer(GLuint index, GLint size, GLenum type, GLsizei stride, const void *pointer)
 {
 	if (!GPU_lgl_on || lgl.app_vao || index >= LGL_GENERIC) {
+		lgl_app_vao_current();
 		glVertexAttribIPointer(index, size, type, stride, pointer);
 		return;
 	}
@@ -2146,6 +2164,7 @@ void GPU_lgl_VertexAttribIPointer(GLuint index, GLint size, GLenum type, GLsizei
 void GPU_lgl_EnableVertexAttribArray(GLuint index)
 {
 	if (!GPU_lgl_on || lgl.app_vao || index >= LGL_GENERIC) {
+		lgl_app_vao_current();
 		glEnableVertexAttribArray(index);
 		return;
 	}
@@ -2155,6 +2174,7 @@ void GPU_lgl_EnableVertexAttribArray(GLuint index)
 void GPU_lgl_DisableVertexAttribArray(GLuint index)
 {
 	if (!GPU_lgl_on || lgl.app_vao || index >= LGL_GENERIC) {
+		lgl_app_vao_current();
 		glDisableVertexAttribArray(index);
 		return;
 	}
@@ -2164,6 +2184,7 @@ void GPU_lgl_DisableVertexAttribArray(GLuint index)
 void GPU_lgl_VertexAttribDivisor(GLuint index, GLuint divisor)
 {
 	if (!GPU_lgl_on || lgl.app_vao || index >= LGL_GENERIC) {
+		lgl_app_vao_current();
 		glVertexAttribDivisor(index, divisor);
 		return;
 	}

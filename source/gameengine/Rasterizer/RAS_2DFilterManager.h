@@ -38,6 +38,8 @@
 #include "MEM_guardedalloc.h"
 #endif
 
+#include <string>
+
 class RAS_ICanvas;
 
 class RAS_2DFilterManager
@@ -73,6 +75,11 @@ private:
 	bool			need_tex_update;
 
 	unsigned int	m_filters[MAX_RENDER_PASS];
+	/* BGE-Remix P8.1: what each pass's program was built from (a custom
+	 * filter's text, or the built-in mode), so a filter actuator that fires
+	 * every frame does not rebuild the same program every frame */
+	std::string	m_filter_source[MAX_RENDER_PASS];
+	int		m_filter_mode[MAX_RENDER_PASS];
 	short		m_enabled[MAX_RENDER_PASS];
 
 	// stores object properties to send to shaders in each pass
