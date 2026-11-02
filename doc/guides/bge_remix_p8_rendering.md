@@ -232,7 +232,11 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
 - Remix's bakes use one UV map; meshes without one are reported.
 - Remix has no orthographic camera: an orthographic camera reaches it as a
   distant, narrow perspective camera framing the same view (within about
-  1 % of the size across the view's depth).
+  1 % of the size across the view's depth), so orthographic 3D scenes are
+  ray traced. A scene with an orthographic camera and no lamps is taken as
+  a 2D screen (a menu): it is drawn in OpenGL as made, and the game stays in
+  Remix for the scenes after it. Overlay scenes (added on top) are always
+  drawn in OpenGL over Remix's picture.
 - In the editors, lines and fonts can differ by a pixel from stock 2.79.
 - On a core context, a whole-window redraw takes about 22 ms on an RTX 3080,
   against about 19 ms in stock 2.79. Edit mode on a million faces is as fast

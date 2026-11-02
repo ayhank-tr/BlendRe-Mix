@@ -2742,9 +2742,11 @@ GAME_MARKED = {"MATERIAL_PT_mirror": "F12 and Remix only", "MATERIAL_PT_sss": "F
 
 
 def t837_keep(C, expected):
-    """P8.30: a game that started in Remix keeps it in the scene it switches
-    to (no setting of its own), not in one that turns Remix off; its
-    orthographic camera reaches Remix as a distant perspective one"""
+    """P8.30: a game that starts in Remix on a 2D screen (an orthographic
+    camera, no lamps) draws it in OpenGL and keeps Remix for the lit
+    orthographic scene it switches to (no setting of its own; its camera
+    reaches Remix as a distant perspective one), not for one that turns
+    Remix off"""
     c, d = {}, {}
     E = expected.get("remix_keep")
     if not E:
@@ -2753,12 +2755,14 @@ def t837_keep(C, expected):
     text = r.get("text") or ""
     frames = (r.get("stats") or {}).get("frames")
     d["remix_frames"] = frames
-    d["notes"] = [l for l in text.splitlines() if "stays in RTX Remix" in l or "orthographic camera" in l][:4]
+    d["notes"] = [l for l in text.splitlines() if "stays in RTX Remix" in l or "orthographic camera" in l or
+                  "2D screen" in l][:4]
     c["the game played its three scenes"] = bool(r.get("ran"))
+    c["KeepA (orthographic, no lamps) is a 2D screen, drawn in OpenGL"] = 'scene "KeepA" is a 2D screen' in text
     c["KeepB (no setting) stays in Remix"] = 'scene "KeepB" stays in RTX Remix' in text
-    # (KeepA and KeepB play 40 frames each, KeepC 60)
-    c["KeepC (Remix turned off) is not drawn by Remix (%s Remix frames)" % frames] = \
-        frames is not None and 60 <= frames <= 2 * E["switch_at"] + 20
+    # (KeepA and KeepB play 40 frames each, KeepC 60: Remix draws KeepB only)
+    c["only KeepB is drawn by Remix (%s Remix frames)" % frames] = \
+        frames is not None and E["switch_at"] - 15 <= frames <= E["switch_at"] + 15
     c["the orthographic camera reaches Remix as a perspective one"] = \
         "an orthographic camera reaches Remix as a distant" in text
     return c, d

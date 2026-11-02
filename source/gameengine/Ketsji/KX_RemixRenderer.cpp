@@ -622,6 +622,29 @@ KX_Scene *KX_RemixRenderer::PickScene(const std::vector<KX_Scene *> &scenes, boo
 	return picked;
 }
 
+/* P8.30: a 2D screen (a menu): an orthographic camera and no lamps. It is
+ * drawn in OpenGL as its author made it, the game staying in Remix; an
+ * orthographic scene with lamps is ray traced (brmx::camera_for_remix) */
+static bool is_2d_screen(KX_Scene *scene)
+{
+	KX_Camera *cam = scene ? scene->GetActiveCamera() : NULL;
+	if (!cam || cam->GetCameraData()->m_perspective) {
+		return false;
+	}
+	CListValue *lights = scene->GetLightList();
+	return !lights || lights->GetCount() == 0;
+}
+
+static void note_2d_screen(KX_Scene *scene)
+{
+	static std::set<std::string> said;
+	const std::string name = scene->GetName().ReadPtr();
+	if (said.insert(name).second) {
+		printf("BGE-Remix: scene \"%s\" is a 2D screen (an orthographic camera, no lamps): drawn in OpenGL, "
+		       "the game stays in RTX Remix\n", name.c_str());
+	}
+}
+
 KX_Scene *KX_RemixRenderer::PickSceneImpl(const std::vector<KX_Scene *> &scenes, bool stereo, bool dome,
                                           int override_enabled, int override_fast)
 {
@@ -629,6 +652,10 @@ KX_Scene *KX_RemixRenderer::PickSceneImpl(const std::vector<KX_Scene *> &scenes,
 		/* the scene keeps Remix as long as it exists */
 		for (KX_Scene *s : scenes) {
 			if (s == m_scene) {
+				if (is_2d_screen(s)) {
+					note_2d_screen(s);
+					return NULL;
+				}
 				return m_scene;
 			}
 		}
@@ -643,9 +670,10 @@ KX_Scene *KX_RemixRenderer::PickSceneImpl(const std::vector<KX_Scene *> &scenes,
 	for (KX_Scene *s : scenes) {
 		/* the -g override applies to the first scene only */
 		settings = GetSettings(s, first ? override_enabled : -1, first ? override_fast : -1);
-		/* P8.30: a game that has drawn through Remix keeps it (a scene or
-		 * file it switched to, unless that turns Remix off itself) */
-		if (!settings.enabled && g_remix_keep_on && !settings.explicit_off && !(first && override_enabled == 0)) {
+		/* P8.30: a game that has drawn through Remix keeps it (the bottom
+		 * scene it switched to or loaded, unless that turns Remix off
+		 * itself; not an overlay over a scene drawn in OpenGL) */
+		if (!settings.enabled && g_remix_keep_on && first && !settings.explicit_off && override_enabled != 0) {
 			settings.enabled = 1;
 			static bool said = false;
 			if (!said) {
@@ -661,6 +689,12 @@ KX_Scene *KX_RemixRenderer::PickSceneImpl(const std::vector<KX_Scene *> &scenes,
 		}
 	}
 	if (!wanted) {
+		return NULL;
+	}
+	if (is_2d_screen(wanted)) {
+		/* the game is in Remix all the same: the scenes after it keep it */
+		note_2d_screen(wanted);
+		g_remix_keep_on = true;
 		return NULL;
 	}
 	if (m_running) {

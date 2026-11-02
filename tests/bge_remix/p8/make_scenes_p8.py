@@ -364,6 +364,9 @@ def make_proc_animated(folder):
     ob = bpy.data.objects.new("Animator", None)
     scene.objects.link(ob)
     logic(scene, ob, "p8_animator.py", ANIMATOR)
+    # (P8.30: a lamp, so Remix takes it as a 3D scene: an orthographic
+    # camera without lamps is a 2D screen, drawn in OpenGL)
+    p2.lamp(scene, "Sun", 'SUN', (0.0, -10.0, 0.0), (math.radians(60.0), 0.0, 0.0), energy=1.0)
     scene["bge_remix"] = 1
     save(scene, os.path.join(folder, "proc_animated.blend"), physical=False)
 
@@ -1789,11 +1792,14 @@ if g[key] == 40:
 
 
 def make_remix_keep(folder, E):
-    """P8.30: three scenes played one after another: KeepA with Remix on,
-    KeepB without a setting (stays in Remix), KeepC with Remix turned off"""
+    """P8.30: three scenes played one after another: KeepA, a 2D screen with
+    Remix on (an orthographic camera, no lamps: drawn in OpenGL), KeepB, an
+    orthographic 3D scene without a setting (stays in Remix, ray traced),
+    KeepC with Remix turned off"""
     first = base("KeepA")
     cam = first.camera
     grey = classic("K_grey", (0.6, 0.6, 0.6))
+    flat = classic("K_flat", (0.2, 0.6, 0.3), shadeless=True)
     scenes = [first]
     for name in ("KeepB", "KeepC"):
         sc = bpy.data.scenes.new(name)
@@ -1806,8 +1812,9 @@ def make_remix_keep(folder, E):
         sc.camera = cam
         scenes.append(sc)
     for k, sc in enumerate(scenes):
-        box(sc, "K_box_%d" % k, (k - 1.0, 0.0, 0.0), (1.0, 1.0, 1.0), grey)
-        p2.lamp(sc, "K_sun_%d" % k, 'SUN', (0.0, -5.0, 5.0), (math.radians(45.0), 0.0, 0.0), energy=1.0)
+        box(sc, "K_box_%d" % k, (k - 1.0, 0.0, 0.0), (1.0, 1.0, 1.0), grey if k else flat)
+        if k:
+            p2.lamp(sc, "K_sun_%d" % k, 'SUN', (0.0, -5.0, 5.0), (math.radians(45.0), 0.0, 0.0), energy=1.0)
         if sc.name != "KeepC":
             driver = bpy.data.objects.new("K_switch_%d" % k, None)
             sc.objects.link(driver)
