@@ -157,6 +157,7 @@ void defaults(MaterialSpec &s)
 	s.bake_slots = 0;
 	s.categories = 0;
 	s.locked = 0;
+	s.shadeless = false;
 	s.marks.clear();
 	s.nodes_baked = false;
 }
@@ -362,6 +363,9 @@ void from_blender_internal(const Material *ma, MaterialSpec &s)
 static void shadeless_glow(const Material *ma, MaterialSpec &s, bool face_image)
 {
 	brb_material_desc &d = s.desc;
+	if (ma->mode & MA_SHLESS) {
+		s.shadeless = true;
+	}
 	if (!(ma->mode & MA_SHLESS) || !s.textures[TEX_ALBEDO].image || s.textures[TEX_EMISSIVE].image ||
 	    (s.locked & (1u << TEX_EMISSIVE)))
 	{

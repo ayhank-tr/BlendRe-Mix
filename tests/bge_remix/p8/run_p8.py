@@ -3008,9 +3008,10 @@ REMIX_FRAMES = 320
 # Remix's denoiser has settled
 REMIX_ENV = {"RTX_ENABLE_ASYNC_COMPILATION": "0", "BGE_REMIX_P2_SHOT_FRAME": "300"}
 # scenes whose textures take longer than REMIX_FRAMES to reach Remix the
-# first time (the third RTX run: proc_textures' 38 bakes were still being
-# encoded at frame 300, so most tiles were plain grey)
-REMIX_LONG = {"proc_textures": 1800}
+# first time, and how many seconds they play (the third RTX run:
+# proc_textures' 38 bakes were still being encoded at frame 300; the final
+# one: 8 still at frame 1800, ten seconds uncapped)
+REMIX_LONG = {"proc_textures": 45}
 
 REMIX_VARIANT = r'''
 # a copy of each scene for Remix: RTX Remix on (scene property bge_remix),
@@ -3309,13 +3310,14 @@ def run_rtx(args, out):
         # (also Remix's own copy of its frame, to tell a picture Remix did
         # not make from one that did not reach the window)
         bmp = os.path.join(out, "rtx_%s_remix_own.bmp" % key)
-        frames = REMIX_LONG.get(key, REMIX_FRAMES)
-        shot = str(frames - 20)
-        env = dict(REMIX_ENV, BGE_REMIX_SCREENSHOT=bmp, BGE_REMIX_SCREENSHOT_FRAME=shot, BGE_REMIX_P2_SHOT_FRAME=shot)
-        r = play(args.ours, out, "rtx_%s_remix" % key, S(name), env, frames=frames, gl_debug=False) \
-            if have(name) else {}
+        seconds = REMIX_LONG.get(key, 0)
+        env = dict(REMIX_ENV, BGE_REMIX_SCREENSHOT=bmp, BGE_REMIX_SCREENSHOT_FRAME="300")
+        r = play(args.ours, out, "rtx_%s_remix" % key, S(name), env, frames=REMIX_FRAMES, seconds=seconds,
+                 gl_debug=False) if have(name) else {}
         if r:
-            r["shot_frame"] = int(shot)
+            # (a timed run's picture is taken in its last second)
+            r["shot_frame"] = 300
+            r["shot_seconds"] = seconds - 1.0 if seconds else None
         if r:
             r["remix_own"] = p2.bmp_to_png(bmp)
         remix_runs[key] = r
@@ -3358,7 +3360,12 @@ def run_rtx(args, out):
         ok, look = p2.has_picture(r.get("screenshot")) if r.get("screenshot") else (False, {})
         own = p2.has_picture(r.get("remix_own"))[1] if r.get("remix_own") else {}
         textured = s.get("first_textured_frame")
-        if textured is None or textured < 0 or textured > r.get("shot_frame", REMIX_FRAMES):
+        if r.get("shot_seconds"):
+            in_time = textured is not None and textured >= 0 and \
+                (s.get("first_textured_seconds") or 0.0) <= r["shot_seconds"]
+        else:
+            in_time = textured is not None and 0 <= textured <= r.get("shot_frame", REMIX_FRAMES)
+        if not in_time:
             late.append("%s (%s)" % (key, textured))
         d["new_scenes"][key] = {"running": s.get("running"), "errors": s.get("errors"), "textured_frame": textured,
                                 "draws": s.get("draws_last_frame"), "picture": look, "remix_own_picture": own,

@@ -140,6 +140,9 @@ struct MaterialSpec {
 	std::map<std::string, std::pair<int, std::string> > marks;
 	/* P8.24: node material baked into Remix's channels */
 	bool nodes_baked;
+	/* P8.30: a shadeless material: it glows with its colour image (a baked
+	 * one too: apply_bake) */
+	bool shadeless;
 };
 
 /* P8.24: every Remix field of the material and how it gets there */

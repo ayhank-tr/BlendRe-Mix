@@ -1158,6 +1158,14 @@ void apply_bake(const BakeResult &r, MaterialSpec &s)
 				if (r.has_alpha && (d.alpha_blend || d.alpha_test)) {
 					d.opacity = 1.0f;
 				}
+				/* P8.30: shadeless: the bake glows (not lit, not a plain
+				 * colour: the RTX run's procedural panels came out white) */
+				if (s.shadeless && !(s.locked & (1u << TEX_EMISSIVE)) && !r.images[BAKE_EMISSIVE]) {
+					s.textures[TEX_EMISSIVE] = t;
+					d.emissive[0] = d.emissive[1] = d.emissive[2] = 1.0f;
+					d.emissive_intensity = 1.0f;
+					d.albedo[0] = d.albedo[1] = d.albedo[2] = 0.0f;
+				}
 				break;
 			case BAKE_ROUGHNESS:
 				s.textures[TEX_ROUGHNESS] = t;
