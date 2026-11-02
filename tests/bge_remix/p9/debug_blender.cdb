@@ -1,0 +1,4 @@
+sxe -c ".echo BGE-Remix crash; .lastevent; r; kn 60; lm; q" av
+sxe -c ".echo BGE-Remix crash; .lastevent; r; kn 60; lm; q" c0000374
+sxe -c ".echo BGE-Remix crash; .lastevent; r; kn 60; lm; q" c0000409
+g
