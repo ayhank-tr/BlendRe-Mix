@@ -2325,9 +2325,22 @@ void KX_RemixRenderer::UpdateFog(KX_Scene *scene)
 		         transmit[0], transmit[1], transmit[2], albedo[0], albedo[1], albedo[2]);
 	}
 
-	/* the world's mist: what passes start + distance is 5 % */
-	if (!key[0] && world && world->hasWorld() && wo && (wo->mode & WO_MIST)) {
-		distance = std::max(wo->miststa + wo->mistdist, 0.1f);
+	/* the world's mist: what passes start + distance is 5 %.
+	 * P8.30: BGE_REMIX_MIST_FOG "off" leaves it out, a number scales the
+	 * distance (larger: thinner fog), for tuning against the game's mist */
+	static float mist_factor = -2.0f;
+	if (mist_factor == -2.0f) {
+		const char *env = getenv("BGE_REMIX_MIST_FOG");
+		mist_factor = 1.0f;
+		if (env && env[0]) {
+			const float f = (float)atof(env);
+			mist_factor = (strcmp(env, "off") == 0) ? 0.0f : (f > 0.0f && f < 1e4f) ? f : 1.0f;
+			printf("BGE-Remix: BGE_REMIX_MIST_FOG %s: the mist's fog %s\n", env,
+			       mist_factor == 0.0f ? "is left out" : "distance scaled");
+		}
+	}
+	if (!key[0] && mist_factor > 0.0f && world && world->hasWorld() && wo && (wo->mode & WO_MIST)) {
+		distance = std::max(wo->miststa + wo->mistdist, 0.1f) * mist_factor;
 		copy_v3_v3(albedo, world->getBackColor());
 		snprintf(key, sizeof(key), "mist %.4f|%.4f, %.4f, %.4f", distance, albedo[0], albedo[1], albedo[2]);
 	}

@@ -193,9 +193,15 @@ void RAS_BucketManager::RenderSolidBuckets(const MT_Transform& cameratrans, RAS_
 		RAS_MeshSlot* ms;
 		/* BGE-Remix P8 Part B (P8.11): objects of one mesh with this material
 		 * (not deformed, no object colour, no billboard or text) are drawn
-		 * as instances, in one draw, where the material allows it */
+		 * as instances, in one draw, where the material allows it.
+		 * BGE-Remix P8.30: shadow maps too; a solid caster is drawn with the
+		 * built-in depth shader (its material's shader does not matter) */
 		RAS_IPolyMaterial *mat = bucket->GetPolyMaterial();
-		const bool instancing = rasty->GetDrawingMode() == RAS_IRasterizer::KX_TEXTURED && mat->CanInstance() &&
+		const int drawmode = rasty->GetDrawingMode();
+		const bool shadow_depth = drawmode == RAS_IRasterizer::KX_SHADOW &&
+		    (mat->GetAlphaBlendMode() == GPU_BLEND_SOLID || rasty->GetUsingOverrideShader());
+		const bool instancing = (drawmode == RAS_IRasterizer::KX_TEXTURED || drawmode == RAS_IRasterizer::KX_SHADOW) &&
+		    (shadow_depth || mat->CanInstance()) &&
 		    !(mat->GetDrawingMode() & (RAS_IRasterizer::RAS_RENDER_3DPOLYGON_TEXT | RAS_IPolyMaterial::BILLBOARD_SCREENALIGNED |
 		                               RAS_IPolyMaterial::BILLBOARD_AXISALIGNED | RAS_IPolyMaterial::SHADOW));
 		std::vector<RAS_MeshSlot *> active;

@@ -701,15 +701,30 @@ bool RAS_StorageBatch::IndexPrimitivesInstanced(std::vector<RAS_MeshSlot *>& slo
 {
 	if (slots.size() < 2 || !GPU_speed_feature("instancing") || !GPU_instancing_supported())
 		return false;
+	/* BGE-Remix P8.30: shadow maps too, with the built-in depth shader when
+	 * no shader is bound (as IndexPrimitives); a lamp's views in one pass
+	 * make each object one instance per view */
+	const bool shadow = m_drawingmode == RAS_IRasterizer::KX_SHADOW;
+	if (m_drawingmode != RAS_IRasterizer::KX_TEXTURED && !shadow)
+		return false;
 	GLint bound = 0;
 	glGetIntegerv(GL_CURRENT_PROGRAM, &bound);
+	GPUShader *own = NULL;
+	if (!bound && shadow) {
+		own = GPU_builtin_game_depth();
+		if (!own)
+			return false;
+		bound = (GLint)GPU_shader_program(own);
+	}
 	if (!bound)
 		return false;
 	const ProgramInfo& pi = GetProgram((unsigned int)bound);
 	if (!pi.core || pi.instanced < 0)
 		return false;
-	if (m_drawingmode != RAS_IRasterizer::KX_TEXTURED)
-		return false;
+	const int views = shadow ? GPU_shadow_views_count() : 0;
+	const size_t per_draw = (views > 0) ? INST_MAX / (size_t)views : INST_MAX;
+	if (own)
+		GPU_shader_bind(own);
 
 	if (!m_instbuf) {
 		std::vector<unsigned int> numbers(INST_MAX);
@@ -742,15 +757,19 @@ bool RAS_StorageBatch::IndexPrimitivesInstanced(std::vector<RAS_MeshSlot *>& slo
 	GPU_old_builtins((unsigned int)bound, &state);
 	glDisable(GL_ALPHA_TEST);
 
-	for (size_t start = 0; start < total; start += INST_MAX) {
-		const size_t n = (total - start < INST_MAX) ? total - start : INST_MAX;
+	for (size_t start = 0; start < total; start += per_draw) {
+		const size_t n = (total - start < per_draw) ? total - start : per_draw;
 
 		/* the instances' model-view matrices: the view times each object's */
 		GLuint buffer = 0;
 		size_t offset = 0;
 		float *mats = (float *)GPU_stream_alloc(n * 16 * sizeof(float), &buffer, &offset);
-		if (!mats)
+		if (!mats) {
+			glProgramUniform1i((GLuint)bound, pi.instanced, 0);
+			if (own)
+				GPU_shader_unbind();
 			return start > 0;
+		}
 		MT_Matrix4x4 v;
 		v.setValue(view);
 		for (size_t i = 0; i < n; i++) {
@@ -780,13 +799,13 @@ bool RAS_StorageBatch::IndexPrimitivesInstanced(std::vector<RAS_MeshSlot *>& slo
 				const float black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
 				glVertexAttrib4fv(pi.col, black);
 			}
-			const GLuint vao = GetVAO(ba, (unsigned int)bound, false, false, color_array, true);
+			const GLuint vao = GetVAO(ba, (unsigned int)bound, own != NULL, false, color_array, true);
 			const size_t gl_first = ba->quads ? firstidx / 4 * 6 : firstidx;
 			const size_t gl_count = ba->quads ? it.totindex / 4 * 6 : it.totindex;
 
 			/* the culling pass (the main view, with last frame's depth) */
 			bool culled = false;
-			if (m_culling && m_cmdused < CMD_MAX && m_visused + n <= VIS_MAX) {
+			if (m_culling && !shadow && m_cmdused < CMD_MAX && m_visused + n <= VIS_MAX) {
 				const unsigned int cmd[5] = {(unsigned int)gl_count, 0u, (unsigned int)gl_first, 0u, m_visused};
 				const unsigned int cmd_offset = m_cmdused * 5 * sizeof(unsigned int);
 				glNamedBufferSubData(m_cmdbuf, cmd_offset, sizeof(cmd), cmd);
@@ -805,17 +824,26 @@ bool RAS_StorageBatch::IndexPrimitivesInstanced(std::vector<RAS_MeshSlot *>& slo
 			}
 			if (!culled) {
 				glProgramUniform1i((GLuint)bound, pi.instanced, 1);
+				/* with views, the instance number steps once every view
+				 * (the shader's view: the instance modulo the views) */
+				const GLuint step = (views > 0) ? (GLuint)views : 1u;
+				if (step != 1)
+					glVertexArrayBindingDivisor(vao, 15, step);
 				glBindVertexArray(vao);
 				glDrawElementsInstancedBaseInstance(mode, (GLsizei)gl_count, GL_UNSIGNED_SHORT,
 				                                    (const void *)(uintptr_t)(gl_first * sizeof(unsigned short)),
-				                                    (GLsizei)n, 0);
+				                                    (GLsizei)(n * step), 0);
 				glBindVertexArray(0);
+				if (step != 1)
+					glVertexArrayBindingDivisor(vao, 15, 1);
 			}
 			m_inst_draws++;
 		}
 		m_inst_objects += (int)n;
 	}
 	glProgramUniform1i((GLuint)bound, pi.instanced, 0);
+	if (own)
+		GPU_shader_unbind();
 	return true;
 }
 

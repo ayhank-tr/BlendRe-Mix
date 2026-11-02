@@ -443,9 +443,11 @@ static const char *gpu_views_vert_suffix =
         "	gl_ClipDistance[4] = dot(bge_clipplanes[4], bge_eye_);\n"
         "	gl_ClipDistance[5] = dot(bge_clipplanes[5], bge_eye_);\n"
         "	if (bge_views > 0) {\n"
-        "		gl_Position = bge_view_m[gl_InstanceID] * gl_Position;\n"
+        /* P8.30: instanced objects are bge_views instances each */
+        "		int bge_view_ = gl_InstanceID % bge_views;\n"
+        "		gl_Position = bge_view_m[bge_view_] * gl_Position;\n"
         "#ifdef BGE_LAYERED\n"
-        "		gl_Layer = bge_view_layer + gl_InstanceID;\n"
+        "		gl_Layer = bge_view_layer + bge_view_;\n"
         "#endif\n"
         "	}\n"
         "}\n";
