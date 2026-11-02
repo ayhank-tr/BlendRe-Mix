@@ -470,11 +470,50 @@ remixapi_ErrorCode REMIXAPI_CALL m_SetupCamera(const remixapi_CameraInfo *info)
 	return REMIXAPI_ERROR_CODE_SUCCESS;
 }
 
+static remixapi_ErrorCode draw_one(const remixapi_InstanceInfo *info);
+
+/* P8.30: GPU instancing (remixapi_InstanceInfoGpuInstancingEXT): each
+ * instance recorded as its own draw, at its transform after the instance's */
+static remixapi_Transform compose(const remixapi_Transform &a, const remixapi_Transform &b)
+{
+	remixapi_Transform r = {};
+	for (int i = 0; i < 3; i++) {
+		for (int j = 0; j < 4; j++) {
+			float v = (j == 3) ? a.matrix[i][3] : 0.0f;
+			for (int k = 0; k < 3; k++) {
+				v += a.matrix[i][k] * b.matrix[k][j];
+			}
+			r.matrix[i][j] = v;
+		}
+	}
+	return r;
+}
+
 remixapi_ErrorCode REMIXAPI_CALL m_DrawInstance(const remixapi_InstanceInfo *info)
 {
 	if (!info || !info->mesh) {
 		return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
 	}
+	const auto *gi = find_ext<remixapi_InstanceInfoGpuInstancingEXT>(
+	    info->pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_GPU_INSTANCING_EXT);
+	if (!gi || gi->instanceTransforms_count == 0 || !gi->instanceTransforms_values) {
+		return draw_one(info);
+	}
+	if (frame_listed("BGE_REMIX_MOCK_DRAWS_FRAME", g_present_count)) {
+		auto mit = g_meshes.find((uintptr_t)info->mesh);
+		mlog("Instanced frame=%d mesh=%llx count=%u", g_present_count,
+		     mit != g_meshes.end() ? mit->second.hash : 0ULL, gi->instanceTransforms_count);
+	}
+	for (uint32_t k = 0; k < gi->instanceTransforms_count; k++) {
+		remixapi_InstanceInfo one = *info;
+		one.transform = compose(gi->instanceTransforms_values[k], info->transform);
+		draw_one(&one);
+	}
+	return REMIXAPI_ERROR_CODE_SUCCESS;
+}
+
+static remixapi_ErrorCode draw_one(const remixapi_InstanceInfo *info)
+{
 	g_frame_draws++;
 	if (const remixapi_InstanceInfoBlendEXT *b = find_ext<remixapi_InstanceInfoBlendEXT>(
 	        info->pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BLEND_EXT))

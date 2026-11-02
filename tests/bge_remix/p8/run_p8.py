@@ -1824,6 +1824,9 @@ def partb_runs(args, out, S, expected):
     ours("b_game_overlays", "game_overlays")
     stock("b_stock_game_overlays", "game_overlays")
     remix("b_game_overlays_remix", "game_overlays_remix")
+    # P8.30: long enough for bge.texture's pictures to be written (five a
+    # second; the 110 frames above take a fraction of a second)
+    remix("b_game_overlays_remix_live", "game_overlays_remix", frames=1500)
     if have("mt_bench"):
         blender_script(args.ours, out, "b_storage", STORAGE, [os.path.dirname(S("mt_bench"))])
         for kind in STORAGES:
@@ -2040,7 +2043,7 @@ def t818_remix_mode(B, expected, out):
         c["the physics shapes show over Remix's picture"] = green >= 40
     # P8.30: bge.texture's render to texture and mirror reach Remix
     # (rewritten texture files, five a second)
-    live = (r.get("stats") or {}).get("live_texture_updates")
+    live = (B["runs"].get("b_game_overlays_remix_live", {}).get("stats") or {}).get("live_texture_updates")
     d["live_texture_updates"] = live
     c["bge.texture's pictures reach Remix (%s updates)" % live] = bool(live)
     d["shared_memory"] = "Vulkan memory sharing is checked in the RTX run"
@@ -3781,7 +3784,7 @@ DIAG = [
     ("remix_extras", None, "remix_extras_remix_rtx", [("now", {}), BOOST_OFF]),
     ("game_overlays", "game_overlays", "game_overlays_remix_rtx",
      [("live pictures, 5 a second", {}), ("live pictures off", {"BGE_REMIX_LIVE_TEXTURE_HZ": "0"}), BOOST_OFF]),
-    ("crowd", "crowd", "crowd_rtx", [("one draw each", {}), ("GPU instancing", {"BGE_REMIX_GPU_INSTANCING": "1"})]),
+    ("crowd", "crowd", "crowd_rtx", [("GPU instancing", {}), ("one draw each", {"BGE_REMIX_GPU_INSTANCING": "0"})]),
 ]
 DIAG_STATS = ("draws_last_frame", "instanced_groups", "live_texture_updates", "game_ms_median", "frame_ms_max",
               "particle_draws", "emitters")

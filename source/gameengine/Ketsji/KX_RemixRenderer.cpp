@@ -3045,8 +3045,8 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 		brb_draw_desc first;
 		std::vector<float> models;
 	};
-	static const bool gpu_instancing = getenv("BGE_REMIX_GPU_INSTANCING") &&
-	                                   getenv("BGE_REMIX_GPU_INSTANCING")[0] == '1';
+	static const bool gpu_instancing = !(getenv("BGE_REMIX_GPU_INSTANCING") &&
+	                                     getenv("BGE_REMIX_GPU_INSTANCING")[0] == '0');
 	std::map<std::tuple<uint64_t, int, uint32_t>, InstanceGroup> groups;
 	m_instanced_groups = 0;
 	for (int i = 0; i < objects->GetCount(); i++) {
@@ -3134,9 +3134,9 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 				d.categories |= BRB_CATEGORY_HAIR_CARDS;
 			}
 			d.pick_id = pick;
-			/* P8.30: BGE_REMIX_GPU_INSTANCING=1: copies of one mesh in one
-			 * call (Remix's GPU instancing); not billboards (their matrix is
-			 * the camera's) nor particles; picking keeps them apart */
+			/* P8.30: copies of one mesh in one call (Remix's GPU instancing;
+			 * BGE_REMIX_GPU_INSTANCING=0 turns it off); not billboards (their
+			 * matrix is the camera's) nor particles; picking keeps them apart */
 			if (gpu_instancing && !e->billboard && !e->particle && !m_pick_wanted) {
 				InstanceGroup &grp = groups[std::make_tuple(d.mesh, d.flags, d.categories)];
 				if (grp.models.empty()) {

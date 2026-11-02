@@ -196,7 +196,7 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
 | `BGE_REMIX_FOG_GRID=WxHxD` | Volumetric fog grid size (default 160x90x64) |
 | `BGE_REMIX_MIST_FOG=<factor>` | Send the world's mist to Remix as fog, its distance times the factor (1: as set) |
 | `BGE_REMIX_LIVE_TEXTURE_HZ=<n>` | `bge.texture` pictures sent to Remix n times a second (default 5; 0: none) |
-| `BGE_REMIX_GPU_INSTANCING=1` | Objects sharing a mesh and material sent to Remix as one instanced draw |
+| `BGE_REMIX_GPU_INSTANCING=0` | Objects sharing a mesh and material sent to Remix one by one, not as one instanced draw |
 | `BGE_REMIX_PARTICLE_SPAWN_UV=1` | Remix's particles take their texture coordinates from where they spawn |
 | `BGE_REMIX_PARTICLE_SPRITE_MODE=<n>` | Remix's particle sprite sheet mode (0 off) |
 | `BGE_REMIX_RTX_SET=k=v;k=v` | Set Remix options (`rtx.*`) after the scene's own |
@@ -326,5 +326,9 @@ Metal. AMD and Intel cards are not tested.
 - Remix 1.6.1's additions taken into P8 before its release: the particles'
   new fields, GPU instancing through the API (bridge ABI 11), `bge.texture`
   pictures in Remix, and a check of the emissive settings (boost emissives,
-  the emissive blend override). Material texture transforms need API 0.6.6,
+  the emissive blend override). Measured on the RTX 3080: crowd's 20,000
+  objects in Remix went from 6.3 to 3.5 ms a frame with GPU instancing (its
+  worst frame from 57 to 16 ms), the picture unchanged, so it is on; the
+  particle fields and emissive settings changed no test picture, so Remix's
+  defaults stay. Material texture transforms need API 0.6.6,
   newer than the pinned runtime's 0.6.5.
