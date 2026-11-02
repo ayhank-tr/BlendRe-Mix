@@ -21,6 +21,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sys
 import time
 
@@ -45,8 +46,9 @@ import bge
 
 g = bge.logic.globalDict
 rc = g.get("bgeremix_rc")
-if rc is None:
-    rc = g["bgeremix_rc"] = {"tick": 0, "times": [], "shots": [], "car": [], "speed_max": 0.0,
+run_id = os.environ.get("BGE_REMIX_RALLY_RUN", "")
+if rc is None or rc.get("run") != run_id:
+    rc = g["bgeremix_rc"] = {"run": run_id, "tick": 0, "times": [], "shots": [], "car": [], "speed_max": 0.0,
                              "route": json.loads(os.environ.get("BGE_REMIX_RALLY_ROUTE", "[]")),
                              "owners": json.loads(os.environ.get("BGE_REMIX_RALLY_OWNERS", "{}"))}
 rc["tick"] += 1
@@ -174,6 +176,79 @@ with open(info_path, "w") as f:
     json.dump(info, f, indent=2)
 """
 
+# Inside Blender (the user's way: open the file, press P): blender.exe opens
+# the test copy and starts the game in the 3D view once per entry of
+# BGE_REMIX_RALLY_SEQUENCE ([tag, rasterizer]), then quits
+EMBEDDED = r"""
+import json, os
+import bpy
+out_dir = os.environ["BGE_REMIX_RALLY_DIR"]
+seq = json.loads(os.environ["BGE_REMIX_RALLY_SEQUENCE"])
+state = {"i": 0, "ticks": 0, "results": []}
+
+def view3d():
+    win = bpy.context.window_manager.windows[0]
+    for area in win.screen.areas:
+        if area.type == 'VIEW_3D':
+            region = [r for r in area.regions if r.type == 'WINDOW'][0]
+            return {"window": win, "screen": win.screen, "area": area, "region": region,
+                    "scene": bpy.context.scene}
+    return None
+
+class RallyEmbedded(bpy.types.Operator):
+    bl_idname = "wm.bge_remix_rally_embedded"
+    bl_label = "BGE-Remix Rally Cross embedded"
+    _timer = None
+
+    def modal(self, context, event):
+        if event.type != 'TIMER':
+            return {'PASS_THROUGH'}
+        state["ticks"] += 1
+        if state["ticks"] < 10:
+            return {'PASS_THROUGH'}
+        if state["i"] < len(seq):
+            tag, mode = seq[state["i"]]
+            state["i"] += 1
+            for sc in bpy.data.scenes:
+                sc.bge_remix = mode
+            os.environ["BGE_REMIX_RALLY_RUN"] = tag
+            os.environ["BGE_REMIX_RALLY_OUT"] = os.path.join(out_dir, tag + ".json")
+            os.environ["BGE_REMIX_RALLY_SHOT"] = os.path.join(out_dir, tag)
+            os.environ["BGE_REMIX_STATS"] = os.path.join(out_dir, tag + "_stats.json")
+            print("Rally probe: starting %s (%s)" % (tag, mode), flush=True)
+            try:
+                bpy.ops.view3d.game_start(view3d())
+                state["results"].append([tag, "returned"])
+            except Exception as ex:
+                state["results"].append([tag, repr(ex)])
+            print("Rally probe: %s returned to Blender" % tag, flush=True)
+            with open(os.path.join(out_dir, "embedded_steps.json"), "w") as f:
+                json.dump(state["results"], f, indent=2)
+            return {'PASS_THROUGH'}
+        context.window_manager.event_timer_remove(self._timer)
+        context.user_preferences.view.use_quit_dialog = False
+        bpy.ops.wm.quit_blender()
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        wm = context.window_manager
+        self._timer = wm.event_timer_add(0.1, context.window)
+        wm.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+bpy.utils.register_class(RallyEmbedded)
+bpy.ops.wm.bge_remix_rally_embedded('INVOKE_DEFAULT')
+"""
+# (session, test copy, [(run, rasterizer)]): one Blender per session
+SESSIONS = [
+    ("in_blender_opengl_then_remix", "rally_test_plain",
+     [("blender_opengl", "OPENGL"), ("blender_remix", "RTX_REMIX"), ("blender_opengl_again", "OPENGL"),
+      ("blender_remix_again", "RTX_REMIX")]),
+    ("in_blender_remix_first", "rally_test_plain", [("blender_remix_first", "RTX_REMIX")]),
+    ("in_blender_remix_no_water", "rally_test_no_water", [("blender_remix_no_water", "RTX_REMIX")]),
+    ("in_blender_remix_no_filters", "rally_test_no_filters", [("blender_remix_no_filters", "RTX_REMIX")]),
+]
+
 ERROR_LINE = re.compile(r"^.*(Traceback|Error:|Python script error|Segmentation|EXCEPTION_).*$", re.M)
 BGE_LINE = re.compile(r"^BGE-Remix(?! GL error).*$", re.M)
 
@@ -232,12 +307,62 @@ def play(build, out, tag, blend, kind, game, env_extra, route, owners):
             if st else None}
 
 
+def session(build, out, name, blend, seq, route, owners):
+    """blender.exe with the test copy, the games started in its 3D view"""
+    script = os.path.join(out, "rally_embedded.py")
+    with open(script, "w", encoding="utf-8") as f:
+        f.write(EMBEDDED)
+    for tag, _ in seq:
+        for x in (".json", "_stats.json"):
+            if os.path.isfile(os.path.join(out, tag + x)):
+                os.remove(os.path.join(out, tag + x))
+    tmp = os.path.join(out, "tmp_" + name)
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp, exist_ok=True)
+    e = p2.base_env(out, name)
+    e.update(p8.GL_ENV)
+    e.update(p8.REMIX_ENV)
+    e.update({"BGE_REMIX_RALLY_DIR": out, "BGE_REMIX_RALLY_SEQUENCE": json.dumps(seq),
+              "BGE_REMIX_RALLY_ROUTE": json.dumps(route), "BGE_REMIX_RALLY_OWNERS": json.dumps(owners),
+              "BGE_REMIX_RUNTIME_DIR": None, "BGE_REMIX_TRACE": "1", "TEMP": tmp, "TMP": tmp})
+    cmd = [p2.exe(build, "blender"), blend, "--python", script]
+    if os.path.isfile(p8.CDB):
+        handlers = "; ".join('sxe -c "%s" %s' % (p8.ON_CRASH, ev) for ev in ("av", "c0000374", "c0000409"))
+        cmd = [p8.CDB, "-G", "-sins", "-c", handlers + "; g"] + cmd
+    print("Rally Cross: %s" % name, flush=True)
+    t0 = time.time()
+    code, text, secs = p2.run(cmd, e, os.path.join(out, name + ".log"), timeout=TIMEOUT * 2,
+                              cwd=os.path.dirname(blend))
+    text = text or ""
+    crash_files = []
+    for n in os.listdir(tmp):
+        if n.endswith(".crash.txt") or n == "bge-remix.log":
+            shutil.copy2(os.path.join(tmp, n), os.path.join(out, name + "_" + n))
+            crash_files.append(name + "_" + n)
+    steps = p2.read_json(os.path.join(out, "embedded_steps.json")) or []
+    runs = {}
+    for tag, mode in seq:
+        r = p2.read_json(os.path.join(out, tag + ".json")) or {}
+        st = p2.read_json(os.path.join(out, tag + "_stats.json")) or {}
+        runs[tag] = {"rasterizer": mode, "ticks": r.get("ticks", 0), "finished": r.get("ticks", 0) >= TICKS,
+                     "speed_max": r.get("speed_max"), "frame_ms_median": r.get("frame_ms_median"),
+                     "shots": r.get("shots", []),
+                     "remix": {k: st.get(k) for k in ("running", "mode", "errors", "draws_last_frame",
+                                                      "live_texture_updates")} if st else None}
+    return {"exit": code, "seconds": round(time.time() - t0, 1), "crash": crash_excerpt(text),
+            "crash_files": crash_files, "steps": steps, "runs": runs,
+            "errors": [m.group(0) for m in ERROR_LINE.finditer(text)][:12],
+            "gl_error_count": len(p8.GL_ERROR.findall(text)), "gl_errors": p8.GL_ERROR.findall(text)[:12],
+            "trace_tail": [l for l in text.splitlines() if l.startswith(("BGE-Remix trace", "Rally probe"))][-12:]}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ours", required=True)
     ap.add_argument("--official")
     ap.add_argument("--out", required=True)
     ap.add_argument("--game", help="Rally Cross's folder (default: %s)" % " or ".join(GAME_DIRS))
+    ap.add_argument("--blender-only", action="store_true", help="only the games started inside Blender")
     args = ap.parse_args()
     out = os.path.abspath(args.out)
     os.makedirs(out, exist_ok=True)
@@ -265,13 +390,15 @@ def main():
     route = [(keys[name], a, b) for name, a, b in ROUTE if name in keys]
     runs = {}
     plan = []
-    if args.official:
+    if args.official and not args.blender_only:
         plan.append(("stock_plain", args.official, "stock", "rally_test_plain", {}))
-    for variant in ("plain", "no_water", "no_filters", "no_damage"):
+    for variant in ("plain", "no_water", "no_filters", "no_damage") if not args.blender_only else ():
         plan.append(("ours_%s" % variant, args.ours, "ours", "rally_test_%s" % variant, {}))
-    for variant in ("plain", "no_water", "no_filters", "no_damage"):
+    for variant in ("plain", "no_water", "no_filters", "no_damage") if not args.blender_only else ():
         plan.append(("ours_remix_%s" % variant, args.ours, "ours", "rally_test_%s_remix" % variant, {}))
-    plan.append(("ours_remix_no_live", args.ours, "ours", "rally_test_plain_remix", {"BGE_REMIX_LIVE_TEXTURE_HZ": "0"}))
+    if not args.blender_only:
+        plan.append(("ours_remix_no_live", args.ours, "ours", "rally_test_plain_remix",
+                     {"BGE_REMIX_LIVE_TEXTURE_HZ": "0"}))
     for tag, build, kind, name, env in plan:
         blend = os.path.join(folder, name + ".blend")
         if not os.path.isfile(blend):
@@ -279,6 +406,12 @@ def main():
             continue
         print("Rally Cross: %s" % tag, flush=True)
         runs[tag] = play(build, out, tag, blend, kind, game, env, route, owners)
+    # inside Blender (the copies without Remix set: the session sets it)
+    sessions = {}
+    for name, copy, seq in SESSIONS:
+        blend = os.path.join(folder, copy + ".blend")
+        if os.path.isfile(blend):
+            sessions[name] = session(args.ours, out, name, blend, seq, route, owners)
     # the test copies go again
     for name in info.get("variants", {}):
         p = os.path.join(folder, name + ".blend")
@@ -286,12 +419,13 @@ def main():
             os.remove(p)
     # pictures: each run's three shots side by side
     items = []
-    for tag in runs:
+    tags = list(runs) + [t for s in sessions.values() for t in s["runs"]]
+    for tag in tags:
         for i, tick in enumerate(SHOTS):
             path = os.path.join(out, "%s_%d.png" % (tag, i))
             items.append(("%s, tick %d" % (tag, tick), path if os.path.isfile(path) else None))
     sheet = p2.contact_sheet(items, os.path.join(out, "sheet_rally.png")) if items else None
-    result = {"game": game, "info": info, "route": route, "runs": runs, "sheet": sheet}
+    result = {"game": game, "info": info, "route": route, "runs": runs, "in_blender": sessions, "sheet": sheet}
     with open(os.path.join(out, "results_rally.json"), "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
     lines += ["Game: %s" % game, "Route (key, from tick, to tick): %s" % route, ""]
@@ -307,6 +441,15 @@ def main():
         lines.append("%-24s %-8s %-6s %-9s %-7s %-8s %s" % (
             tag, state, r["ticks"], r["speed_max"], r["gl_error_count"],
             "%.2f" % r["frame_ms_median"] if r["frame_ms_median"] else "-", (first or "")[:90]))
+    lines += ["", "Inside Blender (the game started in the 3D view, as with P):"]
+    for name, sres in sessions.items():
+        state = "CRASH" if sres["crash"] or sres["crash_files"] else ("exit %s" % sres["exit"])
+        lines.append("%-30s %-8s GL errors %-4s %s" % (name, state, sres["gl_error_count"],
+                                                        ((sres["crash"] or [None, ""])[1] or "")[:80]))
+        for tag, r in sres["runs"].items():
+            lines.append("    %-26s %-10s ticks %-5s speed max %-6s frame ms %s" % (
+                tag, r["rasterizer"], r["ticks"], r["speed_max"],
+                "%.2f" % r["frame_ms_median"] if r["frame_ms_median"] else "-"))
     lines += ["", "Picture sheet: %s" % sheet, "Details: results_rally.json and each run's .log", "",
               "FINISHED"]
     print("\n".join(lines))
