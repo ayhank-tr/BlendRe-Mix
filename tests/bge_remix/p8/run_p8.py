@@ -3455,6 +3455,10 @@ def run_rtx(args, out):
         None not in built and built[0][1] > 0 and built[1][1] == 0 and built[1][0] > 0
     tests["Benchmark targets (RTX run)"] = {"ok": all(c.values()), "checks": c, "detail": d}
 
+    # ColorCopy: a played route on Level 1, against stock 2.79
+    print("RTX run: ColorCopy's played route...", flush=True)
+    tests["ColorCopy (a played route)"] = run_colorcopy(args, out)
+
     # the other sheets: mt_features before (stock 2.79's Multitexture) and
     # after; the editors in stock 2.79 and in P8; the old scenes before and now
     sheets = {"scenes": sheet_scenes}
@@ -3476,6 +3480,7 @@ def run_rtx(args, out):
         b = before.get(phase, {})
         old += [("%s: before P8" % what, b.get("before")), ("%s: P8" % what, b.get("now"))]
     sheets["before"] = p2.contact_sheet(old, os.path.join(out, "sheet_p8_rtx_before.png"))
+    sheets["colorcopy"] = tests["ColorCopy (a played route)"]["detail"].get("sheet")
 
     res = {"tests": tests, "bench": bench, "sheets": sheets, "all_ok": all(t["ok"] for t in tests.values())}
     lines = ["BGE-Remix P8 RTX run (your RTX card, the real RTX Remix runtime)", "=" * 70, ""]
@@ -3491,6 +3496,220 @@ def run_rtx(args, out):
         lines.append("  %-12s %s" % (name, path))
     lines += ["", "ALL PASSED" if res["all_ok"] else "SOMETHING FAILED (see results_p8_rtx.json and the .log files)"]
     return res, lines
+
+
+# ---------------------------------------------------------------------------
+# P8.30: ColorCopy (C:\BGE-Remix\colorcopy\ColorCopy, a finished BGE 2.79
+# puzzle game; its .blend files are "all rights reserved", so the game
+# stays on this PC and only this test is in the repository). A test copy
+# of Level 1 (beside it, so its links to the pieces, textures and sounds
+# hold) gets a probe that holds W, A, S or D on fixed logic ticks through
+# a stand-in for bge.logic.keyboard: the same route, tick for tick, in our
+# build and in stock 2.79
+
+COLORCOPY_DIR = r"C:\BGE-Remix\colorcopy\ColorCopy"
+COLORCOPY_LEVEL = "Level1"
+COLORCOPY_TEST = "Level1_bgeremix_test"  # the test copy, beside the level
+# (key, the tick it is pressed): held for 2 ticks; a step takes 20 ticks,
+# the cube's place is read 40 ticks after each press
+COLORCOPY_ROUTE = [(k, 150 + 45 * i) for i, k in enumerate("WWDDSSAAWDSA")]
+COLORCOPY_SHOTS = [120, 150 + 45 * 4, 150 + 45 * 8, 150 + 45 * 12]
+COLORCOPY_TICKS = 150 + 45 * 12 + 30
+TOL_COLORCOPY = 6.0  # a ColorCopy picture against stock 2.79's (blurred)
+
+COLORCOPY_PROBE = r"""
+# BGE-Remix P8.30: ColorCopy's route probe (made by run_p8.py)
+import json, os, time
+import bge
+
+ROUTE = %(route)r
+SHOTS = %(shots)r
+TICKS = %(ticks)d
+KEYS = {"W": bge.events.WKEY, "A": bge.events.AKEY, "S": bge.events.SKEY, "D": bge.events.DKEY}
+g = bge.logic.globalDict
+cc = g.get("bgeremix_cc")
+if cc is None:
+    cc = g["bgeremix_cc"] = {"tick": 0, "held": None, "times": [], "steps": [], "shots": []}
+
+    class Keys(object):
+        # bge.logic.keyboard, with W, A, S and D held as the route says
+        def __init__(self, real):
+            self._real = real
+
+        def _patch(self, ev):
+            ev = dict(ev)
+            for code in KEYS.values():
+                ev[code] = bge.logic.KX_INPUT_NONE
+            held = bge.logic.globalDict["bgeremix_cc"]["held"]
+            if held is not None:
+                ev[KEYS[held]] = bge.logic.KX_INPUT_ACTIVE
+            return ev
+
+        @property
+        def events(self):
+            return self._patch(self._real.events)
+
+        @property
+        def active_events(self):
+            return {k: v for k, v in self._patch(self._real.events).items() if v != bge.logic.KX_INPUT_NONE}
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    bge.logic.keyboard = Keys(bge.logic.keyboard)
+
+cc["tick"] += 1
+tick = cc["tick"]
+cc["times"].append(time.perf_counter())
+scene = bge.logic.getCurrentScene()
+cube = scene.objects.get("cubo")
+
+
+def where():
+    if cube is None:
+        return None
+    return {"pos": [round(v, 3) for v in cube.worldPosition],
+            "rot": [round(v, 3) for v in cube.worldOrientation.to_euler()],
+            "color": [round(v, 3) for v in cube.color]}
+
+
+cc["held"] = None
+for i, (key, at) in enumerate(ROUTE):
+    if at <= tick < at + 2:
+        cc["held"] = key
+    if tick == at - 1:
+        cc["steps"].append({"key": key, "before": where()})
+    if tick == at + 40 and i < len(cc["steps"]):
+        cc["steps"][i]["after"] = where()
+if tick in SHOTS:
+    base = os.environ.get("BGE_REMIX_CC_SHOT")
+    if base:
+        path = "%%s_%%d.png" %% (base, SHOTS.index(tick))
+        bge.render.makeScreenshot(path)
+        cc["shots"].append(path)
+if tick >= TICKS:
+    t = cc["times"][60:]
+    d = sorted(b - a for a, b in zip(t, t[1:]))
+    out = {"ticks": tick, "steps": cc["steps"], "shots": cc["shots"], "cube_found": cube is not None,
+           "scene": scene.name, "frame_ms_median": 1000.0 * d[len(d) // 2] if d else None,
+           "frame_ms_p95": 1000.0 * d[int(len(d) * 0.95)] if d else None}
+    path = os.environ.get("BGE_REMIX_CC_OUT")
+    if path:
+        with open(path, "w") as f:
+            json.dump(out, f, indent=2)
+    bge.logic.endGame()
+"""
+
+COLORCOPY_SETUP = r"""
+# the ColorCopy test copy: the level with the route probe (run_p8.py)
+import bpy, json, sys
+argv = sys.argv[sys.argv.index("--") + 1:]
+src, dst, info_path, probe_path = argv
+bpy.ops.wm.open_mainfile(filepath=src)
+scene = bpy.context.scene
+probe = bpy.data.objects.new("BGERemixProbe", None)
+scene.objects.link(probe)
+scene.objects.active = probe
+text = bpy.data.texts.new("bgeremix_cc_probe.py")
+with open(probe_path, encoding="utf-8") as f:
+    text.write(f.read())
+bpy.ops.logic.sensor_add(type='ALWAYS', object=probe.name)
+bpy.ops.logic.controller_add(type='PYTHON', object=probe.name)
+sensor = probe.game.sensors[-1]
+controller = probe.game.controllers[-1]
+sensor.use_pulse_true_level = True
+sensor.tick_skip = 0
+controller.mode = 'SCRIPT'
+controller.text = text
+controller.use_priority = True
+sensor.link(controller)
+info = {"scene": scene.name, "scenes": [s.name for s in bpy.data.scenes],
+        "libraries": [l.filepath for l in bpy.data.libraries],
+        "cubes": [o.name for o in scene.objects if o.name.startswith("cubo")],
+        "frame_rate": scene.game_settings.fps, "material_mode": scene.game_settings.material_mode}
+bpy.ops.wm.save_as_mainfile(filepath=dst, check_existing=False, copy=True)
+with open(info_path, "w") as f:
+    json.dump(info, f, indent=2)
+"""
+
+
+def run_colorcopy(args, out):
+    """the ColorCopy route in our build and in stock 2.79"""
+    c, d = {}, {}
+    game = getattr(args, "colorcopy", None) or COLORCOPY_DIR
+    level = os.path.join(game, "levels", COLORCOPY_LEVEL + ".blend")
+    d["game"] = game
+    if not os.path.isfile(level):
+        c["ColorCopy unpacked (%s)" % level] = False
+        return {"ok": False, "checks": c, "detail": d}
+    test = os.path.join(game, "levels", COLORCOPY_TEST + ".blend")
+    probe = os.path.join(out, "cc_probe.py")
+    with open(probe, "w", encoding="utf-8") as f:
+        f.write(COLORCOPY_PROBE % {"route": COLORCOPY_ROUTE, "shots": COLORCOPY_SHOTS, "ticks": COLORCOPY_TICKS})
+    info = os.path.join(out, "cc_info.json")
+    for p in (test, info):
+        if os.path.isfile(p):
+            os.remove(p)
+    blender_script(args.ours, out, "cc_setup", COLORCOPY_SETUP, [level, test, info, probe])
+    d["level"] = p2.read_json(info)
+    c["the test copy of Level 1 made"] = os.path.isfile(test)
+    runs = {}
+    builds = [("ours", args.ours)] + ([("stock", args.official)] if args.official else [])
+    for kind, build in builds:
+        res = os.path.join(out, "cc_%s.json" % kind)
+        if os.path.isfile(res):
+            os.remove(res)
+        e = p2.base_env(out, "cc_" + kind)
+        e.update({"BGE_REMIX_CC_OUT": res, "BGE_REMIX_CC_SHOT": os.path.join(out, "cc_%s" % kind),
+                  "BGE_REMIX_RUNTIME_DIR": None})
+        e.update(GL_ENV if kind == "ours" else {"BGE_REMIX_NO_DIALOGS": "1"})
+        code, text, secs = p2.run([p2.exe(build, "blenderplayer"), "-w", str(SIZE[0]), str(SIZE[1]), test], e,
+                                  os.path.join(out, "cc_%s.log" % kind), timeout=600, cwd=game)
+        if kind == "ours":
+            note_gl(build, "cc_ours", text)
+        errors = [l for l in (text or "").splitlines() if "Traceback" in l or "Error:" in l or
+                  "Python script error" in l]
+        runs[kind] = {"exit": code, "seconds": secs, "result": p2.read_json(res) or {}, "python_errors": errors[:8],
+                      "gl_errors": GL_ERROR.findall(text or "")[:5] if kind == "ours" else None}
+    ours, stock = runs.get("ours", {}), runs.get("stock", {})
+    r = ours.get("result", {})
+    d["runs"] = {k: {x: v[x] for x in ("exit", "seconds", "python_errors", "gl_errors")} for k, v in runs.items()}
+    c["Level 1 plays the whole route in our build (%d ticks)" % COLORCOPY_TICKS] = \
+        ours.get("exit") == 0 and r.get("ticks", 0) >= COLORCOPY_TICKS
+    c["no Python errors in our build"] = bool(ours) and not ours.get("python_errors")
+    c["no OpenGL errors in our build"] = bool(ours) and not ours.get("gl_errors")
+    steps = r.get("steps", [])
+    moved = [s for s in steps if s.get("before") and s.get("after") and s["before"]["pos"] != s["after"]["pos"]]
+    d["steps"] = {"ours": steps, "stock": stock.get("result", {}).get("steps")}
+    c["the cube moves on the key presses (%d of %d steps)" % (len(moved), len(COLORCOPY_ROUTE))] = \
+        r.get("cube_found") is True and len(moved) >= len(COLORCOPY_ROUTE) // 2
+    d["frame_ms"] = {k: [v.get("result", {}).get("frame_ms_median"), v.get("result", {}).get("frame_ms_p95")]
+                     for k, v in runs.items()}
+    items = []
+    if stock:
+        sr = stock.get("result", {})
+        d["stock_python_errors"] = stock.get("python_errors")
+
+        def same_place(a, b):
+            pa, pb = (a.get("after") or {}).get("pos"), (b.get("after") or {}).get("pos")
+            return bool(pa) and bool(pb) and all(abs(x - y) < 1e-2 for x, y in zip(pa, pb))
+        same = [same_place(a, b) for a, b in zip(steps, sr.get("steps", []))]
+        c["the cube ends each step where it does in stock 2.79 (%d of %d)" % (sum(1 for x in same if x),
+                                                                              len(COLORCOPY_ROUTE))] = \
+            len(same) == len(COLORCOPY_ROUTE) and all(same)
+        diffs = []
+        for k in range(len(COLORCOPY_SHOTS)):
+            a, b = os.path.join(out, "cc_ours_%d.png" % k), os.path.join(out, "cc_stock_%d.png" % k)
+            pa, pb = picture(a), picture(b)
+            diffs.append(whole_diff(blurred(pa, 2.0), blurred(pb, 2.0)) if pa is not None and pb is not None
+                         else None)
+            items += [("ColorCopy tick %d: stock 2.79" % COLORCOPY_SHOTS[k], b),
+                      ("ColorCopy tick %d: P8" % COLORCOPY_SHOTS[k], a)]
+        d["picture_differences"] = diffs
+        c["the pictures along the route as stock 2.79's (within %.0f; %s)" % (TOL_COLORCOPY, diffs)] = \
+            None not in diffs and all(x <= TOL_COLORCOPY for x in diffs)
+    d["sheet"] = p2.contact_sheet(items, os.path.join(out, "sheet_p8_colorcopy.png")) if items else None
+    return {"ok": all(c.values()), "checks": c, "detail": d}
 
 
 # ---------------------------------------------------------------------------
@@ -3606,8 +3825,10 @@ def main():
     ap.add_argument("--rtx", action="store_true", help="the RTX run: the real RTX Remix runtime (P8.30)")
     ap.add_argument("--before", help="the earlier phases' RTX results (C:\\BGE-Remix\\results)")
     ap.add_argument("--diag", action="store_true", help="the diagnostic RTX run (P8.30 fix 5)")
+    ap.add_argument("--colorcopy", help="ColorCopy's folder (default %s)" % COLORCOPY_DIR)
+    ap.add_argument("--colorcopy-only", action="store_true", help="only ColorCopy's played route")
     args = ap.parse_args()
-    if not args.rtx and not args.mock and not args.diag:
+    if not args.rtx and not args.mock and not args.diag and not args.colorcopy_only:
         ap.error("--mock is needed (the fake RTX Remix runtime) unless --rtx")
     args.ours = os.path.abspath(args.ours)
     OURS["build"] = args.ours
@@ -3615,7 +3836,16 @@ def main():
         args.official = os.path.abspath(args.official)
     out = os.path.abspath(args.out)
     os.makedirs(out, exist_ok=True)
-    if args.diag:
+    if args.colorcopy_only:
+        t = run_colorcopy(args, out)
+        res = {"tests": {"ColorCopy (a played route)": t}, "all_ok": t["ok"]}
+        lines = ["BGE-Remix P8.30: ColorCopy's played route", "=" * 70, ""]
+        for check, ok in t["checks"].items():
+            lines.append("  %s %s" % ("ok    " if ok else "FAILED", check))
+        lines += ["", "Picture sheet: %s" % t["detail"].get("sheet"), "",
+                  "ALL PASSED" if t["ok"] else "SOMETHING FAILED (see results_p8_colorcopy.json and cc_*.log)"]
+        name = "p8_colorcopy"
+    elif args.diag:
         res, lines = run_diag(args, out)
         name = "p8_diag"
     else:
