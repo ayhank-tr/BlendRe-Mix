@@ -41,6 +41,8 @@
 #include "RAS_IRasterizer.h"
 
 #include "GPU_draw.h"
+#include "GPU_material.h"
+#include "GPU_layer.h"
 
 #include "STR_HashedString.h"
 
@@ -435,6 +437,8 @@ KX_BlenderMaterial::ActivatShaders(
 {
 	KX_BlenderMaterial *tmp = const_cast<KX_BlenderMaterial*>(this);
 
+	rasty->SetClassicFallback(false);
+
 	// reset... 
 	if (tmp->mMaterial->IsShared()) 
 		cachingInfo =0;
@@ -487,6 +491,8 @@ KX_BlenderMaterial::ActivateBlenderShaders(
 {
 	KX_BlenderMaterial *tmp = const_cast<KX_BlenderMaterial*>(this);
 
+	rasty->SetClassicFallback(false);
+
 	if (mLastShader) {
 		mLastShader->SetProg(false);
 		mLastShader= NULL;
@@ -532,6 +538,11 @@ KX_BlenderMaterial::ActivateMat(
 	)const
 {
 	KX_BlenderMaterial *tmp = const_cast<KX_BlenderMaterial*>(this);
+
+	/* BGE-Remix P8.4: a material whose GLSL shader could not be built: the
+	 * fixed-function state is set up as before and drawn with the built-in
+	 * classic shader */
+	rasty->SetClassicFallback(true);
 
 	if (mLastShader) {
 		mLastShader->SetProg(false);
@@ -620,6 +631,15 @@ KX_BlenderMaterial::Activate(
 	}
 }
 
+/* BGE-Remix P8 Part B (P8.11): a GLSL material without custom shader or
+ * blending, whose shader has nothing per object */
+bool KX_BlenderMaterial::CanInstance() const
+{
+	if (mShader || !mBlenderShader || !mBlenderShader->Ok() || mUserDefBlend)
+		return false;
+	return GPU_material_instanceable(mBlenderShader->GetGPUMaterial());
+}
+
 bool KX_BlenderMaterial::UsesLighting(RAS_IRasterizer *rasty) const
 {
 	if (!RAS_IPolyMaterial::UsesLighting(rasty))
@@ -649,7 +669,18 @@ void KX_BlenderMaterial::ActivateMeshSlot(const RAS_MeshSlot & ms, RAS_IRasteriz
 		if (ELEM(alphablend, GEMAT_SOLID, GEMAT_ALPHA, GEMAT_ALPHA_SORT) && mMaterial->alphablend != GEMAT_SOLID)
 			alphablend = mMaterial->alphablend;
 
-		rasty->SetAlphaBlend(alphablend);
+		/* BGE-Remix P8: setBlending() works without a custom shader too, as
+		 * in Multitexture: the rasterizer is told it is a custom mode (-1), so
+		 * the next material sets its own blending again */
+		if (mUserDefBlend) {
+			rasty->SetAlphaBlend(GEMAT_SOLID);
+			rasty->SetAlphaBlend(-1);
+			glEnable(GL_BLEND);
+			glBlendFunc(mBlendFunc[0], mBlendFunc[1]);
+		}
+		else {
+			rasty->SetAlphaBlend(alphablend);
+		}
 	}
 }
 
@@ -682,6 +713,13 @@ void KX_BlenderMaterial::ActivatGLMaterials( RAS_IRasterizer* rasty )const
 
 	if (mMaterial->material)
 		rasty->SetPolygonOffset(-mMaterial->material->zoffs, 0.0f);
+
+	/* BGE-Remix P8 Part C (P8.22): a Wire material draws its edges (in the
+	 * picture, not in shadow maps) */
+	if (rasty->GetDrawingMode() == RAS_IRasterizer::KX_TEXTURED) {
+		const bool wire = mMaterial->material && mMaterial->material->material_type == MA_TYPE_WIRE;
+		glPolygonMode(GL_FRONT_AND_BACK, wire ? GL_LINE : GL_FILL);
+	}
 }
 
 
@@ -719,36 +757,35 @@ void KX_BlenderMaterial::ActivateTexGen(RAS_IRasterizer *ras) const
 	}
 }
 
+/* BGE-Remix P8 Part B: the texture matrix (scale, then offset) into the
+ * layer's texture matrices, as glScale and glTranslate built it */
+static void tex_matrix_scale_offset(int unit, const float scale[3], const float offset[3])
+{
+	float m[4][4] = {{0.0f}};
+	m[0][0] = scale[0];
+	m[1][1] = scale[1];
+	m[2][2] = scale[2];
+	m[3][0] = scale[0] * offset[0];
+	m[3][1] = scale[1] * offset[1];
+	m[3][2] = scale[2] * offset[2];
+	m[3][3] = 1.0f;
+	GPU_texture_matrix_set(unit, m);
+}
+
 void KX_BlenderMaterial::setTexMatrixData(int i)
 {
-	glMatrixMode(GL_TEXTURE);
-	glLoadIdentity();
+	float scale[3] = {mMaterial->mapping[i].scale[0], mMaterial->mapping[i].scale[1],
+	                  mMaterial->mapping[i].scale[2]};
+	const float offset[3] = {mMaterial->mapping[i].offsets[0], mMaterial->mapping[i].offsets[1],
+	                         mMaterial->mapping[i].offsets[2]};
 
 	if ( GLEW_ARB_texture_cube_map && 
 		mTextures[i].GetTextureType() == GL_TEXTURE_CUBE_MAP_ARB && 
 		mMaterial->mapping[i].mapping & USEREFL) {
-		glScalef( 
-			mMaterial->mapping[i].scale[0], 
-			-mMaterial->mapping[i].scale[1], 
-			-mMaterial->mapping[i].scale[2]
-		);
+		scale[1] = -scale[1];
+		scale[2] = -scale[2];
 	}
-	else
-	{
-		glScalef( 
-			mMaterial->mapping[i].scale[0], 
-			mMaterial->mapping[i].scale[1], 
-			mMaterial->mapping[i].scale[2]
-		);
-	}
-	glTranslatef(
-		mMaterial->mapping[i].offsets[0],
-		mMaterial->mapping[i].offsets[1], 
-		mMaterial->mapping[i].offsets[2]
-	);
-
-	glMatrixMode(GL_MODELVIEW);
-
+	tex_matrix_scale_offset(i, scale, offset);
 }
 
 static void GetProjPlane(BL_Material *mat, int index,int num, float*param)
@@ -793,21 +830,15 @@ void KX_BlenderMaterial::setObjectMatrixData(int i, RAS_IRasterizer *ras)
 
 	const MT_Matrix4x4& mvmat = ras->GetViewMatrix();
 
-	glMatrixMode(GL_TEXTURE);
-	glLoadIdentity();
-	glScalef( 
-		mMaterial->mapping[i].scale[0], 
-		mMaterial->mapping[i].scale[1], 
-		mMaterial->mapping[i].scale[2]
-	);
-
 	MT_Point3 pos = obj->NodeGetWorldPosition();
 	MT_Vector4 matmul = MT_Vector4(pos[0], pos[1], pos[2], 1.f);
 	MT_Vector4 t = mvmat*matmul;
 
-	glTranslatef( (float)(-t[0]), (float)(-t[1]), (float)(-t[2]) );
-
-	glMatrixMode(GL_MODELVIEW);
+	/* BGE-Remix P8 Part B: the layer's texture matrix */
+	const float scale[3] = {mMaterial->mapping[i].scale[0], mMaterial->mapping[i].scale[1],
+	                        mMaterial->mapping[i].scale[2]};
+	const float offset[3] = {(float)(-t[0]), (float)(-t[1]), (float)(-t[2])};
+	tex_matrix_scale_offset(i, scale, offset);
 
 }
 
@@ -858,7 +889,12 @@ void KX_BlenderMaterial::SetBlenderGLSLShader()
 	if (!mBlenderShader->Ok()) {
 		delete mBlenderShader;
 		mBlenderShader = 0;
+		return;
 	}
+
+	/* BGE-Remix P8: "Face Textures": the face image is texture 0 */
+	if (mMaterial->material && (mMaterial->material->mode & MA_FACETEXTURE))
+		mBlenderShader->SetFaceImage(mMaterial->img[0]);
 }
 
 #ifdef USE_MATHUTILS

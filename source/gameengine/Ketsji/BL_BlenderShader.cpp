@@ -22,8 +22,12 @@
  *  \ingroup ketsji
  */
 
+#include <stdio.h>
+#include <stdlib.h>
+
 #include "DNA_customdata_types.h"
 #include "DNA_material_types.h"
+#include "DNA_mesh_types.h"
 #include "DNA_scene_types.h"
 
 #include "BLI_utildefines.h"
@@ -31,9 +35,14 @@
 #include "BKE_global.h"
 #include "BKE_main.h"
 #include "BKE_DerivedMesh.h"
+#include "BKE_mesh.h"
 
 #include "BL_BlenderShader.h"
 #include "BL_Material.h"
+#include "KX_GameObject.h"
+#include "KX_KetsjiEngine.h"
+#include "KX_PythonInit.h"
+#include "GPU_probes.h"
 
 #include "GPU_material.h"
 #include "GPU_shader.h"
@@ -46,7 +55,9 @@ BL_BlenderShader::BL_BlenderShader(KX_Scene *scene, struct Material *ma, int lig
 :
 	mMat(ma),
 	mLightLayer(lightlayer),
-	mGPUMat(NULL)
+	mGPUMat(NULL),
+	mFaceImage(NULL),
+	mTraced(false)
 {
 	mBlenderScene = scene->GetBlenderScene();
 	mAlphaBlend = GPU_BLEND_SOLID;
@@ -62,7 +73,7 @@ BL_BlenderShader::~BL_BlenderShader()
 
 void BL_BlenderShader::ReloadMaterial()
 {
-	mGPUMat = (mMat) ? GPU_material_from_blender(mBlenderScene, mMat, false) : NULL;
+	mGPUMat = (mMat) ? GPU_material_from_blender_ex(mBlenderScene, mMat, false, true) : NULL;
 }
 
 void BL_BlenderShader::SetProg(bool enable, double time, RAS_IRasterizer* rasty)
@@ -77,6 +88,8 @@ void BL_BlenderShader::SetProg(bool enable, double time, RAS_IRasterizer* rasty)
 			view.getValue(&viewmat[0][0]);
 			viewinv.getValue(&viewinvmat[0][0]);
 
+			if (GPU_material_uses_face_image(mGPUMat))
+				GPU_material_set_face_image(mGPUMat, mFaceImage);
 			GPU_material_bind(mGPUMat, mLightLayer, mBlenderScene->lay, time, 1, viewmat, viewinvmat, NULL, false);
 		}
 		else
@@ -156,6 +169,13 @@ void BL_BlenderShader::Update(const RAS_MeshSlot & ms, RAS_IRasterizer* rasty )
 	if (!gpumat || !GPU_material_bound(gpumat))
 		return;
 
+	/* BGE-Remix P8 Part B (P8.15): the object's layers (This Layer Only lamps) */
+	if (ms.m_clientObj) {
+		GPU_material_set_object_layer(gpumat, ((KX_GameObject *)ms.m_clientObj)->GetLayer());
+		/* BGE-Remix P8 Part B (P8.18): the object's planar mirror */
+		GPU_mirror_use(KX_GetActiveEngine()->MirrorIndex((KX_GameObject *)ms.m_clientObj));
+	}
+
 	MT_Matrix4x4 model;
 	model.setValue(ms.m_OpenGLMatrix);
 
@@ -169,6 +189,31 @@ void BL_BlenderShader::Update(const RAS_MeshSlot & ms, RAS_IRasterizer* rasty )
 
 	rasty->GetViewMatrix().getValue(&viewmat[0][0]);
 	float auto_bump_scale = ms.m_pDerivedMesh!=0 ? ms.m_pDerivedMesh->auto_bump_scale : 1.0f;
+
+	/* BGE-Remix P8.5: the game sends the mesh's own coordinates as Generated
+	 * (orco) ones; Blender draws them in the mesh's texture space (a
+	 * modified mesh's DerivedMesh already has them there) */
+	Mesh *me = (!ms.m_pDerivedMesh && ms.m_mesh) ? ms.m_mesh->GetMesh() : NULL;
+	float loc[3] = {0.0f, 0.0f, 0.0f}, size[3] = {1.0f, 1.0f, 1.0f};
+	if (me) {
+		BKE_mesh_texspace_get(me, loc, NULL, size);
+		GPU_material_set_orco_space(gpumat, loc, size);
+	}
+	/* for tests (BGE_REMIX_TRACE): what the first draw of each material used */
+	static int trace = -1;
+	if (trace < 0) {
+		const char *env = getenv("BGE_REMIX_TRACE");
+		trace = (env && env[0]) ? 1 : 0;
+	}
+	if (trace && !mTraced) {
+		mTraced = true;
+		printf("BGE-Remix trace: material \"%s\": mesh %s (%d vertices, auto %d), derived %d, orco uniform %d, "
+		       "texture space %.3f %.3f %.3f / %.3f %.3f %.3f\n",
+		       mMat ? mMat->id.name + 2 : "-", me ? me->id.name + 2 : "-", me ? me->totvert : -1,
+		       me ? (me->texflag & ME_AUTOSPACE) != 0 : -1, ms.m_pDerivedMesh != NULL,
+		       (GPU_get_material_builtins(gpumat) & GPU_ORCO_MATRIX) != 0, loc[0], loc[1], loc[2], size[0], size[1], size[2]);
+		fflush(stdout);
+	}
 	GPU_material_bind_uniforms(gpumat, obmat, viewmat, obcol, auto_bump_scale, NULL, NULL);
 
 	mAlphaBlend = GPU_material_alpha_blend(gpumat, obcol);
@@ -182,7 +227,8 @@ int BL_BlenderShader::GetAlphaBlend()
 bool BL_BlenderShader::Equals(BL_BlenderShader *blshader)
 {
 	/* to avoid unneeded state switches */
-	return (blshader && mMat == blshader->mMat && mLightLayer == blshader->mLightLayer);
+	return (blshader && mMat == blshader->mMat && mLightLayer == blshader->mLightLayer &&
+	        mFaceImage == blshader->mFaceImage);
 }
 
 // eof

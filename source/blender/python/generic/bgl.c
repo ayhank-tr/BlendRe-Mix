@@ -38,6 +38,7 @@
 #include "MEM_guardedalloc.h"
 
 #include "bgl.h"
+#include "py_capi_utils.h"
 
 
 /* -------------------------------------------------------------------- */
@@ -1003,15 +1004,47 @@ static PyObject *Buffer_repr(Buffer *self)
 /** \name OpenGL API Wrapping
  * \{ */
 
+/* BGE-Remix P8.28: on a core context the old functions go through the
+ * emulation (GPU_legacy.h); the few it does not do are skipped, and said
+ * once each with the script's file and line */
+static bool bgl_unsupported(const char *name, int *checked)
+{
+	if (!GPU_lgl_on) {
+		return false;
+	}
+	if (*checked == 0) {
+		*checked = GPU_lgl_unsupported(name) ? 1 : -1;
+		if (*checked == 1) {
+			const char *file = NULL;
+			int line = 0;
+			PyC_FileAndNum(&file, &line);
+			printf("BGE-Remix GL emulation: bgl.%s is not emulated on the core context (skipped; %s, line %d)\n",
+			       name, file ? file : "?", line);
+			fflush(stdout);
+		}
+	}
+	return *checked == 1;
+}
+
+/* the arguments expanded before the call (the redirects are macros taking
+ * them one by one) */
+#define BGL_CALL(func, args) func args
+
 #define BGL_Wrap(funcname, ret, arg_list)                                     \
 static PyObject *Method_##funcname (PyObject *UNUSED(self), PyObject *args)   \
 {                                                                             \
+	static int unsupported = 0;                                               \
 	arg_def arg_list;                                                         \
 	ret_def_##ret;                                                            \
 	if (!PyArg_ParseTuple(args, arg_str arg_list, arg_ref arg_list)) {        \
 		return NULL;                                                          \
 	}                                                                         \
-	ret_set_##ret gl##funcname (arg_var arg_list);                            \
+	if (bgl_unsupported("gl" #funcname, &unsupported)) {                      \
+		ret_set_##ret 0;                                                      \
+	}                                                                         \
+	else {                                                                    \
+		ret_set_##ret BGL_CALL(gl##funcname, (arg_var arg_list));             \
+	}                                                                         \
 	ret_ret_##ret;                                                            \
 }
 
@@ -1023,7 +1056,7 @@ static PyObject *Method_##funcname (PyObject *UNUSED(self), PyObject *args)   \
 	if (!PyArg_ParseTuple(args, arg_str arg_list, arg_ref arg_list)) {        \
 		return NULL;                                                          \
 	}                                                                         \
-	ret_set_##ret glu##funcname (arg_var arg_list);                           \
+	ret_set_##ret BGL_CALL(glu##funcname, (arg_var arg_list));                \
 	ret_ret_##ret;                                                            \
 }
 

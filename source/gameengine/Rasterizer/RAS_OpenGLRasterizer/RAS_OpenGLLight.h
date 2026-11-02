@@ -28,6 +28,8 @@
 #include "RAS_ILightObject.h"
 
 class RAS_OpenGLRasterizer;
+class MT_Transform;
+class KX_Scene;
 struct GPULamp;
 struct Image;
 
@@ -37,11 +39,14 @@ class RAS_OpenGLLight : public RAS_ILightObject
 	RAS_OpenGLRasterizer *m_rasterizer;
 
 	GPULamp *GetGPULamp();
+	void SetupShadowCamera(RAS_ICanvas *canvas, KX_Camera *cam, MT_Transform& camtrans,
+	                       float viewmat[4][4], float winmat[4][4], const int rect[4]);
 public:
 	RAS_OpenGLLight(RAS_OpenGLRasterizer *ras);
 	~RAS_OpenGLLight();
 
-	bool ApplyFixedFunctionLighting(KX_Scene *kxscene, int oblayer, int slot);
+	bool FillClassicLight(KX_Scene *kxscene, int oblayer, const MT_Transform& viewmat,
+	                      struct GPUClassicLight *cl);
 
 	RAS_OpenGLLight* Clone() { return new RAS_OpenGLLight(*this); }
 
@@ -51,6 +56,11 @@ public:
 	int GetShadowLayer();
 	void BindShadowBuffer(RAS_ICanvas *canvas, KX_Camera *cam, MT_Transform& camtrans);
 	void UnbindShadowBuffer();
+	int ShadowViewCount();
+	void SetShadowView(RAS_ICanvas *canvas, KX_Camera *cam, MT_Transform& camtrans, int view);
+	bool BindShadowBufferLayered(RAS_ICanvas *canvas, KX_Camera *cam, MT_Transform& camtrans);
+	void SetShadowCamera(const float camtoworld[16], const float winmat[16]);
+	unsigned int ShadowSignature();
 	Image *GetTextureImage(short texslot);
 	void Update();
 };

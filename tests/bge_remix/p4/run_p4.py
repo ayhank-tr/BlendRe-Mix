@@ -347,8 +347,10 @@ def run_ci(args, out):
                                                 "tree_error_deg": tree_err, "most_draws": most, "stats": r["stats"]})
 
         em = fo["emitter"]
+        # (P8.30: the particles' own copy of the emitter mesh, with their
+        # glowing material: "emitter:<object>@<particle system>")
         emit = [p2.parse_fields(l) for l in lines if l.startswith("Emitter ") and
-                hexfield(l, "mesh") in hashes("mesh", em["mesh"])]
+                hexfield(l, "mesh") in hashes("mesh", em["mesh"]) | hashes("emitter", em["mesh"] + "@Sparks")]
         e = emit[-1] if emit else {}
         life = e.get("life", [0, 0]) if isinstance(e.get("life"), list) else [0, 0]
         size = e.get("size", [0, 0]) if isinstance(e.get("size"), list) else [0, 0]
@@ -428,8 +430,10 @@ def run_ci(args, out):
             if m:
                 rects.append(tuple(float(v) for v in m.groups()))
         c = {
+            # (on a driver that has the extension, the fake runtime is the
+            # reason: its Vulkan handles are made up)
             "without the extension: copy mode, with the reason": st_c.get("mode") == "copy" and
-            "GL_NV_draw_vulkan_image" in (st_c.get("copy_mode_reason") or ""),
+            any(w in (st_c.get("copy_mode_reason") or "") for w in ("GL_NV_draw_vulkan_image", "fake Remix runtime")),
             "the copy-mode game ran 120 frames": ran(rc, 120),
             "with the stand-in: direct mode": st_d.get("mode") == "direct",
             "Remix started without its window, with game settings":

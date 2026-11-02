@@ -5040,9 +5040,13 @@ static bool subsurf_use_gpu_backend(SubsurfFlags flags)
 	 * and user choosed to use any of the OSD compute devices,
 	 * but also check if GPU has all needed features.
 	 */
+	/* BGE-Remix P8.29: OpenSubdiv's drawing shaders are old GLSL with
+	 * geometry stages: on a core context the subdivision is made on the
+	 * processor (as without a GPU compute device) */
 	return
 	        (flags & SUBSURF_USE_GPU_BACKEND) != 0 &&
 	        (U.opensubdiv_compute_type != USER_OPENSUBDIV_COMPUTE_NONE) &&
+	        !GPU_lgl_on &&
 	        (openSubdiv_supportGPUDisplay());
 #else
 	(void)flags;

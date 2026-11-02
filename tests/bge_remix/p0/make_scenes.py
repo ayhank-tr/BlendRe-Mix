@@ -71,6 +71,17 @@ def reset():
 
 
 def save(path):
+    # P8.7: new materials are physical; these scenes were made for Classic
+    # shading (Blender Internal's), so they keep it
+    for ma in bpy.data.materials:
+        ma["bge_physical"] = 0
+    # P8.9: new lamps are physical too; these scenes keep their own falloff
+    for la in bpy.data.lamps:
+        la["bge_physical"] = 0
+    # P8 Part B (P8.12): new scenes start in the Modern pipeline; these keep
+    # the Classic one they were made for (a hidden property: harmless in 2.79)
+    for sc in bpy.data.scenes:
+        sc["bge_remix_pipeline"] = 0
     bpy.ops.wm.save_as_mainfile(filepath=path, check_existing=False, compress=False)
     print("BGE-Remix: wrote", path)
 

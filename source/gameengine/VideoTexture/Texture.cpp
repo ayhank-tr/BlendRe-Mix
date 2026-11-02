@@ -55,6 +55,9 @@
 #include "Exception.h"
 
 #include <memory.h>
+#include <stdint.h>
+#include <string.h>
+#include "GPU_layer.h"
 #include "GPU_glew.h"
 
 extern "C" {
@@ -99,7 +102,28 @@ void loadTexture(unsigned int texId, unsigned int *texture, short *size,
 	{
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-		glTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA, size[0], size[1], 0, GL_RGBA, GL_UNSIGNED_BYTE, texture);
+		/* BGE-Remix P8 Part B: a frame of the same size goes through the
+		 * layer's streaming buffer (the copy to the texture is the card's,
+		 * the game does not wait for it); a new size makes the texture again */
+		GLint w = 0, h = 0;
+		glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
+		glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
+		const size_t bytes = (size_t)size[0] * (size_t)size[1] * 4;
+		unsigned int buffer = 0;
+		size_t offset = 0;
+		void *dst = (w == size[0] && h == size[1] && bytes > 0) ? GPU_stream_alloc(bytes, &buffer, &offset) : NULL;
+		if (dst) {
+			memcpy(dst, texture, bytes);
+			GPU_stream_written(buffer);
+			glBindBuffer(GL_PIXEL_UNPACK_BUFFER, buffer);
+			glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+			glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, size[0], size[1], GL_RGBA, GL_UNSIGNED_BYTE,
+			                (const void *)(uintptr_t)offset);
+			glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+		}
+		else {
+			glTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA, size[0], size[1], 0, GL_RGBA, GL_UNSIGNED_BYTE, texture);
+		}
 	}
 	glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
 }
@@ -363,7 +387,11 @@ static PyObject *Texture_refresh(Texture *self, PyObject *args)
 				}
 
 				// get texture
-				unsigned int * texture = self->m_source->m_image->getImage(self->m_actTex, ts);
+				// BGE-Remix P8.30: when RTX Remix wants this image's picture,
+				// the source reads it back to memory (no copy on the card)
+				const bool live = KX_LiveTextureDue && self->m_imgTexture &&
+				                  KX_LiveTextureDue(self->m_imgTexture);
+				unsigned int * texture = self->m_source->m_image->getImage(live ? 0 : self->m_actTex, ts);
 				// if texture is available
 				if (texture != NULL)
 				{
@@ -393,6 +421,10 @@ static PyObject *Texture_refresh(Texture *self, PyObject *args)
 					}
 					// load texture for rendering
 					loadTexture(self->m_actTex, texture, size, self->m_mipmap);
+					/* BGE-Remix P8.30: the picture for RTX Remix too */
+					if (KX_LiveTextureHook && self->m_imgTexture) {
+						KX_LiveTextureHook(self->m_imgTexture, texture, size[0], size[1]);
+					}
 				}
 				// refresh texture source, if required
 				if (refreshSource) {

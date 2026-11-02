@@ -58,6 +58,7 @@
 #include "ED_space_api.h"
 
 #include "BIF_gl.h"
+#include "GPU_glcheck.h"
 #include "BIF_glutil.h"
 #include "BLF_api.h"
 
@@ -515,7 +516,19 @@ void ED_region_do_draw(bContext *C, ARegion *ar)
 		BLF_draw_default(UI_UNIT_X, 0.4f * UI_UNIT_Y, 0.0f, ar->headerstr, BLF_DRAW_STR_DUMMY_MAX);
 	}
 	else if (at->draw) {
+		/* BGE-Remix P8.1: what the region's drawing leaves changed (BGE_REMIX_GL_CHECK=1) */
+		const bool gl_check = GPU_state_check_enabled();
+		GPUStateSnapshot gl_before, gl_after;
+		if (gl_check) {
+			GPU_state_snapshot(&gl_before);
+		}
 		at->draw(C, ar);
+		if (gl_check) {
+			char who[64];
+			GPU_state_snapshot(&gl_after);
+			BLI_snprintf(who, sizeof(who), "region %d/%d", sa ? (int)sa->spacetype : -1, (int)ar->regiontype);
+			GPU_state_compare(&gl_before, &gl_after, who, 0);
+		}
 	}
 
 	/* XXX test: add convention to end regions always in pixel space, for drawing of borders/gestures etc */

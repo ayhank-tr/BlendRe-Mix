@@ -358,6 +358,25 @@ static PyObject *brmx_view_stats(PyObject *UNUSED_self)
 	return PyUnicode_FromString(BRMX_view_stats_json());
 }
 
+PyDoc_STRVAR(brmx_material_match_doc,
+".. function:: material_match(pointer)\n"
+"\n"
+"   BGE-Remix P8.24: how the material (its as_pointer()) reaches RTX Remix,\n"
+"   field by field (JSON text).\n"
+"\n"
+"   :rtype: str\n");
+static PyObject *brmx_material_match(PyObject *UNUSED_self, PyObject *args)
+{
+	unsigned long long ptr = 0;
+	if (!PyArg_ParseTuple(args, "K:material_match", &ptr) || !ptr) {
+		if (!PyErr_Occurred()) {
+			PyErr_SetString(PyExc_ValueError, "material_match: a material's as_pointer() is needed");
+		}
+		return NULL;
+	}
+	return PyUnicode_FromString(BRMX_material_match_json((struct Material *)(uintptr_t)ptr));
+}
+
 static PyMethodDef brmx_methods[] = {
 	{"bridge_info", (PyCFunction)brmx_bridge_info, METH_NOARGS, brmx_bridge_info_doc},
 	{"status", (PyCFunction)brmx_status, METH_NOARGS, brmx_status_doc},
@@ -373,6 +392,7 @@ static PyMethodDef brmx_methods[] = {
 	{"render_sync", (PyCFunction)brmx_render_sync, METH_VARARGS, brmx_render_sync_doc},
 	{"render_frame", (PyCFunction)brmx_render_frame, METH_VARARGS, brmx_render_frame_doc},
 	{"view_stats", (PyCFunction)brmx_view_stats, METH_NOARGS, brmx_view_stats_doc},
+	{"material_match", (PyCFunction)brmx_material_match, METH_VARARGS, brmx_material_match_doc},
 	{NULL, NULL, 0, NULL}
 };
 

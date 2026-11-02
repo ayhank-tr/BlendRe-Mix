@@ -542,6 +542,53 @@ static void rna_SpaceView3D_viewport_shade_update(Main *bmain, Scene *scene, Poi
 	ED_view3d_shade_update(bmain, scene, v3d, sa);
 }
 
+/* BGE-Remix P7: the Game View's background is the 3D View's shading: plain
+ * (Solid) or RTX Remix's picture (Rendered) */
+static int rna_SpaceView3D_game_view_background_get(PointerRNA *ptr)
+{
+	View3D *v3d = (View3D *)ptr->data;
+	return (v3d->drawtype == OB_RENDER) ? 1 : 0;
+}
+
+static void rna_SpaceView3D_game_view_background_set(PointerRNA *ptr, int value)
+{
+	View3D *v3d = (View3D *)ptr->data;
+	if (value) {
+		v3d->gameview_flag |= V3D_GAMEVIEW_REMIX;
+		if (v3d->drawtype != OB_RENDER) {
+			v3d->prev_drawtype = v3d->drawtype;
+		}
+		v3d->drawtype = OB_RENDER;
+	}
+	else {
+		v3d->gameview_flag &= ~V3D_GAMEVIEW_REMIX;
+		v3d->drawtype = OB_SOLID;
+	}
+}
+
+static void rna_SpaceView3D_game_view_update(Main *UNUSED(bmain), Scene *UNUSED(scene), PointerRNA *ptr)
+{
+	ScrArea *sa = rna_area_from_space(ptr);
+	if (sa) {
+		ED_area_tag_redraw(sa);
+	}
+}
+
+static void rna_SpaceView3D_is_game_view_set(PointerRNA *ptr, int value)
+{
+	View3D *v3d = (View3D *)ptr->data;
+	if (value) {
+		v3d->gameview_flag |= V3D_GAMEVIEW;
+		if ((v3d->gameview_flag & V3D_GAMEVIEW_INIT) == 0) {
+			v3d->gameview_flag |= V3D_GAMEVIEW_INIT | V3D_GAMEVIEW_DIM | V3D_GAMEVIEW_LABELS;
+			v3d->gameview_layers = V3D_GAMEVIEW_LAYERS_ALL;
+		}
+	}
+	else {
+		v3d->gameview_flag &= ~V3D_GAMEVIEW;
+	}
+}
+
 static void rna_SpaceView3D_matcap_update(Main *UNUSED(bmain), Scene *UNUSED(scene), PointerRNA *ptr)
 {
 	View3D *v3d = (View3D *)(ptr->data);
@@ -2456,6 +2503,72 @@ static void rna_def_space_view3d(BlenderRNA *brna)
 	                            "rna_SpaceView3D_viewport_shade_itemf");
 	RNA_def_property_ui_text(prop, "Viewport Shading", "Method to display/shade objects in the 3D View");
 	RNA_def_property_update(prop, NC_SPACE | ND_SPACE_VIEW3D, "rna_SpaceView3D_viewport_shade_update");
+
+	/* BGE-Remix P7: the Game View */
+	{
+		static EnumPropertyItem game_view_layer_items[] = {
+			{1 << 0, "OBJECTS", ICON_OBJECT_DATA, "Objects", "Every object the game makes, and the ones it does not"},
+			{1 << 1, "CAMERAS", ICON_CAMERA_DATA, "Cameras", "The cameras, the one the game starts with, what each sees"},
+			{1 << 2, "INTERFACE", ICON_FONT_DATA, "Interface", "The player's screen: overlays, texts, the mouse cursor"},
+			{1 << 3, "RENDERING", ICON_MATERIAL_DATA, "Rendering", "Materials, textures, lights, the world, 2D filters"},
+			{1 << 4, "PHYSICS", ICON_PHYSICS, "Physics", "Bodies, their collision shapes, joints, the physics engine"},
+			{1 << 5, "MEDIA", ICON_SPEAKER, "Media", "Sounds, the listener, videos"},
+			{1 << 6, "DATA", ICON_BUTS, "Data", "Game properties, saved and loaded data"},
+			{1 << 7, "FLUIDS", ICON_MOD_FLUIDSIM, "Fluids", "Fluids (none in this version of the game engine)"},
+			{1 << 8, "ARTICULATIONS", ICON_CONSTRAINT_BONE, "Articulations",
+			 "Articulated bodies (none in this version of the game engine)"},
+			{1 << 9, "LOGIC", ICON_LOGIC, "Logic", "Sensors, controllers, actuators and their links"},
+			{1 << 10, "PYTHON", ICON_SCRIPT, "Python", "Python scripts and modules"},
+			{1 << 11, "ANIMATION", ICON_ACTION, "Animation", "Actions and what plays them"},
+			{1 << 12, "MESSAGES", ICON_LINKED, "Messages", "Who sends which message to whom"},
+			{1 << 13, "NAVIGATION", ICON_CURVE_PATH, "Navigation", "Navigation meshes, steering, obstacles"},
+			{1 << 14, "DESTRUCTION", ICON_MOD_EXPLODE, "Destruction",
+			 "Breaking objects (none in this version of the game engine)"},
+			{1 << 15, "INPUT", ICON_HAND, "Input", "Keys, mouse and joysticks the game listens to"},
+			{1 << 16, "SCENES", ICON_SCENE_DATA, "Scenes", "The scenes, how the game goes from one to another"},
+			{1 << 17, "REMIX", ICON_LIGHTPAINT, "Remix", "What RTX Remix gets: meshes, materials, lights"},
+			{1 << 18, "PERFORMANCE", ICON_SORTTIME, "Performance", "What costs the most, over the targets"},
+			{1 << 19, "TIME", ICON_TIME, "Time", "The game's clock, delays, timers"},
+			{1 << 20, "LEFT_OUT", ICON_ERROR, "Left out", "What is in the file but not in the game"},
+			{1 << 21, "UNASSIGNED", ICON_QUESTION, "Unassigned", "What no layer claims"},
+			{0, NULL, 0, NULL, NULL}
+		};
+		static EnumPropertyItem game_view_background_items[] = {
+			{0, "PLAIN", ICON_SOLID, "Plain", "The holograms over Blender's own drawing of the scene"},
+			{1, "REMIX", ICON_SMOOTH, "RTX Remix", "The holograms over RTX Remix's picture of the scene"},
+			{0, NULL, 0, NULL, NULL}
+		};
+
+		prop = RNA_def_property(srna, "is_game_view", PROP_BOOLEAN, PROP_NONE);
+		RNA_def_property_boolean_sdna(prop, NULL, "gameview_flag", V3D_GAMEVIEW);
+		RNA_def_property_boolean_funcs(prop, NULL, "rna_SpaceView3D_is_game_view_set");
+		RNA_def_property_ui_text(prop, "Game View", "This 3D View is a Game View");
+		RNA_def_property_update(prop, NC_SPACE | ND_SPACE_VIEW3D, "rna_SpaceView3D_game_view_update");
+
+		prop = RNA_def_property(srna, "game_view_layers", PROP_ENUM, PROP_NONE);
+		RNA_def_property_enum_sdna(prop, NULL, "gameview_layers");
+		RNA_def_property_enum_items(prop, game_view_layer_items);
+		RNA_def_property_flag(prop, PROP_ENUM_FLAG);
+		RNA_def_property_ui_text(prop, "Game View Layers", "The layers the Game View shows");
+		RNA_def_property_update(prop, NC_SPACE | ND_SPACE_VIEW3D, "rna_SpaceView3D_game_view_update");
+
+		prop = RNA_def_property(srna, "game_view_background", PROP_ENUM, PROP_NONE);
+		RNA_def_property_enum_items(prop, game_view_background_items);
+		RNA_def_property_enum_funcs(prop, "rna_SpaceView3D_game_view_background_get",
+		                            "rna_SpaceView3D_game_view_background_set", NULL);
+		RNA_def_property_ui_text(prop, "Background", "What the holograms are drawn over");
+		RNA_def_property_update(prop, NC_SPACE | ND_SPACE_VIEW3D, "rna_SpaceView3D_viewport_shade_update");
+
+		prop = RNA_def_property(srna, "game_view_dim", PROP_BOOLEAN, PROP_NONE);
+		RNA_def_property_boolean_sdna(prop, NULL, "gameview_flag", V3D_GAMEVIEW_DIM);
+		RNA_def_property_ui_text(prop, "Dim", "Dim the scene under the holograms");
+		RNA_def_property_update(prop, NC_SPACE | ND_SPACE_VIEW3D, "rna_SpaceView3D_game_view_update");
+
+		prop = RNA_def_property(srna, "game_view_labels", PROP_BOOLEAN, PROP_NONE);
+		RNA_def_property_boolean_sdna(prop, NULL, "gameview_flag", V3D_GAMEVIEW_LABELS);
+		RNA_def_property_ui_text(prop, "Names", "Show the names of the elements under their avatars");
+		RNA_def_property_update(prop, NC_SPACE | ND_SPACE_VIEW3D, "rna_SpaceView3D_game_view_update");
+	}
 
 	prop = RNA_def_property(srna, "local_view", PROP_POINTER, PROP_NONE);
 	RNA_def_property_pointer_sdna(prop, NULL, "localvd");

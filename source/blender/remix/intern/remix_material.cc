@@ -30,6 +30,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "BRMX_bake.h"
 #include "BRMX_material.h"
 
 extern "C" {
@@ -45,14 +46,41 @@ extern "C" {
 #include "BKE_node.h"
 
 #include "BLI_listbase.h"
+
+#include "GPU_material.h"
+
+#include "BKE_material_physical.h"
+
+#include "IMB_colormanagement.h"
 }
 
 namespace brmx {
 
 const char *texture_slot_name(int slot)
 {
-	static const char *names[TEX_COUNT] = {"albedo", "normal", "roughness", "metallic", "emissive"};
+	static const char *names[TEX_COUNT] = {"albedo", "normal", "roughness", "metallic", "emissive", "height",
+	                                       "tangent", "transmittance", "sss_transmittance", "sss_thickness",
+	                                       "sss_albedo", "sss_radius"};
 	return (slot >= 0 && slot < TEX_COUNT) ? names[slot] : "?";
+}
+
+const wchar_t **texture_field(brb_material_desc &d, int slot)
+{
+	switch (slot) {
+		case TEX_ALBEDO: return &d.albedo_texture;
+		case TEX_NORMAL: return &d.normal_texture;
+		case TEX_ROUGHNESS: return &d.roughness_texture;
+		case TEX_METALLIC: return &d.metallic_texture;
+		case TEX_EMISSIVE: return &d.emissive_texture;
+		case TEX_HEIGHT: return &d.height_texture;
+		case TEX_TANGENT: return &d.tangent_texture;
+		case TEX_TRANSMITTANCE: return &d.transmittance_texture;
+		case TEX_SSS_TRANSMITTANCE: return &d.subsurface_transmittance_texture;
+		case TEX_SSS_THICKNESS: return &d.subsurface_thickness_texture;
+		case TEX_SSS_ALBEDO: return &d.subsurface_albedo_texture;
+		case TEX_SSS_RADIUS: return &d.subsurface_radius_texture;
+	}
+	return NULL;
 }
 
 namespace {
@@ -72,6 +100,16 @@ void note(MaterialSpec &s, const std::string &text)
 	s.notes.push_back(text);
 }
 
+/* P8.24: a field carried approximately or not at all (the worst mark stays) */
+void mark(MaterialSpec &s, const char *field, int level, const std::string &why)
+{
+	std::pair<int, std::string> &m = s.marks[field];
+	if (m.second.empty() || level >= m.first) {
+		m.first = level;
+		m.second = why;
+	}
+}
+
 /* Blender Internal's specular hardness (Blinn-Phong exponent) as a GGX
  * roughness: alpha = sqrt(2 / (n + 2)), roughness = sqrt(alpha). */
 float hardness_to_roughness(const Material *ma)
@@ -86,8 +124,9 @@ float hardness_to_roughness(const Material *ma)
  * (the test balls are 0.8 m across). */
 static const float GLASS_TINT_DISTANCE = 0.5f;
 
-static void glass_tint(const float c[3], float r_transmittance[3])
+static void glass_tint(const float c[3], float r_transmittance[3], MaterialSpec &s)
 {
+	mark(s, "transmittance", MATCH_APPROX, "Cycles tints glass at each surface, Remix by the distance inside");
 	for (int i = 0; i < 3; i++) {
 		r_transmittance[i] = c[i] * c[i];
 	}
@@ -115,6 +154,12 @@ void defaults(MaterialSpec &s)
 	s.notes.clear();
 	s.source = MaterialSpec::DEFAULT;
 	s.particle = false;
+	s.bake_slots = 0;
+	s.categories = 0;
+	s.locked = 0;
+	s.shadeless = false;
+	s.marks.clear();
+	s.nodes_baked = false;
 }
 
 TextureRequest texture(Image *ima, int kind, int channel = 0, int flags = 0)
@@ -198,66 +243,93 @@ Image *prop_image(const Material *ma, const char *name)
 	return (p && p->type == IDP_STRING) ? image_by_name(IDP_String(p)) : NULL;
 }
 
-enum { PANEL_OPAQUE = 0, PANEL_GLASS = 1, PANEL_SUBSURFACE = 2 };
-enum { PANEL_ALPHA_OPAQUE = 0, PANEL_ALPHA_BLEND = 1, PANEL_ALPHA_CLIP = 2 };
-
-bool from_panel(const Material *ma, MaterialSpec &s)
-{
-	if (!prop_int(ma, "bge_remix_override", 0)) {
-		return false;
-	}
-	brb_material_desc &d = s.desc;
-	s.source = MaterialSpec::PANEL;
-	const int type = prop_int(ma, "bge_remix_type", PANEL_OPAQUE);
-	set3(d.albedo, 0.8f, 0.8f, 0.8f);
-	prop_float3(ma, "bge_remix_albedo", d.albedo);
-	d.opacity = prop_float(ma, "bge_remix_opacity", 1.0f);
-	d.roughness = prop_float(ma, "bge_remix_roughness", 0.5f);
-	d.metallic = prop_float(ma, "bge_remix_metallic", 0.0f);
-	set3(d.emissive, 1.0f, 1.0f, 1.0f);
-	prop_float3(ma, "bge_remix_emissive", d.emissive);
-	d.emissive_intensity = prop_float(ma, "bge_remix_emissive_strength", 0.0f);
-	const int alpha = prop_int(ma, "bge_remix_alpha", PANEL_ALPHA_OPAQUE);
-	d.alpha_blend = alpha == PANEL_ALPHA_BLEND;
-	d.alpha_test = alpha == PANEL_ALPHA_CLIP;
-	d.alpha_cutoff = prop_float(ma, "bge_remix_alpha_cutoff", 0.5f);
-	if (alpha == PANEL_ALPHA_OPAQUE) {
-		d.opacity = 1.0f;
-	}
-	if (type == PANEL_GLASS) {
-		d.type = BRB_MATERIAL_TRANSLUCENT;
-		d.ior = prop_float(ma, "bge_remix_ior", 1.5f);
-		set3(d.transmittance, 1.0f, 1.0f, 1.0f);
-		prop_float3(ma, "bge_remix_transmittance", d.transmittance);
-	}
-	else if (type == PANEL_SUBSURFACE) {
-		d.subsurface = 1;
-		memcpy(d.subsurface_color, d.albedo, sizeof(d.subsurface_color));
-		prop_float3(ma, "bge_remix_subsurface_radius", d.subsurface_radius);
-	}
-	s.textures[TEX_ALBEDO] = texture(prop_image(ma, "bge_remix_albedo_image"), BRB_TEXTURE_COLOR);
-	s.textures[TEX_NORMAL] = texture(prop_image(ma, "bge_remix_normal_image"), BRB_TEXTURE_NORMAL);
-	s.textures[TEX_ROUGHNESS] = texture(prop_image(ma, "bge_remix_roughness_image"), BRB_TEXTURE_SCALAR);
-	s.textures[TEX_METALLIC] = texture(prop_image(ma, "bge_remix_metallic_image"), BRB_TEXTURE_SCALAR);
-	s.textures[TEX_EMISSIVE] = texture(prop_image(ma, "bge_remix_emissive_image"), BRB_TEXTURE_COLOR);
-	for (int i = 0; i < TEX_COUNT; i++) {
-		if (!s.textures[i].image) {
-			s.textures[i] = TextureRequest();
-		}
-	}
-	return true;
-}
-
 /* ------------------------------------------------------------------------- */
 /* 3. Blender Internal */
+
+/* P8.24: the fields a texture slot's influences reach */
+void mark_slot_fields(MaterialSpec &s, int mapto, int level, const std::string &why)
+{
+	if (mapto & MAP_COL) {
+		mark(s, "albedo", level, why);
+	}
+	if (mapto & MAP_NORM) {
+		mark(s, "normal", level, why);
+	}
+	if (mapto & MAP_EMIT) {
+		mark(s, "emissive", level, why);
+	}
+	if (mapto & MAP_HAR) {
+		mark(s, "roughness", level, why);
+	}
+	if (mapto & MAP_RAYMIRR) {
+		mark(s, "metallic", level, why);
+	}
+	if (mapto & MAP_ALPHA) {
+		mark(s, "opacity", level, why);
+	}
+}
+
+void image_slots(const Material *ma, MaterialSpec &s, bool physical);
+
+/* P8.8: Classic settings Remix can show: a ray mirror (metal), raytraced
+ * glass, subsurface scattering, Z transparency, Add blending */
+void classic_extras(const Material *ma, MaterialSpec &s)
+{
+	brb_material_desc &d = s.desc;
+	if ((ma->mode & MA_TRANSP) && (ma->mode & MA_ZTRANSP) && ma->alpha < 1.0f && !d.alpha_blend && !d.alpha_test) {
+		/* Z transparency: see-through by the alpha, as F12 */
+		d.alpha_blend = 1;
+		d.opacity = ma->alpha;
+	}
+	if (ma->game.alpha_blend == GEMAT_ADD) {
+		d.additive = 1;
+	}
+	if ((ma->mode & MA_RAYMIRROR) && ma->ray_mirror > 0.0f) {
+		const float rm = std::min(ma->ray_mirror, 1.0f);
+		if (ma->fresnel_mir <= 0.0f) {
+			/* a mirror of the same strength at every angle: metal, in the
+			 * mirror's colour */
+			d.metallic = rm;
+			for (int i = 0; i < 3; i++) {
+				d.albedo[i] = d.albedo[i] * (1.0f - rm) + (&ma->mirr)[i] * rm;
+			}
+		}
+		/* with Fresnel: Remix's own Fresnel reflects; the gloss blurs */
+		d.roughness = std::min(std::max(1.0f - ma->gloss_mir, 0.0f), 1.0f);
+		mark(s, "metallic", MATCH_APPROX, "from Ray Mirror");
+		mark(s, "roughness", MATCH_APPROX, "from Ray Mirror's gloss");
+	}
+	if ((ma->mode & MA_TRANSP) && (ma->mode & MA_RAYTRANSP) && ma->alpha < 1.0f) {
+		d.type = BRB_MATERIAL_TRANSLUCENT;
+		d.ior = std::min(std::max(ma->ang, 1.0f), 3.0f);
+		/* Filter tints the light passing through by the diffuse colour */
+		const float f = std::min(std::max(ma->filter, 0.0f), 1.0f);
+		set3(d.transmittance, 1.0f - f + f * ma->r, 1.0f - f + f * ma->g, 1.0f - f + f * ma->b);
+		d.alpha_blend = 0;
+		d.additive = 0;
+		mark(s, "transmittance", MATCH_APPROX, "Raytraced Transparency's Filter and colour");
+	}
+	if ((ma->sss_flag & MA_DIFF_SSS) && d.type != BRB_MATERIAL_TRANSLUCENT) {
+		d.subsurface = 1;
+		memcpy(d.subsurface_color, ma->sss_col, sizeof(d.subsurface_color));
+		for (int i = 0; i < 3; i++) {
+			d.subsurface_radius[i] = ma->sss_radius[i] * ma->sss_scale;
+		}
+		mark(s, "subsurface", MATCH_APPROX, "Blender Internal's subsurface radius and scale");
+	}
+}
+
+static void shadeless_glow(const Material *ma, MaterialSpec &s, bool face_image);
 
 void from_blender_internal(const Material *ma, MaterialSpec &s)
 {
 	brb_material_desc &d = s.desc;
 	s.source = MaterialSpec::BLENDER_INTERNAL;
+	s.bake_slots = bake_slots(ma);
 	set3(d.albedo, ma->r * ma->ref, ma->g * ma->ref, ma->b * ma->ref);
 	d.opacity = ma->alpha;
 	d.roughness = hardness_to_roughness(ma);
+	mark(s, "roughness", MATCH_APPROX, "from Blender Internal's specular hardness");
 	d.metallic = 0.0f;
 	if (ma->emit > 0.0f) {
 		set3(d.emissive, ma->r, ma->g, ma->b);
@@ -268,6 +340,7 @@ void from_blender_internal(const Material *ma, MaterialSpec &s)
 		set3(d.albedo, 0.0f, 0.0f, 0.0f);
 		set3(d.emissive, ma->r, ma->g, ma->b);
 		d.emissive_intensity = 1.0f;
+		mark(s, "emissive", MATCH_APPROX, "Shadeless: shown as a glow of its colour");
 	}
 	const int blend = ma->game.alpha_blend;
 	d.alpha_blend = (blend == GEMAT_ALPHA || blend == GEMAT_ALPHA_SORT || blend == GEMAT_ADD) ? 1 : 0;
@@ -276,7 +349,40 @@ void from_blender_internal(const Material *ma, MaterialSpec &s)
 		d.opacity = 1.0f;
 	}
 
-	/* image texture slots */
+	image_slots(ma, s, false);
+	shadeless_glow(ma, s, false);
+	classic_extras(ma, s);
+}
+
+/* The image texture slots (P8.7: a physical material's Hardness slot is
+ * its roughness, its Ray Mirror slot its metallic value) */
+/* P8.30: a shadeless surface with a colour image glows with the image
+ * (the RTX run: textured shadeless screens came out plain white). The
+ * image stays the albedo too, for its alpha; face_image: the image replaces
+ * the colour (Face Textures) */
+static void shadeless_glow(const Material *ma, MaterialSpec &s, bool face_image)
+{
+	brb_material_desc &d = s.desc;
+	if (ma->mode & MA_SHLESS) {
+		s.shadeless = true;
+	}
+	if (!(ma->mode & MA_SHLESS) || !s.textures[TEX_ALBEDO].image || s.textures[TEX_EMISSIVE].image ||
+	    (s.locked & (1u << TEX_EMISSIVE)))
+	{
+		return;
+	}
+	s.textures[TEX_EMISSIVE] = s.textures[TEX_ALBEDO];
+	if (face_image) {
+		set3(d.emissive, 1.0f, 1.0f, 1.0f);
+	}
+	d.emissive_intensity = 1.0f;
+	set3(d.albedo, 0.0f, 0.0f, 0.0f);
+	mark(s, "emissive", MATCH_APPROX, "Shadeless: shown as a glow of its image");
+}
+
+void image_slots(const Material *ma, MaterialSpec &s, bool physical)
+{
+	brb_material_desc &d = s.desc;
 	Image *albedo_image = NULL;
 	for (int i = 0; i < MAX_MTEX; i++) {
 		const MTex *mtex = ma->mtex[i];
@@ -286,17 +392,24 @@ void from_blender_internal(const Material *ma, MaterialSpec &s)
 		const Tex *tex = mtex->tex;
 		const std::string slot = std::string("texture slot ") + (mtex->tex->id.name + 2);
 		if (tex->type != TEX_IMAGE || !tex->ima) {
-			if (mtex->mapto & (MAP_COL | MAP_NORM | MAP_EMIT | MAP_HAR)) {
-				note(s, slot + ": not an image texture, left out");
+			/* P8.6: procedural textures are baked per mesh (BRMX_bake.h) */
+			if ((mtex->mapto & (MAP_COL | MAP_NORM | MAP_EMIT | MAP_HAR)) && !GPU_texture_is_procedural(tex)) {
+				note(s, slot + ": not an image or procedural texture, left out");
+				mark_slot_fields(s, mtex->mapto, MATCH_NONE, slot + ": not an image or procedural texture");
 			}
 			continue;
 		}
 		if (mtex->texco != TEXCO_UV) {
 			note(s, slot + ": not mapped by UV, left out");
+			mark_slot_fields(s, mtex->mapto, MATCH_NONE, slot + ": not mapped by UV");
 			continue;
 		}
 		if (tex->extend == TEX_EXTEND || tex->extend == TEX_CLIP) {
 			d.clamp = 1;
+		}
+		/* P8.22: Interpolation off: Remix samples it without filtering too */
+		if (tex->type == TEX_IMAGE && !(tex->imaflag & TEX_INTERPOL)) {
+			d.filter_nearest = 1;
 		}
 		if ((mtex->mapto & MAP_COL) && !s.textures[TEX_ALBEDO].image) {
 			s.textures[TEX_ALBEDO] = texture(tex->ima, BRB_TEXTURE_COLOR);
@@ -308,9 +421,11 @@ void from_blender_internal(const Material *ma, MaterialSpec &s)
 			}
 			else if (tex->imaflag & TEX_NORMALMAP) {
 				note(s, slot + ": only tangent-space normal maps are read");
+				mark(s, "normal", MATCH_NONE, slot + ": not a tangent-space normal map");
 			}
 			else {
 				note(s, slot + ": bump map (not a normal map), left out");
+				mark(s, "normal", MATCH_NONE, slot + ": a bump map");
 			}
 		}
 		if ((mtex->mapto & MAP_EMIT) && !s.textures[TEX_EMISSIVE].image) {
@@ -321,11 +436,15 @@ void from_blender_internal(const Material *ma, MaterialSpec &s)
 			}
 		}
 		if ((mtex->mapto & MAP_HAR) && !s.textures[TEX_ROUGHNESS].image) {
-			/* bright = hard = smooth */
-			s.textures[TEX_ROUGHNESS] = texture(tex->ima, BRB_TEXTURE_SCALAR, 0, BRB_TEXTURE_INVERT);
+			/* Classic: bright = hard = smooth; physical: the roughness */
+			s.textures[TEX_ROUGHNESS] = texture(tex->ima, BRB_TEXTURE_SCALAR, 0, physical ? 0 : BRB_TEXTURE_INVERT);
+		}
+		if (physical && (mtex->mapto & MAP_RAYMIRR) && !s.textures[TEX_METALLIC].image) {
+			s.textures[TEX_METALLIC] = texture(tex->ima, BRB_TEXTURE_SCALAR);
 		}
 		if ((mtex->mapto & MAP_ALPHA) && tex->ima != albedo_image) {
 			note(s, slot + ": alpha from an image other than the colour texture, left out");
+			mark(s, "opacity", MATCH_NONE, slot + ": alpha from another image than the colour's");
 		}
 		else if ((mtex->mapto & MAP_ALPHA) && tex->ima == albedo_image) {
 			/* the image's alpha is the opacity (a sprite: material alpha 0,
@@ -333,6 +452,69 @@ void from_blender_internal(const Material *ma, MaterialSpec &s)
 			d.opacity = 1.0f;
 		}
 	}
+}
+
+/* ------------------------------------------------------------------------- */
+/* P8.7: the physical material (BKE_material_physical.h), read as the game
+ * and F12 read it */
+
+void game_alpha(const Material *ma, brb_material_desc &d)
+{
+	const int blend = ma->game.alpha_blend;
+	d.alpha_blend = (blend == GEMAT_ALPHA || blend == GEMAT_ALPHA_SORT || blend == GEMAT_ADD) ? 1 : 0;
+	d.alpha_test = (blend == GEMAT_CLIP) ? 1 : 0;
+	if (!d.alpha_blend) {
+		d.opacity = 1.0f;
+	}
+}
+
+bool from_physical(const Material *ma, MaterialSpec &s)
+{
+	if (!BKE_material_is_physical(ma)) {
+		return false;
+	}
+	MaterialPhysical ph;
+	BKE_material_physical_get(ma, &ph);
+	brb_material_desc &d = s.desc;
+	s.source = MaterialSpec::PHYSICAL;
+	s.bake_slots = bake_slots(ma);
+	memcpy(d.albedo, ph.base, sizeof(d.albedo));
+	d.opacity = ph.alpha;
+	d.roughness = ph.roughness;
+	d.metallic = ph.metallic;
+	if (ph.emission_strength > 0.0f) {
+		memcpy(d.emissive, ph.emission, sizeof(d.emissive));
+		d.emissive_intensity = ph.emission_strength;
+	}
+	if (ma->mode & MA_SHLESS) {
+		set3(d.albedo, 0.0f, 0.0f, 0.0f);
+		memcpy(d.emissive, ph.base, sizeof(d.emissive));
+		d.emissive_intensity = 1.0f;
+	}
+	game_alpha(ma, d);
+	if (ma->game.alpha_blend == GEMAT_ADD) {
+		d.additive = 1; /* P8.8 */
+	}
+	if (ph.transmission > 0.0f) {
+		/* Remix's glass is all or nothing */
+		if (ph.transmission < 1.0f) {
+			note(s, "transmission between 0 and 1: Remix draws it as glass from 0.5 up, else opaque");
+			mark(s, "transmittance", MATCH_APPROX, "Transmission between 0 and 1: all glass or none");
+		}
+		if (ph.transmission >= 0.5f) {
+			d.type = BRB_MATERIAL_TRANSLUCENT;
+			d.ior = std::min(std::max(ph.ior, 1.0f), 3.0f);
+			memcpy(d.transmittance, ph.base, sizeof(d.transmittance));
+		}
+	}
+	if (ph.subsurface > 0.0f && d.type != BRB_MATERIAL_TRANSLUCENT) {
+		d.subsurface = 1;
+		memcpy(d.subsurface_color, ph.base, sizeof(d.subsurface_color));
+		memcpy(d.subsurface_radius, ph.subsurface_radius, sizeof(d.subsurface_radius));
+	}
+	image_slots(ma, s, true);
+	shadeless_glow(ma, s, false);
+	return true;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -404,6 +586,25 @@ struct Nodes {
 	{
 		s.notes.push_back(std::string(node->name) + " " + socket + ": linked to " + l->fromnode->name +
 		                  ", which Remix mode does not read; its own value is used");
+		const std::string why = std::string(node->name) + " " + socket + ": " + l->fromnode->name + " is not followed";
+		mark(s, socket_field(socket), MATCH_NONE, why);
+	}
+
+	/* P8.24: the Remix field a shader socket feeds */
+	static const char *socket_field(const char *socket)
+	{
+		static const struct { const char *socket, *field; } map[] = {
+		    {"Base Color", "albedo"}, {"Color", "albedo"}, {"Roughness", "roughness"}, {"Metallic", "metallic"},
+		    {"Normal", "normal"}, {"Strength", "emissive"}, {"IOR", "glass"}, {"Transmission", "glass"},
+		    {"Subsurface", "subsurface"}, {"Subsurface Color", "subsurface"}, {"Subsurface Radius", "subsurface"},
+		    {"Radius", "subsurface"}, {"Scale", "subsurface"}, {"Fac", "opacity"}, {"Anisotropic", "anisotropy"},
+		};
+		for (size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
+			if (strcmp(map[i].socket, socket) == 0) {
+				return map[i].field;
+			}
+		}
+		return "surface";
 	}
 
 	/* An Image Texture node behind the socket (directly), or NULL. */
@@ -464,6 +665,7 @@ struct Nodes {
 			if (!alpha && t && t->color_space != SHD_COLORSPACE_NONE) {
 				note(s, std::string(img->name) + ": a colour (not Non-Color) image drives " + name +
 				            "; its values are used as stored");
+				mark(s, socket_field(name), MATCH_APPROX, std::string(img->name) + ": a colour image used as values");
 			}
 			return def;
 		}
@@ -482,6 +684,7 @@ struct Nodes {
 			const NodeShaderNormalMap *nms = (const NodeShaderNormalMap *)nm->storage;
 			if (nms && nms->space != SHD_NORMAL_MAP_TANGENT) {
 				note(s, std::string(nm->name) + ": only tangent-space normal maps are read");
+				mark(s, "normal", MATCH_NONE, std::string(nm->name) + ": not tangent space");
 				return;
 			}
 			if (const bNode *img = image_node(input(nm, "Color"))) {
@@ -512,9 +715,10 @@ struct Nodes {
 		if (transmission > 0.5f) {
 			d.type = BRB_MATERIAL_TRANSLUCENT;
 			d.ior = value(n, "IOR", 1.45f);
-			glass_tint(d.albedo, d.transmittance);
+			glass_tint(d.albedo, d.transmittance, s);
 			if (s.textures[TEX_ALBEDO].image) {
 				note(s, std::string(n->name) + ": glass tinted by an image, the image is left out");
+				mark(s, "transmittance", MATCH_NONE, std::string(n->name) + ": the tinting image");
 				s.textures[TEX_ALBEDO] = TextureRequest();
 			}
 		}
@@ -558,7 +762,7 @@ struct Nodes {
 				{
 					float c[3] = {1.0f, 1.0f, 1.0f};
 					color(n, "Color", c);
-					glass_tint(c, d.transmittance);
+					glass_tint(c, d.transmittance, s);
 				}
 				d.ior = value(n, "IOR", 1.45f);
 				return;
@@ -628,6 +832,7 @@ struct Nodes {
 				}
 				const float fac = value(n, "Fac", 0.5f);
 				note(s, std::string(n->name) + ": a mix of two surfaces, the stronger one is used");
+				mark(s, "surface", MATCH_APPROX, std::string(n->name) + ": the stronger of two surfaces");
 				shader(fac < 0.5f ? a : b, depth + 1);
 				return;
 			}
@@ -646,12 +851,14 @@ struct Nodes {
 					return;
 				}
 				note(s, std::string(n->name) + ": two surfaces added, the first one is used");
+				mark(s, "surface", MATCH_APPROX, std::string(n->name) + ": the first of two added surfaces");
 				shader(a, depth + 1);
 				return;
 			}
 			default: {
 				/* a shader Remix mode does not know: its colour, if it has one */
 				note(s, std::string(n->name) + ": not a shader Remix mode reads; a flat colour is used");
+				mark(s, "surface", MATCH_NONE, std::string(n->name) + ": a shader Remix mode does not read");
 				for (bNodeSocket *sock = (bNodeSocket *)n->inputs.first; sock; sock = sock->next) {
 					if (sock->type == SOCK_RGBA && sock->default_value) {
 						memcpy(d.albedo, ((const bNodeSocketValueRGBA *)sock->default_value)->value, sizeof(float) * 3);
@@ -713,6 +920,263 @@ bool from_nodes(const Material *ma, MaterialSpec &s)
 	return true;
 }
 
+/* ------------------------------------------------------------------------- */
+/* P8.24: the material's Remix block (ID property group "bge_remix", the
+ * RTX Remix panel; properties_material.py's BGERemixMaterial) */
+
+struct Block {
+	IDProperty *g;
+
+	IDProperty *get(const char *name) const
+	{
+		return g ? IDP_GetPropertyFromGroup(g, name) : NULL;
+	}
+	static int as_int(IDProperty *p, int def)
+	{
+		if (!p) {
+			return def;
+		}
+		switch (p->type) {
+			case IDP_INT: return IDP_Int(p);
+			case IDP_FLOAT: return (int)IDP_Float(p);
+			case IDP_DOUBLE: return (int)IDP_Double(p);
+		}
+		return def;
+	}
+	static float as_float(IDProperty *p, float def)
+	{
+		if (!p) {
+			return def;
+		}
+		switch (p->type) {
+			case IDP_INT: return (float)IDP_Int(p);
+			case IDP_FLOAT: return IDP_Float(p);
+			case IDP_DOUBLE: return (float)IDP_Double(p);
+		}
+		return def;
+	}
+	static bool as_float3(IDProperty *p, float r[3])
+	{
+		if (!p || p->type != IDP_ARRAY || p->len < 3) {
+			return false;
+		}
+		for (int i = 0; i < 3; i++) {
+			if (p->subtype == IDP_FLOAT) {
+				r[i] = ((const float *)IDP_Array(p))[i];
+			}
+			else if (p->subtype == IDP_DOUBLE) {
+				r[i] = (float)((const double *)IDP_Array(p))[i];
+			}
+			else {
+				return false;
+			}
+		}
+		return true;
+	}
+	int i(const char *name, int def = 0) const { return as_int(get(name), def); }
+	float f(const char *name, float def) const { return as_float(get(name), def); }
+	bool f3(const char *name, float r[3]) const { return as_float3(get(name), r); }
+	Block sub(const char *name) const
+	{
+		IDProperty *p = get(name);
+		Block b = {(p && p->type == IDP_GROUP) ? p : NULL};
+		return b;
+	}
+	Image *image(const char *name) const
+	{
+		IDProperty *p = get(name);
+		if (p && p->type == IDP_ID && IDP_Id(p) && GS(IDP_Id(p)->name) == ID_IM) {
+			return (Image *)IDP_Id(p);
+		}
+		return NULL;
+	}
+};
+
+Block remix_block(const Material *ma)
+{
+	IDProperty *p = prop(ma, "bge_remix");
+	Block b = {(p && p->type == IDP_GROUP) ? p : NULL};
+	return b;
+}
+
+/* The slots of the block: their names, Remix's field, and what they hold */
+struct SlotInfo {
+	const char *name;  /* the block's sub group, and the field in the match */
+	int tex;           /* TextureSlot, -1: a value only */
+	int kind;          /* the default compression (brb_texture_kind) */
+	int value;         /* 0 none, 1 a number, 3 a colour or vector */
+	/* the panel's defaults (properties_material.py, REMIX_SLOTS) */
+	float def_value;
+	float def_color[3];
+};
+
+const SlotInfo SLOTS[] = {
+    {"albedo", TEX_ALBEDO, BRB_TEXTURE_COLOR, 3, 0.0f, {0.8f, 0.8f, 0.8f}},
+    {"opacity", -1, 0, 1, 1.0f, {0.0f, 0.0f, 0.0f}},
+    {"roughness", TEX_ROUGHNESS, BRB_TEXTURE_SCALAR, 1, 0.5f, {0.0f, 0.0f, 0.0f}},
+    {"metallic", TEX_METALLIC, BRB_TEXTURE_SCALAR, 1, 0.0f, {0.0f, 0.0f, 0.0f}},
+    {"normal", TEX_NORMAL, BRB_TEXTURE_NORMAL, 0, 0.0f, {0.0f, 0.0f, 0.0f}},
+    {"tangent", TEX_TANGENT, BRB_TEXTURE_COLOR, 0, 0.0f, {0.0f, 0.0f, 0.0f}},
+    {"emissive", TEX_EMISSIVE, BRB_TEXTURE_COLOR, 3, 0.0f, {1.0f, 1.0f, 1.0f}},
+    {"height", TEX_HEIGHT, BRB_TEXTURE_SCALAR, 0, 0.0f, {0.0f, 0.0f, 0.0f}},
+    {"transmittance", TEX_TRANSMITTANCE, BRB_TEXTURE_COLOR, 3, 0.0f, {1.0f, 1.0f, 1.0f}},
+    {"sss_transmittance", TEX_SSS_TRANSMITTANCE, BRB_TEXTURE_COLOR, 3, 0.0f, {0.8f, 0.8f, 0.8f}},
+    {"sss_thickness", TEX_SSS_THICKNESS, BRB_TEXTURE_SCALAR, 0, 0.0f, {0.0f, 0.0f, 0.0f}},
+    {"sss_albedo", TEX_SSS_ALBEDO, BRB_TEXTURE_COLOR, 0, 0.0f, {0.0f, 0.0f, 0.0f}},
+    {"sss_radius", TEX_SSS_RADIUS, BRB_TEXTURE_COLOR, 3, 0.0f, {1.0f, 0.2f, 0.1f}},
+};
+const int SLOT_COUNT = (int)(sizeof(SLOTS) / sizeof(SLOTS[0]));
+
+/* One slot's image as a texture request, with its own settings */
+TextureRequest slot_texture(const Block &slot, Image *ima, const SlotInfo &info, MaterialSpec &s)
+{
+	TextureRequest t = texture(ima, info.kind);
+	/* compression: 0 automatic, 1 BC7, 2 BC6H, 3 BC4, 4 BC5 */
+	static const int kinds[5] = {-1, BRB_TEXTURE_COLOR, BRB_TEXTURE_HDR, BRB_TEXTURE_SCALAR, BRB_TEXTURE_NORMAL};
+	const int comp = slot.i("compression");
+	if (comp > 0 && comp < 5) {
+		t.kind = kinds[comp];
+		if (t.kind != info.kind) {
+			mark(s, info.name, MATCH_APPROX, "compressed in another format than Remix reads this field in");
+		}
+	}
+	/* channel: 0 automatic (red, or the image's colour), 1..4 R, G, B, A */
+	const int channel = slot.i("channel");
+	if (channel > 0 && channel <= 4) {
+		t.channel = channel - 1;
+	}
+	/* colour space: 0 the image's own, 1 sRGB, 2 linear */
+	const int cs = slot.i("colorspace");
+	const bool data = IMB_colormanagement_space_name_is_data(ima->colorspace_settings.name);
+	if (t.kind == BRB_TEXTURE_COLOR && (cs == 2 || (cs == 0 && data && info.tex != TEX_TANGENT))) {
+		t.flags |= BRB_TEXTURE_LINEAR;
+	}
+	if (info.tex == TEX_TANGENT || info.tex == TEX_SSS_RADIUS) {
+		/* directions and lengths: the values as stored */
+		t.flags |= (cs == 1) ? 0 : BRB_TEXTURE_LINEAR;
+	}
+	t.max_size = std::max(slot.i("max_size"), 0);
+	return t;
+}
+
+void apply_remix_block(const Material *ma, MaterialSpec &s)
+{
+	const Block b = remix_block(ma);
+	if (!b.g) {
+		return;
+	}
+	/* the categories hold whether or not the rest is in force */
+	s.categories = (unsigned)b.i("categories");
+	if (!b.i("use")) {
+		return;
+	}
+	brb_material_desc &d = s.desc;
+	const std::string panel = "set in the RTX Remix panel";
+	for (int k = 0; k < SLOT_COUNT; k++) {
+		const SlotInfo &info = SLOTS[k];
+		const Block slot = b.sub(info.name);
+		if (!slot.g || !slot.i("use")) {
+			continue;
+		}
+		s.marks[info.name] = std::make_pair((int)MATCH_EXACT, panel);
+		float c[3];
+		memcpy(c, info.def_color, sizeof(c));
+		const bool has_color = info.value == 3;
+		slot.f3("color", c);
+		const float v = slot.f("value", info.def_value);
+		switch (k) {
+			case 0: if (has_color) { memcpy(d.albedo, c, sizeof(c)); } break;
+			case 1: d.opacity = std::min(std::max(v, 0.0f), 1.0f); break;
+			case 2: d.roughness = std::min(std::max(v, 0.0f), 1.0f); break;
+			case 3: d.metallic = std::min(std::max(v, 0.0f), 1.0f); break;
+			case 6:
+				if (has_color) {
+					memcpy(d.emissive, c, sizeof(c));
+				}
+				d.emissive_intensity = std::max(b.f("emissive_intensity", 1.0f), 0.0f);
+				break;
+			case 8: if (has_color) { memcpy(d.transmittance, c, sizeof(c)); } break;
+			case 9: if (has_color) { memcpy(d.subsurface_color, c, sizeof(c)); } break;
+			case 12: if (has_color) { memcpy(d.subsurface_radius, c, sizeof(c)); } break;
+		}
+		if (info.tex < 0) {
+			continue;
+		}
+		Image *ima = slot.image("image");
+		/* the slot is the block's, with or without an image */
+		s.textures[info.tex] = ima ? slot_texture(slot, ima, info, s) : TextureRequest();
+		s.locked |= 1u << info.tex;
+		/* with an image, the image is the colour (as with a bake) */
+		if (ima && info.tex == TEX_ALBEDO) {
+			set3(d.albedo, 1.0f, 1.0f, 1.0f);
+		}
+		if (ima && info.tex == TEX_EMISSIVE) {
+			set3(d.emissive, 1.0f, 1.0f, 1.0f);
+		}
+		if (info.tex == TEX_TANGENT && ima) {
+			mark(s, "tangent", MATCH_APPROX, "Remix's tangent map format is not checked yet");
+		}
+	}
+	/* glass */
+	if (b.i("use_glass")) {
+		d.type = BRB_MATERIAL_TRANSLUCENT;
+		d.ior = std::min(std::max(b.f("ior", 1.5f), 1.0f), 3.0f);
+		d.transmittance_distance = std::max(b.f("transmittance_distance", GLASS_TINT_DISTANCE), 0.001f);
+		d.thin_walled = b.i("thin_walled");
+		d.thin_wall_thickness = std::max(b.f("thin_wall_thickness", 0.001f), 0.0f);
+		d.use_diffuse_layer = b.i("diffuse_layer");
+		d.alpha_blend = 0;
+		d.additive = 0;
+		s.marks["glass"] = std::make_pair((int)MATCH_EXACT, panel);
+		s.marks.erase("transmittance");
+	}
+	/* subsurface */
+	if (b.i("use_subsurface") && d.type != BRB_MATERIAL_TRANSLUCENT) {
+		d.subsurface = 1;
+		d.subsurface_volumetric = b.i("subsurface_volumetric");
+		d.subsurface_distance = std::max(b.f("subsurface_distance", 1.0f), 0.0f);
+		d.subsurface_anisotropy = b.f("subsurface_anisotropy", 0.0f);
+		d.subsurface_radius_scale = std::max(b.f("subsurface_radius_scale", 1.0f), 0.0f);
+		s.marks["subsurface"] = std::make_pair((int)MATCH_EXACT, panel);
+	}
+	if (b.i("use_anisotropy")) {
+		d.anisotropy = std::min(std::max(b.f("anisotropy", 0.0f), -1.0f), 1.0f);
+		s.marks["anisotropy"] = std::make_pair((int)MATCH_EXACT, panel);
+	}
+	if (b.i("use_thin_film")) {
+		d.thin_film = 1;
+		d.thin_film_thickness = std::max(b.f("thin_film_thickness", 400.0f), 0.0f);
+		d.alpha_is_thin_film = b.i("alpha_is_thin_film");
+		s.marks["thin film"] = std::make_pair((int)MATCH_EXACT, panel);
+	}
+	if (b.i("use_displacement")) {
+		d.displace_in = std::max(b.f("displace_in", 0.05f), 0.0f);
+		d.displace_out = std::max(b.f("displace_out", 0.0f), 0.0f);
+		s.marks["height"] = std::make_pair((int)MATCH_EXACT, panel);
+	}
+	/* blending: 0 automatic, 1 none, 2 alpha, 3 additive */
+	switch (b.i("blend")) {
+		case 1: d.blend_type = -1; d.alpha_blend = 0; d.additive = 0; break;
+		case 2: d.blend_type = 1; d.alpha_blend = 1; d.additive = 0; break;
+		case 3: d.blend_type = 9; d.alpha_blend = 1; d.additive = 1; break; /* as P8.8's emissive blending (8) */
+	}
+	d.inverted_blend = b.i("inverted_blend");
+	/* alpha test: 0 automatic, else Remix's AlphaTestType + 1 */
+	const int at = b.i("alpha_test");
+	if (at > 0 && at <= 8) {
+		d.alpha_test_type = at;
+		d.alpha_cutoff = std::min(std::max(b.f("alpha_cutoff", 0.5f), 0.0f), 1.0f);
+	}
+	/* filtering: 0 automatic, 1 nearest, 2 linear */
+	const int filter = b.i("filter");
+	if (filter == 1 || filter == 2) {
+		d.filter_nearest = filter == 1 ? 1 : 0;
+	}
+	/* wrapping: 0 automatic, else Remix's wrap mode + 1 */
+	d.wrap_u = std::min(std::max(b.i("wrap_u"), 0), 4);
+	d.wrap_v = std::min(std::max(b.i("wrap_v"), 0), 4);
+}
+
 }  /* namespace */
 
 void translate_material(const Material *ma, MaterialSpec &r_spec)
@@ -724,13 +1188,161 @@ void translate_material(const Material *ma, MaterialSpec &r_spec)
 	/* whatever the material's source: sprites and particles */
 	r_spec.particle = prop_int(ma, "bge_remix_particle", 0) != 0 ||
 	                  (ma->game.face_orientation & GEMAT_HALO) != 0;
-	if (from_panel(ma, r_spec)) {
+	/* P8.7: the RTX Remix panel's values are the physical material's now
+	 * (BKE_material_physical_from_remix_panel) */
+	if (!from_nodes(ma, r_spec) && !from_physical(ma, r_spec)) {
+		from_blender_internal(ma, r_spec);
+	}
+	/* P8.24: the Remix block over the translation */
+	apply_remix_block(ma, r_spec);
+}
+
+bool uses_face_image(const Material *ma)
+{
+	return ma && (ma->mode & MA_FACETEXTURE);
+}
+
+void apply_face_image(const Material *ma, Image *face_image, MaterialSpec &r_spec)
+{
+	if (!uses_face_image(ma) || !face_image) {
 		return;
 	}
-	if (from_nodes(ma, r_spec)) {
+	if (r_spec.source == MaterialSpec::NODES) {
+		/* as Blender Internal and the game: the node tree decides */
 		return;
 	}
-	from_blender_internal(ma, r_spec);
+	if (r_spec.locked & (1u << TEX_ALBEDO)) {
+		/* P8.24: the Remix block's albedo */
+		return;
+	}
+	brb_material_desc &d = r_spec.desc;
+	if (r_spec.textures[TEX_ALBEDO].image) {
+		/* a texture slot (or the panel's image) paints over the face image,
+		 * as the game's shader mixes it on top */
+		note(r_spec, "a texture slot gives the colour; the face image is left out");
+		return;
+	}
+	r_spec.textures[TEX_ALBEDO] = texture(face_image, BRB_TEXTURE_COLOR);
+	if (r_spec.source == MaterialSpec::BLENDER_INTERNAL) {
+		/* the image replaces the material colour */
+		set3(d.albedo, ma->ref, ma->ref, ma->ref);
+	}
+	if ((ma->mode & MA_FACETEXTURE_ALPHA) && (d.alpha_blend || d.alpha_test)) {
+		/* the image's alpha is the opacity */
+		d.opacity = 1.0f;
+	}
+	shadeless_glow(ma, r_spec, true);
+}
+
+bool remix_block_used(const Material *ma)
+{
+	return ma && remix_block(ma).i("use") != 0;
+}
+
+bool nodes_need_bake(const Material *ma)
+{
+	if (!ma || !ma->use_nodes || !ma->nodetree || !cycles_output(ma->nodetree)) {
+		return false;
+	}
+	/* Bake Nodes: 0 automatic, 1 always, 2 never */
+	const int mode = remix_block(ma).i("bake_nodes");
+	if (mode == 1 || mode == 2) {
+		return mode == 1;
+	}
+	/* automatic: when the translation left out or approximated part of the
+	 * surface (the translator's marks; glass tinting is not a reason) */
+	MaterialSpec s;
+	defaults(s);
+	from_nodes(ma, s);
+	for (std::map<std::string, std::pair<int, std::string> >::const_iterator it = s.marks.begin();
+	     it != s.marks.end(); ++it)
+	{
+		const std::string &f = it->first;
+		if (f == "albedo" || f == "roughness" || f == "metallic" || f == "normal" || f == "emissive" ||
+		    f == "opacity" || f == "surface")
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+void material_match(const Material *ma, const MaterialSpec &s, std::vector<FieldMatch> &r)
+{
+	r.clear();
+	const brb_material_desc &d = s.desc;
+	const bool glass = d.type == BRB_MATERIAL_TRANSLUCENT;
+	static const char *source_names[] = {"Blender's default material", "the RTX Remix panel", "the Cycles nodes",
+	                                     "Blender Internal's settings", "the physical material"};
+	const std::string from = std::string("from ") + source_names[s.source];
+	const std::string unused = "not used (Remix's default)";
+	struct Row {
+		const char *field;
+		int tex;    /* TextureSlot or -1 */
+		bool used;  /* the material has it */
+	};
+	const Row rows[] = {
+	    {"albedo", TEX_ALBEDO, !glass},
+	    {"opacity", -1, d.alpha_blend || d.alpha_test},
+	    {"roughness", TEX_ROUGHNESS, !glass},
+	    {"metallic", TEX_METALLIC, !glass},
+	    {"normal", TEX_NORMAL, s.textures[TEX_NORMAL].wanted()},
+	    {"tangent", TEX_TANGENT, s.textures[TEX_TANGENT].wanted()},
+	    {"anisotropy", -1, d.anisotropy != 0.0f},
+	    {"emissive", TEX_EMISSIVE, d.emissive_intensity > 0.0f},
+	    {"height", TEX_HEIGHT, s.textures[TEX_HEIGHT].wanted()},
+	    {"thin film", -1, d.thin_film != 0},
+	    {"glass", -1, glass},
+	    {"transmittance", TEX_TRANSMITTANCE, glass},
+	    {"subsurface", -1, d.subsurface != 0},
+	    {"sss_transmittance", TEX_SSS_TRANSMITTANCE, d.subsurface != 0},
+	    {"sss_thickness", TEX_SSS_THICKNESS, s.textures[TEX_SSS_THICKNESS].wanted()},
+	    {"sss_albedo", TEX_SSS_ALBEDO, s.textures[TEX_SSS_ALBEDO].wanted()},
+	    {"sss_radius", TEX_SSS_RADIUS, d.subsurface != 0},
+	    {"blending", -1, d.alpha_blend || d.additive || d.blend_type != 0},
+	    {"alpha test", -1, d.alpha_test || d.alpha_test_type != 0},
+	    {"filtering and wrapping", -1, true},
+	    {"categories", -1, s.categories != 0},
+	};
+	const std::map<std::string, std::pair<int, std::string> >::const_iterator none = s.marks.end();
+	const std::map<std::string, std::pair<int, std::string> >::const_iterator surface = s.marks.find("surface");
+	for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+		const Row &row = rows[i];
+		FieldMatch m;
+		m.field = row.field;
+		m.level = MATCH_EXACT;
+		std::map<std::string, std::pair<int, std::string> >::const_iterator it = s.marks.find(row.field);
+		const bool surface_field = row.tex == TEX_ALBEDO || row.tex == TEX_ROUGHNESS || row.tex == TEX_METALLIC ||
+		                           row.tex == TEX_NORMAL;
+		if (it == none && surface_field && surface != none && !(s.locked & (1u << row.tex))) {
+			it = surface;
+		}
+		if (it != none) {
+			m.level = it->second.first;
+			m.note = it->second.second;
+		}
+		else if (!row.used) {
+			m.note = unused;
+		}
+		else if (std::string(row.field) == "categories") {
+			m.note = "set in the RTX Remix panel";
+		}
+		else {
+			m.note = from;
+		}
+		if (row.tex >= 0 && s.textures[row.tex].wanted() && m.level == MATCH_EXACT) {
+			const TextureRequest &t = s.textures[row.tex];
+			if (t.baked) {
+				m.level = MATCH_APPROX;
+				m.note = s.nodes_baked ? "the node tree, baked into an image" : "procedural textures, baked into an image";
+			}
+			else if (t.image) {
+				m.note += std::string(" (image ") + (t.image->id.name + 2) + ")";
+			}
+		}
+		r.push_back(m);
+	}
+	(void)ma;
 }
 
 }  /* namespace brmx */

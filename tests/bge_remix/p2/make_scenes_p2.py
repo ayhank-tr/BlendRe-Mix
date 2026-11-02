@@ -225,6 +225,17 @@ def world(scene, horizon):
 
 
 def save(path):
+    # P8.7: new materials are physical; these scenes were made for Classic
+    # shading (Blender Internal's), so they keep it
+    for ma in bpy.data.materials:
+        ma["bge_physical"] = 0
+    # P8.9: new lamps are physical too; these scenes keep their own falloff
+    for la in bpy.data.lamps:
+        la["bge_physical"] = 0
+    # P8 Part B (P8.12): new scenes start in the Modern pipeline; these keep
+    # the Classic one they were made for (a hidden property: harmless in 2.79)
+    for sc in bpy.data.scenes:
+        sc["bge_remix_pipeline"] = 0
     bpy.ops.wm.save_as_mainfile(filepath=path, check_existing=False, compress=False)
     print("BGE-Remix: wrote", path)
 
@@ -297,8 +308,8 @@ def make_room(folder):
     expected = {
         "lamps": [lamp_expect(ob) for ob in lamps],
         "world_horizon": vec(scene.world.horizon_color),
-        # the room keeps the default light scale (KX_RemixRenderer: 0.125)
-        "light_scale": scene.get("bge_remix_light_scale", 0.125),
+        # the room keeps the default light scale (BRMX_light.h: 1 since P8.30)
+        "light_scale": scene.get("bge_remix_light_scale", 1.0),
         "materials": [
             {"name": m.name, "albedo": vec(Vector(m.diffuse_color) * m.diffuse_intensity),
              "opacity": m.alpha if m.game_settings.alpha_blend != 'OPAQUE' else 1.0,

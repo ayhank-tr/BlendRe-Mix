@@ -51,16 +51,25 @@
 #include "BLI_sys_types.h" /* for intptr_t support */
 
 #include "gpu_codegen.h"
+#include "gpu_private.h"
 
 #include <string.h>
 #include <stdarg.h>
 
 extern char datatoc_gpu_shader_material_glsl[];
+extern char datatoc_gpu_shader_material_procedural_glsl[];
 extern char datatoc_gpu_shader_vertex_glsl[];
 extern char datatoc_gpu_shader_vertex_world_glsl[];
 extern char datatoc_gpu_shader_geometry_glsl[];
 
 static char *glsl_material_library = NULL;
+
+/* BGE-Remix P8.3: lamp and world values from the shared buffers (not with
+ * OpenSubdiv's GLSL 1.50 shaders) */
+static bool codegen_use_shared = true;
+/* BGE-Remix P8.5: the library with Blender Internal's procedural textures,
+ * only for the materials that use one (they are large to compile) */
+static char *glsl_material_library_procedural = NULL;
 
 
 /* type definitions and constants */
@@ -267,6 +276,7 @@ static GPUFunction *gpu_lookup_function(const char *name)
 	if (!FUNCTION_HASH) {
 		FUNCTION_HASH = BLI_ghash_str_new("GPU_lookup_function gh");
 		gpu_parse_functions_string(FUNCTION_HASH, glsl_material_library);
+		gpu_parse_functions_string(FUNCTION_HASH, datatoc_gpu_shader_material_procedural_glsl);
 	}
 
 	return BLI_ghash_lookup(FUNCTION_HASH, (const void *)name);
@@ -294,6 +304,10 @@ void gpu_codegen_exit(void)
 	if (glsl_material_library) {
 		MEM_freeN(glsl_material_library);
 		glsl_material_library = NULL;
+	}
+	if (glsl_material_library_procedural) {
+		MEM_freeN(glsl_material_library_procedural);
+		glsl_material_library_procedural = NULL;
 	}
 
 #if 0
@@ -412,6 +426,8 @@ const char *GPU_builtin_name(GPUBuiltin builtin)
 		return "unfparticleangvel";
 	else if (builtin == GPU_OBJECT_INFO)
 		return "unfobjectinfo";
+	else if (builtin == GPU_ORCO_MATRIX)
+		return "unforcomat";
 	else
 		return "";
 }
@@ -537,7 +553,14 @@ static int codegen_print_uniforms_functions(DynStr *ds, ListBase *nodes)
 				}
 			}
 			else if (input->source == GPU_SOURCE_VEC_UNIFORM) {
-				if (input->dynamicvec) {
+				char expr[512];
+				if (input->dynamicvec && codegen_use_shared &&
+				    GPU_shared_uniform_expr(input->dynamicvec, input->type, expr, sizeof(expr)))
+				{
+					/* BGE-Remix P8.3: a lamp or world value, read from the shared buffers */
+					BLI_dynstr_appendf(ds, "#define unf%d %s\n", input->id, expr);
+				}
+				else if (input->dynamicvec) {
 					/* only create uniforms for dynamic vectors */
 					BLI_dynstr_appendf(ds, "uniform %s unf%d;\n",
 						GPU_DATATYPE_STR[input->type], input->id);
@@ -585,8 +608,8 @@ static void codegen_declare_tmps(DynStr *ds, ListBase *nodes)
 		for (input = node->inputs.first; input; input = input->next) {
 			if (input->source == GPU_SOURCE_TEX_PIXEL) {
 				if (codegen_input_has_texture(input) && input->definetex) {
-					BLI_dynstr_appendf(ds, "\tvec4 tex%d = texture2D(", input->texid);
-					BLI_dynstr_appendf(ds, "samp%d, gl_TexCoord[%d].st);\n",
+					BLI_dynstr_appendf(ds, "\tvec4 tex%d = texture(", input->texid);
+					BLI_dynstr_appendf(ds, "samp%d, BGE_TEXCOORD(%d).st);\n",
 					                   input->texid, input->texid);
 				}
 			}
@@ -615,7 +638,7 @@ static void codegen_call_functions(DynStr *ds, ListBase *nodes, GPUOutput *final
 			if (input->source == GPU_SOURCE_TEX) {
 				BLI_dynstr_appendf(ds, "samp%d", input->texid);
 				if (input->link)
-					BLI_dynstr_appendf(ds, ", gl_TexCoord[%d].st", input->texid);
+					BLI_dynstr_appendf(ds, ", BGE_TEXCOORD(%d).st", input->texid);
 			}
 			else if (input->source == GPU_SOURCE_TEX_PIXEL) {
 				codegen_convert_datatype(ds, input->link->output->type, input->type,
@@ -638,9 +661,9 @@ static void codegen_call_functions(DynStr *ds, ListBase *nodes, GPUOutput *final
 			}
 			else if (input->source == GPU_SOURCE_OPENGL_BUILTIN) {
 				if (input->oglbuiltin == GPU_MATCAP_NORMAL)
-					BLI_dynstr_append(ds, "gl_SecondaryColor");
+					BLI_dynstr_append(ds, "BGE_VCOL2");
 				else if (input->oglbuiltin == GPU_COLOR)
-					BLI_dynstr_append(ds, "gl_Color");
+					BLI_dynstr_append(ds, "BGE_VCOL");
 			}
 
 			BLI_dynstr_append(ds, ", ");
@@ -655,7 +678,7 @@ static void codegen_call_functions(DynStr *ds, ListBase *nodes, GPUOutput *final
 		BLI_dynstr_append(ds, ");\n");
 	}
 
-	BLI_dynstr_append(ds, "\n\tgl_FragColor = ");
+	BLI_dynstr_append(ds, "\n\tbge_fragcolor = ");
 	codegen_convert_datatype(ds, finaloutput->type, GPU_VEC4, "tmp", finaloutput->id);
 	BLI_dynstr_append(ds, ";\n");
 }
@@ -720,6 +743,23 @@ static char *code_generate_fragment(ListBase *nodes, GPUOutput *output)
 	codegen_declare_tmps(ds, nodes);
 	codegen_call_functions(ds, nodes, output);
 
+	/* BGE-Remix P8 Part B: the old alpha test, in the shader (core) */
+	BLI_dynstr_append(ds, "#ifdef BGE_CORE\n"
+	                      "\tif (bge_alphatest.x > 0.5 && !(bge_fragcolor.a > bge_alphatest.y)) discard;\n"
+	                      "#endif\n");
+	/* BGE-Remix P8 Part C (P8.21): order-independent transparency (weighted
+	 * blended: McGuire and Bavoil 2013), the colour times its cover and a
+	 * weight that falls with depth; the cover alone into the second target */
+	BLI_dynstr_append(ds, "#ifdef BGE_CORE\n"
+	                      "\tif (bge_oit != 0) {\n"
+	                      "\t\tfloat oa = clamp(bge_fragcolor.a, 0.0, 1.0);\n"
+	                      "\t\tfloat ow = clamp(pow(min(1.0, oa * 10.0) + 0.01, 3.0) * 1e8 *\n"
+	                      "\t\t                 pow(1.0 - gl_FragCoord.z * 0.9, 3.0), 1e-2, 3e3);\n"
+	                      "\t\tbge_fragcolor = vec4(bge_fragcolor.rgb * oa, oa) * ow;\n"
+	                      "\t\tbge_oitreveal = vec4(oa);\n"
+	                      "\t}\n"
+	                      "#endif\n");
+
 	BLI_dynstr_append(ds, "}\n");
 
 	/* create shader */
@@ -770,6 +810,7 @@ static char *code_generate_vertex(ListBase *nodes, const GPUMatType type)
 
 	switch (type) {
 		case GPU_MATERIAL_TYPE_MESH:
+		case GPU_MATERIAL_TYPE_MESH_BAKE:
 			vertcode = datatoc_gpu_shader_vertex_glsl;
 			break;
 		case GPU_MATERIAL_TYPE_WORLD:
@@ -790,7 +831,7 @@ static char *code_generate_vertex(ListBase *nodes, const GPUMatType type)
 					BLI_dynstr_appendf(ds, "#ifndef USE_OPENSUBDIV\n");
 #endif
 					BLI_dynstr_appendf(
-					        ds, "\tvar%d.xyz = normalize(gl_NormalMatrix * att%d.xyz);\n",
+					        ds, "\tvar%d.xyz = normalize(BGE_NORMALMAT * att%d.xyz);\n",
 					        input->attribid, input->attribid);
 					BLI_dynstr_appendf(
 					        ds, "\tvar%d.w = att%d.w;\n",
@@ -821,12 +862,28 @@ static char *code_generate_vertex(ListBase *nodes, const GPUMatType type)
 					/* remap to 0.0 - 1.0 range. This is done because OpenGL 2.0 clamps colors
 					 * between shader stages and we want the full range of the normal */
 					BLI_dynstr_appendf(ds, "\tvec3 matcapcol = vec3(0.5) * varnormal + vec3(0.5);\n");
-					BLI_dynstr_appendf(ds, "\tgl_FrontSecondaryColor = vec4(matcapcol, 1.0);\n");
+					BLI_dynstr_appendf(ds, "\tBGE_VCOL2_OUT = vec4(matcapcol, 1.0);\n");
 				}
 				else if (input->oglbuiltin == GPU_COLOR) {
-					BLI_dynstr_appendf(ds, "\tgl_FrontColor = gl_Color;\n");
+					BLI_dynstr_appendf(ds, "\tBGE_VCOL_OUT = bge_col;\n");
 				}
 			}
+
+	/* BGE-Remix P8.6: a bake draws the surface at its active UV map */
+	if (type == GPU_MATERIAL_TYPE_MESH_BAKE) {
+		bool found = false;
+		for (node = nodes->first; node && !found; node = node->next) {
+			for (input = node->inputs.first; input && !found; input = input->next) {
+				if (input->source == GPU_SOURCE_ATTRIB && input->attribfirst &&
+				    input->attribtype == CD_MTFACE && input->attribname[0] == '\0')
+				{
+					BLI_dynstr_appendf(ds, "\tgl_Position = vec4(att%d.xy * 2.0 - vec2(1.0), 0.0, 1.0);\n",
+					                   input->attribid);
+					found = true;
+				}
+			}
+		}
+	}
 
 	BLI_dynstr_append(ds, "}\n");
 
@@ -917,7 +974,54 @@ void GPU_code_generate_glsl_lib(void)
 
 	glsl_material_library = BLI_dynstr_get_cstring(ds);
 
+	BLI_dynstr_append(ds, datatoc_gpu_shader_material_procedural_glsl);
+	glsl_material_library_procedural = BLI_dynstr_get_cstring(ds);
+
 	BLI_dynstr_free(ds);
+}
+
+/* BGE-Remix P8.3: the material library and vertex template built with the
+ * core front end (as the drawing layer's batches will use them): true when
+ * they compile and link */
+bool GPU_codegen_selftest_core(void)
+{
+	GPU_code_generate_glsl_lib();
+	DynStr *ds = BLI_dynstr_new();
+	BLI_dynstr_append(ds, datatoc_gpu_shader_vertex_glsl);
+	BLI_dynstr_append(ds, "\tBGE_VCOL_OUT = bge_col;\n}\n");
+	char *vert = BLI_dynstr_get_cstring(ds);
+	BLI_dynstr_free(ds);
+	const char *frag =
+	        "in vec3 varposition;\n"
+	        "in vec3 varnormal;\n"
+	        "#define unf1 vec3(bge_lw[0], bge_lw[1], bge_lw[2])\n"
+	        "#define unf2 bge_ww[0]\n"
+	        "void main()\n"
+	        "{\n"
+	        "	vec3 facingnormal = gl_FrontFacing ? varnormal : -varnormal;\n"
+	        "	bge_fragcolor = vec4(unf1 * unf2 * facingnormal + BGE_VCOL.rgb, 1.0);\n"
+	        "}\n";
+	GPUShader *sh = GPU_shader_create_ex(vert, frag, NULL, glsl_material_library_procedural, NULL, 0, 0, 0,
+	                                     GPU_SHADER_FLAGS_GLSL450 | GPU_SHADER_FLAGS_CORE |
+	                                     GPU_SHADER_FLAGS_FRONTEND | GPU_SHADER_FLAGS_SHARED);
+	MEM_freeN(vert);
+	if (!sh) {
+		return false;
+	}
+	GPU_shader_free(sh);
+	return true;
+}
+
+/* BGE-Remix P8.5: whether the nodes call the procedural texture library */
+static bool gpu_nodes_use_procedural(ListBase *nodes)
+{
+	GPUNode *node;
+	for (node = nodes->first; node; node = node->next) {
+		if (node->name && STREQLEN(node->name, "proc_", 5)) {
+			return true;
+		}
+	}
+	return false;
 }
 
 
@@ -1182,6 +1286,7 @@ static void gpu_node_input_link(GPUNode *node, GPUNodeLink *link, const GPUType 
 		input->textarget = GL_TEXTURE_2D;
 		input->textype = type;
 		input->dynamictex = true;
+		input->dynamictype = link->dynamictype;  /* BGE-Remix P8: kept, as for dynamic uniforms */
 		input->dynamicdata = link->ptr2;
 		MEM_freeN(link);
 	}
@@ -1652,11 +1757,13 @@ GPUPass *GPU_generate_pass(
         GPUVertexAttribs *attribs, int *builtins,
         const GPUMatType type, const char *UNUSED(name),
         const bool use_opensubdiv,
-        const bool use_new_shading)
+        const bool use_new_shading,
+        const bool use_core)
 {
 	GPUShader *shader;
 	GPUPass *pass;
 	char *vertexcode, *geometrycode, *fragmentcode;
+	const char *libcode;
 
 #if 0
 	if (!FUNCTION_LIB) {
@@ -1671,22 +1778,31 @@ GPUPass *GPU_generate_pass(
 	gpu_nodes_get_vertex_attributes(nodes, attribs);
 	gpu_nodes_get_builtin_flag(nodes, builtins);
 
+	libcode = gpu_nodes_use_procedural(nodes) ? glsl_material_library_procedural : glsl_material_library;
+
 	/* generate code and compile with opengl */
+	codegen_use_shared = !use_opensubdiv;
 	fragmentcode = code_generate_fragment(nodes, outlink->output);
 	vertexcode = code_generate_vertex(nodes, type);
 	geometrycode = code_generate_geometry(nodes, use_opensubdiv);
 
-	int flags = GPU_SHADER_FLAGS_NONE;
+	/* BGE-Remix P8.3: GLSL 4.50 with the material front end */
+	int flags = GPU_SHADER_FLAGS_GLSL450 | GPU_SHADER_FLAGS_FRONTEND | GPU_SHADER_FLAGS_SHARED;
 	if (use_opensubdiv) {
 		flags |= GPU_SHADER_FLAGS_SPECIAL_OPENSUBDIV;
 	}
 	if (use_new_shading) {
 		flags |= GPU_SHADER_FLAGS_NEW_SHADING;
 	}
+	/* BGE-Remix P8 Part B: the game's materials use the core front end
+	 * (matrices and the old built-ins as uniforms, the batches' attributes) */
+	if (use_core && !use_opensubdiv) {
+		flags |= GPU_SHADER_FLAGS_CORE;
+	}
 	shader = GPU_shader_create_ex(vertexcode,
 	                              fragmentcode,
 	                              geometrycode,
-	                              glsl_material_library,
+	                              libcode,
 	                              NULL,
 	                              0,
 	                              0,
@@ -1713,7 +1829,7 @@ GPUPass *GPU_generate_pass(
 	pass->fragmentcode = fragmentcode;
 	pass->geometrycode = geometrycode;
 	pass->vertexcode = vertexcode;
-	pass->libcode = glsl_material_library;
+	pass->libcode = libcode;
 
 	/* extract dynamic inputs and throw away nodes */
 	gpu_nodes_extract_dynamic_inputs(pass, nodes);

@@ -148,6 +148,15 @@ static int gpu_shader_texture(GPUMaterial *mat, bNode *node, bNodeExecData *UNUS
 
 		return true;
 	}
+	else if (tex) {
+		/* BGE-Remix P8.5: a procedural, at the linked vector or the
+		 * original coordinates, as the render's node */
+		GPUNodeLink *co = in[0].link;
+		if (!co) {
+			GPU_link(mat, "texco_orco", GPU_attribute(CD_ORCO, ""), &co);
+		}
+		return GPU_material_link_procedural_node(mat, tex, co, &out[0].link, &out[1].link, &out[2].link);
+	}
 
 	return false;
 }

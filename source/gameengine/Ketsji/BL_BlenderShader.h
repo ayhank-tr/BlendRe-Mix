@@ -62,10 +62,12 @@ private:
 	int				mLightLayer;
 	int				mAlphaBlend;
 	GPUMaterial     *mGPUMat;
+	struct Image	*mFaceImage;	/* BGE-Remix P8: "Face Textures" */
+	bool			mTraced;		/* BGE-Remix P8: BGE_REMIX_TRACE printed once */
 
 	bool			VerifyShader() 
 	{
-		return (NULL != mGPUMat);
+		return GPU_material_is_valid(mGPUMat);
 	}
 
 public:
@@ -74,9 +76,11 @@ public:
 
 	bool				Ok()
 	{
-		// same as VerifyShared
-		return (NULL != mGPUMat);
+		// same as VerifyShared (BGE-Remix P8: and the shader was built)
+		return GPU_material_is_valid(mGPUMat);
 	}
+	/* BGE-Remix P8: the face image this material's faces show ("Face Textures") */
+	void				SetFaceImage(struct Image *ima) { mFaceImage = ima; }
 	void				SetProg(bool enable, double time=0.0, RAS_IRasterizer* rasty=NULL);
 
 	int GetAttribNum();
@@ -84,6 +88,8 @@ public:
 	void Update(const class RAS_MeshSlot & ms, class RAS_IRasterizer* rasty);
 	void ReloadMaterial();
 	int GetAlphaBlend();
+	/* BGE-Remix P8 Part B (P8.11) */
+	GPUMaterial *GetGPUMaterial() { return mGPUMat; }
 
 	bool Equals(BL_BlenderShader *blshader);
 	

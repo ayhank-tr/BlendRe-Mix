@@ -40,6 +40,7 @@
 #include "KX_IpoConvert.h"
 
 #include <map>
+#include <set>
 #include <unordered_set>
 
 using namespace std;
@@ -61,6 +62,7 @@ typedef map<KX_Scene*, map<Material*, RAS_IPolyMaterial*> > PolyMaterialCache;
 
 class KX_BlenderSceneConverter : public KX_ISceneConverter
 {
+	vector<struct ID *> m_temp_ids;  /* BGE-Remix P8 Part C */
 	// Use vector of pairs to allow removal of entities between scene switch
 	vector<pair<KX_Scene*,KX_WorldInfo*> >	m_worldinfos;
 	vector<pair<KX_Scene*,RAS_IPolyMaterial*> > m_polymaterials;
@@ -99,6 +101,10 @@ class KX_BlenderSceneConverter : public KX_ISceneConverter
 	bool					m_useglslmat;
 	bool					m_use_mat_cache;
 
+	/* BGE-Remix P8: which materials' GLSL shaders could be built */
+	std::map<Material *, bool>	m_glslWorks;
+	std::set<Material *>		m_glslFailed;
+
 public:
 	KX_BlenderSceneConverter(
 		Main* maggie,
@@ -129,6 +135,9 @@ public:
 	KX_GameObject *FindGameObject(struct Object *for_blenderobject);
 
 	void RegisterGameMesh(RAS_MeshObject *gamemesh, struct Mesh *for_blendermesh);
+	/* BGE-Remix P8 Part C: Blender data made for the game (hair ribbons,
+	 * curves as meshes), freed with the converter */
+	void RegisterTemporaryID(struct ID *id) { m_temp_ids.push_back(id); }
 	RAS_MeshObject *FindGameMesh(struct Mesh *for_blendermesh/*, unsigned int onlayer*/);
 
 	void RegisterPolyMaterial(RAS_IPolyMaterial *polymat);
@@ -166,6 +175,13 @@ public:
 	// use blender glsl materials
 	virtual void SetGLSLMaterials(bool val);
 	virtual bool GetGLSLMaterials();
+
+	/* BGE-Remix P8: build the material's GLSL shader now; false (and a
+	 * console line) when it cannot be built, so the material falls back to
+	 * the built-in classic shader. BGE_REMIX_GLSL_FAIL=<material name> makes
+	 * it fail on purpose (tests). */
+	bool MaterialGLSLWorks(KX_Scene *scene, struct Material *ma);
+	const std::set<struct Material *> &GetGLSLFailures() const { return m_glslFailed; }
 
 	// cache materials during conversion
 	virtual void SetCacheMaterials(bool val);

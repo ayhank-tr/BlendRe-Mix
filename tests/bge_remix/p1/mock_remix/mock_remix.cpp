@@ -285,26 +285,49 @@ remixapi_ErrorCode REMIXAPI_CALL m_CreateMaterial(const remixapi_MaterialInfo *i
 	const std::string common =
 	    " albedo_tex=" + tex_path(info->albedoTexture) + " normal_tex=" + tex_path(info->normalTexture) +
 	    " emissive_tex=" + tex_path(info->emissiveTexture) + " filter=" + std::to_string(info->filterMode) +
-	    " wrap=" + std::to_string(info->wrapModeU);
+	    " wrap=" + std::to_string(info->wrapModeU) +
+	    /* P8.24 (interface 10) */
+	    " wrap_v=" + std::to_string(info->wrapModeV) + " tangent_tex=" + tex_path(info->tangentTexture);
+	char extra[1024] = "";
+	if (o) {
+		snprintf(extra, sizeof(extra),
+		         " anisotropy=%.4f thinfilm=%d thinfilm_nm=%.2f alpha_thinfilm=%d height_tex=%s displace_in=%.4f "
+		         "displace_out=%.4f inverted=%d alphatest_type=%d sss_volumetric=%d sss_transmittance_tex=%s "
+		         "sss_thickness_tex=%s sss_albedo_tex=%s sss_radius_tex=%s",
+		         o->anisotropy, o->thinFilmThickness_hasvalue ? 1 : 0, o->thinFilmThickness_value,
+		         o->alphaIsThinFilmThickness ? 1 : 0, tex_path(o->heightTexture).c_str(), o->displaceIn,
+		         o->displaceOut, o->invertedBlend ? 1 : 0, (int)o->alphaTestType,
+		         (ss && !ss->subsurfaceDiffusionProfile) ? 1 : 0,
+		         ss ? tex_path(ss->subsurfaceTransmittanceTexture).c_str() : "-",
+		         ss ? tex_path(ss->subsurfaceThicknessTexture).c_str() : "-",
+		         ss ? tex_path(ss->subsurfaceSingleScatteringAlbedoTexture).c_str() : "-",
+		         ss ? tex_path(ss->subsurfaceRadiusTexture).c_str() : "-");
+	}
+	else if (t) {
+		snprintf(extra, sizeof(extra), " transmittance_tex=%s diffuse_layer=%d thinwall=%.4f",
+		         tex_path(t->transmittanceTexture).c_str(), t->useDiffuseLayer ? 1 : 0,
+		         t->thinWallThickness_hasvalue ? t->thinWallThickness_value : 0.0f);
+	}
 	if (o) {
 		mlog("CreateMaterial hash=%llx type=opaque albedo=%.4f,%.4f,%.4f opacity=%.4f roughness=%.4f metallic=%.4f "
 		     "emissive=%.4f,%.4f,%.4f intensity=%.4f blend=%d alphatest=%d alpharef=%d subsurface=%d "
-		     "sss_radius=%.4f,%.4f,%.4f roughness_tex=%s metallic_tex=%s%s",
+		     "sss_radius=%.4f,%.4f,%.4f roughness_tex=%s metallic_tex=%s%s blendtype=%d%s",
 		     (unsigned long long)info->hash, o->albedoConstant.x, o->albedoConstant.y, o->albedoConstant.z,
 		     o->opacityConstant, o->roughnessConstant, o->metallicConstant, info->emissiveColorConstant.x,
 		     info->emissiveColorConstant.y, info->emissiveColorConstant.z, info->emissiveIntensity,
 		     o->blendType_hasvalue ? 1 : 0, (!o->useDrawCallAlphaState && o->alphaTestType != 7) ? 1 : 0,
 		     (int)o->alphaReferenceValue, ss ? 1 : 0, ss ? ss->subsurfaceRadius.x : 0.0f,
 		     ss ? ss->subsurfaceRadius.y : 0.0f, ss ? ss->subsurfaceRadius.z : 0.0f,
-		     tex_path(o->roughnessTexture).c_str(), tex_path(o->metallicTexture).c_str(), common.c_str());
+		     tex_path(o->roughnessTexture).c_str(), tex_path(o->metallicTexture).c_str(), common.c_str(),
+		     o->blendType_hasvalue ? o->blendType_value : -1, extra);
 	}
 	else if (t) {
 		mlog("CreateMaterial hash=%llx type=translucent ior=%.4f transmittance=%.4f,%.4f,%.4f distance=%.4f "
-		     "emissive=%.4f,%.4f,%.4f intensity=%.4f%s",
+		     "emissive=%.4f,%.4f,%.4f intensity=%.4f%s%s",
 		     (unsigned long long)info->hash, t->refractiveIndex, t->transmittanceColor.x, t->transmittanceColor.y,
 		     t->transmittanceColor.z, t->transmittanceMeasurementDistance, info->emissiveColorConstant.x,
 		     info->emissiveColorConstant.y, info->emissiveColorConstant.z, info->emissiveIntensity,
-		     common.c_str());
+		     common.c_str(), extra);
 	}
 	else {
 		mlog("CreateMaterial hash=%llx", (unsigned long long)info->hash);
@@ -447,11 +470,50 @@ remixapi_ErrorCode REMIXAPI_CALL m_SetupCamera(const remixapi_CameraInfo *info)
 	return REMIXAPI_ERROR_CODE_SUCCESS;
 }
 
+static remixapi_ErrorCode draw_one(const remixapi_InstanceInfo *info);
+
+/* P8.30: GPU instancing (remixapi_InstanceInfoGpuInstancingEXT): each
+ * instance recorded as its own draw, at its transform after the instance's */
+static remixapi_Transform compose(const remixapi_Transform &a, const remixapi_Transform &b)
+{
+	remixapi_Transform r = {};
+	for (int i = 0; i < 3; i++) {
+		for (int j = 0; j < 4; j++) {
+			float v = (j == 3) ? a.matrix[i][3] : 0.0f;
+			for (int k = 0; k < 3; k++) {
+				v += a.matrix[i][k] * b.matrix[k][j];
+			}
+			r.matrix[i][j] = v;
+		}
+	}
+	return r;
+}
+
 remixapi_ErrorCode REMIXAPI_CALL m_DrawInstance(const remixapi_InstanceInfo *info)
 {
 	if (!info || !info->mesh) {
 		return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
 	}
+	const auto *gi = find_ext<remixapi_InstanceInfoGpuInstancingEXT>(
+	    info->pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_GPU_INSTANCING_EXT);
+	if (!gi || gi->instanceTransforms_count == 0 || !gi->instanceTransforms_values) {
+		return draw_one(info);
+	}
+	if (frame_listed("BGE_REMIX_MOCK_DRAWS_FRAME", g_present_count)) {
+		auto mit = g_meshes.find((uintptr_t)info->mesh);
+		mlog("Instanced frame=%d mesh=%llx count=%u", g_present_count,
+		     mit != g_meshes.end() ? mit->second.hash : 0ULL, gi->instanceTransforms_count);
+	}
+	for (uint32_t k = 0; k < gi->instanceTransforms_count; k++) {
+		remixapi_InstanceInfo one = *info;
+		one.transform = compose(gi->instanceTransforms_values[k], info->transform);
+		draw_one(&one);
+	}
+	return REMIXAPI_ERROR_CODE_SUCCESS;
+}
+
+static remixapi_ErrorCode draw_one(const remixapi_InstanceInfo *info)
+{
 	g_frame_draws++;
 	if (const remixapi_InstanceInfoBlendEXT *b = find_ext<remixapi_InstanceInfoBlendEXT>(
 	        info->pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BLEND_EXT))
@@ -580,22 +642,33 @@ remixapi_ErrorCode REMIXAPI_CALL m_CreateLight(const remixapi_LightInfo *info, r
 	const remixapi_Float3D &rad = info->radiance;
 	if (auto *l = find_ext<remixapi_LightInfoSphereEXT>(info->pNext, REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT)) {
 		mlog("CreateLight hash=%llx type=sphere pos=%.4f,%.4f,%.4f radius=%.4f shaped=%d dir=%.4f,%.4f,%.4f "
-		     "cone=%.4f softness=%.4f radiance=%.4f,%.4f,%.4f",
+		     "cone=%.4f softness=%.4f radiance=%.4f,%.4f,%.4f volumetric=%.4f",
 		     hash, l->position.x, l->position.y, l->position.z, l->radius, l->shaping_hasvalue ? 1 : 0,
 		     l->shaping_value.direction.x, l->shaping_value.direction.y, l->shaping_value.direction.z,
-		     l->shaping_value.coneAngleDegrees, l->shaping_value.coneSoftness, rad.x, rad.y, rad.z);
+		     l->shaping_value.coneAngleDegrees, l->shaping_value.coneSoftness, rad.x, rad.y, rad.z,
+		     l->volumetricRadianceScale);
 	}
 	else if (auto *l = find_ext<remixapi_LightInfoRectEXT>(info->pNext, REMIXAPI_STRUCT_TYPE_LIGHT_INFO_RECT_EXT)) {
 		mlog("CreateLight hash=%llx type=rect pos=%.4f,%.4f,%.4f size=%.4f,%.4f dir=%.4f,%.4f,%.4f "
-		     "radiance=%.4f,%.4f,%.4f",
+		     "radiance=%.4f,%.4f,%.4f volumetric=%.4f",
 		     hash, l->position.x, l->position.y, l->position.z, l->xSize, l->ySize, l->direction.x,
-		     l->direction.y, l->direction.z, rad.x, rad.y, rad.z);
+		     l->direction.y, l->direction.z, rad.x, rad.y, rad.z, l->volumetricRadianceScale);
+	}
+	else if (auto *l = find_ext<remixapi_LightInfoDiskEXT>(info->pNext, REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISK_EXT)) {
+		/* interface 8 */
+		mlog("CreateLight hash=%llx type=disk pos=%.4f,%.4f,%.4f radii=%.4f,%.4f shaped=%d dir=%.4f,%.4f,%.4f "
+		     "cone=%.4f softness=%.4f radiance=%.4f,%.4f,%.4f volumetric=%.4f",
+		     hash, l->position.x, l->position.y, l->position.z, l->xRadius, l->yRadius, l->shaping_hasvalue ? 1 : 0,
+		     l->direction.x, l->direction.y, l->direction.z, l->shaping_value.coneAngleDegrees,
+		     l->shaping_value.coneSoftness, rad.x, rad.y, rad.z, l->volumetricRadianceScale);
 	}
 	else if (auto *l = find_ext<remixapi_LightInfoDistantEXT>(info->pNext,
 	                                                         REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISTANT_EXT))
 	{
-		mlog("CreateLight hash=%llx type=distant dir=%.4f,%.4f,%.4f angle=%.4f radiance=%.4f,%.4f,%.4f",
-		     hash, l->direction.x, l->direction.y, l->direction.z, l->angularDiameterDegrees, rad.x, rad.y, rad.z);
+		mlog("CreateLight hash=%llx type=distant dir=%.4f,%.4f,%.4f angle=%.4f radiance=%.4f,%.4f,%.4f "
+		     "volumetric=%.4f",
+		     hash, l->direction.x, l->direction.y, l->direction.z, l->angularDiameterDegrees, rad.x, rad.y, rad.z,
+		     l->volumetricRadianceScale);
 	}
 	else if (auto *l = find_ext<remixapi_LightInfoDomeEXT>(info->pNext, REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DOME_EXT)) {
 		const bool tex = l->colorTexture && GetFileAttributesW(l->colorTexture) != INVALID_FILE_ATTRIBUTES;
@@ -873,6 +946,11 @@ extern "C" REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_InitializeLibrary(
 	if (mode && mode[0]) {
 		strncpy(g_mode, mode, sizeof(g_mode) - 1);
 	}
+	/* P8: the game asks before choosing direct mode: this runtime's Vulkan
+	 * handles are made up (a driver with GL_NV_draw_vulkan_image would draw
+	 * from them), so it says what it is (the process's environment block:
+	 * the game's C library has its own copy of getenv's) */
+	SetEnvironmentVariableA("BGE_REMIX_FAKE_RUNTIME", "1");
 	const uint64_t v = info ? info->version : 0;
 	mlog("InitializeLibrary api=%llu.%llu.%llu mode=%s",
 	     (unsigned long long)REMIXAPI_VERSION_GET_MAJOR(v), (unsigned long long)REMIXAPI_VERSION_GET_MINOR(v),

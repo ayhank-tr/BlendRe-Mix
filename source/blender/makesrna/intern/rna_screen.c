@@ -35,6 +35,8 @@
 
 #include "DNA_screen_types.h"
 #include "DNA_scene_types.h"
+#include "DNA_space_types.h"
+#include "DNA_view3d_types.h"
 
 EnumPropertyItem rna_enum_region_type_items[] = {
 	{RGN_TYPE_WINDOW, "WINDOW", 0, "Window", ""},
@@ -52,6 +54,37 @@ EnumPropertyItem rna_enum_region_type_items[] = {
 
 #include "WM_api.h"
 #include "WM_types.h"
+
+/* BGE-Remix P7: the editor types of an area: the space types, and the Game
+ * View (a 3D View with V3D_GAMEVIEW) after the 3D View */
+static EnumPropertyItem rna_enum_area_type_items[] = {
+	{SPACE_EMPTY, "EMPTY", ICON_NONE, "Empty", ""},
+	{SPACE_VIEW3D, "VIEW_3D", ICON_VIEW3D, "3D View", "3D viewport"},
+	{AREA_TYPE_GAME_VIEW, "GAME_VIEW", ICON_GAME, "Game View",
+	 "The whole game, layer by layer: what goes into the game, its state and its warnings"},
+	{0, "", ICON_NONE, NULL, NULL},
+	{SPACE_TIME, "TIMELINE", ICON_TIME, "Timeline", "Timeline and playback controls"},
+	{SPACE_IPO, "GRAPH_EDITOR", ICON_IPO, "Graph Editor", "Edit drivers and keyframe interpolation"},
+	{SPACE_ACTION, "DOPESHEET_EDITOR", ICON_ACTION, "Dope Sheet", "Adjust timing of keyframes"},
+	{SPACE_NLA, "NLA_EDITOR", ICON_NLA, "NLA Editor", "Combine and layer Actions"},
+	{0, "", ICON_NONE, NULL, NULL},
+	{SPACE_IMAGE, "IMAGE_EDITOR", ICON_IMAGE_COL, "UV/Image Editor", "View and edit images and UV Maps"},
+	{SPACE_CLIP, "CLIP_EDITOR", ICON_CLIP, "Movie Clip Editor", "Motion tracking tools"},
+	{SPACE_SEQ, "SEQUENCE_EDITOR", ICON_SEQUENCE, "Video Sequence Editor", "Video editing tools"},
+	{SPACE_NODE, "NODE_EDITOR", ICON_NODETREE, "Node Editor", "Editor for node-based shading and compositing tools"},
+	{SPACE_TEXT, "TEXT_EDITOR", ICON_TEXT, "Text Editor", "Edit scripts and in-file documentation"},
+	{SPACE_LOGIC, "LOGIC_EDITOR", ICON_LOGIC, "Logic Editor", "Game logic editing"},
+	{0, "", ICON_NONE, NULL, NULL},
+	{SPACE_BUTS, "PROPERTIES", ICON_BUTS, "Properties", "Edit properties of active object and related data-blocks"},
+	{SPACE_OUTLINER, "OUTLINER", ICON_OOPS, "Outliner", "Overview of scene graph and all available data-blocks"},
+	{SPACE_USERPREF, "USER_PREFERENCES", ICON_PREFERENCES, "User Preferences", "Edit persistent configuration settings"},
+	{SPACE_INFO, "INFO", ICON_INFO, "Info", "Main menu bar and list of error messages (drag down to expand and display)"},
+	{0, "", ICON_NONE, NULL, NULL},
+	{SPACE_FILE, "FILE_BROWSER", ICON_FILESEL, "File Browser", "Browse for files and assets"},
+	{0, "", ICON_NONE, NULL, NULL},
+	{SPACE_CONSOLE, "CONSOLE", ICON_CONSOLE, "Python Console", "Interactive programmatic console for advanced editing and script development"},
+	{0, NULL, 0, NULL, NULL}
+};
 
 #ifdef RNA_RUNTIME
 
@@ -127,12 +160,28 @@ static EnumPropertyItem *rna_Area_type_itemf(bContext *UNUSED(C), PointerRNA *UN
                                              PropertyRNA *UNUSED(prop), bool *UNUSED(r_free))
 {
 	/* +1 to skip SPACE_EMPTY */
-	return rna_enum_space_type_items + 1;
+	return rna_enum_area_type_items + 1;
 }
+
+/* BGE-Remix P7: a 3D View area showing the Game View */
+static bool area_is_game_view(ScrArea *sa)
+{
+	View3D *v3d = sa->spacedata.first;
+	return sa->spacetype == SPACE_VIEW3D && sa->butspacetype == SPACE_VIEW3D && v3d &&
+	       v3d->spacetype == SPACE_VIEW3D && (v3d->gameview_flag & V3D_GAMEVIEW);
+}
+
+/* the Game View asked for by the last type set (applied in the update, once
+ * the area holds a 3D View): 1 Game View, 0 plain 3D View, -1 neither */
+static ScrArea *area_gameview_request_area = NULL;
+static int area_gameview_request = -1;
 
 static int rna_Area_type_get(PointerRNA *ptr)
 {
 	ScrArea *sa = (ScrArea *)ptr->data;
+	if (area_is_game_view(sa)) {
+		return AREA_TYPE_GAME_VIEW;
+	}
 	/* read from this instead of 'spacetype' for correct reporting: T41435 */
 	return sa->butspacetype;
 }
@@ -140,7 +189,38 @@ static int rna_Area_type_get(PointerRNA *ptr)
 static void rna_Area_type_set(PointerRNA *ptr, int value)
 {
 	ScrArea *sa = (ScrArea *)ptr->data;
+	area_gameview_request_area = sa;
+	if (value == AREA_TYPE_GAME_VIEW) {
+		area_gameview_request = 1;
+		value = SPACE_VIEW3D;
+	}
+	else {
+		area_gameview_request = (value == SPACE_VIEW3D) ? 0 : -1;
+	}
 	sa->butspacetype = value;
+}
+
+static void area_gameview_apply(ScrArea *sa)
+{
+	View3D *v3d;
+	if (area_gameview_request_area != sa || area_gameview_request == -1 || sa->spacetype != SPACE_VIEW3D) {
+		area_gameview_request_area = NULL;
+		return;
+	}
+	v3d = sa->spacedata.first;
+	if (area_gameview_request == 1) {
+		v3d->gameview_flag |= V3D_GAMEVIEW;
+		if ((v3d->gameview_flag & V3D_GAMEVIEW_INIT) == 0) {
+			/* a new Game View: every layer, dimmed scene, names shown */
+			v3d->gameview_flag |= V3D_GAMEVIEW_INIT | V3D_GAMEVIEW_DIM | V3D_GAMEVIEW_LABELS;
+			v3d->gameview_layers = V3D_GAMEVIEW_LAYERS_ALL;
+		}
+	}
+	else {
+		v3d->gameview_flag &= ~V3D_GAMEVIEW;
+	}
+	area_gameview_request_area = NULL;
+	area_gameview_request = -1;
 }
 
 static void rna_Area_type_update(bContext *C, PointerRNA *ptr)
@@ -162,6 +242,7 @@ static void rna_Area_type_update(bContext *C, PointerRNA *ptr)
 			CTX_wm_region_set(C, NULL);
 
 			ED_area_newspace(C, sa, sa->butspacetype, true);
+			area_gameview_apply(sa);  /* BGE-Remix P7 */
 			ED_area_tag_redraw(sa);
 
 			/* It is possible that new layers becomes visible. */
@@ -239,7 +320,7 @@ static void rna_def_area(BlenderRNA *brna)
 
 	prop = RNA_def_property(srna, "type", PROP_ENUM, PROP_NONE);
 	RNA_def_property_enum_sdna(prop, NULL, "spacetype");
-	RNA_def_property_enum_items(prop, rna_enum_space_type_items);
+	RNA_def_property_enum_items(prop, rna_enum_area_type_items);
 	RNA_def_property_enum_default(prop, SPACE_VIEW3D);
 	RNA_def_property_enum_funcs(prop, "rna_Area_type_get", "rna_Area_type_set", "rna_Area_type_itemf");
 	RNA_def_property_ui_text(prop, "Editor Type", "Current editor type for this area");

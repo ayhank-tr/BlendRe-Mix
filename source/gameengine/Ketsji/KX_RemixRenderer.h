@@ -85,8 +85,13 @@ public:
 		int enabled;        /* 1: render through Remix */
 		int window_mode;    /* 1: present into a child window (blenderplayer) */
 		float light_scale;  /* brightness factor for lamps */
-		float exposure;     /* stops added to Remix's automatic exposure (default +2) */
+		float exposure;     /* stops added to Remix's exposure (P8.30: default 0) */
+		int explicit_off;   /* P8.30: the scene turns Remix off itself (bge_remix 0) */
 	};
+	/* P8.30: once a game has drawn through Remix, the scenes and files it
+	 * switches to keep Remix on, unless they turn it off themselves; a new
+	 * game (Blender's embedded player) starts afresh */
+	static void ResetKeepOn();
 
 	/* Scene settings: the custom properties bge_remix, bge_remix_fast and
 	 * bge_remix_light_scale of the Blender scene (Render panel), unless the
@@ -147,6 +152,7 @@ private:
 		bool double_sided;
 		bool blend;
 		bool particle;
+		unsigned categories; /* P8.24: the materials' Remix categories */
 		int billboard;     /* 0 no, 1 Halo (faces the camera), 2 Billboard (turns around Z) */
 		int shadow_faces;  /* surfaces left out (Shadow face orientation) */
 		uint64_t content;  /* hash of the positions and normals */
@@ -161,6 +167,7 @@ private:
 		bool double_sided;
 		bool blend;        /* has alpha-blended surfaces */
 		bool particle;
+		unsigned categories; /* P8.24: the materials' Remix categories */
 		int billboard;
 	};
 	/* a mesh skinned by Remix: one per mesh and armature */
@@ -173,6 +180,7 @@ private:
 		bool double_sided;
 		bool blend;
 		bool particle;
+		unsigned categories; /* P8.24: the materials' Remix categories */
 	};
 	/* an object deformed on the CPU: its own Remix mesh */
 	struct DeformEntry {
@@ -184,6 +192,7 @@ private:
 		bool double_sided;
 		bool blend;
 		bool particle;
+		unsigned categories; /* P8.24: the materials' Remix categories */
 	};
 	struct PickEntry {
 		uint32_t id;
@@ -197,12 +206,23 @@ private:
 		bool blend;        /* alpha blended */
 		bool particle;     /* drawn as a particle (Halo, or the panel's Particle) */
 		bool waiting;      /* sent without some textures that are still being encoded */
+		/* P8.6: a material with procedural textures, made for one mesh */
+		RAS_IPolyMaterial *pm;
+		RAS_MeshObject *mesh;
+		float obmat[16];           /* where the mesh was when baked */
+		uint64_t bake_signature;   /* to bake again when the textures change */
+		double bake_checked;
+		MaterialEntry() : hash(0), scene(NULL), blend(false), particle(false), waiting(false), pm(NULL), mesh(NULL),
+		                  bake_signature(0), bake_checked(0.0) {}
 	};
 	struct LightEntry {
 		uint64_t hash;
 		KX_Scene *scene;
 		std::vector<unsigned char> desc; /* last description sent */
+		int frame;                       /* BGE-Remix P8.9: the last frame it was sent in */
+		LightEntry() : hash(0), scene(NULL), frame(0) {}
 	};
+	int m_light_frame;                   /* BGE-Remix P8.9: counts UpdateLights calls */
 
 	bool Start(KX_Scene *scene, int width, int height, const Settings &settings);
 	KX_Scene *PickSceneImpl(const std::vector<KX_Scene *> &scenes, bool stereo, bool dome,
@@ -219,6 +239,15 @@ private:
 	bool DrawSkinned(KX_Scene *scene, KX_GameObject *obj, RAS_Deformer *def, const float model[16], uint32_t pick);
 	bool DrawDeformed(KX_Scene *scene, KX_GameObject *obj, RAS_Deformer *def, const float model[16], uint32_t pick);
 	bool DrawEmitters(KX_Scene *scene, KX_GameObject *obj, struct Object *ob, const float model[16], uint32_t pick);
+	bool DrawFaceText(KX_Scene *scene, KX_GameObject *obj, RAS_MeshObject *mesh, const float model[16], uint32_t pick);
+	uint64_t ParticleMaterial(KX_Scene *scene, struct Object *ob, struct ParticleSystem *psys);
+	uint64_t EmitterMesh(KX_Scene *scene, KX_GameObject *obj, RAS_MeshObject *mesh, struct ParticleSystem *psys,
+	                     uint64_t material);
+	/* P8.20: a halo material's vertices as glowing sprites facing the camera */
+	bool DrawHalos(KX_Scene *scene, KX_GameObject *obj, struct Object *ob, const float model[16],
+	               const MT_Matrix3x3 &camori, uint32_t pick);
+	uint64_t HaloMaterial(struct Material *ma);
+	std::map<const void *, uint64_t> m_halo_materials;
 	void SkinCheck(KX_GameObject *obj, BL_SkinDeformer *skin, uint64_t mesh, const float model[16], uint32_t pick);
 	void ReleaseSkinning(KX_Scene *scene);
 	void PruneDynamic(KX_Scene *scene);
@@ -226,9 +255,12 @@ private:
 	void UpdatePicking(KX_Scene *scene);
 	bool ObjectAlive(KX_GameObject *obj);
 	void NoteOnce(const std::string &text);
-	uint64_t EnsureMaterial(KX_Scene *scene, RAS_IPolyMaterial *mat);
+	const MaterialEntry &EnsureMaterial(KX_Scene *scene, RAS_IPolyMaterial *mat, RAS_MeshObject *mesh);
 	void SendMaterial(MaterialEntry &e);
 	void UpdateTextures(KX_Scene *scene);
+	/* P8.6: procedural textures baked into images, per mesh */
+	void Bake(MaterialEntry &e);
+	void UpdateBakes(KX_Scene *scene);
 	void ShowRemixWindow(bool show);
 	void ApplyExposure(const Settings &settings);
 	void UpdateLights(KX_Scene *scene, float light_scale);
@@ -249,7 +281,10 @@ private:
 	bool m_shown;          /* window mode: the child window is visible */
 
 	std::map<const void *, MeshEntry> m_meshes;
-	std::map<const void *, MaterialEntry> m_materials;
+	/* by polygon material, and mesh for those with baked procedural textures */
+	std::map<std::pair<const void *, const void *>, MaterialEntry> m_materials;
+	float m_bake_obmat[16];    /* P8.6: the object drawn now, for bakes */
+	double m_bakes_checked;
 	std::map<const void *, LightEntry> m_lights;
 	std::map<uint64_t, const void *> m_hashes;
 	/* by mesh and armature names (BGE gives every armature object its own
@@ -278,9 +313,47 @@ private:
 	float m_highlight_color[3];
 	int m_vp_x0, m_vp_y0;      /* the viewport's top left corner in the window */
 	brmx::TextureCache *m_cache;
+
+	/* BGE-Remix P8 Part B (P8.17): the world's sky as the dome's picture
+	 * (named by its content), and the mist sent as Remix's fog */
+	uint64_t m_skykey;
+	std::wstring m_skypath;
+	std::string m_fogsent;
+	/* P8.19: volume objects (held; found again every second) */
+	std::vector<KX_GameObject *> m_volume_objs;
+	int m_volume_scan;
+	bool m_mist_said;  /* P8.30: the mist left out of Remix, said once */
+	const wchar_t *SkyTexture(KX_Scene *scene, uint64_t *r_key);
+	void UpdateFog(KX_Scene *scene);
+	void ForcedAutoExposure();
+	std::set<const void *> m_particles_said;  /* P8.30 diagnostics */
+	int m_instanced_groups;  /* P8.30: instanced draws in the last frame */
+	/* P8.30: bge.texture pictures written for Remix */
+	struct LiveEntry {
+		double last;
+		int ticket;
+		int flip;  /* each picture's file a new name (Remix reads a path once) */
+		std::wstring writing, ready, old;
+		LiveEntry() : last(-1e9), ticket(0), flip(0) {}
+	};
+	std::map<struct Image *, LiveEntry> m_live;
+	int m_live_updates;
+	void UpdateLiveTextures();
+public:
+	void LiveTexture(struct Image *ima, const unsigned int *rgba, int width, int height);
+	bool LiveTextureDue(struct Image *ima);
+private:
+	/* P8.23: the camera and screen effects' settings as Remix's options
+	 * (sent when they change) */
+	void UpdateCameraEffects(KX_Scene *scene, KX_Camera *cam);
+	std::string m_fx_sent;
 	int m_materials_waiting;   /* entries with waiting set */
 	int m_materials_swapped;   /* sent again with their textures */
 	int m_material_notes;      /* lines the translator could not represent */
+	int m_bakes, m_rebakes;    /* P8.6: materials baked, and baked again while playing */
+	double m_bake_ms;          /* P8.6: time spent baking */
+	int m_bakes_cached;        /* P8.7: bakes found in the cache (nothing drawn) */
+	double m_bake_gpu_ms;      /* P8.7: their time on the graphics card */
 	double m_max_swap_ms;      /* slowest frame that swapped materials */
 	double m_frame_ms_max;     /* longest gap between two Remix frames (after the first 10) */
 	double m_last_render;

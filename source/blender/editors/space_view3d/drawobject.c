@@ -316,7 +316,9 @@ bool draw_glsl_material(Scene *scene, Object *ob, View3D *v3d, const char dt)
 		return false;
 }
 
-static bool check_alpha_pass(Base *base)
+/* whether the object's see-through materials are drawn after the solid ones
+ * (BGE-Remix P8: also in the GLSL drawing of a game scene, as the game sorts) */
+static bool check_alpha_pass_game(Base *base, bool game_glsl)
 {
 	if (base->flag & OB_FROMDUPLI)
 		return false;
@@ -327,7 +329,7 @@ static bool check_alpha_pass(Base *base)
 	if (base->object->mode & OB_MODE_ALL_PAINT)
 		return false;
 
-	return (base->object->dtx & OB_DRAWTRANSP);
+	return game_glsl || (base->object->dtx & OB_DRAWTRANSP);
 }
 
 /***/
@@ -3675,6 +3677,8 @@ static DMDrawOption draw_em_fancy__setGLSLFaceOpts(void *userData, int index)
 	}
 }
 
+static bool draw_glsl_face_images_em(Object *ob, BMEditMesh *em, DerivedMesh *dm);
+
 static void draw_em_fancy(Scene *scene, ARegion *ar, View3D *v3d,
                           Object *ob, BMEditMesh *em, DerivedMesh *cageDM, DerivedMesh *finalDM, const char dt)
 
@@ -3716,8 +3720,10 @@ static void draw_em_fancy(Scene *scene, ARegion *ar, View3D *v3d,
 			if (draw_glsl_material(scene, ob, v3d, dt)) {
 				glFrontFace((ob->transflag & OB_NEG_SCALE) ? GL_CW : GL_CCW);
 
-				finalDM->drawMappedFacesGLSL(finalDM, GPU_object_material_bind,
-				                             draw_em_fancy__setGLSLFaceOpts, em);
+				if (!draw_glsl_face_images_em(ob, em, finalDM)) {
+					finalDM->drawMappedFacesGLSL(finalDM, GPU_object_material_bind,
+					                             draw_em_fancy__setGLSLFaceOpts, em);
+				}
 				GPU_object_material_unbind();
 
 				glFrontFace(GL_CCW);
@@ -3959,6 +3965,136 @@ static bool object_is_halo(Scene *scene, Object *ob)
 	return (ma && (ma->material_type == MA_TYPE_HALO) && !BKE_scene_use_new_shading_nodes(scene));
 }
 
+/* BGE-Remix P8: "Face Textures" in GLSL: the faces are drawn once per face
+ * image, each time with that image bound. Returns false when no material of
+ * the object uses face textures (then the mesh is drawn as usual). */
+typedef struct GLSLFaceImageData {
+	const MTexPoly *mtpoly;
+	int totpoly;
+	Image *ima;
+} GLSLFaceImageData;
+
+static DMDrawOption draw_glsl_face_image_cb(void *userData, int index)
+{
+	GLSLFaceImageData *data = userData;
+	if (index < 0 || index >= data->totpoly) {
+		return (data->ima == NULL) ? DM_DRAW_OPTION_NORMAL : DM_DRAW_OPTION_SKIP;
+	}
+	return (data->mtpoly[index].tpage == data->ima) ? DM_DRAW_OPTION_NORMAL : DM_DRAW_OPTION_SKIP;
+}
+
+static bool draw_glsl_face_images(Object *ob, DerivedMesh *dm)
+{
+	Mesh *me = ob->data;
+	GLSLFaceImageData data;
+	Image *images[64];
+	int totimages = 0, a, i;
+	bool used = false;
+
+	if (ob->type != OB_MESH || !me || !me->mtpoly || !dm->drawMappedFacesGLSL) {
+		return false;
+	}
+	for (a = 1; a <= ob->totcol; a++) {
+		Material *ma = give_current_material(ob, a);
+		if (ma && (ma->mode & MA_FACETEXTURE)) {
+			used = true;
+		}
+	}
+	if (!used) {
+		return false;
+	}
+	/* the distinct face images (NULL included); many images: draw as usual */
+	for (i = 0; i < me->totpoly; i++) {
+		Image *ima = me->mtpoly[i].tpage;
+		for (a = 0; a < totimages && images[a] != ima; a++) {}
+		if (a == totimages) {
+			if (totimages == 64) {
+				return false;
+			}
+			images[totimages++] = ima;
+		}
+	}
+	data.mtpoly = me->mtpoly;
+	data.totpoly = me->totpoly;
+	for (a = 0; a < totimages; a++) {
+		data.ima = images[a];
+		GPU_object_material_face_image(images[a]);
+		dm->drawMappedFacesGLSL(dm, GPU_object_material_bind, draw_glsl_face_image_cb, &data);
+	}
+	GPU_object_material_face_image(NULL);
+	return true;
+}
+
+/* the same in edit mode: hidden faces are skipped */
+typedef struct GLSLFaceImageEditData {
+	BMEditMesh *em;
+	int cd_poly_tex_offset;
+	Image *ima;
+} GLSLFaceImageEditData;
+
+static DMDrawOption draw_glsl_face_image_em_cb(void *userData, int index)
+{
+	GLSLFaceImageEditData *data = userData;
+	BMFace *efa;
+	MTexPoly *tp;
+	if (index < 0 || index >= data->em->bm->totface) {
+		return (data->ima == NULL) ? DM_DRAW_OPTION_NORMAL : DM_DRAW_OPTION_SKIP;
+	}
+	efa = BM_face_at_index(data->em->bm, index);
+	if (BM_elem_flag_test(efa, BM_ELEM_HIDDEN)) {
+		return DM_DRAW_OPTION_SKIP;
+	}
+	tp = BM_ELEM_CD_GET_VOID_P(efa, data->cd_poly_tex_offset);
+	return (tp->tpage == data->ima) ? DM_DRAW_OPTION_NORMAL : DM_DRAW_OPTION_SKIP;
+}
+
+static bool draw_glsl_face_images_em(Object *ob, BMEditMesh *em, DerivedMesh *dm)
+{
+	GLSLFaceImageEditData data;
+	Image *images[64];
+	int totimages = 0, a;
+	bool used = false;
+	BMIter iter;
+	BMFace *efa;
+
+	if (!em || !dm->drawMappedFacesGLSL) {
+		return false;
+	}
+	data.cd_poly_tex_offset = CustomData_get_offset(&em->bm->pdata, CD_MTEXPOLY);
+	if (data.cd_poly_tex_offset == -1) {
+		return false;
+	}
+	for (a = 1; a <= ob->totcol; a++) {
+		Material *ma = give_current_material(ob, a);
+		if (ma && (ma->mode & MA_FACETEXTURE)) {
+			used = true;
+		}
+	}
+	if (!used) {
+		return false;
+	}
+	BM_ITER_MESH (efa, &iter, em->bm, BM_FACES_OF_MESH) {
+		MTexPoly *tp = BM_ELEM_CD_GET_VOID_P(efa, data.cd_poly_tex_offset);
+		Image *ima = tp->tpage;
+		for (a = 0; a < totimages && images[a] != ima; a++) {}
+		if (a == totimages) {
+			if (totimages == 64) {
+				return false;
+			}
+			images[totimages++] = ima;
+		}
+	}
+	BM_mesh_elem_table_ensure(em->bm, BM_FACE);
+	data.em = em;
+	for (a = 0; a < totimages; a++) {
+		data.ima = images[a];
+		GPU_object_material_face_image(images[a]);
+		dm->drawMappedFacesGLSL(dm, GPU_object_material_bind, draw_glsl_face_image_em_cb, &data);
+	}
+	GPU_object_material_face_image(NULL);
+	return true;
+}
+
 static void draw_mesh_fancy(Scene *scene, ARegion *ar, View3D *v3d, RegionView3D *rv3d, Base *base,
                             const char dt, const unsigned char ob_wire_col[4], const short dflag)
 {
@@ -4055,8 +4191,9 @@ static void draw_mesh_fancy(Scene *scene, ARegion *ar, View3D *v3d, RegionView3D
 				dm->drawFacesSolid(dm, fpl, fast, NULL);
 				draw_loose = false;
 			}
-			else
+			else if (!draw_glsl_face_images(ob, dm)) {
 				dm->drawFacesGLSL(dm, GPU_object_material_bind);
+			}
 
 #if 0 /* XXX */
 			if (BKE_bproperty_object_get(ob, "Text"))
@@ -4297,7 +4434,10 @@ static bool draw_mesh_object(Scene *scene, ARegion *ar, View3D *v3d, RegionView3
 				const bool glsl = draw_glsl_material(scene, ob, v3d, dt);
 
 				if (dt == OB_SOLID || glsl) {
-					const bool check_alpha = check_alpha_pass(base);
+					/* BGE-Remix P8: Textured mode in a game scene draws as the game
+					 * does: see-through materials after the solid ones, without the
+					 * object's Transparency display option */
+					const bool check_alpha = check_alpha_pass_game(base, glsl && BKE_scene_uses_blender_game(scene));
 					GPU_begin_object_materials(v3d, rv3d, scene, ob, glsl,
 					                           (check_alpha) ? &do_alpha_after : NULL);
 				}

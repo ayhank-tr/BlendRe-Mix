@@ -51,6 +51,7 @@ using namespace std;
 #endif
 
 class RAS_ICanvas;
+struct Scene;
 class RAS_IPolyMaterial;
 class RAS_MeshSlot;
 class RAS_ILightObject;
@@ -314,6 +315,8 @@ public:
 	virtual void SetFog(short type, float start, float dist, float intensity, float color[3]) = 0;
 	virtual void DisplayFog() = 0;
 	virtual void EnableFog(bool enable) = 0;
+	/* BGE-Remix P8 Part B (P8.17): no mist above this height (0: none) */
+	virtual void SetFogHeight(float height) = 0;
 
 	virtual void SetBackColor(float color[3]) = 0;
 	
@@ -422,6 +425,10 @@ public:
 	virtual void SetMotionBlurState(int newstate) = 0;
 
 	virtual void SetAlphaBlend(int alphablend) = 0;
+	/* BGE-Remix P8 Part C (P8.21): the order-independent transparent pass
+	 * (Modern scenes); false: transparent surfaces are drawn sorted */
+	virtual bool BeginTransparency() { return false; }
+	virtual void EndTransparency() {}
 	virtual void SetFrontFace(bool ccw) = 0;
 
 	virtual void SetAnisotropicFiltering(short level) = 0;
@@ -432,6 +439,10 @@ public:
 
 	virtual void SetUsingOverrideShader(bool val) = 0;
 	virtual bool GetUsingOverrideShader() = 0;
+
+	/* BGE-Remix P8.4: the next meshes are a material whose GLSL shader could
+	 * not be built (drawn with the built-in classic shader) */
+	virtual void SetClassicFallback(bool) {}
 
 	/**
 	 * Render Tools
@@ -488,6 +499,26 @@ public:
 	virtual void RemoveLight(RAS_ILightObject *lightobject) = 0;
 
 	virtual void MotionBlur() = 0;
+	/* BGE-Remix P8 Part B: the end of a stereo frame (interlaced stereo puts
+	 * the left eye's rows back over the right eye's picture) */
+	virtual void FinishStereo() {}
+	/* BGE-Remix P8 Part B: the old OpenGL matrices set from the layer's, for
+	 * old drawing that reads them (Python's bgl in drawing callbacks) */
+	virtual void SyncOldMatrices() {}
+	/* BGE-Remix P8 Part B (P8.12): a scene draws into its pipeline's target
+	 * (Modern, or Classic with anti-aliasing); "first": the frame's first
+	 * scene (it clears the background); EndScene puts it on the window */
+	virtual void BeginScene(struct Scene *scene, bool first, int samples) {}
+	virtual void EndScene() {}
+	/* BGE-Remix P8 Part B (P8.11): mesh slots of one mesh and material drawn
+	 * as instances (false: the caller draws them one by one); the main
+	 * camera's view (GPU occlusion culling may be used); the frame's counts */
+	virtual bool IndexPrimitivesInstanced(std::vector<class RAS_MeshSlot *>& slots) { return false; }
+	virtual void SetMainView(bool on) {}
+	virtual void GetInstancingStats(int *r_draws, int *r_objects) { *r_draws = *r_objects = 0; }
+	/* BGE-Remix P8 Part B (P8.11): instances the GPU culling pass tested and
+	 * let through this frame (drawn: -1 unless BGE_REMIX_DRAW_STATS=1) */
+	virtual void GetCullingStats(int *r_tested, int *r_drawn) { *r_tested = 0; *r_drawn = -1; }
 
 	virtual void SetClientObject(void *obj) = 0;
 

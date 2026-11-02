@@ -40,6 +40,11 @@
 #include "RAS_IPolygonMaterial.h"
 #include "RAS_MeshObject.h"
 #include "PHY_IGraphicController.h"
+#include "RAS_MaterialBucket.h"
+#include "BL_BlenderDataConversion.h"
+#include "KX_PythonInit.h"  /* KX_GetActiveEngine (P8.22) */
+#include "KX_KetsjiEngine.h"
+#include <algorithm>
 
 #include "DNA_armature_types.h"
 #include "DNA_action_types.h"
@@ -68,6 +73,7 @@ extern "C"{
 
 BL_ModifierDeformer::~BL_ModifierDeformer()
 {
+	FreeDerivedArrays();
 	if (m_dm) {
 		// deformedOnly is used as a user counter
 		if (--m_dm->deformedOnly == 0) {
@@ -90,6 +96,9 @@ void BL_ModifierDeformer::ProcessReplica()
 {
 	/* Note! - This is not inherited from PyObjectPlus */
 	BL_ShapeDeformer::ProcessReplica();
+	/* the arrays are the original's: this replica makes its own */
+	m_dmArrays.clear();
+	m_dmArraysDirty = true;
 	if (m_dm)
 		// by default try to reuse mesh, deformedOnly is used as a user count
 		m_dm->deformedOnly++;
@@ -106,10 +115,12 @@ bool BL_ModifierDeformer::HasCompatibleDeformer(Object *ob)
 		return false;
 	ModifierData* md;
 	for (md = (ModifierData *)ob->modifiers.first; md; md = md->next) {
-		if (modifier_dependsOnTime(md))
-			continue;
 		if (!(md->mode & eModifierMode_Realtime))
 			continue;
+		/* BGE-Remix P8 Part C (P8.22): modifiers that move with time (Ocean,
+		 * Dynamic Paint, fluid results) play at the game's time */
+		if (modifier_dependsOnTime(md))
+			return true;
 		/* armature modifier are handled by SkinDeformer, not ModifierDeformer */
 		if (md->type == eModifierType_Armature )
 			continue;
@@ -159,10 +170,25 @@ bool BL_ModifierDeformer::Update(void)
 	bool bShapeUpdate = BL_ShapeDeformer::Update();
 
 	if (bShapeUpdate || m_lastModifierUpdate != m_gameobj->GetLastFrame()) {
+		/* BGE-Remix P8 Part C (P8.22): time-dependent modifiers run at the
+		 * game's time, every frame */
+		Object* blendobj = m_gameobj->GetBlendObject();
+		bool timed = false;
+		for (ModifierData *md = (ModifierData *)blendobj->modifiers.first; md && !timed; md = md->next)
+			timed = (md->mode & eModifierMode_Realtime) && modifier_dependsOnTime(md);
+		if (timed)
+			m_bDynamic = true;  /* (Remix reads it again each frame too) */
 		// static derived mesh are not updated
 		if (m_dm == NULL || m_bDynamic) {
+			const int cfra = m_scene->r.cfra;
+			const float subframe = m_scene->r.subframe;
+			if (timed && KX_GetActiveEngine()) {
+				const double fps = (double)m_scene->r.frs_sec / std::max((double)m_scene->r.frs_sec_base, 1e-6);
+				const double frame = (double)m_scene->r.sfra + KX_GetActiveEngine()->GetClockTime() * fps;
+				m_scene->r.cfra = (int)frame;
+				m_scene->r.subframe = (float)(frame - (double)(int)frame);
+			}
 			/* execute the modifiers */
-			Object* blendobj = m_gameobj->GetBlendObject();
 			/* hack: the modifiers require that the mesh is attached to the object
 			 * It may not be the case here because of replace mesh actuator */
 			Mesh *oldmesh = (Mesh*)blendobj->data;
@@ -171,6 +197,8 @@ bool BL_ModifierDeformer::Update(void)
 			DerivedMesh *dm = mesh_create_derived_no_virtual(m_scene, blendobj, m_transverts, CD_MASK_MESH);
 			/* restore object data */
 			blendobj->data = oldmesh;
+			m_scene->r.cfra = cfra;
+			m_scene->r.subframe = subframe;
 			/* free the current derived mesh and replace, (dm should never be NULL) */
 			if (m_dm != NULL) {
 				// HACK! use deformedOnly as a user counter
@@ -180,6 +208,7 @@ bool BL_ModifierDeformer::Update(void)
 				}
 			}
 			m_dm = dm;
+			m_dmArraysDirty = true;
 			// get rid of temporary data
 			m_dm->needsFree = 0;
 			m_dm->release(m_dm);
@@ -198,6 +227,10 @@ bool BL_ModifierDeformer::Update(void)
 		m_lastModifierUpdate=m_gameobj->GetLastFrame();
 		bShapeUpdate = true;
 
+		/* BGE-Remix P8 Part B: the slots draw the derived mesh as batches */
+		if (m_dmArraysDirty)
+			UpdateDerivedArrays();
+
 		int nmat = m_pMeshObject->NumMaterials();
 		for (int imat=0; imat<nmat; imat++) {
 			RAS_MeshMaterial *mmat = m_pMeshObject->GetMeshMaterial(imat);
@@ -205,9 +238,37 @@ bool BL_ModifierDeformer::Update(void)
 			if (!slot || !*slot)
 				continue;
 			(*slot)->m_pDerivedMesh = m_dm;
+			(*slot)->m_pDerivedArrays = (imat < (int)m_dmArrays.size()) ? &m_dmArrays[imat] : NULL;
 		}
 	}
 	return bShapeUpdate;
+}
+
+void BL_ModifierDeformer::FreeDerivedArrays()
+{
+	for (size_t i = 0; i < m_dmArrays.size(); i++) {
+		for (size_t j = 0; j < m_dmArrays[i].size(); j++)
+			delete m_dmArrays[i][j];
+	}
+	m_dmArrays.clear();
+}
+
+void BL_ModifierDeformer::UpdateDerivedArrays()
+{
+	m_dmArraysDirty = false;
+	if (!m_dm)
+		return;
+	Object *blendobj = m_gameobj->GetBlendObject();
+	const int nmat = m_pMeshObject->NumMaterials();
+	if ((int)m_dmArrays.size() != nmat) {
+		FreeDerivedArrays();
+		m_dmArrays.resize(nmat);
+	}
+	for (int imat = 0; imat < nmat; imat++) {
+		RAS_MeshMaterial *mmat = m_pMeshObject->GetMeshMaterial(imat);
+		RAS_IPolyMaterial *polymat = (mmat && mmat->m_bucket) ? mmat->m_bucket->GetPolyMaterial() : NULL;
+		BL_ConvertDerivedMeshArrays(m_dm, blendobj, polymat, m_dmArrays[imat]);
+	}
 }
 
 bool BL_ModifierDeformer::Apply(RAS_IPolyMaterial *mat)

@@ -48,6 +48,27 @@
 #include "DNA_lamp_types.h"
 
 #include "BKE_scene.h"
+
+#include "GPU_material.h"
+#include "KX_PythonInit.h"
+#include "KX_KetsjiEngine.h"
+#include "RAS_BucketManager.h"
+
+#include <algorithm>
+#include <map>
+
+/* BGE-Remix P8: a lamp's type changed from Python while playing. In GLSL the
+ * type is built into every material's shader, so the Blender lamp's type is
+ * changed (and given back when the game ends) and the shaders are rebuilt. */
+static std::map<Lamp *, short> g_saved_lamp_types;
+
+void KX_LightObject_RestoreLampTypes()
+{
+	for (std::map<Lamp *, short>::iterator it = g_saved_lamp_types.begin(); it != g_saved_lamp_types.end(); ++it) {
+		it->first->type = it->second;
+	}
+	g_saved_lamp_types.clear();
+}
 #include "MEM_guardedalloc.h"
 
 #include "BLI_math.h"
@@ -161,11 +182,16 @@ PyAttributeDef KX_LightObject::Attributes[] = {
 	KX_PYATTRIBUTE_RO_FUNCTION("shadowClipStart", KX_LightObject, pyattr_get_shadow_clip_start),
 	KX_PYATTRIBUTE_RO_FUNCTION("shadowClipEnd", KX_LightObject, pyattr_get_shadow_clip_end),
 	KX_PYATTRIBUTE_RO_FUNCTION("shadowFrustumSize", KX_LightObject, pyattr_get_shadow_frustum_size),
-	KX_PYATTRIBUTE_RO_FUNCTION("shadowBias", KX_LightObject, pyattr_get_shadow_bias),
-	KX_PYATTRIBUTE_RO_FUNCTION("shadowBleedBias", KX_LightObject, pyattr_get_shadow_bleed_bias),
+	KX_PYATTRIBUTE_RW_FUNCTION("shadowBias", KX_LightObject, pyattr_get_shadow_bias, pyattr_set_shadow_bias),
+	KX_PYATTRIBUTE_RW_FUNCTION("shadowBleedBias", KX_LightObject, pyattr_get_shadow_bleed_bias, pyattr_set_shadow_bleed_bias),
 	KX_PYATTRIBUTE_RO_FUNCTION("shadowBindId", KX_LightObject, pyattr_get_shadow_bind_code),
 	KX_PYATTRIBUTE_RO_FUNCTION("shadowMapType", KX_LightObject, pyattr_get_shadow_map_type),
-	KX_PYATTRIBUTE_RO_FUNCTION("shadowColor", KX_LightObject, pyattr_get_shadow_color),
+	KX_PYATTRIBUTE_RW_FUNCTION("shadowColor", KX_LightObject, pyattr_get_shadow_color, pyattr_set_shadow_color),
+	/* BGE-Remix P8.9: the light's size */
+	KX_PYATTRIBUTE_RW_FUNCTION("size", KX_LightObject, pyattr_get_size, pyattr_set_size),
+	KX_PYATTRIBUTE_RW_FUNCTION("areaSize", KX_LightObject, pyattr_get_area_size, pyattr_set_area_size),
+	KX_PYATTRIBUTE_RW_FUNCTION("sunAngle", KX_LightObject, pyattr_get_sun_angle, pyattr_set_sun_angle),
+	KX_PYATTRIBUTE_RW_FUNCTION("contactShadow", KX_LightObject, pyattr_get_contact_shadow, pyattr_set_contact_shadow),
 	KX_PYATTRIBUTE_RO_FUNCTION("useShadow", KX_LightObject, pyattr_get_shadow_active),
 	KX_PYATTRIBUTE_RO_FUNCTION("shadowMatrix", KX_LightObject, pyattr_get_shadow_matrix),
 	KX_PYATTRIBUTE_RO_FUNCTION("SPOT", KX_LightObject, pyattr_get_typeconst),
@@ -281,6 +307,109 @@ PyObject *KX_LightObject::pyattr_get_shadow_color(void *self_v, const KX_PYATTRI
 {
 	KX_LightObject *self = static_cast<KX_LightObject *>(self_v);
 	return PyColorFromVector(MT_Vector3(self->m_lightobj->m_shadowcolor));
+}
+
+/* BGE-Remix P8.9: shadow settings and the light's size, changed while
+ * playing (the shaders read them as they change) */
+static int set_float(PyObject *value, const KX_PYATTRIBUTE_DEF *attrdef, float lo, float hi, float *r)
+{
+	const double val = PyFloat_AsDouble(value);
+	if (val == -1.0 && PyErr_Occurred()) {
+		PyErr_Format(PyExc_TypeError, "expected a number for attribute \"%s\"", attrdef->m_name);
+		return PY_SET_ATTR_FAIL;
+	}
+	*r = (float)std::min(std::max(val, (double)lo), (double)hi);
+	return PY_SET_ATTR_SUCCESS;
+}
+
+int KX_LightObject::pyattr_set_shadow_bias(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef, PyObject *value)
+{
+	KX_LightObject *self = static_cast<KX_LightObject *>(self_v);
+	return set_float(value, attrdef, 0.0f, 100.0f, &self->m_lightobj->m_shadowbias);
+}
+
+int KX_LightObject::pyattr_set_shadow_bleed_bias(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef, PyObject *value)
+{
+	KX_LightObject *self = static_cast<KX_LightObject *>(self_v);
+	return set_float(value, attrdef, 0.0f, 1.0f, &self->m_lightobj->m_shadowbleedbias);
+}
+
+int KX_LightObject::pyattr_set_shadow_color(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef, PyObject *value)
+{
+	KX_LightObject *self = static_cast<KX_LightObject *>(self_v);
+	MT_Vector3 color;
+	if (PyVecTo(value, color)) {
+		self->m_lightobj->m_shadowcolor[0] = color[0];
+		self->m_lightobj->m_shadowcolor[1] = color[1];
+		self->m_lightobj->m_shadowcolor[2] = color[2];
+		return PY_SET_ATTR_SUCCESS;
+	}
+	return PY_SET_ATTR_FAIL;
+}
+
+PyObject *KX_LightObject::pyattr_get_size(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef)
+{
+	KX_LightObject *self = static_cast<KX_LightObject *>(self_v);
+	return PyFloat_FromDouble(self->m_lightobj->m_size);
+}
+
+int KX_LightObject::pyattr_set_size(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef, PyObject *value)
+{
+	KX_LightObject *self = static_cast<KX_LightObject *>(self_v);
+	return set_float(value, attrdef, 0.0f, 1000.0f, &self->m_lightobj->m_size);
+}
+
+PyObject *KX_LightObject::pyattr_get_area_size(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef)
+{
+	KX_LightObject *self = static_cast<KX_LightObject *>(self_v);
+	return Py_BuildValue("[ff]", self->m_lightobj->m_areasize[0], self->m_lightobj->m_areasize[1]);
+}
+
+int KX_LightObject::pyattr_set_area_size(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef, PyObject *value)
+{
+	KX_LightObject *self = static_cast<KX_LightObject *>(self_v);
+	float xy[2];
+	bool ok = PySequence_Check(value) && PySequence_Size(value) == 2;
+	for (int i = 0; ok && i < 2; i++) {
+		PyObject *item = PySequence_GetItem(value, i);
+		xy[i] = item ? (float)PyFloat_AsDouble(item) : 0.0f;
+		Py_XDECREF(item);
+		ok = item && !PyErr_Occurred();
+	}
+	if (!ok) {
+		PyErr_Clear();
+		PyErr_Format(PyExc_TypeError, "expected two numbers (width, height) for attribute \"%s\"", attrdef->m_name);
+		return PY_SET_ATTR_FAIL;
+	}
+	const float x = xy[0], y = xy[1];
+	self->m_lightobj->m_areasize[0] = std::max(x, 0.0001f);
+	self->m_lightobj->m_areasize[1] = std::max(y, 0.0001f);
+	return PY_SET_ATTR_SUCCESS;
+}
+
+PyObject *KX_LightObject::pyattr_get_sun_angle(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef)
+{
+	KX_LightObject *self = static_cast<KX_LightObject *>(self_v);
+	return PyFloat_FromDouble(self->m_lightobj->m_sunangle);
+}
+
+int KX_LightObject::pyattr_set_sun_angle(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef, PyObject *value)
+{
+	KX_LightObject *self = static_cast<KX_LightObject *>(self_v);
+	return set_float(value, attrdef, 0.01f, 90.0f, &self->m_lightobj->m_sunangle);
+}
+
+/* BGE-Remix P8.10: how far contact shadows reach (0: none) */
+PyObject *KX_LightObject::pyattr_get_contact_shadow(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef)
+{
+	KX_LightObject *self = static_cast<KX_LightObject *>(self_v);
+	return PyFloat_FromDouble(self->m_lightobj->m_contact);
+}
+
+int KX_LightObject::pyattr_set_contact_shadow(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef, PyObject *value)
+{
+	KX_LightObject *self = static_cast<KX_LightObject *>(self_v);
+	return set_float(value, attrdef, 0.0f, 100.0f, &self->m_lightobj->m_contact);
 }
 
 PyObject *KX_LightObject::pyattr_get_shadow_active(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef)
@@ -481,6 +610,30 @@ int KX_LightObject::pyattr_set_type(void* self_v, const KX_PYATTRIBUTE_DEF *attr
 		case 2:
 			self->m_lightobj->m_type = self->m_lightobj->LIGHT_NORMAL;
 			break;
+	}
+
+	/* BGE-Remix P8: GLSL shaders follow the new type */
+	Object *ob = self->GetBlenderObject();
+	if (self->m_lightobj->m_glsl && ob && ob->type == OB_LAMP && ob->data) {
+		Lamp *la = (Lamp *)ob->data;
+		const short type = (val == 0) ? LA_SPOT : ((val == 1) ? LA_SUN : LA_LOCAL);
+		if (la->type != type) {
+			if (g_saved_lamp_types.find(la) == g_saved_lamp_types.end()) {
+				g_saved_lamp_types[la] = la->type;
+			}
+			la->type = type;
+			GPU_materials_free();
+			KX_KetsjiEngine *engine = KX_GetActiveEngine();
+			if (engine) {
+				KX_SceneList *scenes = engine->CurrentScenes();
+				for (KX_SceneList::iterator it = scenes->begin(); it != scenes->end(); ++it) {
+					if ((*it)->GetBucketManager()) {
+						(*it)->GetBucketManager()->ReleaseDisplayLists();
+						(*it)->GetBucketManager()->ReleaseMaterials();
+					}
+				}
+			}
+		}
 	}
 
 	return PY_SET_ATTR_SUCCESS;

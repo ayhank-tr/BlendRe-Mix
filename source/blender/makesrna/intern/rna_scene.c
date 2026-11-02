@@ -1905,6 +1905,84 @@ static void rna_Scene_sync_mode_set(PointerRNA *ptr, int value)
 /* BGE-Remix (P6): PhysX. The file keeps physicsEngine = Bullet (stock 2.79
  * opens it with Bullet) and the scene ID property BGE_PHYSX_IDPROP: 1 PhysX
  * on the CPU, 2 PhysX on the GPU. */
+
+/* BGE-Remix P8 Part C (P8.23): the Modern pipeline's screen effects (scene ID properties) */
+static int rna_GameSettings_fx_bloom_get(PointerRNA *ptr)
+{
+	return BKE_scene_game_fx((Scene *)ptr->id.data, "bloom", 0.0f) != 0.0f;
+}
+static void rna_GameSettings_fx_bloom_set(PointerRNA *ptr, int value)
+{
+	BKE_scene_game_fx_set((Scene *)ptr->id.data, "bloom", value ? 1.0f : 0.0f);
+}
+static float rna_GameSettings_fx_bloom_intensity_get(PointerRNA *ptr)
+{
+	return BKE_scene_game_fx((Scene *)ptr->id.data, "bloom_intensity", 0.05f);
+}
+static void rna_GameSettings_fx_bloom_intensity_set(PointerRNA *ptr, float value)
+{
+	BKE_scene_game_fx_set((Scene *)ptr->id.data, "bloom_intensity", value);
+}
+static float rna_GameSettings_fx_bloom_threshold_get(PointerRNA *ptr)
+{
+	return BKE_scene_game_fx((Scene *)ptr->id.data, "bloom_threshold", 1.0f);
+}
+static void rna_GameSettings_fx_bloom_threshold_set(PointerRNA *ptr, float value)
+{
+	BKE_scene_game_fx_set((Scene *)ptr->id.data, "bloom_threshold", value);
+}
+static float rna_GameSettings_fx_bloom_radius_get(PointerRNA *ptr)
+{
+	return BKE_scene_game_fx((Scene *)ptr->id.data, "bloom_radius", 6.5f);
+}
+static void rna_GameSettings_fx_bloom_radius_set(PointerRNA *ptr, float value)
+{
+	BKE_scene_game_fx_set((Scene *)ptr->id.data, "bloom_radius", value);
+}
+static int rna_GameSettings_fx_auto_exposure_get(PointerRNA *ptr)
+{
+	return BKE_scene_game_fx((Scene *)ptr->id.data, "auto_exposure", 0.0f) != 0.0f;
+}
+static void rna_GameSettings_fx_auto_exposure_set(PointerRNA *ptr, int value)
+{
+	BKE_scene_game_fx_set((Scene *)ptr->id.data, "auto_exposure", value ? 1.0f : 0.0f);
+}
+static float rna_GameSettings_fx_exposure_speed_get(PointerRNA *ptr)
+{
+	return BKE_scene_game_fx((Scene *)ptr->id.data, "exposure_speed", 1.0f);
+}
+static void rna_GameSettings_fx_exposure_speed_set(PointerRNA *ptr, float value)
+{
+	BKE_scene_game_fx_set((Scene *)ptr->id.data, "exposure_speed", value);
+}
+static float rna_GameSettings_fx_vignette_get(PointerRNA *ptr)
+{
+	return BKE_scene_game_fx((Scene *)ptr->id.data, "vignette", 0.0f);
+}
+static void rna_GameSettings_fx_vignette_set(PointerRNA *ptr, float value)
+{
+	BKE_scene_game_fx_set((Scene *)ptr->id.data, "vignette", value);
+}
+static int rna_GameSettings_fx_depth_of_field_get(PointerRNA *ptr)
+{
+	return BKE_scene_game_fx((Scene *)ptr->id.data, "depth_of_field", 0.0f) != 0.0f;
+}
+static void rna_GameSettings_fx_depth_of_field_set(PointerRNA *ptr, int value)
+{
+	BKE_scene_game_fx_set((Scene *)ptr->id.data, "depth_of_field", value ? 1.0f : 0.0f);
+}
+
+/* BGE-Remix P8 Part B: the game's pipeline, a hidden ID property of the scene */
+static int rna_GameSettings_render_pipeline_get(PointerRNA *ptr)
+{
+	return BKE_scene_game_pipeline((Scene *)ptr->id.data);
+}
+
+static void rna_GameSettings_render_pipeline_set(PointerRNA *ptr, int value)
+{
+	BKE_scene_game_pipeline_set((Scene *)ptr->id.data, value);
+}
+
 static int rna_GameSettings_physx_mode(PointerRNA *ptr)
 {
 	Scene *scene = (Scene *)ptr->id.data;
@@ -1955,6 +2033,13 @@ static int rna_GameSettings_physics_engine_get(PointerRNA *ptr)
 		return WOPHY_PHYSX;
 	}
 	return gm->physicsEngine;
+}
+
+/* BGE-Remix P8: one material mode (GLSL); old scripts may still set it */
+static void rna_GameSettings_material_mode_set(PointerRNA *ptr, int UNUSED(value))
+{
+	GameData *gm = (GameData *)ptr->data;
+	gm->matmode = GAME_MAT_GLSL;
 }
 
 static void rna_GameSettings_physics_engine_set(PointerRNA *ptr, int value)
@@ -4634,7 +4719,8 @@ static void rna_def_scene_game_data(BlenderRNA *brna)
 	};
 
 	static EnumPropertyItem material_items[] = {
-		{GAME_MAT_MULTITEX, "MULTITEXTURE", 0, "Multitexture", "Multitexture materials"},
+		{GAME_MAT_MULTITEX, "MULTITEXTURE", 0, "Multitexture",
+		 "Kept for old scripts only: BGE-Remix has one material mode, GLSL"},
 		{GAME_MAT_GLSL, "GLSL", 0, "GLSL", "OpenGL shading language shaders"},
 		{0, NULL, 0, NULL, NULL}
 	};
@@ -4688,6 +4774,70 @@ static void rna_def_scene_game_data(BlenderRNA *brna)
 	RNA_def_property_enum_sdna(prop, NULL, "aasamples");
 	RNA_def_property_enum_items(prop, aasamples_items);
 	RNA_def_property_ui_text(prop, "AA Samples", "The number of AA Samples to use for MSAA");
+
+	/* BGE-Remix P8 Part B */
+	static EnumPropertyItem render_pipeline_items[] = {
+		{0, "CLASSIC", 0, "Classic",
+		 "8-bit colour, as Blender 2.79 drew the game (files from before open with it)"},
+		{1, "MODERN", 0, "Modern",
+		 "Half-float colour; the scene's exposure, view transform, look and gamma (Color Management) "
+		 "are applied at the end"},
+		{0, NULL, 0, NULL, NULL}
+	};
+	prop = RNA_def_property(srna, "render_pipeline", PROP_ENUM, PROP_NONE);
+	RNA_def_property_enum_items(prop, render_pipeline_items);
+	RNA_def_property_enum_funcs(prop, "rna_GameSettings_render_pipeline_get",
+	                            "rna_GameSettings_render_pipeline_set", NULL);
+	RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
+	RNA_def_property_ui_text(prop, "Pipeline", "How the game draws its colours");
+	RNA_def_property_update(prop, NC_SCENE, NULL);
+
+	/* BGE-Remix P8 Part C (P8.23): screen effects of the Modern pipeline */
+	prop = RNA_def_property(srna, "fx_bloom", PROP_BOOLEAN, PROP_NONE);
+	RNA_def_property_boolean_funcs(prop, "rna_GameSettings_fx_bloom_get", "rna_GameSettings_fx_bloom_set");
+	RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
+	RNA_def_property_ui_text(prop, "Bloom", "Bright parts glow into their surroundings (Modern; RTX Remix's bloom too)");
+	RNA_def_property_update(prop, NC_SCENE, NULL);
+	prop = RNA_def_property(srna, "fx_bloom_intensity", PROP_FLOAT, PROP_NONE);
+	RNA_def_property_float_funcs(prop, "rna_GameSettings_fx_bloom_intensity_get", "rna_GameSettings_fx_bloom_intensity_set", NULL);
+	RNA_def_property_range(prop, 0.0f, 1.0f);
+	RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
+	RNA_def_property_ui_text(prop, "Intensity", "How much of the glow is added");
+	RNA_def_property_update(prop, NC_SCENE, NULL);
+	prop = RNA_def_property(srna, "fx_bloom_threshold", PROP_FLOAT, PROP_NONE);
+	RNA_def_property_float_funcs(prop, "rna_GameSettings_fx_bloom_threshold_get", "rna_GameSettings_fx_bloom_threshold_set", NULL);
+	RNA_def_property_range(prop, 0.0f, 10.0f);
+	RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
+	RNA_def_property_ui_text(prop, "Threshold", "Brightness above which a pixel glows");
+	RNA_def_property_update(prop, NC_SCENE, NULL);
+	prop = RNA_def_property(srna, "fx_bloom_radius", PROP_FLOAT, PROP_NONE);
+	RNA_def_property_float_funcs(prop, "rna_GameSettings_fx_bloom_radius_get", "rna_GameSettings_fx_bloom_radius_set", NULL);
+	RNA_def_property_range(prop, 1.0f, 10.0f);
+	RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
+	RNA_def_property_ui_text(prop, "Radius", "How far the glow spreads (larger: wider)");
+	RNA_def_property_update(prop, NC_SCENE, NULL);
+	prop = RNA_def_property(srna, "fx_auto_exposure", PROP_BOOLEAN, PROP_NONE);
+	RNA_def_property_boolean_funcs(prop, "rna_GameSettings_fx_auto_exposure_get", "rna_GameSettings_fx_auto_exposure_set");
+	RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
+	RNA_def_property_ui_text(prop, "Auto Exposure", "The exposure follows the picture's brightness, as eyes adapt (Modern; RTX Remix's too)");
+	RNA_def_property_update(prop, NC_SCENE, NULL);
+	prop = RNA_def_property(srna, "fx_exposure_speed", PROP_FLOAT, PROP_NONE);
+	RNA_def_property_float_funcs(prop, "rna_GameSettings_fx_exposure_speed_get", "rna_GameSettings_fx_exposure_speed_set", NULL);
+	RNA_def_property_range(prop, 0.01f, 10.0f);
+	RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
+	RNA_def_property_ui_text(prop, "Adaptation", "How fast the exposure follows (per second)");
+	RNA_def_property_update(prop, NC_SCENE, NULL);
+	prop = RNA_def_property(srna, "fx_vignette", PROP_FLOAT, PROP_NONE);
+	RNA_def_property_float_funcs(prop, "rna_GameSettings_fx_vignette_get", "rna_GameSettings_fx_vignette_set", NULL);
+	RNA_def_property_range(prop, 0.0f, 1.0f);
+	RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
+	RNA_def_property_ui_text(prop, "Vignette", "Darkening towards the picture's corners (Modern; RTX Remix's too)");
+	RNA_def_property_update(prop, NC_SCENE, NULL);
+	prop = RNA_def_property(srna, "fx_depth_of_field", PROP_BOOLEAN, PROP_NONE);
+	RNA_def_property_boolean_funcs(prop, "rna_GameSettings_fx_depth_of_field_get", "rna_GameSettings_fx_depth_of_field_set");
+	RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
+	RNA_def_property_ui_text(prop, "Depth of Field", "The camera's Depth of Field settings (focus, f-stop) blur what is out of focus (Modern; RTX Remix's too)");
+	RNA_def_property_update(prop, NC_SCENE, NULL);
 	
 	prop = RNA_def_property(srna, "depth", PROP_INT, PROP_UNSIGNED);
 	RNA_def_property_int_sdna(prop, NULL, "depth");
@@ -4982,7 +5132,9 @@ static void rna_def_scene_game_data(BlenderRNA *brna)
 	prop = RNA_def_property(srna, "material_mode", PROP_ENUM, PROP_NONE);
 	RNA_def_property_enum_sdna(prop, NULL, "matmode");
 	RNA_def_property_enum_items(prop, material_items);
-	RNA_def_property_ui_text(prop, "Material Mode", "Material mode to use for rendering");
+	RNA_def_property_enum_funcs(prop, NULL, "rna_GameSettings_material_mode_set", NULL);
+	RNA_def_property_ui_text(prop, "Material Mode",
+	                         "Material mode to use for rendering (BGE-Remix: always GLSL; setting it does nothing)");
 	RNA_def_property_update(prop, NC_SCENE | NA_EDITED, NULL);
 
 	prop = RNA_def_property(srna, "use_glsl_lights", PROP_BOOLEAN, PROP_NONE);

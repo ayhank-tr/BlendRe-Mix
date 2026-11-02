@@ -67,6 +67,7 @@ extern "C"
 #include "BLO_runtime.h"
 
 #include "BKE_appdir.h"
+#include "BKE_font.h"
 #include "BKE_blender.h"
 #include "BKE_depsgraph.h"
 #include "BKE_global.h"
@@ -96,6 +97,9 @@ extern int datatoc_bfont_ttf_size;
 extern char datatoc_bfont_ttf[];
 extern int datatoc_bmonofont_ttf_size;
 extern char datatoc_bmonofont_ttf[];
+/* BGE-Remix P8.22: the builtin font of text objects (their shape for Remix) */
+extern int datatoc_bfont_pfb_size;
+extern char datatoc_bfont_pfb[];
 
 #ifdef __cplusplus
 }
@@ -119,6 +123,10 @@ extern char datatoc_bmonofont_ttf[];
 
 #ifdef WIN32
 #  include <windows.h>
+#  include <stdint.h>
+#  include <stdio.h>
+#  include <stdlib.h>
+#  include <string.h>
 #  if !defined(DEBUG)
 #    include <wincon.h>
 #  endif // !defined(DEBUG)
@@ -130,6 +138,49 @@ extern char datatoc_bmonofont_ttf[];
 
 #ifdef WITH_SDL_DYNLOAD
 #  include "sdlew.h"
+#endif
+
+#if defined(WIN32) && defined(_M_X64)
+/* BGE-Remix P8: a crash prints where it happened and the calls that led
+ * there (module + offset each, read with blenderplayer.map), so a test's log
+ * says where without a debugger */
+static LONG WINAPI bge_remix_crash_filter(EXCEPTION_POINTERS *ep)
+{
+	static volatile LONG once = 0;
+	if (InterlockedExchange(&once, 1))
+		return EXCEPTION_CONTINUE_SEARCH;
+	fflush(stdout);
+	CONTEXT ctx = *ep->ContextRecord;
+	fprintf(stderr, "\nBGE-Remix crash: exception %08lx\n", (unsigned long)ep->ExceptionRecord->ExceptionCode);
+	for (int i = 0; i < 40 && ctx.Rip; i++) {
+		const DWORD64 pc = ctx.Rip;
+		HMODULE mod = NULL;
+		char name[MAX_PATH] = "?";
+		if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+		                       (LPCSTR)pc, &mod))
+		{
+			GetModuleFileNameA(mod, name, MAX_PATH);
+		}
+		const char *base = strrchr(name, '\\');
+		base = base ? base + 1 : name;
+		fprintf(stderr, "BGE-Remix crash frame %d: %s+0x%llx\n", i, base,
+		        (unsigned long long)(pc - (DWORD64)(uintptr_t)mod));
+		DWORD64 image = 0;
+		PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry(pc, &image, NULL);
+		if (!fn) {
+			/* a leaf function: the return address is on the stack */
+			ctx.Rip = *(DWORD64 *)(uintptr_t)ctx.Rsp;
+			ctx.Rsp += 8;
+		}
+		else {
+			PVOID data = NULL;
+			DWORD64 frame = 0;
+			RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, pc, fn, &ctx, &data, &frame, NULL);
+		}
+	}
+	fflush(stderr);
+	return EXCEPTION_CONTINUE_SEARCH;
+}
 #endif
 
 const int kMinWindowWidth = 100;
@@ -275,6 +326,7 @@ static void usage(const char* program, bool isBlenderPlayer)
 	printf("  -c: keep console window open\n\n");
 #endif
 	printf("  -d: turn debugging on\n\n");
+	printf("  --gl-compat: an OpenGL compatibility context instead of the core one (BGE-Remix)\n\n");
 	printf("  -g: game engine options:\n\n");
 	printf("       Name                       Default      Description\n");
 	printf("       ------------------------------------------------------------------------\n");
@@ -452,6 +504,19 @@ int main(
 	char **argv;
 	int argv_num;
 
+#  if defined(_M_X64)
+	SetUnhandledExceptionFilter(bge_remix_crash_filter);
+#  endif
+	/* BGE-Remix P8: in the tests (no dialogs) the output is not buffered,
+	 * so a crash loses none of it */
+	{
+		const char *nd = getenv("BGE_REMIX_NO_DIALOGS");
+		if (nd && nd[0] == '1') {
+			setvbuf(stdout, NULL, _IONBF, 0);
+			setvbuf(stderr, NULL, _IONBF, 0);
+		}
+	}
+
 	/* We delay loading of openmp so we can set the policy here. */
 # if defined(_MSC_VER)
 	_putenv_s("OMP_WAIT_POLICY", "PASSIVE");
@@ -523,6 +588,8 @@ int main(
 	BLF_load_mem("default", (unsigned char*)datatoc_bfont_ttf, datatoc_bfont_ttf_size);
 	if (blf_mono_font == -1)
 		blf_mono_font = BLF_load_mem_unique("monospace", (unsigned char*)datatoc_bmonofont_ttf, datatoc_bmonofont_ttf_size);
+	/* BGE-Remix P8.22: as creator.c, so text objects can be made into shapes */
+	BKE_vfont_builtin_register(datatoc_bfont_pfb, datatoc_bfont_pfb_size);
 
 	// Parse command line options
 #if defined(DEBUG)
@@ -578,6 +645,13 @@ int main(
 		validArguments = argc;
 
 
+	/* BGE-Remix P8.29: --gl-compat, before the window is made */
+	for (i = 1; i < validArguments; i++) {
+		if (strcmp(argv[i], "--gl-compat") == 0) {
+			BLI_setenv("BGE_REMIX_GL_COMPAT", "1");
+		}
+	}
+
 	/* Parsing command line arguments (can be set from WM_OT_blenderplayer_start) */
 #if defined(DEBUG)
 		printf("Parsing command line arguments...\n");
@@ -594,7 +668,11 @@ int main(
 #if defined(DEBUG)
 		printf("argv[%d] = '%s'\n", i, argv[i]);
 #endif
-		if (argv[i][0] == '-')
+		if (strcmp(argv[i], "--gl-compat") == 0) {
+			/* BGE-Remix P8.29: taken above */
+			i++;
+		}
+		else if (argv[i][0] == '-')
 		{
 			/* ignore all args after " - ", allow python to have own args */
 			if (argv[i][1]=='\0') {

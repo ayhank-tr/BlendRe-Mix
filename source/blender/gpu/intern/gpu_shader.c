@@ -37,9 +37,17 @@
 #include "GPU_debug.h"
 #include "GPU_extensions.h"
 #include "GPU_glew.h"
+#include "GPU_glcheck.h"
+#include "GPU_lights.h"
 #include "GPU_shader.h"
+#include "GPU_layer.h"
 #include "GPU_texture.h"
 #include "GPU_material.h"
+#include "GPU_translate.h"
+
+#include "BLI_dynstr.h"
+
+#include "gpu_private.h"
 
 /* TODO(sergey): Find better default values for this constants. */
 #define MAX_DEFINE_LENGTH 1024
@@ -259,6 +267,263 @@ GPUShader *GPU_shader_create(const char *vertexcode,
 	                            GPU_SHADER_FLAGS_NONE);
 }
 
+/* BGE-Remix P8.3: the material front end. The material library and the
+ * generated code use bge_pos, bge_nor, bge_col (vertex inputs), bge_mv,
+ * bge_mvinv, bge_proj, bge_projinv, bge_normalmat (matrices),
+ * bge_lightsource (the 3D view's default lights), BGE_VCOL and BGE_VCOL2
+ * (the vertex colour and MatCap varyings), BGE_TEXCOORD (old texture
+ * coordinates) and bge_fragcolor (the output). The compatibility front end
+ * maps them to the old built-ins, for meshes the old code still draws (the
+ * 3D view); the core front end declares them, for the drawing layer's
+ * batches (BGE-Remix P8 Part B: the game's materials), with bge_alphatest
+ * (the old alpha test: on, reference). */
+static const char *gpu_frontend_vert_compat =
+        "#define BGE_COMPAT\n"
+        "#define bge_pos gl_Vertex\n"
+        "#define bge_nor gl_Normal\n"
+        "#define bge_col gl_Color\n"
+        "#define bge_mv gl_ModelViewMatrix\n"
+        "#define bge_mvinv gl_ModelViewMatrixInverse\n"
+        "#define bge_proj gl_ProjectionMatrix\n"
+        "#define bge_projinv gl_ProjectionMatrixInverse\n"
+        "#define bge_normalmat gl_NormalMatrix\n"
+        "#define BGE_VCOL_OUT gl_FrontColor\n"
+        "#define BGE_VCOL2_OUT gl_FrontSecondaryColor\n"
+        "#define BGE_MV gl_ModelViewMatrix\n"
+        "#define BGE_NORMALMAT gl_NormalMatrix\n";
+
+static const char *gpu_frontend_frag_compat =
+        "#define BGE_COMPAT\n"
+        "#define bge_mv gl_ModelViewMatrix\n"
+        "#define bge_mvinv gl_ModelViewMatrixInverse\n"
+        "#define bge_proj gl_ProjectionMatrix\n"
+        "#define bge_projinv gl_ProjectionMatrixInverse\n"
+        "#define bge_normalmat gl_NormalMatrix\n"
+        "#define bge_lightsource gl_LightSource\n"
+        "#define BGE_VCOL gl_Color\n"
+        "#define BGE_VCOL2 gl_SecondaryColor\n"
+        "#define BGE_TEXCOORD(n) gl_TexCoord[n]\n"
+        "out vec4 bge_fragcolor;\n";
+
+static const char *gpu_frontend_vert_core =
+        "#define BGE_CORE\n"
+        "in vec4 bge_pos;\n"
+        "in vec3 bge_nor;\n"
+        "in vec4 bge_col;\n"
+        "uniform mat4 bge_mv;\n"
+        "uniform mat4 bge_mvinv;\n"
+        "uniform mat4 bge_proj;\n"
+        "uniform mat4 bge_projinv;\n"
+        "uniform mat3 bge_normalmat;\n"
+        "out vec4 bge_vcol_v;\n"
+        "out vec4 bge_vcol2_v;\n"
+        "#define BGE_VCOL_OUT bge_vcol_v\n"
+        "#define BGE_VCOL2_OUT bge_vcol2_v\n"
+        /* BGE-Remix P8 Part B (P8.11): instances of one mesh and material in
+         * one draw; each instance's model-view matrix from a storage buffer,
+         * found through its instance number (attribute 15, one per instance)
+         * directly (bge_instanced 1) or through the culling pass's list of
+         * visible instances (2) */
+        "#ifndef BGE_NO_INSTANCING\n"
+        "layout(location = 15) in uint bge_instance;\n"
+        "layout(std430, binding = 8) readonly buffer BgeInstanceMatrices { mat4 bge_inst_mv[]; };\n"
+        "layout(std430, binding = 9) readonly buffer BgeInstanceVisible { uint bge_inst_visible[]; };\n"
+        "uniform int bge_instanced;\n"
+        "mat4 bge_mv_inst()\n"
+        "{\n"
+        "	if (bge_instanced == 0) return bge_mv;\n"
+        "	uint i = bge_instance;\n"
+        "	if (bge_instanced == 2) i = bge_inst_visible[i];\n"
+        "	return bge_inst_mv[i];\n"
+        "}\n"
+        "#define BGE_MV bge_mv_inst()\n"
+        "#define BGE_NORMALMAT (bge_instanced != 0 ? transpose(inverse(mat3(BGE_MV))) : bge_normalmat)\n"
+        "#else\n"
+        "#define BGE_MV bge_mv\n"
+        "#define BGE_NORMALMAT bge_normalmat\n"
+        "#endif\n";
+
+static const char *gpu_frontend_frag_core =
+        "#define BGE_CORE\n"
+        "uniform mat4 bge_mv;\n"
+        "uniform mat4 bge_mvinv;\n"
+        "uniform mat4 bge_proj;\n"
+        "uniform mat4 bge_projinv;\n"
+        "uniform mat3 bge_normalmat;\n"
+        "struct BgeLightSource { vec4 position; vec4 diffuse; vec4 specular; vec4 halfVector; };\n"
+        "uniform BgeLightSource bge_lightsource[8];\n"
+        "in vec4 bge_vcol_v;\n"
+        "in vec4 bge_vcol2_v;\n"
+        "#define BGE_VCOL bge_vcol_v\n"
+        "#define BGE_VCOL2 bge_vcol2_v\n"
+        "#define BGE_TEXCOORD(n) vec4(0.0)\n"
+        "uniform vec2 bge_alphatest;\n"
+        /* P8 Part C (P8.21): Modern scenes' order-independent transparency:
+         * bge_oit 1 writes the weighted colour and the cover */
+        "layout(location = 0) out vec4 bge_fragcolor;\n"
+        "layout(location = 1) out vec4 bge_oitreveal;\n"
+        "uniform int bge_oit;\n";
+
+/* BGE-Remix P8.3: lamp and world values, read from shared storage buffers
+ * (gpu_material.c fills them; the generated code indexes them).
+ * BGE-Remix P8 Part B (P8.16): the shadow pool and the scene's depth on
+ * their own units (GPU_lights.h); bge_shadowpass: a shadow map is being
+ * drawn (lighting is skipped) */
+static const char *gpu_frontend_shared =
+        "layout(std430, binding = 6) readonly buffer BgeLampWords { float bge_lw[]; };\n"
+        "layout(std430, binding = 7) readonly buffer BgeWorldWords { float bge_ww[]; };\n";
+
+/* every fragment stage with the material library (it reads them) */
+static const char *gpu_frontend_lights =
+        "uniform sampler2DArray bge_shadowpool;\n"
+        "uniform sampler2D bge_scenedepth;\n"
+        "uniform float bge_scenedepth_on;\n"
+        "uniform int bge_shadowpass;\n"
+        "uniform sampler2D bge_noramp;\n"
+        "uniform int bge_oblay;\n"
+        "#if __VERSION__ >= 400\n"
+        "#define BGE_GATHER(uvl) textureGather(bge_shadowpool, uvl, 0)\n"
+        "#else\n"
+        "#define BGE_GATHER(uvl) vec4(texture(bge_shadowpool, uvl).r)\n"
+        "#endif\n"
+        /* P8.15: the lamps (world space; GPULampRecord in gpu_material.c),
+         * and the view's clusters (gpu_lights.c) */
+        "#if __VERSION__ >= 430\n"
+        "#define BGE_CLUSTERED\n"
+        "struct BgeLamp {\n"
+        "	vec4 co_type, vec_dist, col_energy, spot;\n"
+        "	mat4 imat;\n"
+        "	vec4 falloff, coeff;\n"
+        "	vec4 area[4];\n"
+        "	vec4 shadow_color, shadow_params, shadow_clip, contact, cascade_scale, cascade_range;\n"
+        "	mat4 shadowmat[4];\n"
+        "	vec4 bound;\n"
+        "	uvec4 bits;\n"
+        "	vec4 extra;\n"
+        "};\n"
+        "layout(std430, binding = 11) readonly buffer BgeLamps { BgeLamp bge_lamps[]; };\n"
+        "layout(std430, binding = 12) readonly buffer BgeClusterInfo {\n"
+        "	vec4 bge_cl_viewport; vec4 bge_cl_depth; uvec4 bge_cl_counts; };\n"
+        "layout(std430, binding = 13) readonly buffer BgeClusterMasks { uint bge_cl_mask[]; };\n"
+        /* P8.18: the probes (GPU_probes.h), the sky, a planar mirror, the
+         * last frame (screen-space reflections) */
+        "layout(std430, binding = 14) readonly buffer BgeProbes { uvec4 bge_probe_head; vec4 bge_probe[]; };\n"
+        "uniform samplerCubeArray bge_probes;\n"
+        "uniform samplerCube bge_skycube;\n"
+        "uniform sampler2D bge_mirror;\n"
+        "uniform sampler2D bge_history;\n"
+        "uniform int bge_sky_on;\n"
+        "uniform int bge_mirror_on;\n"
+        "uniform vec2 bge_mirror_size;\n"
+        "uniform int bge_ssr_on;\n"
+        "#endif\n";
+
+/* BGE-Remix P8 Part B (P8.16): a lamp's shadow views in one pass. Each view
+ * is an instance; the vertex stage's position (the first view's clip space)
+ * is moved into the view's own, and the view picks its layer of the shadow
+ * pool. The shader's own main runs first, renamed. */
+static const char *gpu_views_vert_front =
+        "uniform int bge_views;\n"
+        "uniform int bge_view_layer;\n"
+        "uniform mat4 bge_view_m[6];\n"
+        "uniform vec4 bge_clipplane;\n"   /* P8.18: a planar mirror's view (eye space) */
+        "uniform vec4 bge_clipplanes[6];\n"  /* P8.26: the old clip planes 1-5 (eye space) */
+        "#define main bge_user_main\n";
+
+static const char *gpu_views_vert_suffix =
+        "\n#undef main\n"
+        "void main()\n"
+        "{\n"
+        "	bge_user_main();\n"
+        "	vec4 bge_eye_ = bge_projinv * gl_Position;\n"
+        "	gl_ClipDistance[0] = dot(bge_clipplane, bge_eye_);\n"
+        "	gl_ClipDistance[1] = dot(bge_clipplanes[1], bge_eye_);\n"
+        "	gl_ClipDistance[2] = dot(bge_clipplanes[2], bge_eye_);\n"
+        "	gl_ClipDistance[3] = dot(bge_clipplanes[3], bge_eye_);\n"
+        "	gl_ClipDistance[4] = dot(bge_clipplanes[4], bge_eye_);\n"
+        "	gl_ClipDistance[5] = dot(bge_clipplanes[5], bge_eye_);\n"
+        "	if (bge_views > 0) {\n"
+        /* P8.30: instanced objects are bge_views instances each */
+        "		int bge_view_ = gl_InstanceID % bge_views;\n"
+        "		gl_Position = bge_view_m[bge_view_] * gl_Position;\n"
+        "#ifdef BGE_LAYERED\n"
+        "		gl_Layer = bge_view_layer + bge_view_;\n"
+        "#endif\n"
+        "	}\n"
+        "}\n";
+
+const char *GPU_shader_views_vert_ext(void)
+{
+	return GPU_caps()->vs_layer ? "#extension GL_ARB_shader_viewport_layer_array : require\n#define BGE_LAYERED\n" : "";
+}
+
+const char *GPU_shader_views_vert_front(void)
+{
+	return gpu_views_vert_front;
+}
+
+const char *GPU_shader_views_vert_suffix(void)
+{
+	return gpu_views_vert_suffix;
+}
+
+static const char *gpu_shader_version_ex(int flags, bool use_opensubdiv)
+{
+	if ((flags & GPU_SHADER_FLAGS_GLSL450) && !use_opensubdiv) {
+		return (flags & GPU_SHADER_FLAGS_CORE) ? "#version 450 core\n" : "#version 450 compatibility\n";
+	}
+	return gpu_shader_version();
+}
+
+/* BGE-Remix P8.26: an old shader (GLSL 1.20-1.50 with the old built-ins)
+ * on a core context: each stage translated (GPU_translate.h) */
+static bool gpu_shader_compile_translated(GLuint stage, int which, const char **pieces, int n, const char *who)
+{
+	DynStr *ds = BLI_dynstr_new();
+	for (int i = 0; i < n; i++) {
+		if (pieces[i]) {
+			BLI_dynstr_append(ds, pieces[i]);
+		}
+	}
+	char *src = BLI_dynstr_get_cstring(ds);
+	BLI_dynstr_free(ds);
+	int problems = 0;
+	char *tr = GPU_glsl_translate(src, which, true, who, &problems);
+	MEM_freeN(src);
+	const char *one[1] = {tr};
+	GLint status = 0;
+	/* the real call: the source is translated already */
+	GLEW_GET_FUN(__glewShaderSource)(stage, 1, one, NULL);
+	glCompileShader(stage);
+	glGetShaderiv(stage, GL_COMPILE_STATUS, &status);
+	if (!status) {
+		GLchar log[5000];
+		GLsizei length = 0;
+		glGetShaderInfoLog(stage, sizeof(log), &length, log);
+		shader_print_errors("compile (translated)", log, one, 1);
+	}
+	MEM_freeN(tr);
+	return status != 0;
+}
+
+/* compiles one stage from its pieces; false (and the log printed) on failure */
+static bool gpu_shader_compile_stage(GLuint stage, const char **source, int num_source)
+{
+	GLint status;
+	GLchar log[5000];
+	GLsizei length = 0;
+
+	glShaderSource(stage, num_source, source, NULL);
+	glCompileShader(stage);
+	glGetShaderiv(stage, GL_COMPILE_STATUS, &status);
+	if (!status) {
+		glGetShaderInfoLog(stage, sizeof(log), &length, log);
+		shader_print_errors("compile", log, source, num_source);
+		return false;
+	}
+	return true;
+}
+
 GPUShader *GPU_shader_create_ex(const char *vertexcode,
                                 const char *fragcode,
                                 const char *geocode,
@@ -276,7 +541,6 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 	 */
 	bool use_opensubdiv = (flags & GPU_SHADER_FLAGS_SPECIAL_OPENSUBDIV) != 0;
 #else
-	UNUSED_VARS(flags);
 	bool use_opensubdiv = false;
 #endif
 	GLint status;
@@ -285,6 +549,16 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 	GPUShader *shader;
 	char standard_defines[MAX_DEFINE_LENGTH] = "";
 	char standard_extensions[MAX_EXT_DEFINE_LENGTH] = "";
+	const bool glsl450 = (flags & GPU_SHADER_FLAGS_GLSL450) && !use_opensubdiv;
+	/* BGE-Remix P8.26: on a core context (the emulation on) every GLSL 4.50
+	 * shader takes the core front end, and the old ones are translated */
+	const bool core = glsl450 && ((flags & GPU_SHADER_FLAGS_CORE) || GPU_lgl_on);
+	const bool translate = GPU_lgl_on && !glsl450 && !use_opensubdiv;
+	const bool frontend = (flags & GPU_SHADER_FLAGS_FRONTEND) != 0;
+	const char *version = gpu_shader_version_ex(core ? (flags | GPU_SHADER_FLAGS_CORE) : flags, use_opensubdiv);
+	const char *vert_front = frontend ? (core ? gpu_frontend_vert_core : gpu_frontend_vert_compat) : NULL;
+	const char *frag_front = frontend ? (core ? gpu_frontend_frag_core : gpu_frontend_frag_compat) : NULL;
+	const char *shared = (glsl450 && (flags & GPU_SHADER_FLAGS_SHARED)) ? gpu_frontend_shared : NULL;
 
 	if (geocode && !GPU_geometry_shader_support())
 		return NULL;
@@ -313,47 +587,43 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 	gpu_shader_standard_defines(standard_defines,
 	                            use_opensubdiv,
 	                            (flags & GPU_SHADER_FLAGS_NEW_SHADING) != 0);
-	gpu_shader_standard_extensions(standard_extensions, geocode != NULL);
-
-	if (vertexcode) {
-		const char *source[5];
-		/* custom limit, may be too small, beware */
-		int num_source = 0;
-
-		source[num_source++] = gpu_shader_version();
-		source[num_source++] = standard_extensions;
-		source[num_source++] = standard_defines;
-
-		if (defines) source[num_source++] = defines;
-		source[num_source++] = vertexcode;
-
-		glAttachShader(shader->program, shader->vertex);
-		glShaderSource(shader->vertex, num_source, source, NULL);
-
-		glCompileShader(shader->vertex);
-		glGetShaderiv(shader->vertex, GL_COMPILE_STATUS, &status);
-
-		if (!status) {
-			glGetShaderInfoLog(shader->vertex, sizeof(log), &length, log);
-			shader_print_errors("compile", log, source, num_source);
-
-			GPU_shader_free(shader);
-			return NULL;
-		}
+	/* BGE-Remix P8 Part B (P8.11): instancing reads storage buffers in the
+	 * vertex stage, which OpenGL 4.5 does not promise */
+	if (core && frontend && !GPU_instancing_supported()) {
+		strcat(standard_defines, "#define BGE_NO_INSTANCING\n");
+	}
+	if (!glsl450 && !translate) {
+		gpu_shader_standard_extensions(standard_extensions, geocode != NULL);
+	}
+	else {
+		/* the library's bicubic bump reads the level of detail; GLSL 4.00
+		 * made the extension's textureQueryLOD core as textureQueryLod */
+		strcat(standard_extensions, "#define textureQueryLOD textureQueryLod\n");
 	}
 
+	/* the pieces of each stage, in order */
+	const char *vsrc[10], *fsrc[12], *gsrc[6];
+	const bool views = core && frontend;  /* P8.16: shadow views in one pass */
+	int nv = 0, nf = 0, ng = 0;
+	if (vertexcode) {
+		vsrc[nv++] = version;
+		vsrc[nv++] = standard_extensions;
+		if (views) vsrc[nv++] = GPU_shader_views_vert_ext();
+		vsrc[nv++] = standard_defines;
+		if (vert_front) vsrc[nv++] = vert_front;
+		if (views) vsrc[nv++] = gpu_views_vert_front;
+		if (defines) vsrc[nv++] = defines;
+		vsrc[nv++] = vertexcode;
+		if (views) vsrc[nv++] = gpu_views_vert_suffix;
+	}
 	if (fragcode) {
-		const char *source[7];
-		int num_source = 0;
-
-		source[num_source++] = gpu_shader_version();
-		source[num_source++] = standard_extensions;
-		source[num_source++] = standard_defines;
-
+		fsrc[nf++] = version;
+		fsrc[nf++] = standard_extensions;
+		fsrc[nf++] = standard_defines;
 #ifdef WITH_OPENSUBDIV
 		/* TODO(sergey): Move to fragment shader source code generation. */
 		if (use_opensubdiv) {
-			source[num_source++] =
+			fsrc[nf++] =
 			        "#ifdef USE_OPENSUBDIV\n"
 			        "in block {\n"
 			        "	VertexData v;\n"
@@ -361,52 +631,72 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 			        "#endif\n";
 		}
 #endif
+		if (frag_front) fsrc[nf++] = frag_front;
+		if (shared) fsrc[nf++] = shared;
+		if (shared || libcode) fsrc[nf++] = gpu_frontend_lights;
+		if (defines) fsrc[nf++] = defines;
+		if (libcode) fsrc[nf++] = libcode;
+		fsrc[nf++] = fragcode;
+	}
+	if (geocode) {
+		gsrc[ng++] = version;
+		gsrc[ng++] = standard_extensions;
+		gsrc[ng++] = standard_defines;
+		if (defines) gsrc[ng++] = defines;
+		gsrc[ng++] = geocode;
+	}
 
-		if (defines) source[num_source++] = defines;
-		if (libcode) source[num_source++] = libcode;
-		source[num_source++] = fragcode;
+	if (vertexcode) glAttachShader(shader->program, shader->vertex);
+	if (fragcode) glAttachShader(shader->program, shader->fragment);
+	if (geocode) glAttachShader(shader->program, shader->geometry);
 
-		glAttachShader(shader->program, shader->fragment);
-		glShaderSource(shader->fragment, num_source, source, NULL);
-
-		glCompileShader(shader->fragment);
-		glGetShaderiv(shader->fragment, GL_COMPILE_STATUS, &status);
-
-		if (!status) {
-			glGetShaderInfoLog(shader->fragment, sizeof(log), &length, log);
-			shader_print_errors("compile", log, source, num_source);
-
-			GPU_shader_free(shader);
-			return NULL;
+	/* BGE-Remix P8.3: a program compiled before, from the shader cache */
+	const bool cacheable = glsl450 && !geocode;
+	unsigned long long cache_key = 0;
+	if (cacheable) {
+		const char *all[24];
+		int na = 0;
+		for (int i = 0; i < nv; i++) all[na++] = vsrc[i];
+		all[na++] = "\x01";
+		for (int i = 0; i < nf; i++) all[na++] = fsrc[i];
+		cache_key = gpu_shader_cache_key(all, na);
+		if (gpu_shader_cache_load(shader->program, cache_key)) {
+			GPU_lights_program_samplers(shader->program);
+			return shader;
 		}
 	}
 
-	if (geocode) {
-		const char *source[6];
-		int num_source = 0;
-
-		source[num_source++] = gpu_shader_version();
-		source[num_source++] = standard_extensions;
-		source[num_source++] = standard_defines;
-
-		if (defines) source[num_source++] = defines;
-		source[num_source++] = geocode;
-
-		glAttachShader(shader->program, shader->geometry);
-		glShaderSource(shader->geometry, num_source, source, NULL);
-
-		glCompileShader(shader->geometry);
-		glGetShaderiv(shader->geometry, GL_COMPILE_STATUS, &status);
-
-		if (!status) {
-			glGetShaderInfoLog(shader->geometry, sizeof(log), &length, log);
-			shader_print_errors("compile", log, source, num_source);
-
+	if (translate) {
+		/* the pieces after "#version" (the translation gives its own) */
+		if ((vertexcode && !gpu_shader_compile_translated(shader->vertex, GPU_TRANSLATE_VERTEX, vsrc + 1, nv - 1,
+		                                                    "GPU shader")) ||
+		    (fragcode && !gpu_shader_compile_translated(shader->fragment, GPU_TRANSLATE_FRAGMENT, fsrc + 1, nf - 1,
+		                                                  "GPU shader")) ||
+		    (geocode && !gpu_shader_compile_translated(shader->geometry, GPU_TRANSLATE_GEOMETRY, gsrc + 1, ng - 1,
+		                                                 "GPU shader")))
+		{
 			GPU_shader_free(shader);
 			return NULL;
 		}
-		
-		if (!use_opensubdiv) {
+		if (vertexcode) {
+			glBindAttribLocation(shader->program, 0, "bge_pos");
+		}
+	}
+	else if (vertexcode && !gpu_shader_compile_stage(shader->vertex, vsrc, nv)) {
+		GPU_shader_free(shader);
+		return NULL;
+	}
+	if (!translate && fragcode && !gpu_shader_compile_stage(shader->fragment, fsrc, nf)) {
+		GPU_shader_free(shader);
+		return NULL;
+	}
+	if (geocode && !translate) {
+		if (!gpu_shader_compile_stage(shader->geometry, gsrc, ng)) {
+			GPU_shader_free(shader);
+			return NULL;
+		}
+		/* GLSL 4.50 shaders say it with layouts */
+		if (!use_opensubdiv && !glsl450) {
 			GPU_shader_geometry_stage_primitive_io(shader, input, output, number);
 		}
 	}
@@ -422,6 +712,17 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 	}
 #endif
 
+	if (cacheable && gpu_shader_cache_enabled()) {
+		glProgramParameteri(shader->program, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
+	}
+
+	/* BGE-Remix P8 Part B: the core front end's position at place 0 (a
+	 * compatibility context draws only when attribute 0 or the old vertex
+	 * array is fed; the game's batches feed attributes only) */
+	if (core && frontend && vertexcode) {
+		glBindAttribLocation(shader->program, 0, "bge_pos");
+	}
+
 	glLinkProgram(shader->program);
 	glGetProgramiv(shader->program, GL_LINK_STATUS, &status);
 	if (!status) {
@@ -434,6 +735,13 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 
 		GPU_shader_free(shader);
 		return NULL;
+	}
+
+	if (cacheable) {
+		gpu_shader_cache_save(shader->program, cache_key);
+	}
+	if (shared || libcode) {
+		GPU_lights_program_samplers(shader->program);
 	}
 
 #ifdef WITH_OPENSUBDIV
@@ -452,6 +760,22 @@ GPUShader *GPU_shader_create_ex(const char *vertexcode,
 	return shader;
 }
 
+bool GPU_instancing_supported(void)
+{
+	static int supported = -1;
+	if (supported < 0) {
+		GLint blocks = 0;
+		glGetIntegerv(GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS, &blocks);
+		supported = (blocks >= 2) ? 1 : 0;
+	}
+	return supported == 1;
+}
+
+unsigned int GPU_shader_program(GPUShader *shader)
+{
+	return shader ? shader->program : 0;
+}
+
 void GPU_shader_bind(GPUShader *shader)
 {
 	GPU_ASSERT_NO_GL_ERRORS("Pre Shader Bind");
@@ -468,6 +792,10 @@ void GPU_shader_unbind(void)
 
 void GPU_shader_free(GPUShader *shader)
 {
+	/* BGE-Remix P8 Part B: the old built-ins' places of the program go too */
+	if (shader && shader->program) {
+		GPU_old_builtins_forget(shader->program);
+	}
 	if (shader->vertex)
 		glDeleteShader(shader->vertex);
 	if (shader->geometry)

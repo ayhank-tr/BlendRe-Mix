@@ -72,6 +72,9 @@ public:
 	};
 
 protected:
+	/* BGE-Remix P8 Part B (P8.13): relative keys on the graphics card */
+	virtual bool GPUSkinKeys(bool build);
+
 	bool			m_useShapeDrivers;
 	double			m_lastShapeUpdate;
 	struct Key*		m_key;

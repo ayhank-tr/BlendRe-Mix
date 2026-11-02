@@ -138,6 +138,7 @@ static int load_bridge(void)
 	BRIDGE_FN(frame_read, "brb_frame_read");
 	BRIDGE_FN(frame_read_end, "brb_frame_read_end");
 	BRIDGE_FN(gl_direct_supported, "brb_gl_direct_supported");
+	BRIDGE_FN(frame_draw_instanced, "brb_frame_draw_instanced");
 #undef BRIDGE_FN
 
 	/* Remix is shut down before the process ends, however it ends. */

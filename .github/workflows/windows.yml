@@ -3,8 +3,9 @@ name: windows
 # BGE-Remix Windows build and tests.
 # Builds Blender 2.79b (blender.exe + blenderplayer.exe) with Visual Studio 2022
 # (v143) against Blender 2.79's own pre-compiled vc14 libraries, with the
-# official release options. Then runs the phase 0 tests against official
-# Blender 2.79b, using Mesa's software OpenGL (the CI machines have no GPU).
+# official release options. The tests run on a PC with a graphics card
+# (tests/bge_remix/run_local.bat); the test job here, on Mesa's software
+# OpenGL, runs only when the workflow is started by hand.
 
 on:
   push:
@@ -160,6 +161,7 @@ jobs:
             -DWITH_CYCLES_CUDA_BINARIES=OFF `
             -DWITH_LTO=ON -DWITH_CPU_AVX2=ON -DWITH_MEM_MIMALLOC=ON `
             -DWITH_PHYSX=ON -DPHYSX_ROOT_DIR="$pwd/physx_sdk" `
+            -DCMAKE_EXE_LINKER_FLAGS="/MAP" `
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 2>&1 | Tee-Object -FilePath configure.log
           if ($LASTEXITCODE -ne 0) {
             $lines = Select-String -Path configure.log -Pattern 'CMake Error' -Context 0,4 | Select-Object -First 8 |
@@ -189,6 +191,9 @@ jobs:
           }
           $t.Stop()
           "build_minutes=$([math]::Round($t.Elapsed.TotalMinutes, 1))" | Tee-Object -FilePath build/bin/Release/BUILD_TIME.txt
+          # BGE-Remix P8: the linker writes its maps (blender.map,
+          # blenderplayer.map: function addresses, to read crash dumps) next
+          # to the programs in build/bin/Release, so they go with them
 
       - uses: actions/upload-artifact@v4
         if: failure()
@@ -198,6 +203,19 @@ jobs:
             configure.log
             build.log
           if-no-files-found: ignore
+
+      # The fake RTX Remix runtime the tests use, in the build's download
+      # (the tests run on a PC with a graphics card since P8 Part B)
+      - name: Build the fake Remix runtime (for the tests)
+        shell: pwsh
+        run: |
+          cmake -S blender/tests/bge_remix/p1/mock_remix -B mockbuild -G "Visual Studio 17 2022" -A x64
+          cmake --build mockbuild --config Release -- /m /v:minimal
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $m = "build/bin/Release/bge_remix_test_mock"
+          New-Item -ItemType Directory -Force "$m/mock", "$m/mock_shim" | Out-Null
+          Copy-Item mockbuild/Release/d3d9.dll "$m/mock/"
+          Copy-Item mockbuild/Release/d3d9.dll, mockbuild/Release/d3d9_x64.dll, mockbuild/Release/remixdep.dll "$m/mock_shim/"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -215,10 +233,15 @@ jobs:
           p6native/Release/p6_physx_checks.exe
           if ($LASTEXITCODE -ne 0) { Write-Output "::error title=PhysX native checks::some checks failed (see the log)"; exit 1 }
 
+  # Since P8 Part B the tests run on a PC with a graphics card
+  # (tests/bge_remix/run_local.bat); this job runs only when started by hand
+  # (Actions, "Run workflow")
   test:
     needs: build
+    if: github.event_name == 'workflow_dispatch'
     runs-on: windows-2022
-    timeout-minutes: 90
+    # P8 Part B plays about 150 more scenes on software OpenGL
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
         with:
@@ -248,6 +271,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      # BGE-Remix P8: a crash of Blender or the player leaves a small dump
+      # (Windows Error Reporting) in results/dumps, read with the linker maps
+      - name: Crash dumps
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force results/dumps | Out-Null
+          foreach ($exe in "blender.exe", "blenderplayer.exe") {
+            $k = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\$exe"
+            New-Item -Path $k -Force | Out-Null
+            New-ItemProperty -Path $k -Name DumpFolder -PropertyType ExpandString -Value "$pwd\results\dumps" -Force | Out-Null
+            New-ItemProperty -Path $k -Name DumpType -PropertyType DWord -Value 1 -Force | Out-Null
+            New-ItemProperty -Path $k -Name DumpCount -PropertyType DWord -Value 30 -Force | Out-Null
+          }
+          Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting" -Name DontShowUI -Value 1 -Type DWord
 
       - name: Phase 0 tests (T1.7 regression, B1.1 startup)
         shell: pwsh
@@ -314,6 +352,35 @@ jobs:
           GALLIUM_DRIVER: llvmpipe
         run: |
           python blender/tests/bge_remix/p6/run_p6.py --ours ours --official blender-2.79b-windows64 --out results/p6
+
+      - name: Phase 7 tests (the Game View)
+        if: always()
+        shell: pwsh
+        env:
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          python blender/tests/bge_remix/p7/run_p7.py --ours ours --official blender-2.79b-windows64 --mock mock --out results/p7
+
+      - name: Phase 8 tests (plan v2 Parts A and B, OpenGL 4.5, the game's drawing, lights, shadows, sky, reflections, volumes)
+        if: always()
+        shell: pwsh
+        env:
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          python blender/tests/bge_remix/p8/run_p8.py --ours ours --official blender-2.79b-windows64 --mock mock --out results/p8
+
+      - name: Crash dumps and maps
+        if: always()
+        shell: pwsh
+        run: |
+          $dumps = Get-ChildItem results/dumps -Filter *.dmp -ErrorAction SilentlyContinue
+          # a crash the console debugger caught prints "BGE-Remix crash" (run_p8.py)
+          $caught = Select-String -Path results/p8/*.log -Pattern '^BGE-Remix crash\s*$' -List -ErrorAction SilentlyContinue
+          if ($dumps -or $caught) {
+            $dumps | ForEach-Object { Write-Output "::warning title=Crash dump::$($_.Name)" }
+            $caught | ForEach-Object { Write-Output "::warning title=Crash caught::$($_.Filename)" }
+            Copy-Item ours/*.map results/dumps/ -ErrorAction SilentlyContinue
+          }
 
       - uses: actions/upload-artifact@v4
         if: always()

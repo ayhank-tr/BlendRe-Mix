@@ -46,6 +46,31 @@
 #include "RAS_MeshObject.h"
 #include "RAS_Deformer.h"	// __NLA
 
+/* BGE-Remix P8.4: the batch storage frees an array's buffers */
+void (*RAS_DisplayArray::s_storage_free)(void *storage) = NULL;
+
+RAS_DisplayArray& RAS_DisplayArray::operator=(const RAS_DisplayArray& other)
+{
+	if (this != &other) {
+		if (m_storage && s_storage_free)
+			s_storage_free(m_storage);
+		m_storage = NULL;
+		m_offset = other.m_offset;
+		m_vertex = other.m_vertex;
+		m_index = other.m_index;
+		m_type = other.m_type;
+		m_users = other.m_users;
+	}
+	return *this;
+}
+
+RAS_DisplayArray::~RAS_DisplayArray()
+{
+	if (m_storage && s_storage_free)
+		s_storage_free(m_storage);
+	m_storage = NULL;
+}
+
 /* mesh slot */
 
 RAS_MeshSlot::RAS_MeshSlot() : SG_QList()
@@ -63,6 +88,7 @@ RAS_MeshSlot::RAS_MeshSlot() : SG_QList()
 	m_bDisplayList = true;
 	m_joinSlot = NULL;
 	m_pDerivedMesh = NULL;
+	m_pDerivedArrays = NULL;
 }
 
 RAS_MeshSlot::~RAS_MeshSlot()
@@ -95,6 +121,7 @@ RAS_MeshSlot::RAS_MeshSlot(const RAS_MeshSlot& slot) : SG_QList()
 	m_clientObj = NULL;
 	m_pDeformer = NULL;
 	m_pDerivedMesh = NULL;
+	m_pDerivedArrays = NULL;
 	m_OpenGLMatrix = NULL;
 	m_mesh = slot.m_mesh;
 	m_bucket = slot.m_bucket;
@@ -600,6 +627,13 @@ bool RAS_MaterialBucket::ActivateMaterial(const MT_Transform& cameratrans, RAS_I
 	if (rasty->GetDrawingMode() != RAS_IRasterizer::KX_SHADOW && m_material->OnlyShadow())
 		return false;
 
+	/* BGE-Remix P8 Part B (P8.19): volumes are drawn by their own pass */
+	if (m_material->IsVolume())
+		return false;
+	/* BGE-Remix P8 Part C (P8.20): halos are drawn as sprites */
+	if (m_material->IsHalo())
+		return false;
+
 	if (!rasty->SetMaterial(*m_material))
 		return false;
 	
@@ -658,6 +692,17 @@ void RAS_MaterialBucket::RenderMeshSlot(const MT_Transform& cameratrans, RAS_IRa
 	}
 
 	rasty->PopMatrix();
+}
+
+void RAS_MaterialBucket::RenderMeshSlotsInstanced(const MT_Transform& cameratrans, RAS_IRasterizer* rasty,
+                                                  std::vector<RAS_MeshSlot *>& slots)
+{
+	/* the material's uniforms are the same for every slot (nothing per object) */
+	m_material->ActivateMeshSlot(*slots[0], rasty);
+	if (rasty->IndexPrimitivesInstanced(slots))
+		return;
+	for (size_t i = 0; i < slots.size(); i++)
+		RenderMeshSlot(cameratrans, rasty, *slots[i]);
 }
 
 void RAS_MaterialBucket::Optimize(MT_Scalar distance)

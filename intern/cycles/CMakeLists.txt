@@ -231,6 +231,11 @@ if(CYCLES_STANDALONE_REPOSITORY)
 	include_directories(../third_party/atomic)
 else()
 	include_directories(../atomic)
+	# BGE-Remix P8.26: the viewport's old OpenGL calls through Blender's emulation
+	if(NOT WITH_CYCLES_STANDALONE)
+		add_definitions(-DWITH_BLENDER_GL_EMULATION)
+		include_directories(../../source/blender/gpu)
+	endif()
 endif()
 
 # Warnings

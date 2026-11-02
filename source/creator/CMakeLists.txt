@@ -422,6 +422,14 @@ if(WITH_INTERNATIONAL)
 	unset(_locale_dir)
 endif()
 
+# BGE-Remix P7: the Game View's avatars (made from Blender's icons)
+if(WITH_GAMEENGINE)
+	install(
+		DIRECTORY ${CMAKE_SOURCE_DIR}/release/datafiles/gameview
+		DESTINATION ${TARGETDIR_VER}/datafiles
+	)
+endif()
+
 # color management
 if(WITH_OPENCOLORIO)
 	install(

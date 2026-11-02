@@ -91,8 +91,63 @@ MXContext *_mx_context = NULL;
 #endif
 
 
+/* BGE-Remix P8.29: on a core context GLEW's flags as an old context would
+ * have them: every version up to the context's (GLEW counts a version as
+ * missing when one of its old functions is), and the extensions OpenGL 4.5
+ * has as its own (a core context does not list them) */
+static void glew_core_flags(void)
+{
+	GLint mask = 0, major = 0, minor = 0;
+	glGetIntegerv(GL_CONTEXT_PROFILE_MASK, &mask);
+	if (!(mask & GL_CONTEXT_CORE_PROFILE_BIT)) {
+		return;
+	}
+	glGetIntegerv(GL_MAJOR_VERSION, &major);
+	glGetIntegerv(GL_MINOR_VERSION, &minor);
+	const int v = major * 10 + minor;
+#ifndef WITH_GLEW_MX
+#  define SET(x, on) __GLEW_##x = (on) ? GL_TRUE : GL_FALSE
+	SET(VERSION_1_1, 1); SET(VERSION_1_2, 1); SET(VERSION_1_2_1, 1); SET(VERSION_1_3, 1); SET(VERSION_1_4, 1);
+	SET(VERSION_1_5, 1); SET(VERSION_2_0, 1); SET(VERSION_2_1, 1); SET(VERSION_3_0, 1);
+	SET(VERSION_3_1, v >= 31); SET(VERSION_3_2, v >= 32); SET(VERSION_3_3, v >= 33); SET(VERSION_4_0, v >= 40);
+	SET(VERSION_4_1, v >= 41); SET(VERSION_4_2, v >= 42); SET(VERSION_4_3, v >= 43); SET(VERSION_4_4, v >= 44);
+	SET(VERSION_4_5, v >= 45);
+	if (v >= 45) {
+		SET(ARB_shader_objects, 1); SET(ARB_vertex_shader, 1); SET(ARB_fragment_shader, 1);
+		SET(ARB_multitexture, 1); SET(ARB_texture_cube_map, 1); SET(ARB_texture_env_combine, 1);
+		SET(EXT_framebuffer_object, 1); SET(ARB_framebuffer_object, 1); SET(EXT_framebuffer_blit, 1);
+		SET(EXT_framebuffer_multisample, 1); SET(ARB_texture_multisample, 1);
+		SET(ARB_texture_float, 1); SET(EXT_texture3D, 1);
+		SET(ARB_texture_non_power_of_two, 1); SET(ARB_depth_texture, 1); SET(ARB_shadow, 1);
+		SET(ARB_texture_rg, 1); SET(ARB_texture_rectangle, 1);
+		SET(ARB_vertex_buffer_object, 1); SET(ARB_vertex_array_object, 1); SET(ARB_sampler_objects, 1);
+		SET(ARB_draw_instanced, 1); SET(ARB_draw_elements_base_vertex, 1); SET(ARB_uniform_buffer_object, 1);
+		SET(ARB_texture_swizzle, 1); SET(ARB_sync, 1); SET(ARB_half_float_pixel, 1);
+		SET(EXT_separate_specular_color, 1); SET(ARB_texture_buffer_object, 1);
+		SET(ARB_get_program_binary, 1); SET(ARB_compute_shader, 1); SET(ARB_texture_query_lod, 1);
+		SET(ARB_debug_output, 1); SET(KHR_debug, 1);
+	}
+	SET(ARB_compatibility, 0);
+#  undef SET
+#else
+	(void)v;
+#endif
+}
+
+/* BGE-Remix P8.30: glewInit asks a core context for the old extension
+ * string, an invalid enum: not left for the next error check (Remix's
+ * present found it, before the debug output was on) */
+static void glew_drain_errors(void)
+{
+	for (int i = 0; i < 16 && glGetError() != GL_NO_ERROR; i++) {
+	}
+}
+
 MXContext *mxCreateContext(void)
 {
+	/* BGE-Remix P8.29: a core context lists no extensions in the old
+	 * string: their functions are looked up anyway */
+	glewExperimental = GL_TRUE;
 #ifdef WITH_GLEW_MX
 	MXContext* new_ctx = calloc(1, sizeof(MXContext));
 
@@ -100,12 +155,16 @@ MXContext *mxCreateContext(void)
 		MXContext* cur_ctx = _mx_context;
 		_mx_context = new_ctx;
 		GLEW_CHK(glewInit());
+		glew_core_flags();
+		glew_drain_errors();
 		_mx_context = cur_ctx;
 	}
 
 	return new_ctx;
 #else
 	GLEW_CHK(glewInit());
+	glew_core_flags();
+	glew_drain_errors();
 	return NULL;
 #endif
 }

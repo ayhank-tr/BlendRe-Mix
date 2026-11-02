@@ -55,6 +55,7 @@
 #include "DNA_actuator_types.h"
 #include "DNA_view3d_types.h"
 #include "DNA_smoke_types.h"
+#include "DNA_material_types.h"
 #include "DNA_rigidbody_types.h"
 
 #include "DNA_genfile.h"
@@ -63,6 +64,8 @@
 #include "BKE_colortools.h"
 #include "BKE_library.h"
 #include "BKE_main.h"
+#include "BKE_material.h"
+#include "BKE_material_physical.h"
 #include "BKE_mask.h"
 #include "BKE_modifier.h"
 #include "BKE_node.h"
@@ -1673,8 +1676,38 @@ void blo_do_versions_270(FileData *fd, Library *UNUSED(lib), Main *main)
 	}
 }
 
+/* BGE-Remix P8: one material mode. A scene saved with Multitexture plays
+ * as GLSL. Multitexture drew colours as they are, where GLSL colour-manages
+ * them (a grey of 0.4 shows lighter), so such a scene gets "GLSL Color
+ * Management" off and keeps its look (stock 2.79 coloured a material by its
+ * object's colour only with "Object Color" ticked, in both modes, so that
+ * needs nothing). Runs on every load (files from stock 2.79 and older
+ * builds). */
+static void do_versions_bge_remix_one_material_mode(Main *main)
+{
+	Scene *sce;
+
+	/* Blender's own start-up file (read from memory: no file name) says
+	 * Multitexture too; its scenes are new ones, so they keep colour
+	 * management (every scene made from it would lose it otherwise) */
+	const bool is_file = main->name[0] != '\0';
+
+	for (sce = main->scene.first; sce; sce = sce->id.next) {
+		if (sce->gm.matmode != GAME_MAT_GLSL) {
+			sce->gm.matmode = GAME_MAT_GLSL;
+			if (is_file) {
+				sce->gm.flag |= GAME_GLSL_NO_COLOR_MANAGEMENT;
+			}
+		}
+	}
+}
+
 void do_versions_after_linking_270(Main *main)
 {
+	do_versions_bge_remix_one_material_mode(main);
+	/* BGE-Remix P8.7: the RTX Remix panel merged into the physical material */
+	BKE_material_physical_from_remix_panel(main);
+
 	/* To be added to next subversion bump! */
 	if (!MAIN_VERSION_ATLEAST(main, 279, 0)) {
 		FOREACH_NODETREE(main, ntree, id) {

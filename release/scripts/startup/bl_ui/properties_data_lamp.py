@@ -20,6 +20,7 @@
 import bpy
 from bpy.types import Menu, Panel
 from rna_prop_ui import PropertyPanel
+from .game_marks import is_game, mark, prop_marked, NOT_REMIX
 
 
 class LAMP_MT_sunsky_presets(Menu):
@@ -78,6 +79,36 @@ class DATA_PT_lamp(DataButtonsPanel, Panel):
     bl_label = "Lamp"
     COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_GAME'}
 
+    @classmethod
+    def register(cls):
+        # BGE-Remix P8.9: the shared light description, stored as hidden
+        # properties of the lamp (bge_*), which stock Blender 2.79b keeps and
+        # ignores; the C side reads them in
+        # source/blender/blenkernel/intern/lamp_physical.c
+        from bpy.props import EnumProperty, FloatProperty
+        L = bpy.types.Lamp
+        L.bge_physical = EnumProperty(
+            name="Falloff Model",
+            items=(('CLASSIC', "Classic", "The falloff type below, as older files use", 0),
+                   ('PHYSICAL', "Physical", "Inverse square with the light's size, as RTX Remix lights fall off; "
+                    "full energy at the Distance", 1)),
+            default='CLASSIC')
+        L.bge_sun_angle = FloatProperty(
+            name="Angle", min=0.01, max=90.0, default=0.53, precision=2,
+            description="The sun's apparent size in degrees (the real sun: 0.53): softens its shadows "
+            "in the game and in RTX Remix")
+        # BGE-Remix P8.10
+        L.bge_contact_shadow = FloatProperty(
+            name="Contact Shadow", min=0.0, max=100.0, default=0.0, precision=2, unit='LENGTH',
+            description="How far the game's contact shadows reach: fine shadows where objects touch "
+            "(0: none; they need a depth pass of the scene)")
+
+    @classmethod
+    def unregister(cls):
+        del bpy.types.Lamp.bge_physical
+        del bpy.types.Lamp.bge_sun_angle
+        del bpy.types.Lamp.bge_contact_shadow
+
     def draw(self, context):
         layout = self.layout
 
@@ -94,10 +125,16 @@ class DATA_PT_lamp(DataButtonsPanel, Panel):
 
         if lamp.type in {'POINT', 'SPOT'}:
             sub.label(text="Falloff:")
-            sub.prop(lamp, "falloff_type", text="")
+            # BGE-Remix P8.9: physical falloff (game, F12 and RTX Remix alike)
+            sub.prop(lamp, "bge_physical", text="")
+            physical = lamp.bge_physical == 'PHYSICAL'
+            if not physical:
+                sub.prop(lamp, "falloff_type", text="")
             sub.prop(lamp, "distance")
 
-            if lamp.falloff_type == 'LINEAR_QUADRATIC_WEIGHTED':
+            if physical:
+                pass
+            elif lamp.falloff_type == 'LINEAR_QUADRATIC_WEIGHTED':
                 col.label(text="Attenuation Factors:")
                 sub = col.column(align=True)
                 sub.prop(lamp, "linear_attenuation", slider=True, text="Linear")
@@ -112,15 +149,30 @@ class DATA_PT_lamp(DataButtonsPanel, Panel):
 
             col.prop(lamp, "use_sphere")
 
+        game = is_game(context)
         if lamp.type == 'AREA':
             col.prop(lamp, "distance")
-            col.prop(lamp, "gamma")
+            if not game:  # BGE-Remix P8.25: F12 only
+                col.prop(lamp, "gamma")
 
         col = split.column()
-        col.prop(lamp, "use_negative")
-        col.prop(lamp, "use_own_layer", text="This Layer Only")
-        col.prop(lamp, "use_specular")
-        col.prop(lamp, "use_diffuse")
+        if game:
+            # BGE-Remix P8.25: Remix lights every surface fully, on every layer
+            prop_marked(col, lamp, "use_negative", NOT_REMIX)
+            prop_marked(col, lamp, "use_own_layer", NOT_REMIX, text="This Layer Only")
+            prop_marked(col, lamp, "use_specular", NOT_REMIX)
+            prop_marked(col, lamp, "use_diffuse", NOT_REMIX)
+        else:
+            col.prop(lamp, "use_negative")
+            col.prop(lamp, "use_own_layer", text="This Layer Only")
+            col.prop(lamp, "use_specular")
+            col.prop(lamp, "use_diffuse")
+        # BGE-Remix P8.8: the light's size, which RTX Remix lights with
+        # (Blender Internal's soft shadows use it too); area lamps have theirs
+        if game and lamp.type in {'POINT', 'SPOT'}:
+            col.prop(lamp, "shadow_soft_size", text="Size")
+        elif game and lamp.type == 'SUN':
+            col.prop(lamp, "bge_sun_angle")
 
 
 class DATA_PT_sunsky(DataButtonsPanel, Panel):
@@ -367,7 +419,7 @@ class DATA_PT_spot(DataButtonsPanel, Panel):
         sub = col.column(align=True)
         sub.active = lamp.use_halo
         sub.prop(lamp, "halo_intensity", text="Intensity")
-        if lamp.shadow_method == 'BUFFER_SHADOW':
+        if lamp.shadow_method == 'BUFFER_SHADOW' and not is_game(context):
             sub.prop(lamp, "halo_step", text="Step")
 
 

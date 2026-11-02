@@ -47,6 +47,7 @@ set(INC_SYS
 
 set(SRC
 	intern/gpu_basic_shader.c
+	intern/gpu_builtin.c
 	intern/gpu_buffers.c
 	intern/gpu_codegen.c
 	intern/gpu_compositing.c
@@ -54,13 +55,27 @@ set(SRC
 	intern/gpu_draw.c
 	intern/gpu_extensions.c
 	intern/gpu_framebuffer.c
+	intern/gpu_glcheck.c
 	intern/gpu_init_exit.c
+	intern/gpu_layer.c
+	intern/gpu_legacy.c
+	intern/gpu_legacy_glu.c
+	intern/gpu_legacy_raster.c
+	intern/gpu_legacy_state.c
+	intern/gpu_legacy_variants.c
+	intern/gpu_lights.c
+	intern/gpu_probes.c
+	intern/gpu_volumes.c
+	intern/gpu_sprites.c
 	intern/gpu_material.c
 	intern/gpu_select.c
 	intern/gpu_select_pick.c
 	intern/gpu_select_sample_query.c
+	intern/gpu_selftest.c
 	intern/gpu_shader.c
+	intern/gpu_shader_cache.c
 	intern/gpu_texture.c
+	intern/gpu_translate.c
 
 	shaders/gpu_shader_fx_lib.glsl
 	shaders/gpu_shader_fx_ssao_frag.glsl
@@ -71,6 +86,7 @@ set(SRC
 	shaders/gpu_shader_fx_dof_hq_geo.glsl
 	shaders/gpu_shader_fx_vert.glsl
 	shaders/gpu_shader_material.glsl
+	shaders/gpu_shader_material_procedural.glsl
 	shaders/gpu_shader_sep_gaussian_blur_frag.glsl
 	shaders/gpu_shader_sep_gaussian_blur_vert.glsl
 	shaders/gpu_shader_basic_frag.glsl
@@ -92,21 +108,33 @@ set(SRC
 	GPU_extensions.h
 	GPU_framebuffer.h
 	GPU_glew.h
+	GPU_glcheck.h
 	GPU_init_exit.h
+	GPU_layer.h
+	GPU_legacy.h
+	GPU_lights.h
+	GPU_probes.h
+	GPU_volumes.h
+	GPU_sprites.h
 	GPU_material.h
 	GPU_select.h
 	GPU_shader.h
 	GPU_texture.h
+	GPU_translate.h
 	intern/gpu_codegen.h
+	intern/gpu_legacy_intern.h
+	intern/gpu_legacy_private.h
 	intern/gpu_private.h
 	intern/gpu_select_private.h
 )
 
 data_to_c_simple(shaders/gpu_shader_geometry.glsl SRC)
+data_to_c_simple(shaders/gpu_shader_legacy.glsl SRC)
 data_to_c_simple(shaders/gpu_shader_fire_frag.glsl SRC)
 data_to_c_simple(shaders/gpu_shader_smoke_frag.glsl SRC)
 data_to_c_simple(shaders/gpu_shader_smoke_vert.glsl SRC)
 data_to_c_simple(shaders/gpu_shader_material.glsl SRC)
+data_to_c_simple(shaders/gpu_shader_material_procedural.glsl SRC)
 data_to_c_simple(shaders/gpu_shader_sep_gaussian_blur_frag.glsl SRC)
 data_to_c_simple(shaders/gpu_shader_sep_gaussian_blur_vert.glsl SRC)
 data_to_c_simple(shaders/gpu_shader_basic_frag.glsl SRC)

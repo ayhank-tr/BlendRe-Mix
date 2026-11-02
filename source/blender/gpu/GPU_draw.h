@@ -72,6 +72,7 @@ void GPU_end_object_materials(void);
 bool GPU_object_materials_check(void);
 
 int GPU_object_material_bind(int nr, void *attribs);
+void GPU_object_material_face_image(struct Image *ima);  /* BGE-Remix P8 */
 void GPU_object_material_unbind(void);
 int GPU_object_material_visible(int nr, void *attribs);
 
@@ -82,6 +83,8 @@ void GPU_material_diffuse_get(int nr, float diff[4]);
 bool GPU_material_use_matcaps_get(void);
 
 void GPU_set_material_alpha_blend(int alphablend);
+/* BGE-Remix P8 Part B: the alpha test a blend mode sets (on, reference) */
+void GPU_material_alpha_test(int alphablend, bool *r_on, float *r_ref);
 int GPU_get_material_alpha_blend(void);
 
 /* TexFace drawing
@@ -109,6 +112,11 @@ void GPU_render_text(
         const char *textstr, int textlen, unsigned int *col,
         const float *v_quad[4], const float *uv_quad[4],
         int glattrib);
+/* BGE-Remix P8 Part B: the same through the drawing layer (the game) */
+void GPU_render_text_layer(
+        struct MTexPoly *mtexpoly, int mode,
+        const char *textstr, int textlen, unsigned int *col,
+        const float *v_quad[4], const float *uv_quad[4], const float obcol[4]);
 
 /* Mipmap settings
  * - these will free textures on changes */
@@ -136,6 +144,23 @@ int GPU_update_image_time(struct Image *ima, double time);
 int GPU_verify_image(
         struct Image *ima, struct ImageUser *iuser,
         int textarget, int tftile, bool compare, bool mipmap, bool is_data);
+
+/* BGE-Remix P8.24: the shared compressed texture cache. The game engine
+ * sets a loader: an 8-bit colour image whose BC7 file RTX Remix also reads
+ * is drawn from that file (every mip level, rows from the bottom) instead of
+ * being uploaded uncompressed. The "texture_cache" speed switch turns it off. */
+typedef struct GPUCompressedImage {
+	unsigned int format;            /* the OpenGL compressed format */
+	int width, height, levels;
+	const unsigned char *data[16];  /* each mip level */
+	int size[16];                   /* its bytes */
+	void *owner;                    /* the loader's, given back to free */
+} GPUCompressedImage;
+typedef bool (*GPUImageCacheLoad)(struct Image *ima, struct ImBuf *ibuf, GPUCompressedImage *r_img);
+typedef void (*GPUImageCacheFree)(GPUCompressedImage *img);
+void GPU_set_image_cache(GPUImageCacheLoad load, GPUImageCacheFree free_fn);
+/* images drawn from the cache since the loader was set */
+int GPU_image_cache_loads(void);
 void GPU_create_gl_tex(
         unsigned int *bind, unsigned int *rect, float *frect, int rectw, int recth,
         int textarget, bool mipmap, bool use_hight_bit_depth, struct Image *ima);

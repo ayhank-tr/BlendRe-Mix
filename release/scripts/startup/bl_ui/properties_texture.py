@@ -19,6 +19,7 @@
 # <pep8 compliant>
 import bpy
 from bpy.types import Menu, Panel, UIList
+from .game_marks import is_game, mark, GAME_NO_TEXTURE_TYPES
 
 from bpy.types import (
     Brush,
@@ -226,6 +227,11 @@ class TEXTURE_PT_context_texture(TextureButtonsPanel, Panel):
             else:
                 split.label(text="Type:")
                 split.prop(tex, "type", text="")
+                # BGE-Remix P8.25: texture types the game cannot draw
+                if is_game(context) and tex.type in GAME_NO_TEXTURE_TYPES:
+                    layout.label(text="The game and RTX Remix do not draw this texture type (F12 only)", icon='ERROR')
+                elif is_game(context) and tex.type == 'ENVIRONMENT_MAP':
+                    mark(layout, "OpenGL and F12; Remix traces reflections itself")
 
 
 class TEXTURE_PT_preview(TextureButtonsPanel, Panel):
@@ -751,7 +757,8 @@ class TEXTURE_PT_distortednoise(TextureTypePanel, Panel):
 
 class TEXTURE_PT_voxeldata(TextureButtonsPanel, Panel):
     bl_label = "Voxel Data"
-    COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_GAME'}
+    # BGE-Remix P8.25: not drawn by the game or Remix: hidden in game scenes
+    COMPAT_ENGINES = {'BLENDER_RENDER'}
 
     @classmethod
     def poll(cls, context):
@@ -794,7 +801,8 @@ class TEXTURE_PT_voxeldata(TextureButtonsPanel, Panel):
 
 class TEXTURE_PT_pointdensity(TextureButtonsPanel, Panel):
     bl_label = "Point Density"
-    COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_GAME'}
+    # BGE-Remix P8.25: not drawn by the game or Remix: hidden in game scenes
+    COMPAT_ENGINES = {'BLENDER_RENDER'}
 
     @classmethod
     def poll(cls, context):
@@ -869,7 +877,8 @@ class TEXTURE_PT_pointdensity(TextureButtonsPanel, Panel):
 
 class TEXTURE_PT_pointdensity_turbulence(TextureButtonsPanel, Panel):
     bl_label = "Turbulence"
-    COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_GAME'}
+    # BGE-Remix P8.25: not drawn by the game or Remix: hidden in game scenes
+    COMPAT_ENGINES = {'BLENDER_RENDER'}
 
     @classmethod
     def poll(cls, context):
@@ -907,7 +916,8 @@ class TEXTURE_PT_pointdensity_turbulence(TextureButtonsPanel, Panel):
 class TEXTURE_PT_ocean(TextureTypePanel, Panel):
     bl_label = "Ocean"
     tex_type = 'OCEAN'
-    COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_GAME'}
+    # BGE-Remix P8.25: not drawn by the game or Remix: hidden in game scenes
+    COMPAT_ENGINES = {'BLENDER_RENDER'}
 
     def draw(self, context):
         layout = self.layout
@@ -1056,7 +1066,27 @@ class TEXTURE_PT_influence(TextureSlotPanel, Panel):
             return sub  # XXX, temp. use_map_normal needs to override.
 
         if isinstance(idblock, Material):
-            if idblock.type in {'SURFACE', 'WIRE'}:
+            if idblock.type in {'SURFACE', 'WIRE'} and getattr(idblock, "bge_physical", 'CLASSIC') == 'PHYSICAL':
+                # BGE-Remix P8.7: what each influence means in a physical material
+                split = layout.split()
+
+                col = split.column()
+                col.label(text="Surface:")
+                factor_but(col, "use_map_color_diffuse", "diffuse_color_factor", "Base Color")
+                factor_but(col, "use_map_alpha", "alpha_factor", "Alpha")
+                factor_but(col, "use_map_raymir", "raymir_factor", "Metallic")
+                factor_but(col, "use_map_hardness", "hardness_factor", "Roughness")
+                factor_but(col, "use_map_specular", "specular_factor", "Specular")
+
+                col = split.column()
+                col.label(text="Shading:")
+                factor_but(col, "use_map_emit", "emit_factor", "Emission")
+                factor_but(col, "use_map_ambient", "ambient_factor", "Ambient")
+                col.label(text="Geometry:")
+                sub_tmp = factor_but(col, "use_map_normal", "normal_factor", "Normal")
+                sub_tmp.active = (tex.use_map_normal or tex.use_map_displacement)
+                factor_but(col, "use_map_displacement", "displacement_factor", "Displace")
+            elif idblock.type in {'SURFACE', 'WIRE'}:
                 split = layout.split()
 
                 col = split.column()

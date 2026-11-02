@@ -114,6 +114,19 @@ int BRMX_present_direct_available(const char **r_reason)
 		}
 		return 0;
 	}
+	/* the tests' fake runtime (it sets this when loaded): its Vulkan handles
+	 * are made up, so the picture is copied, unless a test simulates direct
+	 * mode (BGE_REMIX_FAKE_VK_DRAW=1) */
+	if (!env_is("BGE_REMIX_FAKE_VK_DRAW", "1")) {
+		char fake[8] = "";
+		if (GetEnvironmentVariableA("BGE_REMIX_FAKE_RUNTIME", fake, sizeof(fake)) > 0 && fake[0] == '1') {
+			present.reason = "the tests' fake Remix runtime has no Vulkan picture";
+			if (r_reason) {
+				*r_reason = present.reason;
+			}
+			return 0;
+		}
+	}
 	if (!present.checked) {
 		present.checked = 1;
 		if (env_is("BGE_REMIX_FAKE_VK_DRAW", "1")) {
@@ -180,6 +193,19 @@ static int draw_direct(const BRMX_Bridge *bridge, int x, int y, int width, int h
 		present.signal(resume);
 		return got;
 	}
+	/* an error left by an earlier call is not this drawing's (P8.30: the RTX
+	 * run reported one here in every Remix run; which step it comes from is
+	 * said once) */
+	GLenum before = glGetError();
+	while (glGetError() != GL_NO_ERROR) {
+		/* drained */
+	}
+	if (before != GL_NO_ERROR && !present.error_noted) {
+		present.error_noted = 1;
+		printf("BGE-Remix: an OpenGL error (0x%04x) was left before Remix's image was drawn; "
+		       "not Remix's\n", before);
+		fflush(stdout);
+	}
 	if (GLEW_VERSION_2_0) {
 		glGetIntegerv(GL_CURRENT_PROGRAM, &program);
 		glUseProgram(0);
@@ -200,6 +226,12 @@ static int draw_direct(const BRMX_Bridge *bridge, int x, int y, int width, int h
 		glSamplerParameteri(present.sampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 	}
 
+	err = glGetError();
+	if (err != GL_NO_ERROR && !present.error_noted) {
+		present.error_noted = 1;
+		printf("BGE-Remix: setting up the drawing of Remix's image failed (OpenGL error 0x%04x)\n", err);
+		fflush(stdout);
+	}
 	present.wait(done);
 	if (got == 1) {
 		/* window coordinates; the picture's rows go from the top, OpenGL's from

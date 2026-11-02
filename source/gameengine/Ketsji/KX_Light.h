@@ -44,6 +44,9 @@ class RAS_IRasterizer;
 class RAS_ILightObject;
 class MT_Transform;
 
+/* BGE-Remix P8: lamp types changed from Python are given back when the game ends */
+void KX_LightObject_RestoreLampTypes();
+
 class KX_LightObject : public KX_GameObject
 {
 	Py_Header
@@ -78,6 +81,18 @@ public:
 	static PyObject		*pyattr_get_shadow_bleed_bias(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef);
 	static PyObject		*pyattr_get_shadow_map_type(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef);
 	static PyObject		*pyattr_get_shadow_color(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef);
+	/* BGE-Remix P8.9 */
+	static int			pyattr_set_shadow_bias(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef, PyObject *value);
+	static int			pyattr_set_shadow_bleed_bias(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef, PyObject *value);
+	static int			pyattr_set_shadow_color(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef, PyObject *value);
+	static PyObject		*pyattr_get_size(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef);
+	static int			pyattr_set_size(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef, PyObject *value);
+	static PyObject		*pyattr_get_area_size(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef);
+	static int			pyattr_set_area_size(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef, PyObject *value);
+	static PyObject		*pyattr_get_sun_angle(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef);
+	static int			pyattr_set_sun_angle(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef, PyObject *value);
+	static PyObject		*pyattr_get_contact_shadow(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef);
+	static int			pyattr_set_contact_shadow(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef, PyObject *value);
 	static PyObject		*pyattr_get_shadow_active(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef);
 	static PyObject		*pyattr_get_shadow_matrix(void *self_v, const KX_PYATTRIBUTE_DEF *attrdef);
 	static PyObject*	pyattr_get_distance(void* self_v, const KX_PYATTRIBUTE_DEF *attrdef);

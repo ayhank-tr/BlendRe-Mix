@@ -198,6 +198,22 @@ static uint32_t to_categories(uint32_t c)
 	if (c & BRB_CATEGORY_PARTICLE_EMITTER) {
 		r |= REMIXAPI_INSTANCE_CATEGORY_BIT_PARTICLE_EMITTER;
 	}
+	const struct { uint32_t ours, remix; } more[] = {
+	    {BRB_CATEGORY_HAIR_CARDS, REMIXAPI_INSTANCE_CATEGORY_BIT_HAIR_CARDS},
+	    {BRB_CATEGORY_ANIMATED_WATER, REMIXAPI_INSTANCE_CATEGORY_BIT_ANIMATED_WATER},
+	    {BRB_CATEGORY_TERRAIN, REMIXAPI_INSTANCE_CATEGORY_BIT_TERRAIN},
+	    {BRB_CATEGORY_DECAL_STATIC, REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_STATIC},
+	    {BRB_CATEGORY_DECAL_DYNAMIC, REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_DYNAMIC},
+	    {BRB_CATEGORY_SKY, REMIXAPI_INSTANCE_CATEGORY_BIT_SKY},
+	    {BRB_CATEGORY_WORLD_UI, REMIXAPI_INSTANCE_CATEGORY_BIT_WORLD_UI},
+	    {BRB_CATEGORY_BEAM, REMIXAPI_INSTANCE_CATEGORY_BIT_BEAM},
+	    {BRB_CATEGORY_IGNORE, REMIXAPI_INSTANCE_CATEGORY_BIT_IGNORE},
+	};
+	for (size_t i = 0; i < sizeof(more) / sizeof(more[0]); i++) {
+		if (c & more[i].ours) {
+			r |= more[i].remix;
+		}
+	}
 	return r;
 }
 
@@ -213,8 +229,25 @@ struct ParticleExt {
 	remixapi_Float3D velocity[2];
 };
 
+/* P8.30 diagnostics: BGE_REMIX_PARTICLE_UNITS replaces the centimetres */
+static float particle_units()
+{
+	static float units = -1.0f;
+	if (units < 0.0f) {
+		char buf[32];
+		const DWORD n = GetEnvironmentVariableA("BGE_REMIX_PARTICLE_UNITS", buf, sizeof(buf));
+		const float f = (n > 0 && n < sizeof(buf)) ? (float)atof(buf) : 0.0f;
+		units = (f > 0.0f) ? f : CM;
+		if (f > 0.0f) {
+			log("BGE_REMIX_PARTICLE_UNITS: particle lengths times %g", units);
+		}
+	}
+	return units;
+}
+
 static void fill_particles(const brb_particle_desc &d, ParticleExt &p)
 {
+	const float CM = particle_units();
 	remixapi_InstanceInfoParticleSystemEXT &i = p.info;
 	i = remixapi_InstanceInfoParticleSystemEXT();
 	i.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_PARTICLE_SYSTEM_EXT;
@@ -234,7 +267,13 @@ static void fill_particles(const brb_particle_desc &d, ParticleExt &p)
 	i.alignParticlesToVelocity = d.align_to_velocity ? TRUE : FALSE;
 	i.hideEmitter = d.hide_emitter ? TRUE : FALSE;
 	i.billboardType = (uint8_t)std::min(std::max(d.billboard, 0), 3);
-	i.spriteSheetMode = 0;
+	/* interface 11 */
+	i.spriteSheetMode = (uint8_t)std::min(std::max(d.sprite_sheet_mode, 0), 255);
+	i.useSpawnTexcoords = d.use_spawn_texcoords ? TRUE : FALSE;
+	i.randomFlipAxis = (uint8_t)std::min(std::max(d.random_flip_axis, 0), 255);
+	i.collisionMode = (uint8_t)std::min(std::max(d.collision_mode, 0), 2);
+	i.initialRotationDeviationDegrees = std::max(d.rotation_deviation_deg, 0.0f);
+	i.spawnBurstDuration = std::max(d.burst_duration, 0.0f);
 	i.motionTrailMultiplier = 1.0f;
 	i.turbulenceFrequency = 0.05f;
 	i.turbulenceForce = 0.0f;
@@ -258,7 +297,7 @@ static void fill_particles(const brb_particle_desc &d, ParticleExt &p)
 	i.maxVelocity = {p.velocity, 2};
 }
 
-static int draw_instance(const brb_draw_desc &d)
+static int draw_instance(const brb_draw_desc &d, const float *models = nullptr, uint32_t model_count = 0)
 {
 	if (!running()) {
 		return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
@@ -275,7 +314,7 @@ static int draw_instance(const brb_draw_desc &d)
 	remixapi_InstanceInfo inst = {};
 	inst.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO;
 	inst.mesh = it->second;
-	inst.transform = to_transform(world ? identity : d.model);
+	inst.transform = to_transform((world || models) ? identity : d.model);
 	inst.categoryFlags = to_categories(d.categories);
 	inst.doubleSided = (flags & BRB_DRAW_DOUBLE_SIDED) ? TRUE : FALSE;
 	void **tail = &inst.pNext;
@@ -336,6 +375,23 @@ static int draw_instance(const brb_draw_desc &d)
 		*tail = &blend;
 		tail = &blend.pNext;
 	}
+	/* interface 11: one call, the mesh at each model matrix (the instance's
+	 * own transform the identity, so the matrices are world space whether
+	 * Remix applies them alone or after it) */
+	std::vector<remixapi_Transform> inst_tf;
+	remixapi_InstanceInfoGpuInstancingEXT gpu_inst = {};
+	if (models && model_count > 0) {
+		inst_tf.resize(model_count);
+		for (uint32_t k = 0; k < model_count; k++) {
+			inst_tf[k] = to_transform(models + (size_t)k * 16);
+		}
+		gpu_inst.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_GPU_INSTANCING_EXT;
+		gpu_inst.instanceTransforms_values = inst_tf.data();
+		gpu_inst.instanceTransforms_count = model_count;
+		*tail = &gpu_inst;
+		tail = &gpu_inst.pNext;
+		g_frame_draws += (int)model_count - 1;
+	}
 	g_frame_draws++;
 	return track(guarded("DrawInstance", [&] { return g_remix.DrawInstance(&inst); }));
 }
@@ -367,8 +423,9 @@ BRB_API int brb_material_create(const brb_material_desc *d)
 		/* Remix's glass rejects a zero distance; Blender's glass tints per surface */
 		glass.transmittanceMeasurementDistance = std::max(d->transmittance_distance, 0.001f);
 		glass.thinWallThickness_hasvalue = d->thin_walled ? TRUE : FALSE;
-		glass.thinWallThickness_value = 0.001f;
-		glass.useDiffuseLayer = FALSE;
+		glass.thinWallThickness_value = d->thin_wall_thickness > 0.0f ? d->thin_wall_thickness : 0.001f;
+		glass.useDiffuseLayer = d->use_diffuse_layer ? TRUE : FALSE;
+		glass.transmittanceTexture = tex(d->transmittance_texture); /* interface 10 */
 		ext = &glass;
 	}
 	else {
@@ -378,7 +435,22 @@ BRB_API int brb_material_create(const brb_material_desc *d)
 		opaque.metallicConstant = clamp01(d->metallic);
 		opaque.roughnessTexture = tex(d->roughness_texture);
 		opaque.metallicTexture = tex(d->metallic_texture);
-		if (d->alpha_blend) {
+		/* interface 10 */
+		opaque.anisotropy = std::min(std::max(d->anisotropy, -1.0f), 1.0f);
+		opaque.thinFilmThickness_hasvalue = d->thin_film ? TRUE : FALSE;
+		opaque.thinFilmThickness_value = std::max(d->thin_film_thickness, 0.0f);
+		opaque.alphaIsThinFilmThickness = d->alpha_is_thin_film ? TRUE : FALSE;
+		opaque.heightTexture = tex(d->height_texture);
+		opaque.displaceIn = std::max(d->displace_in, 0.0f);
+		opaque.displaceOut = std::max(d->displace_out, 0.0f);
+		if (d->additive) {
+			/* P8.8: Blender's Add blending is Remix's emissive blending (one,
+			 * one: dxvk-remix BlendType::kEmissive) */
+			opaque.useDrawCallAlphaState = FALSE;
+			opaque.blendType_hasvalue = TRUE;
+			opaque.blendType_value = 8;
+		}
+		else if (d->alpha_blend) {
 			/* blend by opacity (and the albedo texture's alpha), not by the
 			 * (missing) draw call state */
 			opaque.useDrawCallAlphaState = FALSE;
@@ -392,17 +464,38 @@ BRB_API int brb_material_create(const brb_material_desc *d)
 			opaque.alphaTestType = 4; /* AlphaTestType::kGreater */
 			opaque.alphaReferenceValue = (uint8_t)std::lround(clamp01(d->alpha_cutoff) * 255.0f);
 		}
+		/* interface 10: the material's own Remix settings, over the above */
+		if (d->blend_type > 0) {
+			opaque.useDrawCallAlphaState = FALSE;
+			opaque.blendType_hasvalue = TRUE;
+			opaque.blendType_value = d->blend_type - 1;
+		}
+		else if (d->blend_type < 0) {
+			/* no blending at all */
+			opaque.blendType_hasvalue = FALSE;
+		}
+		opaque.invertedBlend = d->inverted_blend ? TRUE : FALSE;
+		if (d->alpha_test_type > 0) {
+			opaque.useDrawCallAlphaState = FALSE;
+			opaque.alphaTestType = d->alpha_test_type - 1;
+			opaque.alphaReferenceValue = (uint8_t)std::lround(clamp01(d->alpha_cutoff) * 255.0f);
+		}
 		if (d->subsurface) {
 			/* Remix's diffusion profile, as Blender's Christensen-Burley:
 			 * radius per channel in scene units (here Blender units) */
 			sss.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_SUBSURFACE_EXT;
 			sss.subsurfaceTransmittanceColor = srgb3(d->subsurface_color);
 			sss.subsurfaceSingleScatteringAlbedo = f3(d->subsurface_color);
-			sss.subsurfaceMeasurementDistance = 0.0f;
-			sss.subsurfaceVolumetricAnisotropy = 0.0f;
-			sss.subsurfaceDiffusionProfile = TRUE;
+			sss.subsurfaceMeasurementDistance = d->subsurface_volumetric ? std::max(d->subsurface_distance, 0.0f) : 0.0f;
+			sss.subsurfaceVolumetricAnisotropy = std::min(std::max(d->subsurface_anisotropy, -1.0f), 1.0f);
+			sss.subsurfaceDiffusionProfile = d->subsurface_volumetric ? FALSE : TRUE;
 			sss.subsurfaceRadius = f3(d->subsurface_radius);
-			sss.subsurfaceRadiusScale = 1.0f;
+			sss.subsurfaceRadiusScale = d->subsurface_radius_scale > 0.0f ? d->subsurface_radius_scale : 1.0f;
+			/* interface 10 */
+			sss.subsurfaceTransmittanceTexture = tex(d->subsurface_transmittance_texture);
+			sss.subsurfaceThicknessTexture = tex(d->subsurface_thickness_texture);
+			sss.subsurfaceSingleScatteringAlbedoTexture = tex(d->subsurface_albedo_texture);
+			sss.subsurfaceRadiusTexture = tex(d->subsurface_radius_texture);
 			const float rmax = std::max(std::max(d->subsurface_radius[0], d->subsurface_radius[1]), d->subsurface_radius[2]);
 			sss.subsurfaceMaxSampleRadius = std::max(rmax * 3.0f, 0.001f);
 			opaque.pNext = &sss;
@@ -418,6 +511,13 @@ BRB_API int brb_material_create(const brb_material_desc *d)
 	info.emissiveTexture = tex(d->emissive_texture);
 	info.filterMode = d->filter_nearest ? 0 : 1;   /* MDL filter: nearest, linear */
 	info.wrapModeU = info.wrapModeV = d->clamp ? 0 : 1; /* MDL wrap: clamp, repeat */
+	if (d->wrap_u > 0) {
+		info.wrapModeU = (uint8_t)std::min(d->wrap_u - 1, 3); /* interface 10 */
+	}
+	if (d->wrap_v > 0) {
+		info.wrapModeV = (uint8_t)std::min(d->wrap_v - 1, 3);
+	}
+	info.tangentTexture = tex(d->tangent_texture);
 
 	remixapi_MaterialHandle h = nullptr;
 	remixapi_ErrorCode r = guarded("CreateMaterial", [&] { return g_remix.CreateMaterial(&info, &h); });
@@ -504,9 +604,10 @@ BRB_API int brb_mesh_create(uint64_t hash, const brb_surface_desc *surfaces, uin
 			o.normal[0] = v.normal[0];
 			o.normal[1] = v.normal[1];
 			o.normal[2] = v.normal[2];
-			/* Remix samples textures with the origin at the top left (D3D) */
+			/* interface 10: Blender's coordinates as they are; the DDS files'
+			 * rows start at the bottom, as Blender's images (bridge_texture.cpp) */
 			o.texcoord[0] = v.uv[0];
-			o.texcoord[1] = 1.0f - v.uv[1];
+			o.texcoord[1] = v.uv[1];
 			o.color = v.color;
 			if (skin) {
 				const size_t at = (size_t)i * spacing;
@@ -608,14 +709,18 @@ BRB_API int brb_light_create(const brb_light_desc *d)
 
 	remixapi_LightInfoSphereEXT sphere = default_sphere();
 	remixapi_LightInfoRectEXT rect = {};
+	remixapi_LightInfoDiskEXT disk = {};
 	remixapi_LightInfoDistantEXT distant = {};
 	remixapi_LightInfoDomeEXT dome = {};
+	/* interface 8: 0 means Remix's own 1 (the field was new; callers left it zero) */
+	const float volumetric = d->volumetric > 0.0f ? d->volumetric : 1.0f;
 	switch (d->type) {
 		case BRB_LIGHT_SPHERE:
 			sphere.position = f3(d->position);
 			sphere.radius = std::max(d->radius, 0.001f);
 			sphere.shaping_hasvalue = d->shaped ? TRUE : FALSE;
 			sphere.shaping_value = shaping;
+			sphere.volumetricRadianceScale = volumetric;
 			info.pNext = &sphere;
 			break;
 		case BRB_LIGHT_RECT:
@@ -628,20 +733,33 @@ BRB_API int brb_light_create(const brb_light_desc *d)
 			rect.direction = f3(d->direction);
 			rect.shaping_hasvalue = d->shaped ? TRUE : FALSE;
 			rect.shaping_value = shaping;
-			rect.volumetricRadianceScale = 1.0f;
+			rect.volumetricRadianceScale = volumetric;
 			info.pNext = &rect;
+			break;
+		case BRB_LIGHT_DISK:
+			disk.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISK_EXT;
+			disk.position = f3(d->position);
+			disk.xAxis = f3(d->x_axis);
+			disk.xRadius = std::max(d->size[0], 0.001f);
+			disk.yAxis = f3(d->y_axis);
+			disk.yRadius = std::max(d->size[1], 0.001f);
+			disk.direction = f3(d->direction);
+			disk.shaping_hasvalue = d->shaped ? TRUE : FALSE;
+			disk.shaping_value = shaping;
+			disk.volumetricRadianceScale = volumetric;
+			info.pNext = &disk;
 			break;
 		case BRB_LIGHT_DISTANT:
 			distant.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISTANT_EXT;
 			distant.direction = f3(d->direction);
 			distant.angularDiameterDegrees = std::max(d->angular_diameter_deg, 0.01f);
-			distant.volumetricRadianceScale = 1.0f;
+			distant.volumetricRadianceScale = volumetric;
 			info.pNext = &distant;
 			break;
 		case BRB_LIGHT_DOME:
 			dome.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DOME_EXT;
 			dome.transform = {{{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}}};
-			dome.colorTexture = dome_texture().c_str();
+			dome.colorTexture = (d->dome_texture && d->dome_texture[0]) ? d->dome_texture : dome_texture().c_str();
 			info.pNext = &dome;
 			break;
 		default:
@@ -741,6 +859,14 @@ BRB_API int brb_frame_draw(uint64_t mesh, const float model[16], int flags)
 	memcpy(d.model, model, sizeof(d.model));
 	d.flags = flags;
 	return draw_instance(d);
+}
+
+BRB_API int brb_frame_draw_instanced(const brb_draw_desc *desc, const float *models, uint32_t count)
+{
+	if (!desc || !models || count == 0) {
+		return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+	}
+	return draw_instance(*desc, models, count);
 }
 
 BRB_API int brb_frame_draw_ex(const brb_draw_desc *desc)

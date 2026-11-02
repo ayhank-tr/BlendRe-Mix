@@ -42,7 +42,12 @@
 
 #include "RAS_BucketManager.h"
 
+#include "GPU_layer.h"
+#include "GPU_material.h"  /* GPU_BLEND_* */
+
 #include <algorithm>
+#include <map>
+#include <vector>
 /* sorting */
 
 struct RAS_BucketManager::sortedmeshslot
@@ -149,16 +154,28 @@ void RAS_BucketManager::RenderAlphaBuckets(const MT_Transform& cameratrans, RAS_
 		rasty->SetDepthMask(RAS_IRasterizer::KX_DEPTHMASK_DISABLED);
 
 	OrderBuckets(cameratrans, m_AlphaBuckets, slots, true);
-	
-	for (sit=slots.begin(); sit!=slots.end(); ++sit) {
-		rasty->SetClientObject(sit->m_ms->m_clientObj);
 
-		while (sit->m_bucket->ActivateMaterial(cameratrans, rasty))
-			sit->m_bucket->RenderMeshSlot(cameratrans, rasty, *(sit->m_ms));
+	/* BGE-Remix P8 Part C (P8.21): in Modern scenes, alpha-blended surfaces
+	 * go through the order-independent pass; additive and the other ones
+	 * are drawn after it, in their order */
+	const bool oit = !slots.empty() && rasty->BeginTransparency();
+	for (int pass = oit ? 0 : 1; pass < 2; pass++) {
+		for (sit=slots.begin(); sit!=slots.end(); ++sit) {
+			const int blend = sit->m_bucket->GetPolyMaterial()->GetAlphaBlendMode();
+			const bool blended = (blend == GPU_BLEND_ALPHA || blend == GPU_BLEND_ALPHA_SORT);
+			if (oit && (pass == 0) != blended)
+				continue;
+			rasty->SetClientObject(sit->m_ms->m_clientObj);
 
-		// make this mesh slot culled automatically for next frame
-		// it will be culled out by frustum culling
-		sit->m_ms->SetCulled(true);
+			while (sit->m_bucket->ActivateMaterial(cameratrans, rasty))
+				sit->m_bucket->RenderMeshSlot(cameratrans, rasty, *(sit->m_ms));
+
+			// make this mesh slot culled automatically for next frame
+			// it will be culled out by frustum culling
+			sit->m_ms->SetCulled(true);
+		}
+		if (pass == 0)
+			rasty->EndTransparency();
 	}
 
 	rasty->SetDepthMask(RAS_IRasterizer::KX_DEPTHMASK_ENABLED);
@@ -174,11 +191,50 @@ void RAS_BucketManager::RenderSolidBuckets(const MT_Transform& cameratrans, RAS_
 #if 1
 		RAS_MaterialBucket* bucket = *bit;
 		RAS_MeshSlot* ms;
-		// remove the mesh slot from the list, it culls them automatically for next frame
-		while ((ms = bucket->GetNextActiveMeshSlot())) {
-			rasty->SetClientObject(ms->m_clientObj);
-			while (bucket->ActivateMaterial(cameratrans, rasty))
-				bucket->RenderMeshSlot(cameratrans, rasty, *ms);
+		/* BGE-Remix P8 Part B (P8.11): objects of one mesh with this material
+		 * (not deformed, no object colour, no billboard or text) are drawn
+		 * as instances, in one draw, where the material allows it.
+		 * BGE-Remix P8.30: shadow maps too; a solid caster is drawn with the
+		 * built-in depth shader (its material's shader does not matter) */
+		RAS_IPolyMaterial *mat = bucket->GetPolyMaterial();
+		const int drawmode = rasty->GetDrawingMode();
+		const bool shadow_depth = drawmode == RAS_IRasterizer::KX_SHADOW &&
+		    (mat->GetAlphaBlendMode() == GPU_BLEND_SOLID || rasty->GetUsingOverrideShader());
+		const bool instancing = (drawmode == RAS_IRasterizer::KX_TEXTURED || drawmode == RAS_IRasterizer::KX_SHADOW) &&
+		    (shadow_depth || mat->CanInstance()) &&
+		    !(mat->GetDrawingMode() & (RAS_IRasterizer::RAS_RENDER_3DPOLYGON_TEXT | RAS_IPolyMaterial::BILLBOARD_SCREENALIGNED |
+		                               RAS_IPolyMaterial::BILLBOARD_AXISALIGNED | RAS_IPolyMaterial::SHADOW));
+		std::vector<RAS_MeshSlot *> active;
+		while ((ms = bucket->GetNextActiveMeshSlot()))
+			active.push_back(ms);
+		std::map<RAS_MeshObject *, std::vector<RAS_MeshSlot *> > groups;
+		if (instancing) {
+			for (size_t i = 0; i < active.size(); i++) {
+				RAS_MeshSlot *s = active[i];
+				if (!s->m_pDeformer && !s->m_pDerivedArrays && !s->m_bObjectColor && !s->m_joinSlot &&
+				    s->m_joinedSlots.empty() && s->m_mesh)
+				{
+					groups[s->m_mesh].push_back(s);
+				}
+			}
+		}
+		for (size_t i = 0; i < active.size(); i++) {
+			ms = active[i];
+			std::map<RAS_MeshObject *, std::vector<RAS_MeshSlot *> >::iterator g =
+			        instancing ? groups.find(ms->m_mesh) : groups.end();
+			if (g != groups.end() && g->second.size() >= 2) {
+				if (g->second[0] == ms) {
+					/* the group is drawn where its first object comes */
+					rasty->SetClientObject(ms->m_clientObj);
+					while (bucket->ActivateMaterial(cameratrans, rasty))
+						bucket->RenderMeshSlotsInstanced(cameratrans, rasty, g->second);
+				}
+			}
+			else {
+				rasty->SetClientObject(ms->m_clientObj);
+				while (bucket->ActivateMaterial(cameratrans, rasty))
+					bucket->RenderMeshSlot(cameratrans, rasty, *ms);
+			}
 
 			// make this mesh slot culled automatically for next frame
 			// it will be culled out by frustum culling
@@ -225,8 +281,18 @@ void RAS_BucketManager::Renderbuckets(const MT_Transform& cameratrans, RAS_IRast
 	/* beginning each frame, clear (texture/material) caching information */
 	rasty->ClearCachingInfo();
 
+	/* BGE-Remix P8 Part B: the GPU time of the main passes (not shadows) */
+	const bool timed = rasty->GetDrawingMode() != RAS_IRasterizer::KX_SHADOW;
+	if (timed)
+		GPU_pass_timer_begin(GPU_PASS_OPAQUE);
 	RenderSolidBuckets(cameratrans, rasty);
+	if (timed) {
+		GPU_pass_timer_end(GPU_PASS_OPAQUE);
+		GPU_pass_timer_begin(GPU_PASS_TRANSPARENT);
+	}
 	RenderAlphaBuckets(cameratrans, rasty);
+	if (timed)
+		GPU_pass_timer_end(GPU_PASS_TRANSPARENT);
 
 	/* If we're drawing shadows and bucket wasn't rendered (outside of the lamp frustum or doesn't cast shadows)
 	 * then the mesh is still modified, so we don't want to set MeshModified to false yet (it will mess up

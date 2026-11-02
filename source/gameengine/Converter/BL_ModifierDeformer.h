@@ -42,6 +42,7 @@
 
 struct DerivedMesh;
 struct Object;
+class RAS_DisplayArray;
 
 class BL_ModifierDeformer : public BL_ShapeDeformer  
 {
@@ -58,7 +59,8 @@ public:
 	                    BL_ShapeDeformer(gameobj,bmeshobj, mesh),
 	                    m_lastModifierUpdate(-1),
 	                    m_scene(scene),
-	                    m_dm(NULL)
+	                    m_dm(NULL),
+	                    m_dmArraysDirty(true)
 	{
 		m_recalcNormal = false;
 	}
@@ -75,7 +77,8 @@ public:
 	                    BL_ShapeDeformer(gameobj, bmeshobj_old, bmeshobj_new, mesh, release_object, false, arma),
 	                    m_lastModifierUpdate(-1),
 	                    m_scene(scene),
-	                    m_dm(NULL)
+	                    m_dm(NULL),
+	                    m_dmArraysDirty(true)
 	{
 		/* pass */
 	}
@@ -87,6 +90,8 @@ public:
 	{
 		return false;
 	}
+	/* BGE-Remix P8 Part B: the derived mesh draws its own arrays */
+	virtual bool GPUSkinAllowed() { return false; }
 
 	bool Update (void);
 	bool Apply(RAS_IPolyMaterial *mat);
@@ -105,6 +110,12 @@ protected:
 	double					 m_lastModifierUpdate;
 	Scene					*m_scene;
 	DerivedMesh				*m_dm;
+	/* BGE-Remix P8 Part B: the derived mesh as display arrays, one list per
+	 * mesh material (the mesh slots draw them as batches) */
+	std::vector<std::vector<RAS_DisplayArray *> > m_dmArrays;
+	bool					 m_dmArraysDirty;
+	void FreeDerivedArrays();
+	void UpdateDerivedArrays();
 
 
 #ifdef WITH_CXX_GUARDEDALLOC

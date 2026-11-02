@@ -63,6 +63,7 @@ void IMB_colormanagement_validate_settings(struct ColorManagedDisplaySettings *d
 
 const char *IMB_colormanagement_role_colorspace_name_get(int role);
 void IMB_colormanagement_check_is_data(struct ImBuf *ibuf, const char *name);
+bool IMB_colormanagement_space_name_is_data(const char *name); /* BGE-Remix P8.24 */
 void IMB_colormanagement_assign_float_colorspace(struct ImBuf *ibuf, const char *name);
 void IMB_colormanagement_assign_rect_colorspace(struct ImBuf *ibuf, const char *name);
 

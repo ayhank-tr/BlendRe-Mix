@@ -51,6 +51,7 @@
 #include <vector>
 #include <algorithm>
 
+#include "BL_HairCards.h"  /* BGE-Remix P8 Part C (P8.20) */
 #include "BL_BlenderDataConversion.h"
 
 #include "MT_Transform.h"
@@ -137,6 +138,8 @@
 
 #include "BKE_key.h"
 #include "BKE_mesh.h"
+#include "BKE_curve.h"  /* BGE-Remix P8.22: CurveCache */
+#include "BKE_lamp_physical.h"
 
 #include "BLI_math.h"
 
@@ -154,6 +157,8 @@ extern Material defmaterial;	/* material.c */
 }
 
 /* end of blender include block */
+
+#include "GPU_material.h"
 
 #include "KX_BlenderInputDevice.h"
 #include "KX_ConvertProperties.h"
@@ -658,7 +663,8 @@ static bool ConvertMaterial(
 							material->flag[i] |= (mttmp->mapto & MAP_ALPHA) ? TEXALPHA : 0;
 							material->flag[i] |= (mttmp->texflag & MTEX_NEGATIVE) ? TEXNEG : 0;
 
-							if (!glslmat && (material->flag[i] & TEXALPHA)) {
+							/* BGE-Remix P8: in GLSL too (one material mode) */
+							if (material->flag[i] & TEXALPHA) {
 								texalpha = 1;
 							}
 						}
@@ -883,7 +889,27 @@ static bool ConvertMaterial(
 	return true;
 }
 
-static RAS_MaterialBucket *material_from_mesh(Material *ma, MFace *mface, MTFace *tface, MCol *mcol, MTF_localLayer *layers, int lightlayer, unsigned int *rgb, MT_Point2 uvs[4][RAS_TexVert::MAX_UNIT], const char *tfaceName, KX_Scene* scene, KX_BlenderSceneConverter *converter)
+/* BGE-Remix P8.9: whether a lamp of the scene lights its own layers only */
+static bool scene_has_layer_lamps(Scene *blenderscene)
+{
+	bool found = false;
+	Scene *sce_iter;
+	Base *base;
+	for (SETLOOPER(blenderscene, sce_iter, base)) {
+		Object *ob = base->object;
+		/* BGE-Remix P8 Part B (P8.15): the clustered lamps test the layer per
+		 * object: only lamps with their own code in the materials count */
+		if (ob->type == OB_LAMP && ob->data && (((Lamp *)ob->data)->mode & LA_LAYER) &&
+		    GPU_lamp_needs_own_code((Lamp *)ob->data))
+		{
+			found = true;
+			break;
+		}
+	}
+	return found;
+}
+
+static RAS_MaterialBucket *material_from_mesh(Material *ma, MFace *mface, MTFace *tface, MCol *mcol, MTF_localLayer *layers, int lightlayer, unsigned int *rgb, MT_Point2 uvs[4][RAS_TexVert::MAX_UNIT], const char *tfaceName, KX_Scene* scene, KX_BlenderSceneConverter *converter, bool layer_lamps)
 {
 	RAS_IPolyMaterial* polymat = converter->FindCachedPolyMaterial(scene, ma);
 	BL_Material* bl_mat = converter->FindCachedBlenderMaterial(scene, ma);
@@ -894,8 +920,10 @@ static RAS_MaterialBucket *material_from_mesh(Material *ma, MFace *mface, MTFace
 	{
 		bl_mat = new BL_Material();
 
+		/* BGE-Remix P8: a material whose GLSL shader cannot be built falls
+		 * back to the built-in classic shader */
 		ConvertMaterial(bl_mat, ma, tface, tfaceName, mface, mcol,
-			converter->GetGLSLMaterials());
+			converter->GetGLSLMaterials() && converter->MaterialGLSLWorks(scene, ma));
 
 		if (ma && (ma->mode & MA_FACETEXTURE) == 0)
 			converter->CacheBlenderMaterial(scene, ma, bl_mat);
@@ -906,14 +934,27 @@ static RAS_MaterialBucket *material_from_mesh(Material *ma, MFace *mface, MTFace
 
 	GetUVs(bl_mat, layers, mface, tface, uvs);
 
+	/* BGE-Remix P8.9: the material keeps the light layer it was made for
+	 * (lamps with "This Layer Only" light it by that layer), so where the
+	 * scene has such lamps, an object on other layers gets its own (it was
+	 * lit as the first object's layer) */
+	bool cache = true;
+	if (layer_lamps && polymat && static_cast<KX_BlenderMaterial *>(polymat)->GetLightLayer() != lightlayer) {
+		polymat = NULL;
+		cache = false;
+	}
+
 	/* then the KX_BlenderMaterial */
 	if (polymat == NULL)
 	{
 		kx_blmat = new KX_BlenderMaterial();
 
 		kx_blmat->Initialize(scene, bl_mat, (ma?&ma->game:NULL), lightlayer);
+		/* BGE-Remix P8.9: and its own bucket */
+		if (layer_lamps)
+			kx_blmat->SetBucketLayer(lightlayer);
 		polymat = static_cast<RAS_IPolyMaterial*>(kx_blmat);
-		if (ma && (ma->mode & MA_FACETEXTURE) == 0)
+		if (cache && ma && (ma->mode & MA_FACETEXTURE) == 0)
 			converter->CachePolyMaterial(scene, ma, polymat);
 	}
 	
@@ -931,6 +972,155 @@ static RAS_MaterialBucket *material_from_mesh(Material *ma, MFace *mface, MTFace
 	return bucket;
 }
 
+/* BGE-Remix P8 Part B: the faces of a derived mesh (an object's modifiers)
+ * that one mesh material draws (the faces of its material slot and, without
+ * GLSL, of its face image, as Blender's mesh drawing chose them for the game
+ * before), as display arrays of triangles: vertices filled as BL_ConvertMesh
+ * fills a mesh's (positions, normals, UV layers by the material's mapping,
+ * tangents, colours), quads split 0 1 2 / 0 2 3 as Blender's drawing split
+ * them, at most 65535 vertices an array. Returns the triangles made. */
+int BL_ConvertDerivedMeshArrays(DerivedMesh *dm, Object *blenderobj, RAS_IPolyMaterial *polymat,
+                                RAS_DisplayArrayList& arrays)
+{
+	for (RAS_DisplayArrayList::iterator it = arrays.begin(); it != arrays.end(); ++it) {
+		(*it)->m_vertex.clear();
+		(*it)->m_index.clear();
+	}
+	if (!dm || !polymat)
+		return 0;
+
+	KX_BlenderMaterial *kxmat = static_cast<KX_BlenderMaterial *>(polymat);
+	BL_Material *bl_mat = kxmat->GetBLMaterial();
+	if (!bl_mat)
+		return 0;
+	const int matindex = polymat->GetMaterialIndex();
+	const bool glsl = (polymat->GetFlag() & RAS_BLENDERGLSL) != 0;
+	Image *image = polymat->GetBlenderImage();
+
+	DM_ensure_tessface(dm);
+	MVert *mvert = dm->getVertArray(dm);
+	MFace *mface = dm->getTessFaceArray(dm);
+	MTFace *tface = static_cast<MTFace*>(dm->getTessFaceDataArray(dm, CD_MTFACE));
+	MCol *mcol = static_cast<MCol*>(dm->getTessFaceDataArray(dm, CD_MCOL));
+	const int totface = dm->getNumTessFaces(dm);
+	float (*tangent)[4] = NULL;
+	if (tface) {
+		if (CustomData_get_layer_index(&dm->faceData, CD_TANGENT) == -1) {
+			bool generate_data = false;
+			if (CustomData_get_layer_index(&dm->loopData, CD_TANGENT) == -1) {
+				DM_calc_loop_tangents(dm, true, NULL, 0);
+				generate_data = true;
+			}
+			DM_generate_tangent_tessface_data(dm, generate_data);
+		}
+		tangent = (float(*)[4])dm->getTessFaceDataArray(dm, CD_TANGENT);
+	}
+
+	MTF_localLayer layers[MAX_MTFACE];
+	for (int lay = 0; lay < MAX_MTFACE; lay++) {
+		layers[lay].face = 0;
+		layers[lay].name = "";
+	}
+	int validLayers = 0;
+	for (int i = 0; i < dm->faceData.totlayer && validLayers < MAX_MTFACE; i++) {
+		if (dm->faceData.layers[i].type == CD_MTFACE) {
+			layers[validLayers].face = (MTFace*)(dm->faceData.layers[i].data);
+			layers[validLayers].name = dm->faceData.layers[i].name;
+			validLayers++;
+		}
+	}
+
+	MT_Point2 uvs[4][RAS_TexVert::MAX_UNIT];
+	for (unsigned int i = 0; i < RAS_TexVert::MAX_UNIT; i++)
+		uvs[0][i] = uvs[1][i] = uvs[2][i] = uvs[3][i] = MT_Point2(0.0f, 0.0f);
+	unsigned int rgb[4] = {0};
+	MT_Point3 pt[4];
+	MT_Vector3 no[4];
+	MT_Vector4 tan[4];
+	for (unsigned int i = 0; i < 4; i++) {
+		const float zero_vec[4] = {0.0f};
+		pt[i].setValue(zero_vec);
+		no[i].setValue(zero_vec);
+		tan[i].setValue(zero_vec);
+	}
+
+	size_t used = 0;
+	RAS_DisplayArray *array = NULL;
+	int triangles = 0;
+
+	for (int f = 0; f < totface; f++) {
+		MFace *mf = &mface[f];
+		MTFace *tf = tface ? &tface[f] : NULL;
+		if (mf->mat_nr != matindex)
+			continue;
+		if (!glsl && tf && tf->tpage != image)
+			continue;
+
+		const int nverts = mf->v4 ? 4 : 3;
+		const unsigned int vi[4] = {mf->v1, mf->v2, mf->v3, mf->v4};
+		for (int k = 0; k < nverts; k++)
+			pt[k].setValue(mvert[vi[k]].co);
+		if (mf->flag & ME_SMOOTH) {
+			for (int k = 0; k < nverts; k++) {
+				float n[3];
+				normal_short_to_float_v3(n, mvert[vi[k]].no);
+				no[k] = n;
+			}
+		}
+		else {
+			float fno[3];
+			if (mf->v4)
+				normal_quad_v3(fno, mvert[mf->v1].co, mvert[mf->v2].co, mvert[mf->v3].co, mvert[mf->v4].co);
+			else
+				normal_tri_v3(fno, mvert[mf->v1].co, mvert[mf->v2].co, mvert[mf->v3].co);
+			no[0] = no[1] = no[2] = no[3] = MT_Vector3(fno);
+		}
+		if (tangent) {
+			for (int k = 0; k < nverts; k++)
+				tan[k] = tangent[f * 4 + k];
+		}
+
+		Material *ma = blenderobj ? give_current_material(blenderobj, mf->mat_nr + 1) : NULL;
+		if (ma == NULL)
+			ma = &defmaterial;
+		GetRGB(GetMaterialUseVColor(ma, bl_mat->glslmat), mf, mcol ? &mcol[f * 4] : NULL, ma, rgb);
+		/* the UV layers of this face */
+		MTF_localLayer facelayers[MAX_MTFACE];
+		for (int lay = 0; lay < MAX_MTFACE; lay++) {
+			facelayers[lay].name = layers[lay].name;
+			facelayers[lay].face = layers[lay].face ? layers[lay].face + f : 0;
+		}
+		GetUVs(bl_mat, facelayers, mf, tf, uvs);
+
+		if (!array || used + (size_t)nverts > RAS_DisplayArray::BUCKET_MAX_VERTEX) {
+			/* the next array (made when there are not enough) */
+			const size_t next = array ? (size_t)(std::find(arrays.begin(), arrays.end(), array) - arrays.begin()) + 1 : 0;
+			if (next >= arrays.size())
+				arrays.push_back(new RAS_DisplayArray());
+			array = arrays[next];
+			array->m_type = RAS_DisplayArray::TRIANGLE;
+			used = 0;
+		}
+		const unsigned short base = (unsigned short)array->m_vertex.size();
+		for (int k = 0; k < nverts; k++) {
+			array->m_vertex.push_back(RAS_TexVert(pt[k], uvs[k], tan[k], rgb[k], no[k],
+			                                      (mf->flag & ME_SMOOTH) == 0, vi[k]));
+		}
+		used += (size_t)nverts;
+		array->m_index.push_back(base);
+		array->m_index.push_back((unsigned short)(base + 1));
+		array->m_index.push_back((unsigned short)(base + 2));
+		triangles++;
+		if (nverts == 4) {
+			array->m_index.push_back(base);
+			array->m_index.push_back((unsigned short)(base + 2));
+			array->m_index.push_back((unsigned short)(base + 3));
+			triangles++;
+		}
+	}
+	return triangles;
+}
+
 /* blenderobj can be NULL, make sure its checked for */
 RAS_MeshObject* BL_ConvertMesh(Mesh* mesh, Object* blenderobj, KX_Scene* scene, KX_BlenderSceneConverter *converter, bool libloading)
 {
@@ -946,6 +1136,14 @@ RAS_MeshObject* BL_ConvertMesh(Mesh* mesh, Object* blenderobj, KX_Scene* scene, 
 			return meshobj;
 		}
 	}
+
+	/* BGE-Remix P8.5: the mesh's texture space (Generated coordinates: the
+	 * game's shaders, Remix's bakes) made from its vertices now; the one
+	 * kept with the mesh was found unset in the player (CI, P8 run 6) */
+	BKE_mesh_texspace_calc(mesh);
+
+	/* BGE-Remix P8.9: materials per light layer where lamps light their own layers */
+	const bool layer_lamps = scene_has_layer_lamps(scene->GetBlenderScene());
 
 	// Get DerivedMesh data
 	DerivedMesh *dm = CDDM_from_mesh(mesh);
@@ -1081,7 +1279,8 @@ RAS_MeshObject* BL_ConvertMesh(Mesh* mesh, Object* blenderobj, KX_Scene* scene, 
 
 		{
 
-			RAS_MaterialBucket* bucket = material_from_mesh(ma, mface, tface, mcol, layers, lightlayer, rgb, uvs, tfaceName, scene, converter);
+			RAS_MaterialBucket* bucket = material_from_mesh(ma, mface, tface, mcol, layers, lightlayer, rgb, uvs, tfaceName, scene, converter,
+			                                                   layer_lamps);
 
 			// set render flags
 			bool visible = ((ma->game.flag & GEMAT_INVISIBLE)==0);
@@ -1449,6 +1648,20 @@ static KX_LightObject *gamelight_from_blamp(Object *ob, Lamp *la, unsigned int l
 	lightobj->m_layer = layerflag;
 	lightobj->m_spotblend = la->spotblend;
 	lightobj->m_spotsize = la->spotsize;
+
+	/* BGE-Remix P8.9: the shared light description */
+	lightobj->m_physical = BKE_lamp_is_physical(la);
+	lightobj->m_size = BKE_lamp_size(la);
+	lightobj->m_areasize[0] = la->area_size;
+	lightobj->m_areasize[1] = (la->area_shape == LA_AREA_RECT) ? la->area_sizey : la->area_size;
+	lightobj->m_sunangle = BKE_lamp_sun_angle(la);
+	lightobj->m_onlyshadow = (la->mode & LA_ONLYSHADOW) != 0;
+	/* BGE-Remix P8.10 */
+	lightobj->m_contact = BKE_lamp_contact_distance(la);
+	if (lightobj->m_physical) {
+		BKE_lamp_physical_coefficients(la->dist, lightobj->m_size, &lightobj->m_coeff_const,
+		                               &lightobj->m_coeff_lin, &lightobj->m_coeff_quad);
+	}
 	
 	lightobj->m_nodiffuse = (la->mode & LA_NO_DIFF) != 0;
 	lightobj->m_nospecular = (la->mode & LA_NO_SPEC) != 0;
@@ -1533,6 +1746,15 @@ static KX_GameObject *gameobject_from_blenderobject(
 		Mesh* mesh = static_cast<Mesh*>(ob->data);
 		float center[3], extents[3];
 		float radius = my_boundbox_mesh((Mesh*) ob->data, center, extents);
+		/* BGE-Remix P8 Part C (P8.22): a texture mapped to Displace, in a
+		 * Modern scene, moves a finer copy of a still mesh (no modifiers,
+		 * shape keys or armature) */
+		if (BKE_scene_game_pipeline(blenderscene) == BKE_SCENE_GAME_PIPELINE_MODERN && !ob->modifiers.first &&
+		    !mesh->key && ob->partype != PARSKEL)
+		{
+			if (Mesh *displaced = BL_DisplacedMesh(ob, mesh, blenderscene, converter))
+				mesh = displaced;
+		}
 		RAS_MeshObject* meshobj = BL_ConvertMesh(mesh,ob,kxscene,converter, libloading);
 		
 		// needed for python scripting
@@ -1549,6 +1771,10 @@ static KX_GameObject *gameobject_from_blenderobject(
 	
 		// set transformation
 		gameobj->AddMesh(meshobj);
+
+		/* BGE-Remix P8 Part C (P8.20): its hair, as ribbons (a second mesh) */
+		if (RAS_MeshObject *hair = BL_ConvertHairCards(ob, kxscene, converter, libloading))
+			gameobj->AddMesh(hair);
 
 		// gather levels of detail
 		if (BLI_listbase_count_ex(&ob->lodlevels, 2) > 1) {
@@ -1670,17 +1896,60 @@ static KX_GameObject *gameobject_from_blenderobject(
 		/* add to the list only the visible fonts */
 		if ((ob->lay & kxscene->GetBlenderScene()->lay) != 0)
 			kxscene->AddFont(static_cast<KX_FontObject*>(gameobj));
+
+		/* BGE-Remix P8 Part C (P8.22): its text as geometry, for Remix (the
+		 * game draws it as text) */
+		Mesh *me = BKE_mesh_new_from_object(G.main, blenderscene, ob, true, 2, true, false);
+		if (me) {
+			converter->RegisterTemporaryID(&me->id);
+			if (me->totpoly > 0)
+				static_cast<KX_FontObject*>(gameobj)->SetRemixMesh(BL_ConvertMesh(me, ob, kxscene, converter, libloading));
+		}
+		static int said_text = 0;
+		if (said_text < 8) {
+			said_text++;
+			printf("BGE-Remix: text \"%s\" for Remix: %d faces\n", ob->id.name + 2, me ? me->totpoly : 0);
+		}
 		break;
 	}
 
-#ifdef THREADED_DAG_WORKAROUND
+	/* BGE-Remix P8 Part C (P8.22): curves, surfaces and metaballs as meshes
+	 * (their viewport resolution, modifiers applied) */
 	case OB_CURVE:
+	case OB_SURF:
+	case OB_MBALL:
 	{
-		if (ob->curve_cache == NULL) {
+#ifdef THREADED_DAG_WORKAROUND
+		if (ob->type == OB_CURVE && ob->curve_cache == NULL) {
 			BKE_displist_make_curveTypes(blenderscene, ob, false);
 		}
-	}
 #endif
+		/* a metaball has no shape until it is evaluated (the player never
+		 * evaluates it): the render settings make one here; they also update
+		 * the object's texture space, which reads its (here empty) cache */
+		if (ob->type == OB_MBALL && !ob->curve_cache)
+			ob->curve_cache = (CurveCache *)MEM_callocN(sizeof(CurveCache), "BGE-Remix metaball cache");
+		const bool mball_render = ob->type == OB_MBALL && !(ob->curve_cache && ob->curve_cache->disp.first);
+		Mesh *me = BKE_mesh_new_from_object(G.main, blenderscene, ob, true,
+		                                    mball_render ? 2 : 1, true, false);
+		if (!me)
+			break;
+		converter->RegisterTemporaryID(&me->id);
+		if (me->totpoly == 0)
+			break;
+		RAS_MeshObject *meshobj = BL_ConvertMesh(me, ob, kxscene, converter, libloading);
+		kxscene->GetLogicManager()->RegisterMeshName(meshobj->GetName(), meshobj);
+		gameobj = new KX_GameObject(kxscene, KX_Scene::m_callbacks);
+		gameobj->AddMesh(meshobj);
+		static int said = 0;
+		if (said < 8) {
+			said++;
+			printf("BGE-Remix: %s \"%s\" drawn as a mesh (%d faces)\n",
+			       ob->type == OB_CURVE ? "curve" : ob->type == OB_SURF ? "surface" : "metaball", ob->id.name + 2,
+			       me->totpoly);
+		}
+		break;
+	}
 
 	}
 	if (gameobj) 

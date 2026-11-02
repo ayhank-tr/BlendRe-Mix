@@ -98,6 +98,8 @@ extern "C"
 #include "GHOST_IWindow.h"
 #include "GHOST_Rect.h"
 
+#include "BL_GameView.h"
+
 #ifdef WITH_AUDASPACE
 #  include AUD_DEVICE_H
 #endif
@@ -607,20 +609,11 @@ bool GPG_Application::initEngine(GHOST_IWindow* window, const int stereoMode)
 		if (gm->flag & GAME_SHOW_MOUSE)
 			m_canvas->SetMouseState(RAS_ICanvas::MOUSE_NORMAL);
 		
-		RAS_STORAGE_TYPE raster_storage = RAS_AUTO_STORAGE;
-
-		if (gm->raster_storage == RAS_STORE_VBO) {
-			raster_storage = RAS_VBO;
-		}
-		else if (gm->raster_storage == RAS_STORE_VA) {
-			raster_storage = RAS_VA;
-		}
-		//Don't use displaylists with VBOs
-		//If auto starts using VBOs, make sure to check for that here
-		if (useLists && raster_storage != RAS_VBO)
-			m_rasterizer = new RAS_ListRasterizer(m_canvas, true, raster_storage);
-		else
-			m_rasterizer = new RAS_OpenGLRasterizer(m_canvas, raster_storage);
+		/* BGE-Remix P8.4: meshes are batches on the card; the file's Display
+		 * Lists, Vertex Arrays or VBO setting (and -g displaylists) is kept
+		 * for stock 2.79 and has no effect here */
+		(void)useLists;
+		m_rasterizer = new RAS_OpenGLRasterizer(m_canvas, RAS_AUTO_STORAGE);
 
 		/* Stereo parameters - Eye Separation from the UI - stereomode from the command-line/UI */
 		m_rasterizer->SetStereoMode((RAS_IRasterizer::StereoMode) stereoMode);
@@ -737,7 +730,9 @@ bool GPG_Application::startEngine(void)
 		//		sceneconverter->SetAlwaysUseExpandFraming(true);
 		if (m_blendermat)
 			m_sceneconverter->SetMaterials(true);
-		if (m_blenderglslmat && (m_globalSettings->matmode == GAME_MAT_GLSL))
+		/* BGE-Remix P8: one material mode, GLSL; "-g blender_glsl_material = 0"
+		 * still forces the fixed-function fallback for every material */
+		if (m_blenderglslmat)
 			m_sceneconverter->SetGLSLMaterials(true);
 		if (m_startScene->gm.flag & GAME_NO_MATERIAL_CACHING)
 			m_sceneconverter->SetCacheMaterials(false);
@@ -774,6 +769,8 @@ bool GPG_Application::startEngine(void)
 			m_kxStartScene,
 			m_rasterizer,
 			m_canvas);
+		/* BGE-Remix P7: the Game View's checks, in the console */
+		BL_GameViewReportGame(m_kxStartScene, m_maggie, static_cast<KX_BlenderSceneConverter *>(m_sceneconverter));
 		m_ketsjiengine->AddScene(m_kxStartScene);
 		
 		// Create a timer that is used to kick the engine

@@ -47,6 +47,8 @@ using namespace std;
 
 #include "BLI_utildefines.h"
 
+#include "GPU_layer.h"  /* GPUClassicState */
+
 class RAS_IStorage;
 class RAS_ICanvas;
 class RAS_OpenGLLight;
@@ -139,6 +141,40 @@ protected:
 	 * Examples of concrete strategies: Vertex Arrays, VBOs, Immediate Mode*/
 	int m_storage_type;
 	RAS_IStorage *m_storage;
+	/* BGE-Remix P8.4: see SetClassicFallback */
+	bool m_classic;
+	/* BGE-Remix P8 Part B: what the old OpenGL state held for the game's
+	 * shaders (lamps in eye space, material, light model, fog, alpha test):
+	 * the classic shader, custom shaders and the materials' old built-ins
+	 * read it as uniforms; glLight, glMaterial and glFog are not set */
+	GPUClassicState m_state;
+
+	/* BGE-Remix P8 Part B: the matrices are the layer's (GPU_matrix_*) */
+
+	/* BGE-Remix P8 Part B: motion blur as a filter over a history texture
+	 * (the frame and the history, their size, the blending shader) */
+	unsigned int m_mbtex[2];
+	int m_mbsize[2];
+	struct GPUShader *m_mbshader;
+	void FreeMotionBlur();
+
+	/* BGE-Remix P8 Part B (P8.12): the scene's pipeline target */
+	class RAS_Pipeline *m_pipeline;
+	/* BGE-Remix P8 Part B (P8.11): GPU occlusion culling; whether this
+	 * frame's first scene was drawn by the main camera (its depth makes the
+	 * pyramid) */
+	class RAS_GPUCulling *m_culling;
+	bool m_mainview_drawn;
+	bool m_scene_first;
+	float m_mainview_view[16], m_mainview_proj[16];
+	int m_mainview_vp[4];
+
+	/* BGE-Remix P8 Part B: interlaced stereo by a shader: the left eye's
+	 * picture (its texture, size and place) shown on its rows or columns */
+	unsigned int m_stereotex;
+	int m_stereorect[4];
+	bool m_stereoleft;
+	struct GPUShader *m_stereoshader;
 
 public:
 	double GetTime();
@@ -175,6 +211,16 @@ public:
 	virtual RAS_IRasterizer::StereoMode GetStereoMode();
 	virtual bool Stereo();
 	virtual bool InterlacedStereo();
+	virtual void FinishStereo();
+	virtual void SyncOldMatrices();
+	virtual void BeginScene(struct Scene *scene, bool first, int samples);
+	virtual void EndScene();
+	virtual bool IndexPrimitivesInstanced(std::vector<class RAS_MeshSlot *>& slots);
+	virtual void SetMainView(bool on);
+	virtual void GetInstancingStats(int *r_draws, int *r_objects);
+	virtual void GetCullingStats(int *r_tested, int *r_drawn);
+	/* P8.11: the main view's camera matrices, kept as they are set */
+	void KeepMainViewMatrices();
 	virtual void SetEye(const StereoEye eye);
 	virtual StereoEye GetEye();
 	virtual void SetEyeSeparation(const float eyeseparation);
@@ -187,7 +233,6 @@ public:
 
 	virtual void IndexPrimitives(class RAS_MeshSlot &ms);
 	virtual void IndexPrimitives_3DText(class RAS_MeshSlot &ms, class RAS_IPolyMaterial *polymat);
-	virtual void DrawDerivedMesh(class RAS_MeshSlot &ms);
 
 	virtual void SetProjectionMatrix(MT_CmMatrix4x4 &mat);
 	virtual void SetProjectionMatrix(const MT_Matrix4x4 &mat);
@@ -203,6 +248,7 @@ public:
 	
 	virtual void SetFog(short type, float start, float dist, float intensity, float color[3]);
 	virtual void EnableFog(bool enable);
+	virtual void SetFogHeight(float height);
 	virtual void DisplayFog();
 
 	virtual void SetBackColor(float color[3]);
@@ -284,6 +330,8 @@ public:
 	}
 
 	virtual void SetAlphaBlend(int alphablend);
+	virtual bool BeginTransparency();
+	virtual void EndTransparency();
 	virtual void SetFrontFace(bool ccw);
 	
 	virtual void SetAnisotropicFiltering(short level);
@@ -294,6 +342,7 @@ public:
 
 	virtual void SetUsingOverrideShader(bool val);
 	virtual bool GetUsingOverrideShader();
+	virtual void SetClassicFallback(bool val) { m_classic = val; }
 
 	/**
 	 * Render Tools

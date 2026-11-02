@@ -424,12 +424,12 @@ try:
 except Exception:
     pass
 hemi = [0.0, 0.0, 0.0]
-scale = scene.get("bge_remix_light_scale", 0.125)
+scale = scene.get("bge_remix_light_scale", 1.0)  # P8.30: the default (was 0.125)
 for ob in scene.objects:
     if ob.type != 'LAMP':
         continue
     la = ob.data
-    E, D = la.energy * scale * 8.0, getattr(la, "distance", 10.0)
+    E, D = la.energy * scale, getattr(la, "distance", 10.0)  # P8.30 (was * 8 against 0.125)
     la.use_nodes = True
     em = la.node_tree.nodes.get("Emission")
     if la.type in ('POINT', 'SPOT'):

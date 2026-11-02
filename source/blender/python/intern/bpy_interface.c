@@ -75,6 +75,11 @@
 #include "../bmesh/bmesh_py_api.h"
 #include "../mathutils/mathutils.h"
 
+#ifdef WITH_GAMEENGINE
+/* BGE-Remix P7: the Game View's model (BlenderRoutines/BL_GameView.cpp) */
+extern PyObject *BL_GameView_initPython(void);
+#endif
+
 
 /* for internal use, when starting and ending python scripts */
 
@@ -233,6 +238,9 @@ static struct _inittab bpy_internal_modules[] = {
 #endif
 #ifdef WITH_REMIX
 	{"_bge_remix", (PyObject *(*)(void))BRMX_initPython},
+#endif
+#ifdef WITH_GAMEENGINE
+	{"_bge_gameview", BL_GameView_initPython},
 #endif
 	{"gpu", GPU_initPython},
 	{"idprop", BPyInit_idprop},

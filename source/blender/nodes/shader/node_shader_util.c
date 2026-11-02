@@ -256,6 +256,147 @@ bNode *nodeGetActiveTexture(bNodeTree *ntree)
 	return inactivenode;
 }
 
+/* ------------------------------------------------------------------------- */
+/* BGE-Remix P8.24: a node material baked for RTX Remix
+ * (GPU_material_bake_channel): each shader node gives one channel's value,
+ * weighted, as (value * w, w), instead of its shading; Mix and Add Shader mix
+ * the pairs as they mix shading and the bake divides by the weight. Surfaces
+ * have weight 1 in the surface channels (colour, roughness, metallic,
+ * normal); Emission, Transparent, Holdout and Background 0. Alpha: 1, and 0
+ * for Transparent and Holdout. Emission: the emitted colour, unweighted. */
+
+static int bake_socket(bNode *node, const char *name)
+{
+	int i = 0;
+	for (bNodeSocket *sock = node->inputs.first; sock; sock = sock->next, i++) {
+		if (STREQ(sock->name, name)) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+static GPUNodeLink *bake_input(GPUNodeStack *in, int i, const float def[4])
+{
+	if (i >= 0 && in[i].link) {
+		return in[i].link;
+	}
+	return GPU_uniform((float *)((i >= 0) ? in[i].vec : def));
+}
+
+static bool node_shader_gpu_bake(GPUMaterial *mat, bNode *node, GPUNodeStack *in, GPUNodeStack *out)
+{
+	const int channel = GPU_material_bake_channel(mat);
+	static const float zero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+	static const float one[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+	static const float half[4] = {0.5f, 0.5f, 0.5f, 0.5f};
+	bool surface = true, transparent = false;
+	const float *roughness_def = half;
+	const float *metallic_def = zero;
+	const char *color_name = "Color", *roughness_name = "Roughness";
+	GPUNodeLink *value = NULL;
+	float w;
+
+	switch (node->type) {
+		case SH_NODE_BSDF_PRINCIPLED:
+			color_name = "Base Color";
+			break;
+		case SH_NODE_BSDF_DIFFUSE:
+		case SH_NODE_BSDF_TRANSLUCENT:
+		case SH_NODE_BSDF_VELVET:
+		case SH_NODE_BSDF_TOON:
+		case SH_NODE_SUBSURFACE_SCATTERING:
+			roughness_name = NULL;
+			roughness_def = one;
+			break;
+		case SH_NODE_BSDF_GLOSSY:
+		case SH_NODE_BSDF_ANISOTROPIC:
+			metallic_def = one;
+			break;
+		case SH_NODE_BSDF_HAIR:
+			roughness_name = "RoughnessU";
+			break;
+		case SH_NODE_BSDF_GLASS:
+		case SH_NODE_BSDF_REFRACTION:
+			break;
+		case SH_NODE_EMISSION:
+		case SH_NODE_BACKGROUND:
+			surface = false;
+			break;
+		case SH_NODE_BSDF_TRANSPARENT:
+		case SH_NODE_HOLDOUT:
+			surface = false;
+			transparent = true;
+			break;
+		case SH_NODE_AMBIENT_OCCLUSION:
+			roughness_name = NULL;
+			roughness_def = one;
+			break;
+		default:
+			/* not a shader node (or a volume one): as usual */
+			if (node->typeinfo->nclass != NODE_CLASS_SHADER || node->type == SH_NODE_MIX_SHADER ||
+			    node->type == SH_NODE_ADD_SHADER)
+			{
+				return false;
+			}
+			surface = false;
+			break;
+	}
+	if (!out || !out[0].hasoutput) {
+		return true;
+	}
+	w = surface ? 1.0f : 0.0f;
+	switch (channel) {
+		case GPU_BAKE_COLOR:
+			GPU_link(mat, "node_bake_value", bake_input(in, bake_socket(node, color_name), one),
+			         GPU_uniform(&w), &value);
+			break;
+		case GPU_BAKE_HARDNESS: {
+			const int i = roughness_name ? bake_socket(node, roughness_name) : -1;
+			GPU_link(mat, "node_bake_scalar", bake_input(in, i, roughness_def), GPU_uniform(&w), &value);
+			break;
+		}
+		case GPU_BAKE_METALLIC: {
+			const int i = (node->type == SH_NODE_BSDF_PRINCIPLED) ? bake_socket(node, "Metallic") : -1;
+			GPU_link(mat, "node_bake_scalar", bake_input(in, i, metallic_def), GPU_uniform(&w), &value);
+			break;
+		}
+		case GPU_BAKE_ALPHA: {
+			float a = transparent ? 0.0f : 1.0f;
+			GPU_link(mat, "node_bake_scalar", GPU_uniform(&a), GPU_uniform((float *)one), &value);
+			break;
+		}
+		case GPU_BAKE_EMIT:
+			if (node->type == SH_NODE_EMISSION) {
+				GPU_link(mat, "node_bake_emission", bake_input(in, bake_socket(node, "Color"), one),
+				         bake_input(in, bake_socket(node, "Strength"), one), &value);
+			}
+			else {
+				GPU_link(mat, "node_bake_value", GPU_uniform((float *)zero), GPU_uniform((float *)zero), &value);
+			}
+			break;
+		case GPU_BAKE_NORMAL: {
+			const int i = surface ? bake_socket(node, "Normal") : -1;
+			GPUNodeLink *n;
+			if (i >= 0 && in[i].link) {
+				/* the node's own normal, in world space, into the view's */
+				GPU_link(mat, "direction_transform_m4v3", in[i].link, GPU_builtin(GPU_VIEW_MATRIX), &n);
+			}
+			else {
+				n = GPU_builtin(GPU_VIEW_NORMAL);
+			}
+			GPU_link(mat, "node_bake_normal", n, GPU_builtin(GPU_VIEW_NORMAL), GPU_attribute(CD_TANGENT, ""),
+			         GPU_uniform(&w), &value);
+			break;
+		}
+		default:
+			GPU_link(mat, "node_bake_value", GPU_uniform((float *)zero), GPU_uniform((float *)zero), &value);
+			break;
+	}
+	out[0].link = value;
+	return true;
+}
+
 void ntreeExecGPUNodes(bNodeTreeExec *exec, GPUMaterial *mat, int do_outputs, short compatibility)
 {
 	bNodeExec *nodeexec;
@@ -288,7 +429,10 @@ void ntreeExecGPUNodes(bNodeTreeExec *exec, GPUMaterial *mat, int do_outputs, sh
 				node_get_stack(node, stack, nsin, nsout);
 				gpu_stack_from_data_list(gpuin, &node->inputs, nsin);
 				gpu_stack_from_data_list(gpuout, &node->outputs, nsout);
-				if (node->typeinfo->gpufunc(mat, node, &nodeexec->data, gpuin, gpuout))
+				/* BGE-Remix P8.24: a bake for Remix takes a channel from shader nodes */
+				if (GPU_material_bake_channel(mat) >= 0 && node_shader_gpu_bake(mat, node, gpuin, gpuout))
+					data_from_gpu_stack_list(&node->outputs, nsout, gpuout);
+				else if (node->typeinfo->gpufunc(mat, node, &nodeexec->data, gpuin, gpuout))
 					data_from_gpu_stack_list(&node->outputs, nsout, gpuout);
 			}
 		}

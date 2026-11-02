@@ -177,7 +177,7 @@ void geom(
         out vec3 normal, out vec4 vcol, out float vcol_alpha, out float frontback)
 {
 	local = co;
-	view = (gl_ProjectionMatrix[3][3] == 0.0) ? normalize(local) : vec3(0.0, 0.0, -1.0);
+	view = (bge_proj[3][3] == 0.0) ? normalize(local) : vec3(0.0, 0.0, -1.0);
 	global = (viewinvmat * vec4(local, 1.0)).xyz;
 	orco = attorco;
 	uv_attribute(attuv, uv);
@@ -483,9 +483,9 @@ void normal_new_shading(vec3 dir, vec3 nor, out vec3 outnor, out float outdot)
 
 void curves_vec(float fac, vec3 vec, sampler2D curvemap, out vec3 outvec)
 {
-	outvec.x = texture2D(curvemap, vec2((vec.x + 1.0) * 0.5, 0.0)).x;
-	outvec.y = texture2D(curvemap, vec2((vec.y + 1.0) * 0.5, 0.0)).y;
-	outvec.z = texture2D(curvemap, vec2((vec.z + 1.0) * 0.5, 0.0)).z;
+	outvec.x = texture(curvemap, vec2((vec.x + 1.0) * 0.5, 0.0)).x;
+	outvec.y = texture(curvemap, vec2((vec.y + 1.0) * 0.5, 0.0)).y;
+	outvec.z = texture(curvemap, vec2((vec.z + 1.0) * 0.5, 0.0)).z;
 
 	if (fac != 1.0)
 		outvec = (outvec * fac) + (vec * (1.0 - fac));
@@ -494,9 +494,9 @@ void curves_vec(float fac, vec3 vec, sampler2D curvemap, out vec3 outvec)
 
 void curves_rgb(float fac, vec4 col, sampler2D curvemap, out vec4 outcol)
 {
-	outcol.r = texture2D(curvemap, vec2(texture2D(curvemap, vec2(col.r, 0.0)).a, 0.0)).r;
-	outcol.g = texture2D(curvemap, vec2(texture2D(curvemap, vec2(col.g, 0.0)).a, 0.0)).g;
-	outcol.b = texture2D(curvemap, vec2(texture2D(curvemap, vec2(col.b, 0.0)).a, 0.0)).b;
+	outcol.r = texture(curvemap, vec2(texture(curvemap, vec2(col.r, 0.0)).a, 0.0)).r;
+	outcol.g = texture(curvemap, vec2(texture(curvemap, vec2(col.g, 0.0)).a, 0.0)).g;
+	outcol.b = texture(curvemap, vec2(texture(curvemap, vec2(col.b, 0.0)).a, 0.0)).b;
 
 	if (fac != 1.0)
 		outcol = (outcol * fac) + (col * (1.0 - fac));
@@ -816,7 +816,7 @@ void mix_linear(float fac, vec4 col1, vec4 col2, out vec4 outcol)
 
 void valtorgb(float fac, sampler2D colormap, out vec4 outcol, out float outalpha)
 {
-	outcol = texture2D(colormap, vec2(fac, 0.0));
+	outcol = texture(colormap, vec2(fac, 0.0));
 	outalpha = outcol.a;
 }
 
@@ -937,7 +937,7 @@ void texture_wood_sin(vec3 vec, out float value, out vec4 color, out vec3 normal
 
 void texture_image(vec3 vec, sampler2D ima, out float value, out vec4 color, out vec3 normal)
 {
-	color = texture2D(ima, (vec.xy + vec2(1.0, 1.0)) * 0.5);
+	color = texture(ima, (vec.xy + vec2(1.0, 1.0)) * 0.5);
 	value = color.a;
 
 	normal.x = 2.0 * (color.r - 0.5);
@@ -950,6 +950,13 @@ void texture_image(vec3 vec, sampler2D ima, out float value, out vec4 color, out
 void texco_orco(vec3 attorco, out vec3 orco)
 {
 	orco = attorco;
+}
+
+/* BGE-Remix P8.5: orco in the mesh's texture space (orcomat: identity where
+ * the attribute already is) */
+void texco_orco_space(vec3 attorco, mat4 orcomat, out vec3 orco)
+{
+	orco = (orcomat * vec4(attorco, 1.0)).xyz;
 }
 
 void texco_uv(vec2 attuv, out vec3 uv)
@@ -1350,14 +1357,14 @@ vec3 mtex_2d_mapping(vec3 vec)
 
 void mtex_cube_map(vec3 co, samplerCube ima, out float value, out vec4 color)
 {
-	color = textureCube(ima, co);
+	color = texture(ima, co);
 	value = 1.0;
 }
 
 void mtex_cube_map_refl_from_refldir(
         samplerCube ima, vec3 reflecteddirection, out float value, out vec4 color)
 {
-        color = textureCube(ima, reflecteddirection);
+        color = texture(ima, reflecteddirection);
         value = color.a;
 }
 
@@ -1368,13 +1375,13 @@ void mtex_cube_map_refl(
 	vec3 viewdirection = vec3(viewmatrixinverse * vec4(vp, 0.0));
 	vec3 normaldirection = normalize(vec3(vec4(vn, 0.0) * viewmatrix));
 	vec3 reflecteddirection = reflect(viewdirection, normaldirection);
-	color = textureCube(ima, reflecteddirection);
+	color = texture(ima, reflecteddirection);
 	value = 1.0;
 }
 
 void mtex_image(vec3 texco, sampler2D ima, out float value, out vec4 color)
 {
-	color = texture2D(ima, texco.xy);
+	color = texture(ima, texco.xy);
 	value = 1.0;
 }
 
@@ -1385,7 +1392,7 @@ void mtex_normal(vec3 texco, sampler2D ima, out vec3 normal)
 	// It needs to be done because in Blender
 	// the normal used points inward.
 	// Should this ever change this negate must be removed.
-	vec4 color = texture2D(ima, texco.xy);
+	vec4 color = texture(ima, texco.xy);
 	normal = 2.0 * (vec3(-color.r, color.g, color.b) - vec3(-0.5, 0.5, 0.5));
 }
 
@@ -1413,8 +1420,8 @@ void mtex_bump_init_objspace(
         out float fPrevMagnitude_out, out vec3 vNacc_out,
         out vec3 vR1, out vec3 vR2, out float fDet)
 {
-	mat3 obj2view = to_mat3(gl_ModelViewMatrix);
-	mat3 view2obj = to_mat3(gl_ModelViewMatrixInverse);
+	mat3 obj2view = to_mat3(bge_mv);
+	mat3 view2obj = to_mat3(bge_mvinv);
 
 	vec3 vSigmaS = view2obj * dFdx(surf_pos);
 	vec3 vSigmaT = view2obj * dFdy(surf_pos);
@@ -1481,9 +1488,9 @@ void mtex_bump_tap3(
 	vec2 STul = texco.xy + dFdy(texco.xy);
 
 	float Hll, Hlr, Hul;
-	rgbtobw(texture2D(ima, STll), Hll);
-	rgbtobw(texture2D(ima, STlr), Hlr);
-	rgbtobw(texture2D(ima, STul), Hul);
+	rgbtobw(texture(ima, STll), Hll);
+	rgbtobw(texture(ima, STlr), Hlr);
+	rgbtobw(texture(ima, STul), Hul);
 
 	dBs = hScale * (Hlr - Hll);
 	dBt = hScale * (Hul - Hll);
@@ -1508,10 +1515,10 @@ void mtex_bump_bicubic(
 	vec2 STd = texco.xy - 0.5 * TexDy;
 	vec2 STu = texco.xy + 0.5 * TexDy;
 
-	rgbtobw(texture2D(ima, STl), Hl);
-	rgbtobw(texture2D(ima, STr), Hr);
-	rgbtobw(texture2D(ima, STd), Hd);
-	rgbtobw(texture2D(ima, STu), Hu);
+	rgbtobw(texture(ima, STl), Hl);
+	rgbtobw(texture(ima, STr), Hr);
+	rgbtobw(texture(ima, STd), Hd);
+	rgbtobw(texture(ima, STu), Hu);
 
 	vec2 dHdxy = vec2(Hr - Hl, Hu - Hd);
 	float fBlend = clamp(1.0 - textureQueryLOD(ima, texco.xy).x, 0.0, 1.0);
@@ -1597,11 +1604,11 @@ void mtex_bump_tap5(
 	vec2 STu = texco.xy + 0.5 * TexDy;
 
 	float Hc, Hl, Hr, Hd, Hu;
-	rgbtobw(texture2D(ima, STc), Hc);
-	rgbtobw(texture2D(ima, STl), Hl);
-	rgbtobw(texture2D(ima, STr), Hr);
-	rgbtobw(texture2D(ima, STd), Hd);
-	rgbtobw(texture2D(ima, STu), Hu);
+	rgbtobw(texture(ima, STc), Hc);
+	rgbtobw(texture(ima, STl), Hl);
+	rgbtobw(texture(ima, STr), Hr);
+	rgbtobw(texture(ima, STd), Hd);
+	rgbtobw(texture(ima, STu), Hu);
 
 	dBs = hScale * (Hr - Hl);
 	dBt = hScale * (Hu - Hd);
@@ -1618,7 +1625,7 @@ void mtex_bump_deriv(
 	// this variant using a derivative map is described here
 	// http://mmikkelsen3d.blogspot.com/2011/07/derivative-maps.html
 	vec2 dim = vec2(ima_x, ima_y);
-	vec2 dBduv = hScale * dim * (2.0 * texture2D(ima, texco.xy).xy - 1.0);
+	vec2 dBduv = hScale * dim * (2.0 * texture(ima, texco.xy).xy - 1.0);
 
 	dBs = dBduv.x * TexDx.x + s * dBduv.y * TexDx.y;
 	dBt = dBduv.x * TexDy.x + s * dBduv.y * TexDy.y;
@@ -1670,7 +1677,7 @@ void mtex_nspace_world(mat4 viewmat, vec3 texnormal, out vec3 outnormal)
 
 void mtex_nspace_object(vec3 texnormal, out vec3 outnormal)
 {
-	outnormal = normalize(gl_NormalMatrix * texnormal);
+	outnormal = normalize(bge_normalmat * texnormal);
 }
 
 void mtex_blend_normal(float norfac, vec3 normal, vec3 newnormal, out vec3 outnormal)
@@ -1727,7 +1734,7 @@ void lamp_falloff_invcoefficients(float coeff_const, float coeff_lin, float coef
 
 void lamp_falloff_curve(float lampdist, sampler2D curvemap, float dist, out float visifac)
 {
-	visifac = texture2D(curvemap, vec2(dist / lampdist, 0.0)).x;
+	visifac = texture(curvemap, vec2(dist / lampdist, 0.0)).x;
 }
 
 void lamp_visibility_sphere(float lampdist, float dist, float visifac, out float outvisifac)
@@ -1794,7 +1801,7 @@ void lamp_visibility_clamp(float visifac, out float outvisifac)
 void world_paper_view(vec3 vec, out vec3 outvec)
 {
 	vec3 nvec = normalize(vec);
-	outvec = (gl_ProjectionMatrix[3][3] == 0.0) ? vec3(nvec.x, 0.0, nvec.y) : vec3(0.0, 0.0, -1.0);
+	outvec = (bge_proj[3][3] == 0.0) ? vec3(nvec.x, 0.0, nvec.y) : vec3(0.0, 0.0, -1.0);
 }
 
 void world_zen_mapping(vec3 view, float zenup, float zendown, out float zenfac)
@@ -1828,7 +1835,7 @@ void world_blend(vec3 vec, out float blend)
 void shade_view(vec3 co, out vec3 view)
 {
 	/* handle perspective/orthographic */
-	view = (gl_ProjectionMatrix[3][3] == 0.0) ? normalize(co) : vec3(0.0, 0.0, -1.0);
+	view = (bge_proj[3][3] == 0.0) ? normalize(co) : vec3(0.0, 0.0, -1.0);
 }
 
 void shade_tangent_v(vec3 lv, vec3 tang, out vec3 vn)
@@ -2256,7 +2263,7 @@ void test_shadowbuf(
 		co.z -= shadowbias * co.w;
 
 		if (co.w > 0.0 && co.x > 0.0 && co.x / co.w < 1.0 && co.y > 0.0 && co.y / co.w < 1.0)
-			result = shadow2DProj(shadowmap, co).x;
+			result = textureProj(shadowmap, co);
 		else
 			result = 1.0;
 	}
@@ -2272,7 +2279,7 @@ void test_shadowbuf_vsm(
 	else {
 		vec4 co = shadowpersmat * vec4(rco, 1.0);
 		if (co.w > 0.0 && co.x > 0.0 && co.x / co.w < 1.0 && co.y > 0.0 && co.y / co.w < 1.0) {
-			vec2 moments = texture2DProj(shadowmap, co).rg;
+			vec2 moments = textureProj(shadowmap, co).rg;
 			float dist = co.z / co.w;
 			float p = 0.0;
 
@@ -2326,12 +2333,286 @@ void shadows_only_vsm(
 	}
 }
 
+/* ---- BGE-Remix P8.10: shadows of every lamp type ---- */
+
+/* a rotation per pixel, so a few samples blend into a smooth edge */
+float shadow_noise()
+{
+	return 6.2831853 * fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+}
+
+/* sample i of n, spread evenly over the unit disk (golden angle spiral) */
+vec2 shadow_disk(float i, float n, float rot)
+{
+	float r = sqrt((i + 0.5) / n);
+	float a = i * 2.3999632 + rot;
+	return r * vec2(cos(a), sin(a));
+}
+
+/* a shadow map's depth (0..1) in world units; clip: near, far, orthographic */
+float shadow_linear(float d, vec3 clip)
+{
+	if (clip.z > 0.5)
+		return clip.x + d * (clip.y - clip.x);
+	return clip.x * clip.y / max(clip.y - d * (clip.y - clip.x), 1e-8);
+}
+
+bool shadow_inside(vec3 co)
+{
+	return all(greaterThan(co, vec3(0.0))) && all(lessThan(co, vec3(1.0)));
+}
+
+vec4 shadow_linear4(vec4 d, vec3 clip)
+{
+	if (clip.z > 0.5)
+		return clip.x + d * (clip.y - clip.x);
+	return clip.x * clip.y / max(clip.y - d * (clip.y - clip.x), vec4(1e-8));
+}
+
+/* A soft shadow from one view of the shadow pool (percentage-closer soft
+ * shadows; BGE-Remix P8 Part B (P8.16): one layer of bge_shadowpool, read
+ * four texels at a time): the blockers near the receiver give the penumbra's
+ * width, from the light's size and how far the receiver is behind them; the
+ * map is then filtered over that width.
+ *   layer  the view's layer in the pool
+ *   uv     the receiver in the view (0..1), zr its depth (world units)
+ *   bias   world units; slope: the receiver's depth change per unit sideways
+ *   uvw    the view's uv per world unit at the receiver
+ *   light  perspective views: the light's width; orthographic: its spread
+ *          (width per unit of distance)
+ *   texel  one texel in the view's uv */
+float shadow_soft(
+        float layer, vec2 uv, float zr, float bias, float slope, vec3 clip,
+        float uvw, float light, float texel)
+{
+	const float N = 8.0;
+	const float MAXR = 24.0;
+	bool persp = clip.z < 0.5;
+	float rot = shadow_noise();
+
+	/* where blockers of the light's area can be (four texels a sample) */
+	float reach = persp ? light * 0.5 * (zr - clip.x) / max(clip.x, 1e-4) : light * 0.5 * (zr - clip.x);
+	float search = clamp(reach * uvw, 2.0 * texel, MAXR * texel);
+	float blockers = 0.0, nblock = 0.0;
+	for (float i = 0.0; i < N; i += 1.0) {
+		vec2 o = shadow_disk(i, N, rot) * search;
+		vec4 d = BGE_GATHER(vec3(uv + o, layer));
+		vec4 zb = shadow_linear4(d, clip);
+		/* nothing drawn there (beyond the lamp's Clip End): no blocker */
+		vec4 hit = vec4(lessThan(d, vec4(0.99999))) *
+		           vec4(lessThan(zb, vec4(zr - bias - slope * length(o) / uvw)));
+		blockers += dot(hit, zb);
+		nblock += dot(hit, vec4(1.0));
+	}
+	if (nblock < 0.5)
+		return 1.0;
+	float zb = blockers / nblock;
+
+	/* the penumbra on the receiver, filtered with each sample's four texels
+	 * weighted as a bilinear filter weighs them */
+	float pen = persp ? light * (zr - zb) / max(zb, 1e-4) : light * (zr - zb);
+	float radius = clamp(0.5 * pen * uvw, texel, MAXR * texel);
+	float lit = 0.0;
+	for (float i = 0.0; i < N; i += 1.0) {
+		vec2 o = shadow_disk(i, N, rot + 1.7) * radius;
+		vec2 p = uv + o;
+		vec4 d = BGE_GATHER(vec3(p, layer));
+		vec4 ok = max(vec4(greaterThanEqual(d, vec4(0.99999))),
+		              vec4(greaterThanEqual(shadow_linear4(d, clip), vec4(zr - bias - slope * length(o) / uvw))));
+		vec2 f = fract(p / texel - 0.5);
+		vec4 w = vec4((1.0 - f.x) * f.y, f.x * f.y, f.x * (1.0 - f.y), (1.0 - f.x) * (1.0 - f.y));
+		lit += dot(ok, w);
+	}
+	return lit / N;
+}
+
+/* the receiver's offset along its normal, and its slope, against acne (the
+ * shaders' normals point into the surface, Blender Internal's convention, so
+ * the offset goes against them) */
+void shadow_receiver(float inp, float bias, out float ndl, out float sinl, out float offset)
+{
+	ndl = clamp(inp, 0.05, 1.0);
+	sinl = sqrt(1.0 - ndl * ndl);
+	offset = (0.5 + 1.5 * sinl) * bias;
+}
+
+/* spot lamps. params: the light's width, bias, 0, one texel; clip: near, far,
+ * the tangent of half the view, 0 */
+void shadow_spot_soft(
+        vec3 rco, vec3 vn, float inp, float layer, mat4 persmat, vec4 params, vec4 clip,
+        out float result)
+{
+	if (inp <= 0.0) {
+		result = 0.0;
+		return;
+	}
+	float ndl, sinl, offset;
+	shadow_receiver(inp, params.y, ndl, sinl, offset);
+	vec4 co = persmat * vec4(rco, 1.0);
+	float texw = 2.0 * max(co.w, 1e-4) * clip.z * params.w;  /* one texel in world units here */
+	co = persmat * vec4(rco - vn * texw * offset, 1.0);
+	if (co.w <= 0.0) {
+		result = 1.0;
+		return;
+	}
+	vec2 uv = co.xy / co.w;
+	if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+		result = 1.0;
+		return;
+	}
+	result = shadow_soft(layer, uv, co.w, texw * params.y, sinl / ndl * params.y,
+	                     vec3(clip.xy, 0.0), 0.5 / (co.w * clip.z), params.x, params.w);
+}
+
+/* point and area lamps: a cube's six faces, a layer each.
+ * lampmat: the camera's view to the lamp's own axes; clip: near, far, the
+ * tangent of half a face's view (a little over 1: the faces overlap), 0 */
+void shadow_cube_soft(
+        vec3 rco, vec3 vn, float inp, float layer, mat4 lampmat, vec4 params, vec4 clip,
+        out float result)
+{
+	if (inp <= 0.0) {
+		result = 0.0;
+		return;
+	}
+	float ndl, sinl, offset;
+	shadow_receiver(inp, params.y, ndl, sinl, offset);
+	vec3 l = (lampmat * vec4(rco, 1.0)).xyz;
+	vec3 al = abs(l);
+	float texw = 2.0 * max(max(max(al.x, al.y), al.z), 1e-4) * clip.z * params.w;
+	l = (lampmat * vec4(rco - vn * texw * offset, 1.0)).xyz;
+	al = abs(l);
+
+	/* the face looks along the largest axis, its up is the next axis */
+	vec3 f, u;
+	float face;
+	if (al.x >= al.y && al.x >= al.z) {
+		face = (l.x >= 0.0) ? 0.0 : 1.0;
+		f = vec3((l.x >= 0.0) ? 1.0 : -1.0, 0.0, 0.0);
+		u = vec3(0.0, 1.0, 0.0);
+	}
+	else if (al.y >= al.z) {
+		face = (l.y >= 0.0) ? 2.0 : 3.0;
+		f = vec3(0.0, (l.y >= 0.0) ? 1.0 : -1.0, 0.0);
+		u = vec3(0.0, 0.0, 1.0);
+	}
+	else {
+		face = (l.z >= 0.0) ? 4.0 : 5.0;
+		f = vec3(0.0, 0.0, (l.z >= 0.0) ? 1.0 : -1.0);
+		u = vec3(1.0, 0.0, 0.0);
+	}
+	float zr = dot(l, f);
+	if (zr <= clip.x) {
+		result = 1.0;
+		return;
+	}
+	vec2 uv = vec2(dot(l, cross(f, u)), dot(l, u)) / (zr * clip.z) * 0.5 + 0.5;
+	result = shadow_soft(layer + face, uv, zr, texw * params.y, sinl / ndl * params.y,
+	                     vec3(clip.xy, 0.0), 0.5 / (zr * clip.z), params.x, params.w);
+}
+
+/* the sun: four cascades (a layer each) that follow the camera, the finest that
+ * holds the point is used. c0..c3: the camera's view to each cascade (uv and
+ * depth, 0..1); scale: each one's uv per world unit; range: each one's depth
+ * in world units; params: the sun's spread, bias, 0, one texel */
+void shadow_sun_soft(
+        vec3 rco, vec3 vn, float inp, float layer, mat4 c0, mat4 c1, mat4 c2, mat4 c3,
+        vec4 scale, vec4 range, vec4 params, out float result)
+{
+	if (inp <= 0.0) {
+		result = 0.0;
+		return;
+	}
+	vec4 p = vec4(rco, 1.0);
+	mat4 m = c0;
+	float k = 0.0;
+	if (!shadow_inside((c0 * p).xyz)) {
+		m = c1;
+		k = 1.0;
+		if (!shadow_inside((c1 * p).xyz)) {
+			m = c2;
+			k = 2.0;
+			if (!shadow_inside((c2 * p).xyz)) {
+				m = c3;
+				k = 3.0;
+				if (!shadow_inside((c3 * p).xyz)) {
+					result = 1.0;
+					return;
+				}
+			}
+		}
+	}
+	float sc = (k < 0.5) ? scale.x : (k < 1.5) ? scale.y : (k < 2.5) ? scale.z : scale.w;
+	float rg = (k < 0.5) ? range.x : (k < 1.5) ? range.y : (k < 2.5) ? range.z : range.w;
+	float ndl, sinl, offset;
+	shadow_receiver(inp, params.y, ndl, sinl, offset);
+	float texw = params.w / sc;
+	vec3 co = (m * vec4(rco - vn * texw * offset, 1.0)).xyz;
+	result = shadow_soft(layer + k, clamp(co.xy, 0.0, 1.0), co.z * rg, texw * params.y, sinl / ndl * params.y,
+	                     vec3(0.0, rg, 1.0), sc, params.x, params.w);
+}
+
+/* the camera's view depth of a depth buffer value */
+float shadow_view_z(float d)
+{
+	float ndc = d * 2.0 - 1.0;
+	if (bge_proj[2][3] == 0.0)
+		return (ndc - bge_proj[3][2]) / bge_proj[2][2];
+	return -bge_proj[3][2] / (ndc + bge_proj[2][2]);
+}
+
+/* contact shadows: a few steps toward the light through the scene's depth.
+ * contact: distance (0: off), thickness, 0, bias; the scene's depth is
+ * bge_scenedepth (bge_scenedepth_on: drawn this frame).
+ * lv points from the light to the surface (Blender Internal's convention) */
+void shadow_contact(vec3 rco, vec3 lv, vec4 contact, float shadfac, out float result)
+{
+	result = shadfac;
+	if (contact.x <= 0.0 || bge_scenedepth_on < 0.5 || shadfac <= 0.0)
+		return;
+	const float N = 8.0;
+	float jitter = fract(shadow_noise() * 0.1591549);
+	for (float i = 0.0; i < N; i += 1.0) {
+		vec3 p = rco - lv * (contact.x * (i + jitter) / N);
+		vec4 c = bge_proj * vec4(p, 1.0);
+		if (c.w <= 0.0)
+			break;
+		vec2 ndc = c.xy / c.w;
+		if (abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0)
+			break;
+		float dz = shadow_view_z(texture(bge_scenedepth, ndc * 0.5 + 0.5).r) - p.z;
+		if (dz > contact.w && dz < contact.y) {
+			result = 0.0;
+			return;
+		}
+	}
+}
+
+/* a shadow factor as the lamp's shadow colour (Lamp Data node) */
+void shadow_color_mix(float inp, float shadfac, vec3 shadowcolor, out vec3 result)
+{
+	result = (inp > 0.0) ? vec3(1.0) - (1.0 - shadfac) * (vec3(1.0) - shadowcolor) : vec3(1.0);
+}
+
 void shade_light_texture(vec3 rco, sampler2D cookie, mat4 shadowpersmat, out vec4 result)
 {
 
 	vec4 co = shadowpersmat * vec4(rco, 1.0);
 
-	result = texture2DProj(cookie, co);
+	result = textureProj(cookie, co);
+}
+
+/* BGE-Remix P8.9: a lamp texture's coordinates: View across the spot's cone
+ * (-1..1, as Blender Internal), Global the world */
+void lamp_texco_view(vec3 rco, mat4 shadowpersmat, out vec3 co)
+{
+	vec4 p = shadowpersmat * vec4(rco, 1.0);
+	co = vec3(p.xy / max(abs(p.w), 1e-6) * 2.0 - vec2(1.0), 0.0);
+}
+
+void lamp_texco_global(vec3 rco, mat4 viewinvmat, out vec3 co)
+{
+	co = (viewinvmat * vec4(rco, 1.0)).xyz;
 }
 
 void shade_exposure_correct(vec3 col, float linfac, float logfac, out vec3 outcol)
@@ -2340,18 +2621,30 @@ void shade_exposure_correct(vec3 col, float linfac, float logfac, out vec3 outco
 }
 
 void shade_mist_factor(
-        vec3 co, float enable, float miststa, float mistdist, float misttype, float misi,
-        out float outfac)
+        vec3 co, float enable, float miststa, float mistdist, float misttype, float misi, float misthi,
+        mat4 viewinv, out float outfac)
 {
 	if (enable == 1.0) {
 		float fac, zcor;
 
-		zcor = (gl_ProjectionMatrix[3][3] == 0.0) ? length(co) : -co[2];
+		zcor = (bge_proj[3][3] == 0.0) ? length(co) : -co[2];
 
 		fac = clamp((zcor - miststa) / mistdist, 0.0, 1.0);
 		if (misttype == 0.0) fac *= fac;
 		else if (misttype == 1.0) ;
 		else fac = sqrt(fac);
+
+		/* BGE-Remix P8 Part B (P8.17): the mist's height, as F12 (none at
+		 * and above it, fading in below) */
+		if (misthi != 0.0 && fac != 0.0) {
+			float hi = (viewinv * vec4(co, 1.0)).z;
+			if (hi > misthi)
+				fac = 0.0;
+			else if (hi > 0.0) {
+				hi = (misthi - hi) / misthi;
+				fac *= hi * hi;
+			}
+		}
 
 		outfac = 1.0 - (1.0 - fac) * (1.0 - misi);
 	}
@@ -2575,8 +2868,8 @@ void node_bsdf_diffuse(vec4 color, float roughness, vec3 N, out vec4 result)
 
 	/* directional lights */
 	for (int i = 0; i < NUM_LIGHTS; i++) {
-		vec3 light_position = gl_LightSource[i].position.xyz;
-		vec3 light_diffuse = gl_LightSource[i].diffuse.rgb;
+		vec3 light_position = bge_lightsource[i].position.xyz;
+		vec3 light_diffuse = bge_lightsource[i].diffuse.rgb;
 
 		float bsdf = max(dot(N, light_position), 0.0);
 		L += light_diffuse * bsdf;
@@ -2592,10 +2885,10 @@ void node_bsdf_glossy(vec4 color, float roughness, vec3 N, out vec4 result)
 
 	/* directional lights */
 	for (int i = 0; i < NUM_LIGHTS; i++) {
-		vec3 light_position = gl_LightSource[i].position.xyz;
-		vec3 H = gl_LightSource[i].halfVector.xyz;
-		vec3 light_diffuse = gl_LightSource[i].diffuse.rgb;
-		vec3 light_specular = gl_LightSource[i].specular.rgb;
+		vec3 light_position = bge_lightsource[i].position.xyz;
+		vec3 H = bge_lightsource[i].halfVector.xyz;
+		vec3 light_diffuse = bge_lightsource[i].diffuse.rgb;
+		vec3 light_specular = bge_lightsource[i].specular.rgb;
 
 		/* we mix in some diffuse so low roughness still shows up */
 		float bsdf = 0.5 * pow(max(dot(N, H), 0.0), 1.0 / roughness);
@@ -2634,7 +2927,7 @@ void node_bsdf_principled(vec4 base_color, float subsurface, vec3 subsurface_rad
 	float eta = (2.0 / (1.0 - sqrt(0.08 * specular))) - 1.0;
 
 	/* set the viewing vector */
-	vec3 V = (gl_ProjectionMatrix[3][3] == 0.0) ? -normalize(I) : vec3(0.0, 0.0, 1.0);
+	vec3 V = (bge_proj[3][3] == 0.0) ? -normalize(I) : vec3(0.0, 0.0, 1.0);
 
 	/* get the tangent */
 	vec3 Tangent = T;
@@ -2663,13 +2956,13 @@ void node_bsdf_principled(vec4 base_color, float subsurface, vec3 subsurface_rad
 
 	/* directional lights */
 	for (int i = 0; i < NUM_LIGHTS; i++) {
-		vec3 light_position_world = gl_LightSource[i].position.xyz;
+		vec3 light_position_world = bge_lightsource[i].position.xyz;
 		vec3 light_position = normalize(light_position_world);
 
 		vec3 H = normalize(light_position + V);
 
-		vec3 light_diffuse = gl_LightSource[i].diffuse.rgb;
-		vec3 light_specular = gl_LightSource[i].specular.rgb;
+		vec3 light_diffuse = bge_lightsource[i].diffuse.rgb;
+		vec3 light_specular = bge_lightsource[i].specular.rgb;
 
 		float NdotL = dot(N, light_position);
 		float NdotV = dot(N, V);
@@ -2794,11 +3087,11 @@ void node_emission(vec4 color, float strength, vec3 N, out vec4 result)
 
 void background_transform_to_world(vec3 viewvec, out vec3 worldvec)
 {
-	vec4 v = (gl_ProjectionMatrix[3][3] == 0.0) ? vec4(viewvec, 1.0) : vec4(0.0, 0.0, 1.0, 1.0);
-	vec4 co_homogenous = (gl_ProjectionMatrixInverse * v);
+	vec4 v = (bge_proj[3][3] == 0.0) ? vec4(viewvec, 1.0) : vec4(0.0, 0.0, 1.0, 1.0);
+	vec4 co_homogenous = (bge_projinv * v);
 
 	vec4 co = vec4(co_homogenous.xyz / co_homogenous.w, 0.0);
-	worldvec = (gl_ModelViewMatrixInverse * co).xyz;
+	worldvec = (bge_mvinv * co).xyz;
 }
 
 void node_background(vec4 color, float strength, vec3 N, out vec4 result)
@@ -2823,7 +3116,7 @@ void node_add_shader(vec4 shader1, vec4 shader2, out vec4 shader)
 void node_fresnel(float ior, vec3 N, vec3 I, out float result)
 {
 	/* handle perspective/orthographic */
-	vec3 I_view = (gl_ProjectionMatrix[3][3] == 0.0) ? normalize(I) : vec3(0.0, 0.0, -1.0);
+	vec3 I_view = (bge_proj[3][3] == 0.0) ? normalize(I) : vec3(0.0, 0.0, -1.0);
 
 	float eta = max(ior, 0.00001);
 	result = fresnel_dielectric(I_view, N, (gl_FrontFacing) ? eta : 1.0 / eta);
@@ -2835,7 +3128,7 @@ void node_layer_weight(float blend, vec3 N, vec3 I, out float fresnel, out float
 {
 	/* fresnel */
 	float eta = max(1.0 - blend, 0.00001);
-	vec3 I_view = (gl_ProjectionMatrix[3][3] == 0.0) ? normalize(I) : vec3(0.0, 0.0, -1.0);
+	vec3 I_view = (bge_proj[3][3] == 0.0) ? normalize(I) : vec3(0.0, 0.0, -1.0);
 
 	fresnel = fresnel_dielectric(I_view, N, (gl_FrontFacing) ? 1.0 / eta : eta);
 
@@ -2889,7 +3182,7 @@ void node_geometry(
 	true_normal = normal;
 
 	/* handle perspective/orthographic */
-	vec3 I_view = (gl_ProjectionMatrix[3][3] == 0.0) ? normalize(I) : vec3(0.0, 0.0, -1.0);
+	vec3 I_view = (bge_proj[3][3] == 0.0) ? normalize(I) : vec3(0.0, 0.0, -1.0);
 	incoming = -(toworld * vec4(I_view, 0.0)).xyz;
 
 	parametric = vec3(0.0);
@@ -2908,7 +3201,7 @@ void node_tex_coord(
 	uv = attr_uv;
 	object = (obinvmat * (viewinvmat * vec4(I, 1.0))).xyz;
 	camera = vec3(I.xy, -I.z);
-	vec4 projvec = gl_ProjectionMatrix * vec4(I, 1.0);
+	vec4 projvec = bge_proj * vec4(I, 1.0);
 	window = vec3(mtex_2d_mapping(projvec.xyz / projvec.w).xy * camerafac.xy + camerafac.zw, 0.0);
 
 	vec3 shade_I;
@@ -2923,13 +3216,13 @@ void node_tex_coord_background(
         out vec3 generated, out vec3 normal, out vec3 uv, out vec3 object,
         out vec3 camera, out vec3 window, out vec3 reflection)
 {
-	vec4 v = (gl_ProjectionMatrix[3][3] == 0.0) ? vec4(I, 1.0) : vec4(0.0, 0.0, 1.0, 1.0);
-	vec4 co_homogenous = (gl_ProjectionMatrixInverse * v);
+	vec4 v = (bge_proj[3][3] == 0.0) ? vec4(I, 1.0) : vec4(0.0, 0.0, 1.0, 1.0);
+	vec4 co_homogenous = (bge_projinv * v);
 
 	vec4 co = vec4(co_homogenous.xyz / co_homogenous.w, 0.0);
 
 	co = normalize(co);
-	vec3 coords = (gl_ModelViewMatrixInverse * co).xyz;
+	vec3 coords = (bge_mvinv * co).xyz;
 
 	generated = coords;
 	normal = -coords;
@@ -2937,7 +3230,7 @@ void node_tex_coord_background(
 	object = coords;
 
 	camera = vec3(co.xy, -co.z);
-	window = (gl_ProjectionMatrix[3][3] == 0.0) ?
+	window = (bge_proj[3][3] == 0.0) ?
 	         vec3(mtex_2d_mapping(I).xy * camerafac.xy + camerafac.zw, 0.0) :
 	         vec3(vec2(0.5) * camerafac.xy + camerafac.zw, 0.0);
 
@@ -3086,13 +3379,28 @@ void node_tex_clouds(vec3 co, float size, out vec4 color, out float fac)
 	fac = 1.0;
 }
 
+/* BGE-Remix P8 Part B: a camera-space direction with its axes as the
+ * equirectangular lookup takes them (F12's sky without Real Sky) */
+void bge_dir_xzy(vec3 v, out vec3 o)
+{
+	o = v.xzy;
+}
+
+/* BGE-Remix P8 Part B (P8.17): the camera's view direction at a background
+ * pixel (its view position is the screen's), as F12's sky textures use it */
+void bge_background_view(vec3 viewvec, out vec3 view)
+{
+	vec4 co = bge_projinv * vec4(viewvec, 1.0);
+	view = (bge_proj[3][3] == 0.0) ? normalize(co.xyz / co.w) : vec3(0.0, 0.0, -1.0);
+}
+
 void node_tex_environment_equirectangular(vec3 co, sampler2D ima, out vec4 color)
 {
 	vec3 nco = normalize(co);
 	float u = -atan(nco.y, nco.x) / (2.0 * M_PI) + 0.5;
 	float v = atan(nco.z, hypot(nco.x, nco.y)) / M_PI + 0.5;
 
-	color = texture2D(ima, vec2(u, v));
+	color = texture(ima, vec2(u, v));
 }
 
 void node_tex_environment_mirror_ball(vec3 co, sampler2D ima, out vec4 color)
@@ -3108,7 +3416,7 @@ void node_tex_environment_mirror_ball(vec3 co, sampler2D ima, out vec4 color)
 	float u = 0.5 * (nco.x + 1.0);
 	float v = 0.5 * (nco.z + 1.0);
 
-	color = texture2D(ima, vec2(u, v));
+	color = texture(ima, vec2(u, v));
 }
 
 void node_tex_environment_empty(vec3 co, out vec4 color)
@@ -3118,7 +3426,7 @@ void node_tex_environment_empty(vec3 co, out vec4 color)
 
 void node_tex_image(vec3 co, sampler2D ima, out vec4 color, out float alpha)
 {
-	color = texture2D(ima, co.xy);
+	color = texture(ima, co.xy);
 	alpha = color.a;
 }
 
@@ -3186,13 +3494,13 @@ void node_tex_image_box(vec3 texco,
 	}
 	color = vec4(0);
 	if (weight.x > 0.0) {
-		color += weight.x * texture2D(ima, texco.yz);
+		color += weight.x * texture(ima, texco.yz);
 	}
 	if (weight.y > 0.0) {
-		color += weight.y * texture2D(ima, texco.xz);
+		color += weight.y * texture(ima, texco.xz);
 	}
 	if (weight.z > 0.0) {
-		color += weight.z * texture2D(ima, texco.yx);
+		color += weight.z * texture(ima, texco.yx);
 	}
 
 	alpha = color.a;
@@ -3831,5 +4139,826 @@ void material_preview_matcap(vec4 color, sampler2D ima, vec4 N, vec4 mask, out v
 
 	tex.x = 0.5 + 0.49 * normal.x;
 	tex.y = 0.5 + 0.49 * normal.y;
-	result = texture2D(ima, tex) * mask;
+	result = texture(ima, tex) * mask;
+}
+
+/* BGE-Remix P8: "Face Textures" (the face's image, mixed in when one is bound) */
+void mtex_face_image(vec4 col, float on, vec4 rgb_in, out vec4 rgb_out, out float alpha)
+{
+	rgb_out = mix(rgb_in, vec4(col.rgb, rgb_in.a), on);
+	alpha = mix(1.0, col.a, on);
+}
+
+void mtex_face_alpha(float texalpha, float on, float alpha_in, out float alpha_out)
+{
+	alpha_out = mix(alpha_in, texalpha, on);
+}
+
+/* BGE-Remix P8.5: an image texture's mapping as a render does it: the X/Y/Z
+ * projection, then Flat, Cube, Tube or Sphere (wrap 0..3). co is -1..1
+ * (uvmode: UV coordinates, 0..1, are brought to that range first); nor
+ * picks the cube side. */
+void mtex_image_mapping(vec3 co, vec3 proj, float wrap, float uvmode, vec3 nor, out vec3 outco)
+{
+	vec3 t;
+	if (uvmode != 0.0)
+		co = vec3(co.xy * 2.0 - vec2(1.0), 0.0);
+	t.x = (proj.x > 0.5) ? co[int(proj.x) - 1] : 0.0;
+	t.y = (proj.y > 0.5) ? co[int(proj.y) - 1] : 0.0;
+	t.z = (proj.z > 0.5) ? co[int(proj.z) - 1] : 0.0;
+
+	if (wrap == 2.0) {
+		point_map_to_tube(t, outco);
+	}
+	else if (wrap == 3.0) {
+		point_map_to_sphere(t, outco);
+	}
+	else if (wrap == 1.0) {
+		vec3 a = abs(nor);
+		if (a.z >= a.x && a.z >= a.y)
+			outco = vec3(t.xy * 0.5 + vec2(0.5), 0.0);
+		else if (a.y >= a.x && a.y >= a.z)
+			outco = vec3(t.xz * 0.5 + vec2(0.5), 0.0);
+		else
+			outco = vec3(t.yz * 0.5 + vec2(0.5), 0.0);
+	}
+	else {
+		outco = vec3(t.xy * 0.5 + vec2(0.5), 0.0);
+	}
+}
+
+/* BGE-Remix P8.6: the values a bake writes (alpha: drawn here) */
+void bake_out_color(vec4 rgb, float refl, float srgb, vec3 uv, out vec4 result)
+{
+	vec4 col = vec4(rgb.rgb * refl, 1.0);
+	if (srgb != 0.0)
+		linearrgb_to_srgb(col, col);
+	result = vec4(clamp(col.rgb, 0.0, 1.0), 1.0);
+}
+
+void bake_out_value(float value, float scale, vec3 uv, out vec4 result)
+{
+	float v = clamp(value * scale, 0.0, 1.0);
+	result = vec4(v, v, v, 1.0);
+}
+
+/* vn: the shading normal (Blender Internal's, pointing inwards); nor: the
+ * surface's; tangent: the UV map's (w: the bitangent's sign) */
+void bake_out_normal(vec3 vn, vec3 nor, vec4 tangent, vec3 uv, out vec4 result)
+{
+	vec3 N = normalize(nor);
+	vec3 n = -normalize(vn);
+	vec3 T = tangent.xyz - N * dot(N, tangent.xyz);
+	T = (dot(T, T) > 0.0) ? normalize(T) : vec3(1.0, 0.0, 0.0);
+	vec3 B = ((tangent.w < 0.0) ? -1.0 : 1.0) * cross(N, T);
+	vec3 ts = vec3(dot(n, T), dot(n, B), dot(n, N));
+	result = vec4(ts * 0.5 + vec3(0.5), 1.0);
+}
+
+/* BGE-Remix P8.24: a node material baked for Remix (node_shader_gpu_bake):
+ * each shader node's (value * w, w) for one channel */
+void node_bake_value(vec4 value, float w, out vec4 result)
+{
+	result = vec4(value.rgb * w, w);
+}
+
+void node_bake_scalar(float value, float w, out vec4 result)
+{
+	result = vec4(vec3(value) * w, w);
+}
+
+void node_bake_emission(vec4 color, float strength, out vec4 result)
+{
+	result = vec4(color.rgb * strength, 0.0);
+}
+
+/* N: the node's normal, nor: the surface's (view space, outwards) */
+void node_bake_normal(vec3 N, vec3 nor, vec4 tangent, float w, out vec4 result)
+{
+	vec3 Ns = normalize(nor);
+	vec3 n = normalize(N);
+	vec3 T = tangent.xyz - Ns * dot(Ns, tangent.xyz);
+	T = (dot(T, T) > 0.0) ? normalize(T) : vec3(1.0, 0.0, 0.0);
+	vec3 B = ((tangent.w < 0.0) ? -1.0 : 1.0) * cross(Ns, T);
+	result = vec4(vec3(dot(n, T), dot(n, B), dot(n, Ns)) * w, w);
+}
+
+/* the channel's value from the mixed pairs. mode 0: a colour (sRGB when
+ * srgb), 1: a value (def where no node has the channel), 2: a tangent-space
+ * normal, 3: emission (the sum, times scale, as sRGB) */
+void bake_out_nodes(vec4 c, float mode, float srgb, float scale, vec3 uv, out vec4 result)
+{
+	vec3 v = (c.a > 1e-6) ? c.rgb / c.a : vec3(0.0);
+	if (mode == 0.0) {
+		vec4 col = vec4(v, 1.0);
+		if (srgb != 0.0)
+			linearrgb_to_srgb(col, col);
+		result = vec4(clamp(col.rgb, 0.0, 1.0), 1.0);
+	}
+	else if (mode == 2.0) {
+		vec3 n = (c.a > 1e-6 && dot(v, v) > 0.0) ? normalize(v) : vec3(0.0, 0.0, 1.0);
+		result = vec4(n * 0.5 + vec3(0.5), 1.0);
+	}
+	else if (mode == 3.0) {
+		vec4 e = vec4(clamp(c.rgb * scale, 0.0, 1.0), 1.0);
+		linearrgb_to_srgb(e, e);
+		result = vec4(e.rgb, 1.0);
+	}
+	else {
+		float x = (c.a > 1e-6) ? v.r : scale;
+		result = vec4(vec3(clamp(x, 0.0, 1.0)), 1.0);
+	}
+}
+
+/* BGE-Remix P8.7: physically based shading (metal, roughness, Fresnel: the
+ * model RTX Remix shades with). Blender's vectors: vn points into the
+ * surface, lv from the lamp, view from the eye. Light units are Blender
+ * Internal's (Lambert without the 1/pi), so lamps keep their brightness. */
+
+void pbr_prepare(vec3 base, float metallic, float specular, float transmission, out vec3 diffcol, out vec3 f0)
+{
+	float m = clamp(metallic, 0.0, 1.0);
+	diffcol = base * (1.0 - m) * (1.0 - clamp(transmission, 0.0, 1.0));
+	f0 = mix(vec3(0.08 * clamp(specular, 0.0, 1.0)), base, m);
+}
+
+float pbr_ggx(float nh, float a)
+{
+	float a2 = a * a;
+	float d = nh * nh * (a2 - 1.0) + 1.0;
+	return a2 / (M_PI * d * d);
+}
+
+float pbr_smith(float nv, float nl, float a)
+{
+	float k = a * 0.5;
+	return (nv / (nv * (1.0 - k) + k)) * (nl / (nl * (1.0 - k) + k));
+}
+
+vec3 pbr_fresnel(vec3 f0, float vh)
+{
+	return f0 + (vec3(1.0) - f0) * pow(1.0 - clamp(vh, 0.0, 1.0), 5.0);
+}
+
+/* flags: x no diffuse, y no specular, z hemi lamp */
+void shade_pbr_light(
+        vec3 vn, vec3 lv, vec3 view, float inp, float visifac, float shadfac, vec3 lcol, vec3 shadowcol,
+        vec3 diffcol, vec3 f0, float roughness, float subsurface, vec3 flags,
+        vec4 diff_in, vec4 spec_in, out vec4 diff_out, out vec4 spec_out)
+{
+	vec3 N = -normalize(vn);
+	vec3 L = -normalize(lv);
+	vec3 V = -normalize(view);
+	float nl = (flags.z != 0.0) ? 0.5 * inp + 0.5 : inp;
+	/* subsurface: light wraps around the shadowed side */
+	float w = 0.5 * clamp(subsurface, 0.0, 1.0);
+	float dl = max((nl + w) / (1.0 + w), 0.0);
+	vec3 light = lcol * visifac;
+
+	diff_out = diff_in;
+	spec_out = spec_in;
+	if (flags.x == 0.0)
+		diff_out.rgb += diffcol * dl * light * mix(shadowcol, vec3(1.0), shadfac);
+	if (flags.y == 0.0 && flags.z == 0.0 && nl > 0.0) {
+		vec3 H = normalize(L + V);
+		float nv = max(dot(N, V), 1e-4);
+		float nh = max(dot(N, H), 0.0);
+		float a = max(roughness * roughness, 0.002);
+		float nlc = max(nl, 1e-4);
+		vec3 F = pbr_fresnel(f0, dot(V, H));
+		vec3 s = F * (pbr_ggx(nh, a) * pbr_smith(nv, nlc, a) / (4.0 * nv * nlc)) * M_PI * nlc;
+		spec_out.rgb += s * light * shadfac;
+	}
+}
+
+/* the world's light: ambient colour on the diffuse part, the sky's
+ * horizon-to-zenith colours reflected (rougher: more even) */
+/* (P8.18, further down) */
+vec3 bge_env(vec3 wp, vec3 R, float rough, vec3 fallback);
+vec4 bge_ssr(vec3 co, vec3 Rv, float rough);
+
+void shade_pbr_ambient(
+        vec3 co, vec3 vn, vec3 view, vec3 diffcol, vec3 f0, float roughness, float amb, vec3 ambcol,
+        vec3 horicol, vec3 zencol, mat4 viewinv, vec4 col_in, out vec4 col_out)
+{
+	vec3 N = -normalize(vn);
+	vec3 V = -normalize(view);
+	float nv = max(dot(N, V), 0.0);
+	vec3 Rv = reflect(-V, N);
+	vec3 R = (viewinv * vec4(Rv, 0.0)).xyz;
+	vec3 sky = mix(horicol, zencol, clamp(R.z, 0.0, 1.0));
+	sky = mix(sky, 0.5 * (horicol + zencol), clamp(roughness, 0.0, 1.0));
+	/* BGE-Remix P8 Part B (P8.18): a probe, the sky, the screen */
+	sky = bge_env((viewinv * vec4(co, 1.0)).xyz, R, roughness, sky);
+	vec4 s = bge_ssr(co, Rv, roughness);
+	sky = mix(sky, s.rgb, s.a);
+	vec3 F = f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - nv, 5.0);
+	col_out = col_in;
+	col_out.rgb += amb * (ambcol * diffcol + F * sky);
+}
+
+/* glass lets light through where it does not reflect it */
+void shade_pbr_alpha(vec3 vn, vec3 view, vec3 f0, float transmission, float alpha, out float outalpha)
+{
+	vec3 N = -normalize(vn);
+	vec3 V = -normalize(view);
+	float f = pbr_fresnel(f0, max(dot(N, V), 0.0)).g;
+	outalpha = alpha * (1.0 - clamp(transmission, 0.0, 1.0) * (1.0 - f));
+}
+
+/* ---- BGE-Remix P8 Part B (P8.15): the clustered lamps ----
+ * The material's lamps in one loop: the lamps of the pixel's cluster (a
+ * compute pass sorted them, GPU_lights.h), each lit as shade_one_light in
+ * gpu_material.c writes code for one lamp, with the material's own diffuse
+ * and specular models and ramps. Lamps with textures or a falloff curve,
+ * and Variance shadows, keep that per-lamp code. In view space; shadows in
+ * world space (the lamp records are world space).
+ * matp: diffuse model, specular model, flags (BGE_LF_*), light group (-1:
+ * none); diffp: roughness, toon size, toon smooth (or Fresnel), darkness;
+ * specp: refraction (Blinn), rms (Ward), toon size, toon smooth;
+ * rampc, ramps: input, blend type, factor, 0 */
+
+#define BGE_LF_CUBIC 1
+#define BGE_LF_RAMPCOL 2
+#define BGE_LF_RAMPSPEC 4
+#define BGE_LF_SHADOW 8
+#define BGE_LF_NOSHADERS 16
+#define BGE_LF_NOSHADOWS 32
+#define BGE_LF_DIFFUSE 64
+#define BGE_LF_SPECULAR 128
+
+/* a ramp blend by type (MA_RAMP_*: the mix_* functions) */
+void bge_ramp_blend(float type, float fac, vec4 col1, vec4 col2, out vec4 outcol)
+{
+	int t = int(type + 0.5);
+	if (t == 0) mix_blend(fac, col1, col2, outcol);
+	else if (t == 1) mix_add(fac, col1, col2, outcol);
+	else if (t == 2) mix_mult(fac, col1, col2, outcol);
+	else if (t == 3) mix_sub(fac, col1, col2, outcol);
+	else if (t == 4) mix_screen(fac, col1, col2, outcol);
+	else if (t == 5) mix_div(fac, col1, col2, outcol);
+	else if (t == 6) mix_diff(fac, col1, col2, outcol);
+	else if (t == 7) mix_dark(fac, col1, col2, outcol);
+	else if (t == 8) mix_light(fac, col1, col2, outcol);
+	else if (t == 9) mix_overlay(fac, col1, col2, outcol);
+	else if (t == 10) mix_dodge(fac, col1, col2, outcol);
+	else if (t == 11) mix_burn(fac, col1, col2, outcol);
+	else if (t == 12) mix_hue(fac, col1, col2, outcol);
+	else if (t == 13) mix_sat(fac, col1, col2, outcol);
+	else if (t == 14) mix_val(fac, col1, col2, outcol);
+	else if (t == 15) mix_color(fac, col1, col2, outcol);
+	else if (t == 16) mix_soft(fac, col1, col2, outcol);
+	else mix_linear(fac, col1, col2, outcol);
+}
+
+#ifdef BGE_CLUSTERED
+
+uint bge_cluster_index(vec3 co)
+{
+	vec2 f = (gl_FragCoord.xy - bge_cl_viewport.xy) / max(bge_cl_viewport.zw, vec2(1.0));
+	uvec2 t = uvec2(clamp(f, vec2(0.0), vec2(0.99999)) * vec2(16.0, 9.0));
+	float z = max(-co.z, bge_cl_depth.x);
+	uint k = uint(clamp(log(z / bge_cl_depth.x) * bge_cl_depth.z, 0.0, 23.0));
+	return (k * 9u + t.y) * 16u + t.x;
+}
+
+
+/* do_colorband_blend */
+void bge_colorband_blend(sampler2D band, vec4 rp, float fac, vec4 incol, out vec4 outcol)
+{
+	vec4 col;
+	float a;
+	valtorgb(fac, band, col, a);
+	bge_ramp_blend(rp.y, col.a * rp.z, incol, col, outcol);
+}
+
+/* one lamp's visibility (lamp_get_visibility): visifac, and lv, dist, the
+ * view space lamp position and direction (it returns a value: the
+ * library's parser reads only functions without one, and would stop at its
+ * struct parameter) */
+float bge_lamp_visibility(BgeLamp L, vec3 co, mat4 viewmat, mat4 viewinv, out vec3 lampco, out vec3 lampvec,
+                          out vec3 lv, out float dist)
+{
+	float visifac;
+	int type = int(L.co_type.w + 0.5);
+	uint mode = L.bits.x;
+	lampvec = normalize(mat3(viewmat) * L.vec_dist.xyz);
+	lampco = (viewmat * vec4(L.co_type.xyz, 1.0)).xyz;
+	if (type == 1 || type == 3) {
+		lamp_visibility_sun_hemi(lampvec, lv, dist, visifac);
+		return visifac;
+	}
+	lamp_visibility_other(co, lampco, lv, dist, visifac);
+	if (type == 4)
+		return visifac;
+	int falloff = int(L.falloff.x + 0.5);
+	float ldist = L.vec_dist.w;
+	if (falloff == 1) lamp_falloff_invlinear(ldist, dist, visifac);
+	else if (falloff == 2) lamp_falloff_invsquare(ldist, dist, visifac);
+	else if (falloff == 4) lamp_falloff_sliders(ldist, L.falloff.y, L.falloff.z, dist, visifac);
+	else if (falloff == 5) lamp_falloff_invcoefficients(L.coeff.x, L.coeff.y, L.coeff.z, dist, visifac);
+	if ((mode & 64u) != 0u)  /* LA_SPHERE */
+		lamp_visibility_sphere(ldist, dist, visifac, visifac);
+	if (type == 2) {
+		float inpr;
+		mat4 dynimat = L.imat * viewinv;
+		if ((mode & 128u) != 0u)  /* LA_SQUARE */
+			lamp_visibility_spot_square(lampvec, dynimat, L.spot.zw, lv, inpr);
+		else
+			lamp_visibility_spot_circle(lampvec, dynimat, L.spot.zw, lv, inpr);
+		lamp_visibility_spot(L.spot.x, L.spot.y, inpr, visifac, visifac);
+	}
+	lamp_visibility_clamp(visifac, visifac);
+	return visifac;
+}
+
+/* the lamp's shadow (gpu_lamp_shadow): its map in the pool, then contact */
+float bge_lamp_shadow(BgeLamp L, vec3 co, vec3 vn, vec3 lv, float inp, mat4 viewinv)
+{
+	int kind = int(L.shadow_color.w + 0.5);
+	vec3 wp = (viewinv * vec4(co, 1.0)).xyz;
+	vec3 wn = mat3(viewinv) * vn;
+	float layer = L.shadow_clip.w;
+	float s = 1.0;
+	if (kind == 1)
+		shadow_spot_soft(wp, wn, inp, layer, L.shadowmat[0], L.shadow_params, L.shadow_clip, s);
+	else if (kind == 2)
+		shadow_cube_soft(wp, wn, inp, layer, L.shadowmat[0], L.shadow_params, L.shadow_clip, s);
+	else if (kind == 3)
+		shadow_sun_soft(wp, wn, inp, layer, L.shadowmat[0], L.shadowmat[1], L.shadowmat[2], L.shadowmat[3],
+		                L.cascade_scale, L.cascade_range, L.shadow_params, s);
+	shadow_contact(co, lv, L.contact, s, s);
+	return s;
+}
+
+/* whether the lamp lights this material and object */
+bool bge_lamp_applies(BgeLamp L, int flags, float group)
+{
+	uint mode = L.bits.x;
+	if ((mode & 4u) != 0u && (L.bits.y & uint(bge_oblay)) == 0u)  /* LA_LAYER */
+		return false;
+	if ((mode & 32u) != 0u && (flags & BGE_LF_SHADOW) == 0)  /* LA_ONLYSHADOW */
+		return false;
+	if (group >= 0.0)
+		return (L.bits.z & (1u << uint(group))) != 0u;
+	return (L.bits.w & 4u) == 0u;  /* in an exclusive light group */
+}
+
+void shade_lights_clustered_ex(
+        vec3 co, vec3 vn, vec3 view, vec4 rgb, vec4 specrgb, float spec, float har, float refl,
+        vec4 matp, vec4 diffp, vec4 specp, vec4 matq, vec4 rampc, vec4 ramps, sampler2D bandc, sampler2D bands,
+        mat4 viewmat, mat4 viewinv, vec4 diff_in, vec4 spec_in, out vec4 diff_out, out vec4 spec_out)
+{
+	diff_out = diff_in;
+	spec_out = spec_in;
+	if (bge_shadowpass != 0)
+		return;
+	int flags = int(matp.z + 0.5);
+	int dmodel = int(matp.x + 0.5), smodel = int(matp.y + 0.5);
+	bool shaders = (flags & BGE_LF_NOSHADERS) == 0;
+	uint ci = bge_cluster_index(co);
+	uint W = bge_cl_counts.x;
+	for (uint w = 0u; w < W; w++) {
+		uint bits = bge_cl_mask[ci * W + w];
+		while (bits != 0u) {
+			int b = findLSB(bits);
+			bits &= bits - 1u;
+			BgeLamp L = bge_lamps[w * 32u + uint(b)];
+			if (!bge_lamp_applies(L, flags, matp.w))
+				continue;
+			uint mode = L.bits.x;
+			int type = int(L.co_type.w + 0.5);
+			vec3 lampco, lampvec, lv;
+			float dist;
+			float visifac = bge_lamp_visibility(L, co, viewmat, viewinv, lampco, lampvec, lv, dist);
+
+			float inp, is;
+			shade_inp(vn, lv, inp);
+			if ((mode & 2048u) != 0u) {  /* LA_NO_DIFF */
+				is = 0.0;
+			}
+			else if (type == 3) {
+				shade_is_hemi(inp, is);
+			}
+			else {
+				if (type == 4) {
+					mat4 area = mat4(viewmat * L.area[0], viewmat * L.area[1], viewmat * L.area[2], viewmat * L.area[3]);
+					shade_inp_area(co, lampco, lampvec, vn, area, L.coeff.w, L.falloff.w, inp);
+				}
+				is = inp;
+				if (shaders) {
+					if (dmodel == 1) shade_diffuse_oren_nayer(inp, vn, lv, view, diffp.x, is);
+					else if (dmodel == 2) shade_diffuse_toon(vn, lv, view, diffp.y, diffp.z, is);
+					else if (dmodel == 3) shade_diffuse_minnaert(inp, vn, view, diffp.w, is);
+					else if (dmodel == 4) shade_diffuse_fresnel(vn, lv, view, diffp.y, diffp.z, is);
+				}
+			}
+			if (shaders && (flags & BGE_LF_CUBIC) != 0)
+				shade_cubic(is, is);
+
+			float i;
+			shade_visifac(is, visifac, refl, i);
+			vec3 lcol = L.col_energy.rgb * L.col_energy.w;
+
+			float shadfac = 1.0;
+			bool onlyshadow = (mode & 32u) != 0u;
+			if ((flags & BGE_LF_SHADOW) != 0 && L.shadow_color.w > 0.5) {
+				if ((flags & BGE_LF_NOSHADOWS) == 0) {
+					shadfac = bge_lamp_shadow(L, co, vn, lv, inp, viewinv);
+					if (onlyshadow) {
+						vec3 shadrgb;
+						shade_only_shadow(i, shadfac, L.col_energy.w, L.shadow_color.rgb, shadrgb);
+						if ((mode & 2048u) == 0u)
+							shade_only_shadow_diffuse(shadrgb, rgb.rgb, diff_out, diff_out);
+						if ((mode & 4096u) == 0u)
+							shade_only_shadow_specular(shadrgb, specrgb.rgb, spec_out, spec_out);
+						continue;
+					}
+				}
+			}
+			else if ((flags & BGE_LF_NOSHADOWS) != 0 && onlyshadow) {
+				continue;
+			}
+
+			if ((flags & BGE_LF_DIFFUSE) != 0 && (mode & 2048u) == 0u) {
+				vec4 lrgb;
+				shade_mul_value(i, vec4(lcol, 1.0), lrgb);
+				mix_mult(1.0 - shadfac, lrgb, vec4(L.shadow_color.rgb, 1.0), lrgb);
+				/* add_to_diffuse */
+				vec4 addcol = rgb;
+				if ((flags & BGE_LF_RAMPCOL) != 0 && int(rampc.x + 0.5) != 3) {
+					int rin = int(rampc.x + 0.5);
+					float fac = 0.0;
+					if (rin == 1) ramp_rgbtobw(lrgb.rgb, fac);
+					else if (rin == 0) fac = is;
+					else if (rin == 2) fac = dot(view, vn);
+					bge_colorband_blend(bandc, rampc, fac, rgb, addcol);
+				}
+				shade_madd(diff_out, lrgb, addcol, diff_out);
+			}
+
+			if (shaders && (flags & BGE_LF_SPECULAR) != 0 && (mode & 4096u) == 0u && !onlyshadow) {
+				vec3 outcol;
+				if (type == 3) {
+					float t;
+					shade_hemi_spec(vn, lv, view, matq.x, har, visifac, t);
+					shade_add_spec(t, lcol, specrgb.rgb, outcol);
+				}
+				else {
+					float specfac;
+					if (smodel == 1) shade_phong_spec(vn, lv, view, har, specfac);
+					else if (smodel == 0) shade_cooktorr_spec(vn, lv, view, har, specfac);
+					else if (smodel == 2) shade_blinn_spec(vn, lv, view, specp.x, har, specfac);
+					else if (smodel == 4) shade_wardiso_spec(vn, lv, view, specp.y, specfac);
+					else shade_toon_spec(vn, lv, view, specp.z, specp.w, specfac);
+					if (type == 4)
+						shade_spec_area_inp(specfac, inp, specfac);
+					float t;
+					shade_spec_t(shadfac, spec, visifac, specfac, t);
+					vec4 sp = specrgb;
+					if ((flags & BGE_LF_RAMPSPEC) != 0 && int(ramps.x + 0.5) != 3) {
+						/* do_specular_ramp */
+						int rin = int(ramps.x + 0.5);
+						float fac = 0.0;
+						if (rin == 1) fac = t;
+						else if (rin == 0) fac = specfac;
+						else if (rin == 2) fac = dot(view, vn);
+						bge_colorband_blend(bands, ramps, fac, specrgb, sp);
+					}
+					shade_add_spec(t, lcol, sp.rgb, outcol);
+				}
+				shade_add_clamped(spec_out, vec4(outcol, 1.0), spec_out);
+			}
+		}
+	}
+}
+
+void shade_lights_clustered_pbr(
+        vec3 co, vec3 vn, vec3 view, vec4 rgb, vec4 specrgb, float refl, vec3 diffcol, vec3 f0, float roughness,
+        float subsurface, vec4 matp, mat4 viewmat, mat4 viewinv, vec4 diff_in, vec4 spec_in, out vec4 diff_out,
+        out vec4 spec_out)
+{
+	diff_out = diff_in;
+	spec_out = spec_in;
+	if (bge_shadowpass != 0)
+		return;
+	int flags = int(matp.z + 0.5);
+	uint ci = bge_cluster_index(co);
+	uint W = bge_cl_counts.x;
+	for (uint w = 0u; w < W; w++) {
+		uint bits = bge_cl_mask[ci * W + w];
+		while (bits != 0u) {
+			int b = findLSB(bits);
+			bits &= bits - 1u;
+			BgeLamp L = bge_lamps[w * 32u + uint(b)];
+			if (!bge_lamp_applies(L, flags, matp.w))
+				continue;
+			uint mode = L.bits.x;
+			int type = int(L.co_type.w + 0.5);
+			vec3 lampco, lampvec, lv;
+			float dist;
+			float visifac = bge_lamp_visibility(L, co, viewmat, viewinv, lampco, lampvec, lv, dist);
+			float inp;
+			shade_inp(vn, lv, inp);
+			if (type == 4 && (mode & 2048u) == 0u) {
+				mat4 area = mat4(viewmat * L.area[0], viewmat * L.area[1], viewmat * L.area[2], viewmat * L.area[3]);
+				shade_inp_area(co, lampco, lampvec, vn, area, L.coeff.w, L.falloff.w, inp);
+			}
+			float is = ((mode & 2048u) != 0u) ? 0.0 : (type == 3) ? 0.5 * inp + 0.5 : inp;
+			float i;
+			shade_visifac(is, visifac, refl, i);
+			vec3 lcol = L.col_energy.rgb * L.col_energy.w;
+			float shadfac = 1.0;
+			bool onlyshadow = (mode & 32u) != 0u;
+			if ((flags & BGE_LF_SHADOW) != 0 && L.shadow_color.w > 0.5) {
+				if ((flags & BGE_LF_NOSHADOWS) == 0) {
+					shadfac = bge_lamp_shadow(L, co, vn, lv, inp, viewinv);
+					if (onlyshadow) {
+						vec3 shadrgb;
+						shade_only_shadow(i, shadfac, L.col_energy.w, L.shadow_color.rgb, shadrgb);
+						if ((mode & 2048u) == 0u)
+							shade_only_shadow_diffuse(shadrgb, rgb.rgb, diff_out, diff_out);
+						if ((mode & 4096u) == 0u)
+							shade_only_shadow_specular(shadrgb, specrgb.rgb, spec_out, spec_out);
+						continue;
+					}
+				}
+			}
+			else if ((flags & BGE_LF_NOSHADOWS) != 0 && onlyshadow) {
+				continue;
+			}
+			vec3 lf = vec3(((mode & 2048u) != 0u) ? 1.0 : 0.0, ((mode & (4096u | 32u)) != 0u) ? 1.0 : 0.0,
+			               (type == 3) ? 1.0 : 0.0);
+			shade_pbr_light(vn, lv, view, inp, visifac, shadfac, lcol, L.shadow_color.rgb, diffcol, f0, roughness,
+			                subsurface, lf, diff_out, spec_out, diff_out, spec_out);
+		}
+	}
+}
+
+#else  /* no storage buffers (GLSL before 4.30): no clustered lamps */
+
+void shade_lights_clustered_ex(
+        vec3 co, vec3 vn, vec3 view, vec4 rgb, vec4 specrgb, float spec, float har, float refl,
+        vec4 matp, vec4 diffp, vec4 specp, vec4 matq, vec4 rampc, vec4 ramps, sampler2D bandc, sampler2D bands,
+        mat4 viewmat, mat4 viewinv, vec4 diff_in, vec4 spec_in, out vec4 diff_out, out vec4 spec_out)
+{
+	diff_out = diff_in;
+	spec_out = spec_in;
+}
+
+void shade_lights_clustered_pbr(
+        vec3 co, vec3 vn, vec3 view, vec4 rgb, vec4 specrgb, float refl, vec3 diffcol, vec3 f0, float roughness,
+        float subsurface, vec4 matp, mat4 viewmat, mat4 viewinv, vec4 diff_in, vec4 spec_in, out vec4 diff_out,
+        out vec4 spec_out)
+{
+	diff_out = diff_in;
+	spec_out = spec_in;
+}
+
+#endif  /* BGE_CLUSTERED */
+
+/* without ramps (the samplers are never read) */
+void shade_lights_clustered(
+        vec3 co, vec3 vn, vec3 view, vec4 rgb, vec4 specrgb, float spec, float har, float refl,
+        vec4 matp, vec4 diffp, vec4 specp, vec4 matq, mat4 viewmat, mat4 viewinv, vec4 diff_in, vec4 spec_in,
+        out vec4 diff_out, out vec4 spec_out)
+{
+	shade_lights_clustered_ex(co, vn, view, rgb, specrgb, spec, har, refl, matp, diffp, specp, matq, vec4(0.0),
+	                          vec4(0.0), bge_noramp, bge_noramp, viewmat, viewinv, diff_in, spec_in, diff_out,
+	                          spec_out);
+}
+
+/* ---- BGE-Remix P8 Part B (P8.17): Sky & Atmosphere ----
+ * Blender Internal's sun and sky (sunsky.c: the Preetham sky, its
+ * atmosphere) for a sun lamp's Sky and Atmosphere effects. s: the sun's
+ * direction (world, toward the sun), sky on; its theta, phi, the sky's
+ * exposure (negated), colour space; zenith Y, x, y, blend type; blend
+ * factor, atmosphere on, distance factor, sun intensity. p: the Perez
+ * coefficients of Y (0-4), x (5-9), y (10-14). a: the atmosphere's
+ * extinction (xyz), Henyey-Greenstein g; Rayleigh and Mie in-scattering
+ * with their factors; the attenuated sunlight. */
+
+float sunsky_perez(float l0, float l1, float l2, float l3, float l4, float theta, float gamma, float lvz,
+                   float suntheta)
+{
+	float den = (1.0 + l0 * exp(l1)) * (1.0 + l2 * exp(l3 * suntheta) + l4 * cos(suntheta) * cos(suntheta));
+	float num = (1.0 + l0 * exp(l1 / cos(theta))) * (1.0 + l2 * exp(l3 * gamma) + l4 * cos(gamma) * cos(gamma));
+	return lvz * num / den;
+}
+
+vec3 sunsky_xyz_to_rgb(vec3 c, float space)
+{
+	if (space < 0.5)
+		return vec3(3.50570 * c.x - 1.73964 * c.y - 0.544011 * c.z,
+		            -1.06906 * c.x + 1.97781 * c.y + 0.0351720 * c.z,
+		            0.0563117 * c.x - 0.196994 * c.y + 1.05005 * c.z);
+	if (space < 1.5)
+		return vec3(3.240476 * c.x - 1.537150 * c.y - 0.498535 * c.z,
+		            -0.969256 * c.x + 1.875992 * c.y + 0.041556 * c.z,
+		            0.055648 * c.x - 0.204043 * c.y + 1.057311 * c.z);
+	return vec3(2.28783848734076 * c.x - 0.833367677835217 * c.y - 0.454470795871421 * c.z,
+	            -0.511651380743862 * c.x + 1.42275837632178 * c.y + 0.0888930017552939 * c.z,
+	            0.00572040983140966 * c.x - 0.0159068485104036 * c.y + 1.0101864083734 * c.z);
+}
+
+/* the sky's colour toward v (world, normalized; GetSkyXYZRadiancef) */
+vec3 sunsky_radiance(vec3 v, mat4 s, mat4 p)
+{
+	if (v.z < 0.001)
+		v = normalize(vec3(v.xy, 0.001));
+	float theta = acos(clamp(v.z, -1.0, 1.0));
+	float phi = (abs(theta) < 1e-5) ? 0.0 : atan(v.y, v.x);
+	float suntheta = s[1].x, sunphi = s[1].y;
+	float hfade = 1.0, nfade = 1.0;
+	if (theta > 1.5707963) {
+		hfade = 1.0 - (theta * 0.31830989 - 0.5) * 2.0;
+		hfade = hfade * hfade * (3.0 - 2.0 * hfade);
+		theta = 1.5707963;
+	}
+	if (suntheta > 1.5707963 && theta <= 1.5707963) {
+		nfade = 1.0 - (0.5 - theta * 0.31830989) * 2.0;
+		nfade *= 1.0 - (suntheta * 0.31830989 - 0.5) * 2.0;
+		nfade = nfade * nfade * (3.0 - 2.0 * nfade);
+	}
+	float cospsi = sin(theta) * sin(suntheta) * cos(sunphi - phi) + cos(theta) * cos(suntheta);
+	float gamma = (cospsi > 1.0) ? 0.0 : (cospsi < -1.0) ? 3.14159265 : acos(cospsi);
+	float x = sunsky_perez(p[1].y, p[1].z, p[1].w, p[2].x, p[2].y, theta, gamma, s[2].y, suntheta);
+	float y = sunsky_perez(p[2].z, p[2].w, p[3].x, p[3].y, p[3].z, theta, gamma, s[2].z, suntheta);
+	float Y = 6.666666667e-5 * nfade * hfade *
+	          sunsky_perez(p[0].x, p[0].y, p[0].z, p[0].w, p[1].x, theta, gamma, s[2].x, suntheta);
+	if (s[1].z != 0.0)
+		Y = 1.0 - exp(Y * s[1].z);
+	vec3 xyz = vec3((x / y) * Y, Y, ((1.0 - x - y) / y) * Y);
+	return sunsky_xyz_to_rgb(xyz, s[1].w);
+}
+
+/* the world's colour with the sky blended over it (shadeSunView); view: from
+ * the camera into the world */
+void world_sunsky(vec3 view, mat4 s, mat4 p, vec3 col_in, out vec3 col_out)
+{
+	col_out = col_in;
+	if (s[0].w < 0.5)
+		return;
+	vec3 v = normalize(view);
+	v.z = max(v.z, 0.0);
+	v = normalize(v);
+	vec4 sky = vec4(sunsky_radiance(v, s, p), 1.0);
+	vec4 res;
+	bge_ramp_blend(s[2].w, s[3].x, vec4(col_in, 1.0), sky, res);
+	col_out = res.rgb;
+}
+
+/* aerial perspective on a surface (AtmospherePixleShader, as F12 calls it:
+ * the view vector in camera space, the distance its depth) */
+void shade_atmosphere(vec3 co, mat4 s, mat4 a, vec4 col_in, out vec4 col_out)
+{
+	col_out = col_in;
+	if (s[3].y < 0.5 || s[0].z < 0.0)
+		return;
+	vec3 view = normalize(co);
+	float dist = -co.z * s[3].z;
+	float costheta = dot(view, s[0].xyz);
+	float phase1 = 1.0 + costheta * costheta;
+	vec3 E1 = exp(a[0].xyz * (-dist / 0.69314718));
+	float g = a[0].w;
+	float t = 1.0 + g - 2.0 * g * costheta;
+	float phase2 = (1.0 - g * g) / (t * sqrt(t));
+	vec3 I = (a[1].xyz * phase1 + a[2].xyz * phase2) * (vec3(1.0) - E1) / a[0].xyz;
+	I *= a[1].w * s[3].w;
+	vec3 E = E1 * a[2].w * a[3].xyz;
+	/* (the colour is not premultiplied here) */
+	col_out = vec4(col_in.rgb * E + I, col_in.a);
+}
+
+/* ---- BGE-Remix P8 Part B (P8.18): reflections ----
+ * bge_env: the light from direction R (world) at the point wp (world): the
+ * nearest probe that reaches it, blurred by roughness, or the sky, or the
+ * fallback (the horizon and zenith colours). bge_ssr: the reflected ray
+ * (view space) traced through the scene's depth; the colour the last frame
+ * showed where it hits (a: how much to trust it). */
+
+vec3 bge_env(vec3 wp, vec3 R, float rough, vec3 fallback)
+{
+#ifdef BGE_CLUSTERED
+	int best = -1;
+	float bd = 1e30;
+	for (uint i = 0u; i < bge_probe_head.x; i++) {
+		vec4 c = bge_probe[i * 2u];
+		float d = distance(wp, c.xyz);
+		if (d < c.w && d < bd) {
+			bd = d;
+			best = int(i);
+		}
+	}
+	if (best >= 0) {
+		float lod = clamp(rough, 0.0, 1.0) * float(max(bge_probe_head.y, 1u) - 1u);
+		return textureLod(bge_probes, vec4(R, bge_probe[uint(best) * 2u + 1u].x), lod).rgb;
+	}
+	if (bge_sky_on != 0)
+		return textureLod(bge_skycube, R, clamp(rough, 0.0, 1.0) * 4.0).rgb;
+#endif
+	return fallback;
+}
+
+vec4 bge_ssr(vec3 co, vec3 Rv, float rough)
+{
+#ifdef BGE_CLUSTERED
+	if (bge_ssr_on == 0 || bge_scenedepth_on < 0.5 || rough > 0.6)
+		return vec4(0.0);
+	float stepl = max(-co.z, 0.2) * 0.04;
+	vec3 p = co;
+	vec3 prev = co;
+	for (int i = 0; i < 32; i++) {
+		prev = p;
+		p += Rv * stepl;
+		stepl *= 1.12;
+		vec4 c = bge_proj * vec4(p, 1.0);
+		if (c.w <= 0.0)
+			break;
+		vec2 uv = c.xy / c.w * 0.5 + 0.5;
+		if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
+			break;
+		float dz = shadow_view_z(texture(bge_scenedepth, uv).r) - p.z;
+		if (dz > 0.0 && dz < max(stepl * 2.0, 0.1)) {
+			/* refined between the last two points */
+			vec3 a = prev, b = p;
+			for (int k = 0; k < 5; k++) {
+				vec3 m = 0.5 * (a + b);
+				vec4 cm = bge_proj * vec4(m, 1.0);
+				vec2 um = cm.xy / cm.w * 0.5 + 0.5;
+				if (shadow_view_z(texture(bge_scenedepth, um).r) - m.z > 0.0) b = m; else a = m;
+			}
+			vec4 cb = bge_proj * vec4(b, 1.0);
+			uv = cb.xy / cb.w * 0.5 + 0.5;
+			vec2 edge = min(uv, 1.0 - uv);
+			float fade = clamp(min(edge.x, edge.y) * 10.0, 0.0, 1.0) * (1.0 - float(i) / 32.0) *
+			             clamp(1.0 - rough / 0.6, 0.0, 1.0);
+			return vec4(textureLod(bge_history, uv, 0.0).rgb, fade);
+		}
+	}
+#endif
+	return vec4(0.0);
+}
+
+/* a planar mirror's picture at this pixel, blurred by roughness (a: on) */
+vec4 bge_planar(float rough)
+{
+#ifdef BGE_CLUSTERED
+	if (bge_mirror_on != 0) {
+		/* the mirror's picture covers the view (the clusters' viewport) */
+		vec2 uv = (gl_FragCoord.xy - bge_cl_viewport.xy) / max(bge_cl_viewport.zw, vec2(1.0));
+		return vec4(textureLod(bge_mirror, uv, clamp(rough, 0.0, 1.0) * 6.0).rgb, 1.0);
+	}
+#endif
+	return vec4(0.0);
+}
+
+/* Blender Internal's ray mirror: how much reflects (fresnel_fac in F12) */
+float bge_fresnel_fac(vec3 view, vec3 vn, float grad, float fac)
+{
+	if (fac == 0.0)
+		return 1.0;
+	float t1 = dot(view, vn);
+	float t2 = (t1 > 0.0) ? 1.0 + t1 : 1.0 - t1;
+	return clamp(grad + (1.0 - grad) * pow(t2, fac), 0.0, 1.0);
+}
+
+/* a ray mirror material's reflection as the mirror colour input expects it
+ * (refcol: amount, colour); mp: reflectivity, Fresnel, Fresnel blend,
+ * gloss; planar: the material reads a planar mirror */
+void shade_ray_mirror(vec3 co, vec3 vn, vec3 view, mat4 viewinv, vec4 mp, float planar, vec4 refcol_in,
+                      out vec4 refcol_out)
+{
+	float amount = mp.x * bge_fresnel_fac(view, vn, mp.z, mp.y);
+	float rough = clamp(1.0 - mp.w, 0.0, 1.0);
+	/* Blender Internal's normals point into the surface */
+	vec3 N = -normalize(vn);
+	vec3 Rv = reflect(normalize(co), N);
+	vec3 R = (viewinv * vec4(Rv, 0.0)).xyz;
+	vec3 wp = (viewinv * vec4(co, 1.0)).xyz;
+	vec3 col = bge_env(wp, R, rough, refcol_in.gba);
+	if (planar > 0.5) {
+		vec4 m = bge_planar(rough);
+		col = mix(col, m.rgb, m.a);
+	}
+	else {
+		vec4 s = bge_ssr(co, Rv, rough);
+		col = mix(col, s.rgb, s.a);
+	}
+	refcol_out = vec4(amount, col);
+}
+
+/* an Env Map texture (Static, Animated: a probe; Planar: a mirror) */
+void mtex_probe_refl(vec3 co, vec3 vn, mat4 viewinv, float planar, out float value, out vec4 color)
+{
+	vec3 N = -normalize(vn);
+	vec3 Rv = reflect(normalize(co), N);
+	vec3 R = (viewinv * vec4(Rv, 0.0)).xyz;
+	vec3 wp = (viewinv * vec4(co, 1.0)).xyz;
+	color = vec4(bge_env(wp, R, 0.0, vec3(0.0)), 1.0);
+	if (planar > 0.5) {
+		vec4 m = bge_planar(0.0);
+		color.rgb = mix(color.rgb, m.rgb, m.a);
+	}
+	value = 1.0;
 }

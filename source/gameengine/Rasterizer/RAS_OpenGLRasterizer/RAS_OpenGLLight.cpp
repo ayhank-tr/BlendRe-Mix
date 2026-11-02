@@ -28,6 +28,7 @@
 #include "GPU_glew.h"
 
 #include <stdio.h>
+#include <string.h>
 
 
 #include "RAS_OpenGLLight.h"
@@ -44,10 +45,25 @@
 #include "DNA_scene_types.h"
 
 #include "GPU_material.h"
+#include "GPU_lights.h"
+
+extern "C" {
+#include "BKE_lamp_physical.h"
+}
 
 RAS_OpenGLLight::RAS_OpenGLLight(RAS_OpenGLRasterizer *ras)
     :m_rasterizer(ras)
 {
+	/* BGE-Remix P8.9: the converter sets these from the lamp */
+	m_physical = false;
+	m_size = 0.1f;
+	m_areasize[0] = m_areasize[1] = 0.1f;
+	m_sunangle = 0.53f;
+	m_onlyshadow = false;
+	/* BGE-Remix P8.10 */
+	m_contact = 0.0f;
+	m_shadowsig = 0;
+	m_shadowvalid = false;
 }
 
 RAS_OpenGLLight::~RAS_OpenGLLight()
@@ -64,11 +80,14 @@ RAS_OpenGLLight::~RAS_OpenGLLight()
 	}
 }
 
-bool RAS_OpenGLLight::ApplyFixedFunctionLighting(KX_Scene *kxscene, int oblayer, int slot)
+/* BGE-Remix P8 Part B: the lamp as the old fixed-function light (eye space,
+ * through the view matrix), for the game's state; false when it does not
+ * light objects of this layer */
+bool RAS_OpenGLLight::FillClassicLight(KX_Scene *kxscene, int oblayer, const MT_Transform& viewmat,
+                                       GPUClassicLight *cl)
 {
 	KX_Scene* lightscene = (KX_Scene*)m_scene;
 	KX_LightObject* kxlight = (KX_LightObject*)m_light;
-	float vec[4];
 	int scenelayer = ~0;
 
 	if (kxscene && kxscene->GetBlenderScene())
@@ -86,72 +105,71 @@ bool RAS_OpenGLLight::ApplyFixedFunctionLighting(KX_Scene *kxscene, int oblayer,
 		kxlight->GetOpenGLMatrix();
 
 	MT_CmMatrix4x4& worldmatrix= *kxlight->GetOpenGLMatrixPtr();
+	const MT_Matrix3x3& basis = viewmat.getBasis();
 
-	vec[0] = worldmatrix(0,3);
-	vec[1] = worldmatrix(1,3);
-	vec[2] = worldmatrix(2,3);
-	vec[3] = 1.0f;
+	/* the defaults OpenGL gave a light (the old code set the rest) */
+	memset(cl, 0, sizeof(*cl));
+	cl->ambient[3] = 1.0f;
+	cl->spot_direction[2] = -1.0f;
+	cl->spot_cutoff = 180.0f;
+	cl->attenuation[0] = 1.0f;
 
 	if (m_type==RAS_ILightObject::LIGHT_SUN) {
-
-		vec[0] = worldmatrix(0,2);
-		vec[1] = worldmatrix(1,2);
-		vec[2] = worldmatrix(2,2);
-		//vec[0] = base->object->obmat[2][0];
-		//vec[1] = base->object->obmat[2][1];
-		//vec[2] = base->object->obmat[2][2];
-		vec[3] = 0.0f;
-		glLightfv((GLenum)(GL_LIGHT0+slot), GL_POSITION, vec);
+		const MT_Vector3 dir = basis * MT_Vector3(worldmatrix(0,2), worldmatrix(1,2), worldmatrix(2,2));
+		cl->position[0] = (float)dir[0];
+		cl->position[1] = (float)dir[1];
+		cl->position[2] = (float)dir[2];
+		cl->position[3] = 0.0f;
 	}
 	else {
-		//vec[3] = 1.0f;
-		glLightfv((GLenum)(GL_LIGHT0+slot), GL_POSITION, vec);
-		glLightf((GLenum)(GL_LIGHT0+slot), GL_CONSTANT_ATTENUATION, 1.0f);
-		glLightf((GLenum)(GL_LIGHT0+slot), GL_LINEAR_ATTENUATION, m_att1/m_distance);
+		const MT_Point3 pos = viewmat(MT_Point3(worldmatrix(0,3), worldmatrix(1,3), worldmatrix(2,3)));
+		cl->position[0] = (float)pos[0];
+		cl->position[1] = (float)pos[1];
+		cl->position[2] = (float)pos[2];
+		cl->position[3] = 1.0f;
+		cl->attenuation[0] = 1.0f;
+		cl->attenuation[1] = m_att1/m_distance;
 		// without this next line it looks backward compatible.
 		//attennuation still is acceptable
-		glLightf((GLenum)(GL_LIGHT0+slot), GL_QUADRATIC_ATTENUATION, m_att2/(m_distance*m_distance));
+		cl->attenuation[2] = m_att2/(m_distance*m_distance);
 
 		if (m_type==RAS_ILightObject::LIGHT_SPOT) {
-			vec[0] = -worldmatrix(0,2);
-			vec[1] = -worldmatrix(1,2);
-			vec[2] = -worldmatrix(2,2);
-			//vec[0] = -base->object->obmat[2][0];
-			//vec[1] = -base->object->obmat[2][1];
-			//vec[2] = -base->object->obmat[2][2];
-			glLightfv((GLenum)(GL_LIGHT0+slot), GL_SPOT_DIRECTION, vec);
-			glLightf((GLenum)(GL_LIGHT0+slot), GL_SPOT_CUTOFF, m_spotsize / 2.0f);
-			glLightf((GLenum)(GL_LIGHT0+slot), GL_SPOT_EXPONENT, 128.0f * m_spotblend);
+			const MT_Vector3 dir = basis * MT_Vector3(-worldmatrix(0,2), -worldmatrix(1,2), -worldmatrix(2,2));
+			cl->spot_direction[0] = (float)dir[0];
+			cl->spot_direction[1] = (float)dir[1];
+			cl->spot_direction[2] = (float)dir[2];
+			cl->spot_cutoff = m_spotsize / 2.0f;
+			cl->spot_exponent = 128.0f * m_spotblend;
 		}
 		else {
-			glLightf((GLenum)(GL_LIGHT0+slot), GL_SPOT_CUTOFF, 180.0f);
+			cl->spot_cutoff = 180.0f;
 		}
 	}
 
-	if (m_nodiffuse) {
-		vec[0] = vec[1] = vec[2] = vec[3] = 0.0f;
+	if (!m_nodiffuse) {
+		cl->diffuse[0] = m_energy*m_color[0];
+		cl->diffuse[1] = m_energy*m_color[1];
+		cl->diffuse[2] = m_energy*m_color[2];
 	}
-	else {
-		vec[0] = m_energy*m_color[0];
-		vec[1] = m_energy*m_color[1];
-		vec[2] = m_energy*m_color[2];
-		vec[3] = 1.0f;
-	}
+	cl->diffuse[3] = m_nodiffuse ? 0.0f : 1.0f;
 
-	glLightfv((GLenum)(GL_LIGHT0+slot), GL_DIFFUSE, vec);
-	if (m_nospecular)
-	{
-		vec[0] = vec[1] = vec[2] = vec[3] = 0.0f;
+	if (m_nospecular) {
+		cl->specular[3] = 0.0f;
 	}
 	else if (m_nodiffuse) {
-		vec[0] = m_energy*m_color[0];
-		vec[1] = m_energy*m_color[1];
-		vec[2] = m_energy*m_color[2];
-		vec[3] = 1.0f;
+		cl->specular[0] = m_energy*m_color[0];
+		cl->specular[1] = m_energy*m_color[1];
+		cl->specular[2] = m_energy*m_color[2];
+		cl->specular[3] = 1.0f;
 	}
-
-	glLightfv((GLenum)(GL_LIGHT0+slot), GL_SPECULAR, vec);
-	glEnable((GLenum)(GL_LIGHT0+slot));
+	else {
+		/* the old code left the specular colour as the diffuse one it had
+		 * just set (the same vector) */
+		cl->specular[0] = cl->diffuse[0];
+		cl->specular[1] = cl->diffuse[1];
+		cl->specular[2] = cl->diffuse[2];
+		cl->specular[3] = cl->diffuse[3];
+	}
 
 	return true;
 }
@@ -207,21 +225,12 @@ int RAS_OpenGLLight::GetShadowLayer()
 		return 0;
 }
 
-void RAS_OpenGLLight::BindShadowBuffer(RAS_ICanvas *canvas, KX_Camera *cam, MT_Transform& camtrans)
+void RAS_OpenGLLight::SetupShadowCamera(RAS_ICanvas *canvas, KX_Camera *cam, MT_Transform& camtrans,
+                                        float viewmat[4][4], float winmat[4][4], const int rect[4])
 {
-	GPULamp *lamp;
-	float viewmat[4][4], winmat[4][4];
-	int winsize;
-
-	/* bind framebuffer */
-	lamp = GetGPULamp();
-	GPU_lamp_shadow_buffer_bind(lamp, viewmat, &winsize, winmat);
-
-	if (GPU_lamp_shadow_buffer_type(lamp) == LA_SHADMAP_VARIANCE)
-		m_rasterizer->SetUsingOverrideShader(true);
-
-	/* GPU_lamp_shadow_buffer_bind() changes the viewport, so update the canvas */
-	canvas->UpdateViewPort(0, 0, winsize, winsize);
+	/* the view's place in the buffer (GPU_lamp_shadow_buffer_view set the
+	 * viewport), so update the canvas (x, y, width, height) */
+	canvas->UpdateViewPort(rect[0], rect[1], rect[2], rect[3]);
 
 	/* setup camera transformation */
 	MT_Matrix4x4 modelviewmat((float*)viewmat);
@@ -246,13 +255,81 @@ void RAS_OpenGLLight::BindShadowBuffer(RAS_ICanvas *canvas, KX_Camera *cam, MT_T
 	m_rasterizer->SetStereoMode(stereomode);
 }
 
+void RAS_OpenGLLight::BindShadowBuffer(RAS_ICanvas *canvas, KX_Camera *cam, MT_Transform& camtrans)
+{
+	GPULamp *lamp;
+	float viewmat[4][4], winmat[4][4];
+	int winsize;
+
+	/* bind framebuffer (BGE-Remix P8.10: Variance maps are drawn as depth
+	 * too, then turned into moments: no override shader, cut-outs cast) */
+	lamp = GetGPULamp();
+	GPU_lamp_shadow_buffer_bind(lamp, viewmat, &winsize, winmat);
+
+	const int rect[4] = {0, 0, winsize, winsize};
+	SetupShadowCamera(canvas, cam, camtrans, viewmat, winmat, rect);
+}
+
+bool RAS_OpenGLLight::BindShadowBufferLayered(RAS_ICanvas *canvas, KX_Camera *cam, MT_Transform& camtrans)
+{
+	GPULamp *lamp = GetGPULamp();
+	float viewmat[4][4], winmat[4][4], cullmat[4][4];
+	if (!lamp || !GPU_lamp_shadow_buffer_bind_layered(lamp, viewmat, winmat, cullmat))
+		return false;
+
+	const int size = GPU_shadow_pool_size();
+	const int rect[4] = {0, 0, size, size};
+	SetupShadowCamera(canvas, cam, camtrans, viewmat, winmat, rect);
+	/* the camera culls with the box that holds every view (the drawing keeps
+	 * the first view's projection: the vertex stage moves it to each view) */
+	cam->SetProjectionMatrix(MT_Matrix4x4((float *)cullmat));
+	return true;
+}
+
+void RAS_OpenGLLight::SetShadowView(RAS_ICanvas *canvas, KX_Camera *cam, MT_Transform& camtrans, int view)
+{
+	GPULamp *lamp = GetGPULamp();
+	float viewmat[4][4], winmat[4][4];
+	int rect[4];
+
+	if (!lamp)
+		return;
+	GPU_lamp_shadow_buffer_view(lamp, view, viewmat, winmat, rect);
+	SetupShadowCamera(canvas, cam, camtrans, viewmat, winmat, rect);
+}
+
 void RAS_OpenGLLight::UnbindShadowBuffer()
 {
 	GPULamp *lamp = GetGPULamp();
 	GPU_lamp_shadow_buffer_unbind(lamp);
+}
 
-	if (GPU_lamp_shadow_buffer_type(lamp) == LA_SHADMAP_VARIANCE)
-		m_rasterizer->SetUsingOverrideShader(false);
+int RAS_OpenGLLight::ShadowViewCount()
+{
+	GPULamp *lamp = GetGPULamp();
+	return lamp ? GPU_lamp_shadow_view_count(lamp) : 0;
+}
+
+void RAS_OpenGLLight::SetShadowCamera(const float camtoworld[16], const float winmat[16])
+{
+	GPULamp *lamp = GetGPULamp();
+	if (!lamp)
+		return;
+	if (camtoworld && winmat) {
+		float c[4][4], w[4][4];
+		memcpy(c, camtoworld, sizeof(c));
+		memcpy(w, winmat, sizeof(w));
+		GPU_lamp_shadow_camera(lamp, c, w);
+	}
+	else {
+		GPU_lamp_shadow_camera(lamp, NULL, NULL);
+	}
+}
+
+unsigned int RAS_OpenGLLight::ShadowSignature()
+{
+	GPULamp *lamp = GetGPULamp();
+	return lamp ? GPU_lamp_shadow_signature(lamp) : 0;
 }
 
 Image *RAS_OpenGLLight::GetTextureImage(short texslot)
@@ -288,11 +365,27 @@ void RAS_OpenGLLight::Update()
 			for (int j=0; j<4; j++, dobmat++)
 				obmat[i][j] = (float)*dobmat;
 		int hide = kxlight->GetVisible() ? 0 : 1;
+		/* BGE-Remix P8 Part B (P8.15): a type set from Python (the lamp's own
+		 * when it is the type it was converted as: hemi and area stay) */
+		{
+			Lamp *la = (Lamp *)kxlight->GetBlenderObject()->data;
+			const int converted = (la->type == LA_SUN) ? LIGHT_SUN : (la->type == LA_SPOT) ? LIGHT_SPOT : LIGHT_NORMAL;
+			const int latype = (m_type == converted) ? la->type :
+			                   (m_type == LIGHT_SUN) ? LA_SUN : (m_type == LIGHT_SPOT) ? LA_SPOT : LA_LOCAL;
+			GPU_lamp_update_type(lamp, latype);
+		}
 		GPU_lamp_update(lamp, m_layer, hide, obmat);
 		GPU_lamp_update_colors(lamp, m_color[0], m_color[1],
 			m_color[2], m_energy);
+		/* BGE-Remix P8.9: physical falloff follows the distance and the size;
+		 * the size and the shadow settings change without new shaders */
+		if (m_physical) {
+			BKE_lamp_physical_coefficients(m_distance, m_size, &m_coeff_const, &m_coeff_lin, &m_coeff_quad);
+		}
 		GPU_lamp_update_distance(lamp, m_distance, m_att1, m_att2, m_coeff_const, m_coeff_lin, m_coeff_quad);
 		GPU_lamp_update_spot(lamp, m_spotsize, m_spotblend);
+		GPU_lamp_update_size(lamp, m_size, m_areasize[0], m_areasize[1], m_sunangle);
+		GPU_lamp_update_shadow(lamp, m_shadowbias, m_shadowbleedbias, m_shadowcolor, m_contact);
 	}
 }
 

@@ -31,7 +31,7 @@
  */
 
  
-#include "glew-mx.h"
+#include "GPU_glew.h"  /* BGE-Remix P8.26: the old calls redirected */
 #include "KX_Camera.h"
 #include "KX_Scene.h"
 #include "KX_PythonInit.h"

@@ -192,6 +192,7 @@ enum {
 #define IMA_CLAMP_V			32
 #define IMA_TPAGE_REFRESH	64
 #define IMA_GLBIND_IS_DATA	128 /* opengl image texture bound as non-color data */
+#define IMA_GLBIND_CACHED	256 /* BGE-Remix P8.24: drawn from the shared compressed texture cache */
 
 /* ima->type and ima->source moved to BKE_image.h, for API */
 

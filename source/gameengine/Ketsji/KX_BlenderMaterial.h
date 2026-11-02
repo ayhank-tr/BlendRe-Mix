@@ -50,6 +50,9 @@ public:
 
 	virtual ~KX_BlenderMaterial();
 
+	/* BGE-Remix P8.9: the layers whose "This Layer Only" lamps light it */
+	int GetLightLayer() const { return mLightLayer; }
+
 	// --------------------------------
 	virtual TCachingInfo GetCachingInfo(void) const {
 		return (void*) this;
@@ -173,6 +176,8 @@ private:
 	void ActivateTexGen( RAS_IRasterizer *ras ) const;
 
 	bool UsesLighting(RAS_IRasterizer *rasty) const;
+	/* BGE-Remix P8 Part B (P8.11) */
+	virtual bool CanInstance() const;
 	void GetMaterialRGBAColor(unsigned char *rgba) const;
 	Scene* GetBlenderScene() const;
 	void ReleaseMaterial();

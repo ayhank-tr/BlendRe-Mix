@@ -45,6 +45,7 @@ struct Image;
 struct ImageUser;
 struct Material;
 struct Object;
+struct Tex;
 struct Image;
 struct Scene;
 struct SceneRenderLayer;
@@ -98,7 +99,11 @@ typedef enum GPUBuiltin {
 	GPU_PARTICLE_ANG_VELOCITY = (1 << 12),
 	GPU_LOC_TO_VIEW_MATRIX =    (1 << 13),
 	GPU_INVERSE_LOC_TO_VIEW_MATRIX = (1 << 14),
-	GPU_OBJECT_INFO =           (1 << 15)
+	GPU_OBJECT_INFO =           (1 << 15),
+	/* BGE-Remix P8.5: from the mesh's own coordinates to its texture space
+	 * (Generated/Orco), for drawing that sends the raw coordinates (the
+	 * game engine); identity where the orco layer is already in it */
+	GPU_ORCO_MATRIX =           (1 << 16)
 } GPUBuiltin;
 
 typedef enum GPUOpenGLBuiltin {
@@ -109,6 +114,7 @@ typedef enum GPUOpenGLBuiltin {
 typedef enum GPUMatType {
 	GPU_MATERIAL_TYPE_MESH  = 1,
 	GPU_MATERIAL_TYPE_WORLD = 2,
+	GPU_MATERIAL_TYPE_MESH_BAKE = 3,  /* BGE-Remix P8.6: drawn in UV space */
 } GPUMatType;
 
 
@@ -154,6 +160,7 @@ typedef enum GPUDynamicType {
 	GPU_DYNAMIC_OBJECT_AUTOBUMPSCALE = 6  | GPU_DYNAMIC_GROUP_OBJECT,
 	GPU_DYNAMIC_OBJECT_LOCTOVIEWMAT  = 7  | GPU_DYNAMIC_GROUP_OBJECT,
 	GPU_DYNAMIC_OBJECT_LOCTOVIEWIMAT = 8  | GPU_DYNAMIC_GROUP_OBJECT,
+	GPU_DYNAMIC_OBJECT_TEXCO_IMAT    = 9  | GPU_DYNAMIC_GROUP_OBJECT,  /* BGE-Remix P8.5: a texture's coordinate object */
 
 	GPU_DYNAMIC_LAMP_DYNVEC          = 1  | GPU_DYNAMIC_GROUP_LAMP,
 	GPU_DYNAMIC_LAMP_DYNCO           = 2  | GPU_DYNAMIC_GROUP_LAMP,
@@ -170,6 +177,17 @@ typedef enum GPUDynamicType {
 	GPU_DYNAMIC_LAMP_COEFFCONST      = 13 | GPU_DYNAMIC_GROUP_LAMP,
 	GPU_DYNAMIC_LAMP_COEFFLIN        = 14 | GPU_DYNAMIC_GROUP_LAMP,
 	GPU_DYNAMIC_LAMP_COEFFQUAD       = 15 | GPU_DYNAMIC_GROUP_LAMP,
+	/* BGE-Remix P8.9: area lamps' corners and size, shadow settings */
+	GPU_DYNAMIC_LAMP_AREA            = 16 | GPU_DYNAMIC_GROUP_LAMP,
+	GPU_DYNAMIC_LAMP_AREASIZE        = 17 | GPU_DYNAMIC_GROUP_LAMP,
+	GPU_DYNAMIC_LAMP_SHADOWCOLOR     = 18 | GPU_DYNAMIC_GROUP_LAMP,
+	GPU_DYNAMIC_LAMP_SHADOWBIAS      = 19 | GPU_DYNAMIC_GROUP_LAMP,
+	GPU_DYNAMIC_LAMP_BLEEDBIAS       = 20 | GPU_DYNAMIC_GROUP_LAMP,
+	/* BGE-Remix P8.10: shadows of every lamp type, contact shadows */
+	GPU_DYNAMIC_LAMP_SHADOWMAT       = 21 | GPU_DYNAMIC_GROUP_LAMP,
+	GPU_DYNAMIC_LAMP_SHADOWPARAMS    = 22 | GPU_DYNAMIC_GROUP_LAMP,
+	GPU_DYNAMIC_LAMP_SHADOWCLIP      = 23 | GPU_DYNAMIC_GROUP_LAMP,
+	GPU_DYNAMIC_LAMP_CONTACT         = 24 | GPU_DYNAMIC_GROUP_LAMP,
 
 	GPU_DYNAMIC_SAMPLER_2DBUFFER     = 1  | GPU_DYNAMIC_GROUP_SAMPLER,
 	GPU_DYNAMIC_SAMPLER_2DIMAGE      = 2  | GPU_DYNAMIC_GROUP_SAMPLER,
@@ -194,7 +212,8 @@ typedef enum GPUDynamicType {
 	GPU_DYNAMIC_MAT_EMIT             = 6  | GPU_DYNAMIC_GROUP_MAT,
 	GPU_DYNAMIC_MAT_AMB              = 7  | GPU_DYNAMIC_GROUP_MAT,
 	GPU_DYNAMIC_MAT_ALPHA            = 8  | GPU_DYNAMIC_GROUP_MAT,
-	GPU_DYNAMIC_MAT_MIR              = 9  | GPU_DYNAMIC_GROUP_MAT
+	GPU_DYNAMIC_MAT_MIR              = 9  | GPU_DYNAMIC_GROUP_MAT,
+	GPU_DYNAMIC_MAT_FACEIMA          = 10 | GPU_DYNAMIC_GROUP_MAT  /* BGE-Remix P8: a face image is bound */
 } GPUDynamicType;
 
 GPUNodeLink *GPU_attribute(CustomDataType type, const char *name);
@@ -215,16 +234,71 @@ bool GPU_stack_link(GPUMaterial *mat, const char *name, GPUNodeStack *in, GPUNod
 void GPU_material_output_link(GPUMaterial *material, GPUNodeLink *link);
 void GPU_material_enable_alpha(GPUMaterial *material);
 GPUBuiltin GPU_get_material_builtins(GPUMaterial *material);
+/* BGE-Remix P8 Part B (P8.11): instances of one mesh may share a draw */
+bool GPU_material_instanceable(GPUMaterial *material);
 GPUBlendMode GPU_material_alpha_blend(GPUMaterial *material, float obcol[4]);
 
 /* High level functions to create and use GPU materials */
 GPUMaterial *GPU_material_world(struct Scene *scene, struct World *wo);
+/* BGE-Remix P8 Part B (P8.17): the world as the game's background */
+GPUMaterial *GPU_material_world_game(struct Scene *scene, struct World *wo);
+bool GPU_material_world_draw(GPUMaterial *mat, int viewlay, double time, float viewmat[4][4],
+                             float viewinv[4][4]);
+/* the world in every direction, scene linear: an equirectangular picture
+ * (Blender's layout, Z up, rows from the bottom), width x width / 2 RGBA
+ * floats (BGE-Remix P8 Part B: Remix's sky) */
+bool GPU_world_equirect(struct Scene *scene, struct World *wo, int width, float *r_rgba);
 
 GPUMaterial *GPU_material_from_blender(struct Scene *scene, struct Material *ma, bool use_opensubdiv);
+/* BGE-Remix P8.4: for_game: the game's own material (its shader reads the
+ * game's batches) */
+GPUMaterial *GPU_material_from_blender_ex(struct Scene *scene, struct Material *ma, bool use_opensubdiv, bool for_game);
 GPUMaterial *GPU_material_matcap(struct Scene *scene, struct Material *ma, bool use_opensubdiv);
 void GPU_material_free(struct ListBase *gpumaterial);
 
 void GPU_materials_free(void);
+/* BGE-Remix P8.3: the shared lamp and world buffers (at exit) */
+void GPU_shared_buffers_free(void);
+
+/* BGE-Remix P8 */
+/* the material's shader was built (a material whose shader failed is kept,
+ * so it is not built again, but cannot draw) */
+bool GPU_material_is_valid(GPUMaterial *material);
+/* "Face Textures": the UV editor's image of the faces drawn next (NULL: none);
+ * set before GPU_material_bind */
+bool GPU_material_uses_face_image(GPUMaterial *material);
+void GPU_material_set_face_image(GPUMaterial *material, struct Image *ima);
+
+/* BGE-Remix P8.5: the texture slots mapped by Object coordinates follow
+ * their object. The game engine gives the objects' places while it runs
+ * (Blender's own objects stay where they are); NULL clears them all. */
+void GPU_texco_object_matrix_set(struct Object *ob, float obmat[4][4]);
+void GPU_texco_object_matrix_clear(void);
+/* whether a texture type is drawn by the procedural texture library */
+bool GPU_texture_is_procedural(const struct Tex *tex);
+/* BGE-Remix P8.6: a Blender Internal material evaluated in UV space (the
+ * mesh is drawn at its UV map), one of its values per pixel, for baking
+ * into images. NULL for node materials or when the shader fails. */
+typedef enum GPUBakeChannel {
+	GPU_BAKE_COLOR = 0,     /* diffuse colour times reflectivity, sRGB when colour managed */
+	GPU_BAKE_ALPHA = 1,     /* alpha */
+	GPU_BAKE_HARDNESS = 2,  /* hardness / 511; a physical material's roughness */
+	GPU_BAKE_EMIT = 3,      /* emit / scale */
+	GPU_BAKE_NORMAL = 4,    /* the bumped normal in tangent space, 0..1 */
+	GPU_BAKE_METALLIC = 5,  /* a physical material's metallic value */
+} GPUBakeChannel;
+GPUMaterial *GPU_material_bake_create(struct Scene *scene, struct Material *ma, int channel, float scale);
+/* BGE-Remix P8.24: the channel a bake material draws (GPUBakeChannel), -1:
+ * not a bake. A node material's bake (Cycles nodes) asks its shader nodes
+ * for that channel's value instead of their shading. */
+int GPU_material_bake_channel(const GPUMaterial *mat);
+void GPU_material_bake_free(GPUMaterial *material);
+
+/* the Texture node of Blender Internal node materials, for a procedural
+ * (false: not drawn by the library) */
+bool GPU_material_link_procedural_node(GPUMaterial *mat, struct Tex *tex, struct GPUNodeLink *co,
+                                       struct GPUNodeLink **r_value, struct GPUNodeLink **r_color,
+                                       struct GPUNodeLink **r_normal);
 
 bool GPU_lamp_override_visible(GPULamp *lamp, struct SceneRenderLayer *srl, struct Material *ma);
 void GPU_material_bind(
@@ -234,6 +308,9 @@ void GPU_material_bind_uniforms(
         GPUMaterial *material, float obmat[4][4], float viewmat[4][4], float obcol[4],
         float autobumpscale, GPUParticleInfo *pi, float object_info[3]);
 void GPU_material_unbind(GPUMaterial *material);
+/* BGE-Remix P8.5: the texture space (location, size) of the mesh drawn next,
+ * for the next GPU_material_bind_uniforms only (then identity again) */
+void GPU_material_set_orco_space(GPUMaterial *material, const float loc[3], const float size[3]);
 bool GPU_material_bound(GPUMaterial *material);
 struct Scene *GPU_material_scene(GPUMaterial *material);
 GPUMatType GPU_Material_get_type(GPUMaterial *material);
@@ -254,6 +331,11 @@ typedef struct GPUShadeInput {
 	GPUNodeLink *rgb, *specrgb, *vn, *view, *vcol, *ref;
 	GPUNodeLink *alpha, *refl, *spec, *emit, *har, *amb;
 	GPUNodeLink *spectra, *mir, *refcol;
+	/* BGE-Remix P8.7: a physical material (spec is then its specular value,
+	 * emit its emission strength, rgb its base colour) */
+	bool physical;
+	GPUNodeLink *metallic, *roughness;
+	GPUNodeLink *pbr_diff, *pbr_f0; /* set before the lamps */
 } GPUShadeInput;
 
 typedef struct GPUShadeResult {
@@ -329,6 +411,45 @@ void GPU_lamp_update_colors(GPULamp *lamp, float r, float g, float b, float ener
 void GPU_lamp_update_distance(GPULamp *lamp, float distance, float att1, float att2,
                               float coeff_const, float coeff_lin, float coeff_quad);
 void GPU_lamp_update_spot(GPULamp *lamp, float spotsize, float spotblend);
+/* BGE-Remix P8 Part B (P8.15): the lamp's type (LA_LOCAL, LA_SUN...) changed
+ * while playing (the clustered lamps follow it) */
+void GPU_lamp_update_type(GPULamp *lamp, int type);
+/* BGE-Remix P8 Part B (P8.15): the object drawn next with a bound material
+ * (its layers), and whether a lamp keeps per-lamp code in materials (then a
+ * This Layer Only lamp needs a material per layer) */
+void GPU_material_set_object_layer(GPUMaterial *material, int lay);
+bool GPU_lamp_needs_own_code(struct Lamp *la);
+/* BGE-Remix P8 Part B (P8.18): the material reads a planar mirror (its
+ * "bge_planar_mirror" switch, or a Planar env map texture) */
+bool GPU_material_planar_mirror(struct Material *ma);
+/* BGE-Remix P8.9: the light's size (point/spot radius; area lamps: width and
+ * height) and its shadow settings, changed while playing without rebuilding
+ * shaders (bias as Lamp.bias) */
+void GPU_lamp_update_size(GPULamp *lamp, float size, float area_x, float area_y, float sun_angle);
+void GPU_lamp_update_shadow(GPULamp *lamp, float bias, float bleedbias, const float color[3], float contact);
+
+/* BGE-Remix P8.10: a shadow buffer holds one view (spot), six (point and
+ * area: a cube's faces side by side) or four (sun: cascades that follow the
+ * camera given here; without one they sit around the lamp). Binding the
+ * buffer clears it and sets view 0; each other view is set before drawing
+ * it. The signature changes whenever the lamp's views or shadow settings do. */
+int GPU_lamp_shadow_view_count(GPULamp *lamp);
+void GPU_lamp_shadow_buffer_view(GPULamp *lamp, int view, float viewmat[4][4], float winmat[4][4], int r_rect[4]);
+/* BGE-Remix P8 Part B (P8.16): every view of the lamp in one pass (false:
+ * not for this lamp or card; then bind and view as before). Gives the first
+ * view's matrices, which the drawing uses, and a projection for culling that
+ * holds every view (with the first view's matrix) */
+bool GPU_lamp_shadow_buffer_bind_layered(GPULamp *lamp, float viewmat[4][4], float winmat[4][4],
+                                         float cullwinmat[4][4]);
+void GPU_lamp_shadow_camera(GPULamp *lamp, float camtoworld[4][4], float winmat[4][4]);
+unsigned int GPU_lamp_shadow_signature(GPULamp *lamp);
+
+/* BGE-Remix P8.10: the scene's depth seen from the camera (for contact
+ * shadows): drawn between begin and end, used by the materials drawn after;
+ * any other drawing (the 3D view, a viewport without the pass) gets none */
+void GPU_scene_depth_begin(int width, int height);
+void GPU_scene_depth_end(void);
+void GPU_scene_depth_disable(void);
 int GPU_lamp_shadow_layer(GPULamp *lamp);
 GPUNodeLink *GPU_lamp_get_data(
         GPUMaterial *mat, GPULamp *lamp,
@@ -336,6 +457,10 @@ GPUNodeLink *GPU_lamp_get_data(
 
 /* World */
 void GPU_mist_update_enable(short enable);
+/* BGE-Remix P8 Part B (P8.17): the height above which there is no mist (0: none) */
+void GPU_mist_update_height(float height);
+/* the mist drawn by the Modern pipeline's fog grid, not by the materials */
+void GPU_mist_update_volumetric(bool on);
 void GPU_mist_update_values(int type, float start, float dist, float inten, float color[3]);
 void GPU_horizon_update_color(float color[3]);
 void GPU_ambient_update_color(float color[3]);

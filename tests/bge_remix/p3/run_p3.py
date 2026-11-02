@@ -160,15 +160,21 @@ def bridge_checks(ours, out):
                         "error": r.error.decode("utf-8", "replace")}
         return rc == 0, d.path
 
-    # a vertical gradient: the top row of the DDS must be Blender's top row
+    # a vertical gradient. P8.24 (interface 10): the DDS's first row is
+    # Blender's first row (the bottom), as the game's OpenGL wants it; top-first
+    # files (flag 8: what Remix samples with its own coordinates) keep the top
     grad = []
     for y in range(H):
         for x in range(W):
             grad += [x * 255 // W, y * 255 // (H - 1), 128, 255]
     ok, path = write("grad_g.dds", 2, data8=grad, channel=1)
-    top = dds_check.first_block(path) if ok else None
-    checks["scalar map: BC4, full mips, top row first"] = ok and dds_check.read_header(path)["dxgi"] == 80 and \
-        dds_check.read_header(path)["mips"] == dds_check.full_mips(W, H) and top is not None and min(top[:4]) > 0.9
+    first = dds_check.first_block(path) if ok else None
+    checks["scalar map: BC4, full mips, bottom row first"] = ok and dds_check.read_header(path)["dxgi"] == 80 and \
+        dds_check.read_header(path)["mips"] == dds_check.full_mips(W, H) and first is not None and \
+        max(first[:4]) < 0.1
+    ok, path = write("grad_g_top.dds", 2, data8=grad, channel=1, flags=8)
+    first = dds_check.first_block(path) if ok else None
+    checks["scalar map, top first: top row first"] = ok and first is not None and min(first[:4]) > 0.9
     # a constant tilted normal (OpenGL: +x right, +y up the image)
     nx, ny = 0.5, 0.2
     nz = math.sqrt(1 - nx * nx - ny * ny)
@@ -176,11 +182,17 @@ def bridge_checks(ours, out):
     ok, path = write("tilt_n.dds", 1, data8=px * (W * H))
     blk = dds_check.first_block(path) if ok else None
     n = dds_check.octahedral_to_normal(*blk[0]) if blk else (0, 0, 1)
-    err = dds_check.angle_deg(n, (nx, -ny, nz))  # Remix's v runs down the image
+    # Remix's v grows with the file's rows: up the image since interface 10
+    err = dds_check.angle_deg(n, (nx, ny, nz))
     detail["tilt_n.dds"]["decoded"] = n
     detail["tilt_n.dds"]["error_deg"] = err
-    checks["normal map: BC5, octahedral, within 2 degrees (green flipped for Remix)"] = \
+    checks["normal map: BC5, octahedral, within 2 degrees (green as Blender's)"] = \
         ok and dds_check.read_header(path)["dxgi"] == 83 and err < 2.0
+    ok, path = write("tilt_n_top.dds", 1, data8=px * (W * H), flags=8)
+    blk = dds_check.first_block(path) if ok else None
+    n = dds_check.octahedral_to_normal(*blk[0]) if blk else (0, 0, 1)
+    err = dds_check.angle_deg(n, (nx, -ny, nz))
+    checks["normal map, top first: green flipped"] = ok and err < 2.0
     ok, path = write("grad_c.dds", 0, data8=grad)
     # BC7_UNORM holding sRGB values: Remix decodes colour maps from gamma
     # itself, an _SRGB format (99) would be decoded twice
@@ -229,7 +241,10 @@ def run_ci(args, out):
         bad = check_material(f, e)
         d[e["name"]] = {"got": f, "problems": bad}
         c[e["name"]] = not bad
-    others = [l for l in text.splitlines() if l.startswith("BGE-Remix: material ") and "MAUnsupported" not in l]
+    # P8.3: Cycles-node materials have no GLSL shader in the game (as in
+    # stock 2.79); their OpenGL drawing notes are not about Remix
+    others = [l for l in text.splitlines() if l.startswith("BGE-Remix: material ") and "MAUnsupported" not in l
+              and "its GLSL shader could not be built" not in l]
     c["no other ball needs a note"] = not others
     c["the player ran 300 frames"] = ran(r)
     c["every texture arrived (none still waiting)"] = r["stats"].get("textures_waiting") == 0 and \
@@ -325,9 +340,11 @@ print("P3-STOCK " + json.dumps({"keys": keys}))
 STOCK_READ = r'''
 import bpy, json
 ma = bpy.data.materials["PanelGold"]
-print("P3-OURS " + json.dumps({"override": int(ma.get("bge_remix_override", 0)),
-                               "albedo": [round(float(x), 4) for x in ma.get("bge_remix_albedo", [])],
-                               "metallic": float(ma.get("bge_remix_metallic", -1))}))
+# P8.7: the panel's values open as the physical material's
+print("P3-OURS " + json.dumps({"physical": int(ma.get("bge_physical", 0)),
+                               "albedo": [round(float(x), 4) for x in ma.diffuse_color],
+                               "metallic": float(ma.get("bge_metallic", -1)),
+                               "panel_left": sorted(k for k in ma.keys() if k.startswith("bge_remix_"))}))
 '''
 
 
@@ -368,8 +385,9 @@ def check_stock(args, out, scenes):
     code, text, _ = p2.run([p2.exe(args.ours, "blender"), "--background", copy, "--python", script],
                            p2.base_env(out, "ours_read"), os.path.join(out, "ours_read.log"))
     got = tagged_json(text, "P3-OURS") or {}
-    c["reopened in ours: the panel's values are kept"] = got.get("override") == 1 and \
-        p2.close(got.get("albedo", []), [1.0, 0.766, 0.336]) and got.get("metallic") == 1.0
+    c["reopened in ours: the panel's values become the physical material's (P8.7)"] = \
+        got.get("physical") == 1 and p2.close(got.get("albedo", []), [1.0, 0.766, 0.336]) and \
+        got.get("metallic") == 1.0 and not got.get("panel_left")
     d["keys"] = keys
     d["ours"] = got
     return dict(p2.test(c), detail=d)
@@ -433,7 +451,8 @@ def has_cycles_output(ma):
 for ma in bpy.data.materials:
     if has_cycles_output(ma):
         continue
-    panel = ma.get("bge_remix_override", 0)
+    # P8.7: the RTX Remix panel's values are the physical material's now
+    panel = ma.get("bge_physical", 0)
     images = [s.texture.image for s in ma.texture_slots if s and s.texture and s.texture.type == 'IMAGE']
     color_img = next((s.texture.image for s in ma.texture_slots
                       if s and s.texture and s.texture.type == 'IMAGE' and s.use_map_color_diffuse), None)
@@ -445,9 +464,9 @@ for ma in bpy.data.materials:
     outn = nt.nodes.new("ShaderNodeOutputMaterial")
     p = nt.nodes.new("ShaderNodeBsdfPrincipled")
     if panel:
-        p.inputs["Base Color"].default_value = list(ma["bge_remix_albedo"]) + [1.0]
-        p.inputs["Metallic"].default_value = float(ma.get("bge_remix_metallic", 0.0))
-        p.inputs["Roughness"].default_value = float(ma.get("bge_remix_roughness", 0.5))
+        p.inputs["Base Color"].default_value = list(ma.diffuse_color) + [1.0]
+        p.inputs["Metallic"].default_value = float(ma.get("bge_metallic", 0.0))
+        p.inputs["Roughness"].default_value = float(ma.get("bge_roughness", 0.5))
     else:
         p.inputs["Base Color"].default_value = [c * ma.diffuse_intensity for c in ma.diffuse_color] + [1.0]
         p.inputs["Roughness"].default_value = (2.0 / (ma.specular_hardness + 2.0)) ** 0.25

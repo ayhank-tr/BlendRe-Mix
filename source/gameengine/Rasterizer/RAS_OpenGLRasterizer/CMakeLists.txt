@@ -37,6 +37,7 @@ set(INC
 	../../../blender/blenkernel
 	../../../blender/blenlib
 	../../../blender/gpu
+	../../../blender/imbuf
 	../../../blender/makesdna
 	../../../../intern/container
 	../../../../intern/glew-mx
@@ -54,6 +55,10 @@ set(SRC
 	RAS_OpenGLOffScreen.cpp
 	RAS_OpenGLSync.cpp
 	RAS_OpenGLRasterizer.cpp
+	RAS_Pipeline.cpp
+	RAS_ScreenEffects.cpp
+	RAS_GPUCulling.cpp
+	RAS_StorageBatch.cpp
 	RAS_StorageVA.cpp
 	RAS_StorageVBO.cpp
 
@@ -63,6 +68,10 @@ set(SRC
 	RAS_OpenGLOffScreen.h
 	RAS_OpenGLSync.h
 	RAS_OpenGLRasterizer.h
+	RAS_Pipeline.h
+	RAS_ScreenEffects.h
+	RAS_GPUCulling.h
+	RAS_StorageBatch.h
 	RAS_StorageVA.h
 	RAS_StorageVBO.h
 )

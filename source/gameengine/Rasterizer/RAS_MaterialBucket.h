@@ -98,6 +98,23 @@ public:
 
 	enum { BUCKET_MAX_INDEX = 65535 };
 	enum { BUCKET_MAX_VERTEX = 65535 };
+
+	/* BGE-Remix P8.4: the array's buffers on the card, kept by the batch
+	 * storage; a copy gets its own, and they go with the array */
+	void *m_storage;
+	static void (*s_storage_free)(void *storage);
+
+	RAS_DisplayArray()
+	    :m_offset(0), m_type(TRIANGLE), m_users(0), m_storage(NULL)
+	{
+	}
+	RAS_DisplayArray(const RAS_DisplayArray& other)
+	    :m_offset(other.m_offset), m_vertex(other.m_vertex), m_index(other.m_index),
+	    m_type(other.m_type), m_users(other.m_users), m_storage(NULL)
+	{
+	}
+	RAS_DisplayArray& operator=(const RAS_DisplayArray& other);
+	~RAS_DisplayArray();
 };
 
 /* Entry of a RAS_MeshObject into RAS_MaterialBucket */
@@ -128,6 +145,10 @@ public:
 	void*					m_clientObj;
 	RAS_Deformer*			m_pDeformer;
 	DerivedMesh*			m_pDerivedMesh;
+	/* BGE-Remix P8 Part B: the derived mesh's faces of this slot's
+	 * material as display arrays (the deformer's), drawn in place of the
+	 * slot's own arrays */
+	RAS_DisplayArrayList*	m_pDerivedArrays;
 	float*					m_OpenGLMatrix;
 	// visibility
 	bool					m_bVisible;
@@ -231,6 +252,10 @@ public:
 	/* Rendering */
 	bool ActivateMaterial(const MT_Transform& cameratrans, RAS_IRasterizer* rasty);
 	void RenderMeshSlot(const MT_Transform& cameratrans, RAS_IRasterizer* rasty, RAS_MeshSlot &ms);
+	/* BGE-Remix P8 Part B (P8.11): slots of one mesh as instances (one by
+	 * one when the rasterizer cannot) */
+	void RenderMeshSlotsInstanced(const MT_Transform& cameratrans, RAS_IRasterizer* rasty,
+	                              std::vector<RAS_MeshSlot *>& slots);
 	
 	/* Mesh Slot Access */
 	list<RAS_MeshSlot>::iterator msBegin();

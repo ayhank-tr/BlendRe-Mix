@@ -48,6 +48,7 @@
 #include "MEM_guardedalloc.h"
 #include "GPU_draw.h"
 #include "GPU_extensions.h"
+#include "GPU_layer.h"
 
 extern "C" {
 	// envmaps
@@ -446,9 +447,8 @@ void BL_Texture::DisableUnit()
 	if (GLEW_ARB_multitexture)
 		glActiveTextureARB(GL_TEXTURE0_ARB+mUnit);
 
-	glMatrixMode(GL_TEXTURE);
-	glLoadIdentity();
-	glMatrixMode(GL_MODELVIEW);
+	/* BGE-Remix P8 Part B: the layer's texture matrix */
+	GPU_texture_matrix_set(mUnit, NULL);
 
 	if (GLEW_ARB_texture_cube_map && glIsEnabled(GL_TEXTURE_CUBE_MAP_ARB))
 		glDisable(GL_TEXTURE_CUBE_MAP_ARB);
@@ -472,9 +472,7 @@ void BL_Texture::DisableAllTextures()
 		if (GLEW_ARB_multitexture)
 			glActiveTextureARB(GL_TEXTURE0_ARB+i);
 
-		glMatrixMode(GL_TEXTURE);
-		glLoadIdentity();
-		glMatrixMode(GL_MODELVIEW);
+		GPU_texture_matrix_set(i, NULL);
 		glDisable(GL_TEXTURE_2D);
 		glDisable(GL_TEXTURE_GEN_S);
 		glDisable(GL_TEXTURE_GEN_T);

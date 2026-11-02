@@ -70,9 +70,11 @@ int lamp_light(const LampInput &lamp, const float pos[3], const float axis_x[3],
 	}
 	const float color[3] = {std::fabs(lamp.color[0]), std::fabs(lamp.color[1]), std::fabs(lamp.color[2])};
 	if (lamp.type == LA_HEMI) {
-		/* Hemi: light from the whole sky, added to the dome */
+		/* Hemi: light from the whole sky, added to the dome. BGE-Remix P8.9:
+		 * at the sky's scale (the world colour is not scaled), as Cycles
+		 * would light the scene with it */
 		for (int k = 0; k < 3; k++) {
-			r_dome[k] += color[k] * energy;
+			r_dome[k] += color[k] * lamp.energy;
 		}
 		return 2;
 	}
@@ -94,7 +96,9 @@ int lamp_light(const LampInput &lamp, const float pos[3], const float axis_x[3],
 		 * Remix converts D3D9 sun lights): pi * E. Dividing by the sun's
 		 * solid angle burnt the sunlit floor out (RTX 3080, P2 room). */
 		d.type = BRB_LIGHT_DISTANT;
-		d.angular_diameter_deg = SUN_ANGULAR_DIAMETER_DEG;
+		/* BGE-Remix P8.9: the sun's size (0.53 degrees, the real sun's,
+		 * unless the lamp says otherwise) */
+		d.angular_diameter_deg = lamp.sun_angle > 0.0f ? lamp.sun_angle : SUN_ANGULAR_DIAMETER_DEG;
 		scale = (float)(PI * energy);
 	}
 	else if (lamp.type == LA_AREA && lamp.have_lamp) {
@@ -109,13 +113,32 @@ int lamp_light(const LampInput &lamp, const float pos[3], const float axis_x[3],
 		/* intensity pi * E * D over the lamp's area */
 		scale = (float)(PI * energy * dist / (d.size[0] * d.size[1]));
 	}
+	else if (lamp.physical && lamp.type == LA_SPOT) {
+		/* BGE-Remix P8.9: a physical spot is a disk of the light's size,
+		 * facing along the cone (it lights only ahead, as a spot does); the
+		 * same intensity as a sphere of that radius: E * D^2 / r^2 */
+		d.type = BRB_LIGHT_DISK;
+		const float r = std::max(lamp.area_size, MIN_LIGHT_RADIUS);
+		copy3(axis_x, d.x_axis);
+		copy3(axis_y, d.y_axis);
+		normalize3(d.x_axis);
+		normalize3(d.y_axis);
+		d.size[0] = d.size[1] = r;
+		scale = energy * dist * dist / (r * r);
+		d.shaped = 1;
+		const double half = lamp.spotsize * 0.5;
+		d.cone_angle_deg = (float)(half * 180.0 / PI);
+		const float blend = std::min(std::max(lamp.spotblend, 0.0f), 1.0f);
+		d.cone_softness = (float)((1.0 - std::cos(half)) * blend);
+	}
 	else {
 		/* point and spot: a small sphere; Blender Internal's falloff
 		 * E * D / (D + r^2) is E * D / r^2 far away, so the intensity is
-		 * pi * E * D, spread over the sphere's disc pi * R^2 */
+		 * pi * E * D, spread over the sphere's disc pi * R^2. BGE-Remix
+		 * P8.9: physical falloff E * D^2 / (r^2 + d^2) is E * D^2 / r^2 */
 		d.type = BRB_LIGHT_SPHERE;
 		d.radius = std::max(lamp.have_lamp ? lamp.area_size : 0.1f, MIN_LIGHT_RADIUS);
-		scale = energy * dist / (d.radius * d.radius);
+		scale = lamp.physical ? energy * dist * dist / (d.radius * d.radius) : energy * dist / (d.radius * d.radius);
 		if (lamp.type == LA_SPOT) {
 			d.shaped = 1;
 			const double half = lamp.spotsize * 0.5;
@@ -131,6 +154,8 @@ int lamp_light(const LampInput &lamp, const float pos[3], const float axis_x[3],
 	d.radiance[0] = color[0] * scale;
 	d.radiance[1] = color[1] * scale;
 	d.radiance[2] = color[2] * scale;
+	/* BGE-Remix P8.9: a spot halo shows as the light in Remix's fog */
+	d.volumetric = lamp.halo > 0.0f ? 1.0f + lamp.halo : 1.0f;
 	return 1;
 }
 
@@ -149,6 +174,46 @@ int dome_light(const float color[3], brb_light_desc &d)
 	return 1;
 }
 
+bool camera_for_remix(const float view[16], const float proj[16], float r_view[16], float r_proj[16])
+{
+	memcpy(r_view, view, sizeof(float[16]));
+	memcpy(r_proj, proj, sizeof(float[16]));
+	/* orthographic: no perspective divide (the last row is 0 0 0 1) */
+	if (!(std::fabs(proj[3]) < 1e-6f && std::fabs(proj[7]) < 1e-6f && std::fabs(proj[11]) < 1e-6f &&
+	      std::fabs(proj[15] - 1.0f) < 1e-6f))
+	{
+		return false;
+	}
+	const float sx = proj[0], sy = proj[5], sz = proj[10], tx = proj[12], ty = proj[13], tz = proj[14];
+	if (sx == 0.0f || sy == 0.0f || sz == 0.0f) {
+		return false;
+	}
+	/* the box: x in l..r, y in b..t, depth n..f in front of the camera */
+	const float l = (-1.0f - tx) / sx, r = (1.0f - tx) / sx;
+	const float b = (-1.0f - ty) / sy, t = (1.0f - ty) / sy;
+	const float n = (tz + 1.0f) / sz, f = (tz - 1.0f) / sz;
+	const float extent = std::max(std::fabs(r - l), std::fabs(t - b));
+	/* the camera moved this far back along its view (100 times the view's
+	 * size: a 1 % size change across a depth of one view size), the box's
+	 * size kept where the scene usually is: a little in front of the near
+	 * plane */
+	const float back = 100.0f * std::max(extent, 0.01f);
+	const float keep = std::max(n, 0.0f) + 0.5f * std::min(std::max(f - n, 0.0f), 2.0f * extent);
+	const float zn = std::max(n, 0.0f) + back, zf = std::max(f, n + 1e-3f) + back;
+	const float k = zn / (keep + back);
+	const float l2 = l * k, r2 = r * k, b2 = b * k, t2 = t * k;
+	r_view[14] = view[14] - back;
+	memset(r_proj, 0, sizeof(float[16]));
+	r_proj[0] = 2.0f * zn / (r2 - l2);
+	r_proj[5] = 2.0f * zn / (t2 - b2);
+	r_proj[8] = (r2 + l2) / (r2 - l2);
+	r_proj[9] = (t2 + b2) / (t2 - b2);
+	r_proj[10] = -(zf + zn) / (zf - zn);
+	r_proj[11] = -1.0f;
+	r_proj[14] = -2.0f * zf * zn / (zf - zn);
+	return true;
+}
+
 void apply_exposure(const BRMX_Bridge *bridge, float stops)
 {
 	/* Remix's default tone mapper (rtx.tonemappingMode Local) ignores
@@ -162,6 +227,9 @@ void apply_exposure(const BRMX_Bridge *bridge, float stops)
 		return;
 	}
 	sent = stops;
+	/* P8.30: a fixed exposure (BRMX_light.h); a Modern scene's camera
+	 * effects turn Remix's automatic exposure back on when asked */
+	bridge->set_config("rtx.autoExposure.enabled", "False");
 	char value[32];
 	snprintf(value, sizeof(value), "%g", LOCAL_TONEMAP_EXPOSURE * std::pow(2.0, (double)stops));
 	bridge->set_config("rtx.localtonemap.exposure", value);

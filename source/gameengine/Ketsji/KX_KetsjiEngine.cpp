@@ -40,6 +40,9 @@
 #include "BLI_task.h"
 
 #include "KX_KetsjiEngine.h"
+
+#include <algorithm>
+#include <cmath>
 #include "KX_FramePacing.h"
 
 #include "EXP_ListValue.h"
@@ -53,6 +56,7 @@
 #include "RAS_IRasterizer.h"
 #include "RAS_ICanvas.h"
 #include "RAS_ILightObject.h"
+#include "RAS_Deformer.h"
 #include "MT_Vector3.h"
 #include "MT_Transform.h"
 #include "SCA_IInputDevice.h"
@@ -72,14 +76,49 @@
 
 #include "RAS_FramingManager.h"
 #include "DNA_world_types.h"
+#include "DNA_lamp_types.h"
+#include "DNA_object_types.h"
 #include "DNA_scene_types.h"
 
 #include "KX_NavMeshObject.h"
 
 #include "BL_Action.h" // For managing action lock.
+#include "GPU_material.h" /* BGE-Remix P8.5 */
+#include "GPU_glew.h"
+#include "GPU_glcheck.h" /* BGE-Remix P8.1 */
+#include "GPU_draw.h"    /* BGE-Remix P8.24: the shared texture cache */
+#include "GPU_layer.h"   /* BGE-Remix P8.2 */
+#include "GPU_probes.h"  /* BGE-Remix P8 Part B */
+#include "GPU_volumes.h"
+#include "KX_Sprites.h"  /* BGE-Remix P8 Part C (P8.20) */
+extern "C" {
+#include "BKE_scene.h"  /* BGE-Remix P8 Part B: the pipeline */
+#include "BKE_idprop.h"
+#include "BKE_material.h"
+#include "BKE_global.h"
+#include "BKE_main.h"
+#include "DNA_material_types.h"
+#include "DNA_texture_types.h"
+#include "DNA_mesh_types.h"
+#include "DNA_modifier_types.h"
+#include "DNA_smoke_types.h"
+#include "DNA_object_force.h"
+#include "BKE_object.h"
+#include "BKE_modifier.h"
+#include "BKE_cdderivedmesh.h"
+#include "BKE_DerivedMesh.h"
+#include "BLI_math.h"
+#ifdef WITH_SMOKE
+#  include "BKE_smoke.h"
+#  include "smoke_API.h"
+#endif
+}
+#include <algorithm>
+#include <map>
 
 #ifdef WITH_REMIX
 #  include "KX_RemixRenderer.h"
+#  include "BRMX_material.h"  /* P8.24: the shared texture cache */
 #endif
 
 #define DEFAULT_LOGIC_TIC_RATE 60.0
@@ -112,6 +151,9 @@ bool   KX_KetsjiEngine::m_doRender = true;
 /**
  *	Constructor of the Ketsji Engine
  */
+void (*KX_LiveTextureHook)(struct Image *ima, const unsigned int *rgba, int width, int height) = NULL;
+bool (*KX_LiveTextureDue)(struct Image *ima) = NULL;
+
 KX_KetsjiEngine::KX_KetsjiEngine(KX_ISystem* system)
 	:	m_canvas(NULL),
 	m_rasterizer(NULL),
@@ -140,6 +182,7 @@ KX_KetsjiEngine::KX_KetsjiEngine(KX_ISystem* system)
 
 
 	m_exitcode(KX_EXIT_REQUEST_NO_REQUEST),
+	m_gl_check(NULL),
 	m_exitstring(""),
 
 	m_cameraZoom(1.0f),
@@ -181,6 +224,10 @@ KX_KetsjiEngine::KX_KetsjiEngine(KX_ISystem* system)
 	m_remixOverride = -1;
 	m_remixFastOverride = -1;
 	m_remixWindowModeAllowed = false;
+	m_probes_scene = NULL;  /* BGE-Remix P8 Part B (P8.18) */
+	m_probes_scan = 0;
+	m_mirror_drawing = false;
+	m_sprites = new KX_Sprites();  /* BGE-Remix P8 Part C (P8.20) */
 
 	// Initialize the time logger
 	m_logger = new KX_TimeCategoryLogger (25);
@@ -211,6 +258,8 @@ KX_KetsjiEngine::~KX_KetsjiEngine()
 	delete m_logger;
 	if (m_usedome)
 		delete m_dome;
+	delete m_gl_check;  /* BGE-Remix P8.1 */
+	delete m_sprites;
 
 #ifdef WITH_PYTHON
 	Py_CLEAR(m_pyprofiledict);
@@ -335,8 +384,16 @@ void KX_KetsjiEngine::RenderDome()
 
 			// shadow buffers
 			if (i == 0) {
+				GPU_pass_timer_begin(GPU_PASS_SHADOWS);
 				RenderShadowBuffers(scene);
+				GPU_pass_timer_end(GPU_PASS_SHADOWS);
+				/* BGE-Remix P8 Part B (P8.18): reflection probes */
+				if (sceneit == m_scenes.begin())
+					RenderProbes(scene);
 			}
+			/* BGE-Remix P8 Part B (P8.12): the scene's pipeline target */
+			m_rasterizer->BeginScene(scene->GetBlenderScene(), sceneit == m_scenes.begin(),
+			                         scene->GetBlenderScene()->gm.aasamples);
 			// Avoid drawing the scene with the active camera twice when its viewport is enabled
 			if (cam && !cam->GetViewport())
 			{
@@ -371,6 +428,7 @@ void KX_KetsjiEngine::RenderDome()
 				
 				it++;
 			}
+			m_rasterizer->EndScene();
 			// Part of PostRenderScene()
 			m_rasterizer->MotionBlur();
 			scene->Render2DFilters(m_canvas);
@@ -409,6 +467,7 @@ void KX_KetsjiEngine::RenderDome()
 	// Draw Callback for the last scene
 #ifdef WITH_PYTHON
 	PHY_SetActiveEnvironment(scene->GetPhysicsEnvironment());
+	m_rasterizer->SyncOldMatrices();  /* BGE-Remix P8 Part B: for Python's bgl */
 	scene->RunDrawingCallbacks(scene->GetPostDrawCB());
 #endif
 	EndFrame();
@@ -434,6 +493,9 @@ void KX_KetsjiEngine::StartEngine(bool clearIpo)
 	if (m_remix == NULL) {
 		m_remix = new KX_RemixRenderer(m_canvas, m_remixWindowModeAllowed);
 	}
+	/* P8.24: colour images drawn from the BC7 files RTX Remix reads, where
+	 * the cache has them */
+	brmx::install_gl_image_cache(true);
 #endif
 	// there is always one scene enabled at startup
 	Scene* scene = m_scenes[0]->GetBlenderScene();
@@ -459,10 +521,8 @@ void KX_KetsjiEngine::StartEngine(bool clearIpo)
 
 void KX_KetsjiEngine::ClearFrame()
 {
-	// clear unless we're drawing overlapping stereo
-	if (m_rasterizer->InterlacedStereo() &&
-		m_rasterizer->GetEye() == RAS_IRasterizer::RAS_STEREO_RIGHTEYE)
-		return;
+	/* BGE-Remix P8 Part B: interlaced stereo's right eye is cleared too (the
+	 * left eye's picture is kept aside, FinishStereo puts its rows back) */
 
 	// clear the viewports with the background color of the first scene
 	bool doclear = false;
@@ -528,6 +588,9 @@ bool KX_KetsjiEngine::BeginFrame()
 
 void KX_KetsjiEngine::EndFrame()
 {
+	/* BGE-Remix P8 Part B: interlaced stereo's left eye, before the blur */
+	if (m_rasterizer->Stereo())
+		m_rasterizer->FinishStereo();
 	m_rasterizer->MotionBlur();
 
 	// Show profiling info
@@ -541,7 +604,9 @@ void KX_KetsjiEngine::EndFrame()
 #endif
 	if (m_show_framerate || m_show_profile || (m_show_debug_properties))
 	{
+		GPU_pass_timer_begin(GPU_PASS_OVERLAYS);
 		RenderDebugProperties();
+		GPU_pass_timer_end(GPU_PASS_OVERLAYS);
 	}
 
 	double tottime = m_logger->GetAverage();
@@ -556,6 +621,38 @@ void KX_KetsjiEngine::EndFrame()
 		PyTuple_SetItem(val, 1, PyFloat_FromDouble(time/tottime * 100.0));
 
 		PyDict_SetItemString(m_pyprofiledict, m_profileLabels[i], val);
+		Py_DECREF(val);
+	}
+	/* BGE-Remix P8 Part B (P8.11): instanced draws and the objects they drew */
+	{
+		int draws = 0, objects = 0;
+		m_rasterizer->GetInstancingStats(&draws, &objects);
+		PyObject *val = PyTuple_New(2);
+		PyTuple_SetItem(val, 0, PyFloat_FromDouble((double)draws));
+		PyTuple_SetItem(val, 1, PyFloat_FromDouble((double)objects));
+		PyDict_SetItemString(m_pyprofiledict, "Instancing", val);
+		Py_DECREF(val);
+	}
+	/* BGE-Remix P8 Part B (P8.11): instances the GPU culling pass tested and
+	 * drew (-1: not read back, see BGE_REMIX_DRAW_STATS) */
+	{
+		int tested = 0, drawn = -1;
+		m_rasterizer->GetCullingStats(&tested, &drawn);
+		PyObject *val = PyTuple_New(2);
+		PyTuple_SetItem(val, 0, PyFloat_FromDouble((double)tested));
+		PyTuple_SetItem(val, 1, PyFloat_FromDouble((double)drawn));
+		PyDict_SetItemString(m_pyprofiledict, "Culling", val);
+		Py_DECREF(val);
+	}
+	/* BGE-Remix P8 Part B: the GPU time of each pass ("GPU Shadows"...) */
+	for (int i = 0; i < GPU_PASS_COUNT; i++) {
+		const float ms = GPU_pass_timer_ms((GPUPassTimer)i);
+		PyObject *val = PyTuple_New(2);
+		PyTuple_SetItem(val, 0, PyFloat_FromDouble(ms));
+		PyTuple_SetItem(val, 1, PyFloat_FromDouble(ms >= 0.0f ? ms / (tottime * 1000.0) * 100.0 : 0.0));
+		char key[64];
+		snprintf(key, sizeof(key), "GPU %s", GPU_pass_timer_name((GPUPassTimer)i));
+		PyDict_SetItemString(m_pyprofiledict, key, val);
 		Py_DECREF(val);
 	}
 #endif
@@ -580,6 +677,11 @@ void KX_KetsjiEngine::EndFrame()
 	m_logger->StartLog(tc_rasterizer, m_kxsystem->GetTimeInSeconds(), true);
 	
 	m_canvas->EndDraw();
+
+	/* BGE-Remix P8.2: the streaming buffer's frame */
+	GPU_stream_frame_end();
+	/* BGE-Remix P8 Part B: the GPU pass times */
+	GPU_pass_timer_frame();
 }
 
 //#include "PIL_time.h"
@@ -831,6 +933,30 @@ bool KX_KetsjiEngine::NextFrame()
 
 void KX_KetsjiEngine::Render()
 {
+	/* BGE-Remix P8.1: a driver reset stops the game, with a message */
+	if (GPU_reset_check()) {
+		printf("BGE-Remix: the graphics driver was reset; the game has stopped\n");
+		RequestExit(KX_EXIT_REQUEST_QUIT_GAME);
+		return;
+	}
+	/* BGE-Remix P8.1: what a frame leaves changed (BGE_REMIX_GL_CHECK=1) */
+	if (GPU_state_check_enabled()) {
+		GPUStateSnapshot now;
+		GPU_state_snapshot(&now);
+		if (m_gl_check) {
+			GPU_state_compare(m_gl_check, &now, "game frame", 0);
+		}
+		else {
+			m_gl_check = new GPUStateSnapshot;
+		}
+		*m_gl_check = now;
+	}
+
+	/* BGE-Remix P8.5: where the texture coordinate objects are */
+	for (KX_SceneList::iterator sit = m_scenes.begin(); sit != m_scenes.end(); ++sit) {
+		(*sit)->UpdateTexcoObjects();
+	}
+
 	if (m_usedome) {
 		RenderDome();
 		return;
@@ -905,8 +1031,24 @@ void KX_KetsjiEngine::Render()
 		//scene->UpdateMeshTransformations();
 
 		// shadow buffers (Remix computes its own shadows)
-		if (scene != m_remixScene)
+		if (scene != m_remixScene) {
+			GPU_pass_timer_begin(GPU_PASS_SHADOWS);
 			RenderShadowBuffers(scene);
+			GPU_pass_timer_end(GPU_PASS_SHADOWS);
+			/* BGE-Remix P8 Part B (P8.18): reflection probes (the first scene's) */
+			if (scene == *m_scenes.begin())
+				RenderProbes(scene);
+			/* BGE-Remix P8 Part C (P8.20): the first scene's halos and
+			 * particles, moved to the game's time */
+			if (scene == *m_scenes.begin() && m_rasterizer->GetDrawingMode() == RAS_IRasterizer::KX_TEXTURED)
+				m_sprites->Update(scene, m_clockTime);
+		}
+
+		/* BGE-Remix P8 Part B (P8.12): the scene's pipeline target (not for
+		 * the scene Remix draws) */
+		if (scene != m_remixScene)
+			m_rasterizer->BeginScene(scene->GetBlenderScene(), sceneit == m_scenes.begin(),
+			                         scene->GetBlenderScene()->gm.aasamples);
 
 		// Avoid drawing the scene with the active camera twice when its viewport is enabled
 		if (cam && !cam->GetViewport())
@@ -917,7 +1059,10 @@ void KX_KetsjiEngine::Render()
 			m_rasterizer->SetAuxilaryClientInfo(scene);
 	
 			// do the rendering
+			/* BGE-Remix P8 Part B (P8.11): the main camera's view (GPU culling) */
+			m_rasterizer->SetMainView(true);
 			RenderFrame(scene, cam);
+			m_rasterizer->SetMainView(false);
 		}
 		
 		list<class KX_Camera*>* cameras = scene->GetCameras();
@@ -938,6 +1083,7 @@ void KX_KetsjiEngine::Render()
 			
 			it++;
 		}
+		m_rasterizer->EndScene();
 		PostRenderScene(scene);
 	}
 
@@ -959,6 +1105,10 @@ void KX_KetsjiEngine::Render()
 			// pass the scene's worldsettings to the rasterizer
 			scene->GetWorldInfo()->UpdateWorldSettings();
 		
+			if (scene != m_remixScene)
+				m_rasterizer->BeginScene(scene->GetBlenderScene(), sceneit == m_scenes.begin(),
+				                         scene->GetBlenderScene()->gm.aasamples);
+
 			if (scene->IsClearingZBuffer())
 				m_rasterizer->ClearDepthBuffer();
 
@@ -987,6 +1137,7 @@ void KX_KetsjiEngine::Render()
 				
 				it++;
 			}
+			m_rasterizer->EndScene();
 			PostRenderScene(scene);
 		}
 	} // if (m_rasterizer->Stereo())
@@ -1146,12 +1297,65 @@ void KX_KetsjiEngine::UpdateAnimations(KX_Scene *scene)
 		scene->UpdateAnimations(m_frameTime);
 }
 
+/* BGE-Remix P8.10: what a lamp's shadow depends on besides its own views:
+ * the casters that can reach it (where they are, whether they are shown, a
+ * deformer that moves them), so a lamp whose shadow would come out the same
+ * is not drawn again */
+static unsigned int shadow_casters_signature(
+        KX_Scene *scene, KX_LightObject *light, RAS_ILightObject *raslight, int layer, unsigned int frame)
+{
+	unsigned int h = 2166136261u;
+#define HASH_BYTES(p, n) \
+	{ const unsigned char *b_ = (const unsigned char *)(p); \
+	  for (size_t i_ = 0; i_ < (size_t)(n); i_++) { h ^= b_[i_]; h *= 16777619u; } } (void)0
+
+	const bool sun = raslight->m_type == RAS_ILightObject::LIGHT_SUN;
+	const MT_Vector3 lamppos = light->NodeGetWorldPosition();
+	const MT_Scalar reach = raslight->m_shadowclipend;
+	CListValue *objects = scene->GetObjectList();
+
+	for (int i = 0; i < objects->GetCount(); i++) {
+		KX_GameObject *ob = (KX_GameObject *)objects->GetValue(i);
+		if (ob->GetMeshCount() == 0 || !ob->GetVisible() || !ob->GetSGNode())
+			continue;
+		if (layer != 0 && !(ob->GetLayer() & layer))
+			continue;
+		if (!sun) {
+			/* the object's bounding sphere, as KX_Scene's culling has it */
+			const MT_Vector3 scale = ob->GetSGNode()->GetWorldScaling();
+			const MT_Scalar radius = fabs(scale[scale.closestAxis()] * ob->GetSGNode()->Radius());
+			if ((ob->NodeGetWorldPosition() - lamppos).length() - radius > reach)
+				continue;
+		}
+		HASH_BYTES(&ob, sizeof(ob));
+		HASH_BYTES(ob->GetOpenGLMatrix(), sizeof(float) * 16);
+		RAS_Deformer *deformer = ob->GetDeformer();
+		if (deformer && deformer->IsDynamic())
+			HASH_BYTES(&frame, sizeof(frame));
+	}
+#undef HASH_BYTES
+	return h;
+}
+
 void KX_KetsjiEngine::RenderShadowBuffers(KX_Scene *scene)
 {
 	CListValue *lightlist = scene->GetLightList();
 	int i, drawmode;
+	static unsigned int frame = 0;
+	static const bool trace = getenv("BGE_REMIX_TRACE_SHADOWS") != NULL;
 
+	frame++;
 	m_rasterizer->SetAuxilaryClientInfo(scene);
+
+	/* BGE-Remix P8.10: the camera the sun's cascades follow */
+	KX_Camera *viewcam = scene->GetActiveCamera();
+	float camtoworld[16], camwinmat[16];
+	bool have_cam = false;
+	if (viewcam && viewcam->hasValidProjectionMatrix()) {
+		viewcam->GetCameraToWorld().getValue(camtoworld);
+		viewcam->GetProjectionMatrix().getValue(camwinmat);
+		have_cam = true;
+	}
 
 	for (i=0; i<lightlist->GetCount(); i++) {
 		KX_GameObject *gameobj = (KX_GameObject*)lightlist->GetValue(i);
@@ -1164,6 +1368,21 @@ void KX_KetsjiEngine::RenderShadowBuffers(KX_Scene *scene)
 		if (light->GetVisible() && m_rasterizer->GetDrawingMode() == RAS_IRasterizer::KX_TEXTURED &&
 			raslight->HasShadowBuffer())
 		{
+			/* BGE-Remix P8.10: a lamp whose views and casters did not change
+			 * keeps its shadow */
+			raslight->SetShadowCamera(have_cam ? camtoworld : NULL, have_cam ? camwinmat : NULL);
+			const int layer = raslight->GetShadowLayer();
+			const unsigned int sig = raslight->ShadowSignature() ^
+			                         (shadow_casters_signature(scene, light, raslight, layer, frame) * 31u);
+			if (raslight->m_shadowvalid && raslight->m_shadowsig == sig)
+				continue;
+			raslight->m_shadowsig = sig;
+			raslight->m_shadowvalid = true;
+
+			const int views = raslight->ShadowViewCount();
+			if (trace)
+				printf("BGE-Remix shadow: %s drawn (%d views)\n", light->GetName().ReadPtr(), views);
+
 			/* make temporary camera */
 			RAS_CameraData camdata = RAS_CameraData();
 			KX_Camera *cam = new KX_Camera(scene, scene->m_callbacks, camdata, true, true);
@@ -1175,33 +1394,535 @@ void KX_KetsjiEngine::RenderShadowBuffers(KX_Scene *scene)
 			drawmode = m_rasterizer->GetDrawingMode();
 			m_rasterizer->SetDrawingMode(RAS_IRasterizer::KX_SHADOW);
 
+			/* BGE-Remix P8 Part B (P8.16): every view in one pass where the
+			 * card allows (the casters culled once, for all the views) */
+			if (raslight->BindShadowBufferLayered(m_canvas, cam, camtrans)) {
+				scene->CalculateVisibleMeshes(m_rasterizer, cam, layer);
+				m_logger->StartLog(tc_animations, m_kxsystem->GetTimeInSeconds(), true);
+				SG_SetActiveStage(SG_STAGE_ANIMATION_UPDATE);
+				UpdateAnimations(scene);
+				m_logger->StartLog(tc_rasterizer, m_kxsystem->GetTimeInSeconds(), true);
+				SG_SetActiveStage(SG_STAGE_RENDER);
+				scene->RenderBuckets(camtrans, m_rasterizer);
+				raslight->UnbindShadowBuffer();
+				m_rasterizer->SetDrawingMode(drawmode);
+				cam->Release();
+				continue;
+			}
+
 			/* binds framebuffer object, sets up camera .. */
 			raslight->BindShadowBuffer(m_canvas, cam, camtrans);
 
-			/* update scene */
-			scene->CalculateVisibleMeshes(m_rasterizer, cam, raslight->GetShadowLayer());
+			/* BGE-Remix P8.10: each view: a cube's faces, the sun's cascades */
+			for (int view = 0; view < views; view++) {
+				if (view > 0)
+					raslight->SetShadowView(m_canvas, cam, camtrans, view);
 
-			m_logger->StartLog(tc_animations, m_kxsystem->GetTimeInSeconds(), true);
-			SG_SetActiveStage(SG_STAGE_ANIMATION_UPDATE);
-			UpdateAnimations(scene);
-			m_logger->StartLog(tc_rasterizer, m_kxsystem->GetTimeInSeconds(), true);
-			SG_SetActiveStage(SG_STAGE_RENDER);
+				/* update scene */
+				scene->CalculateVisibleMeshes(m_rasterizer, cam, layer);
 
-			/* render */
-			m_rasterizer->ClearDepthBuffer();
-			m_rasterizer->ClearColorBuffer();
-			scene->RenderBuckets(camtrans, m_rasterizer);
+				if (view == 0) {
+					m_logger->StartLog(tc_animations, m_kxsystem->GetTimeInSeconds(), true);
+					SG_SetActiveStage(SG_STAGE_ANIMATION_UPDATE);
+					UpdateAnimations(scene);
+					m_logger->StartLog(tc_rasterizer, m_kxsystem->GetTimeInSeconds(), true);
+					SG_SetActiveStage(SG_STAGE_RENDER);
+				}
+
+				/* render */
+				m_rasterizer->ClearDepthBuffer();
+				m_rasterizer->ClearColorBuffer();
+				scene->RenderBuckets(camtrans, m_rasterizer);
+			}
 
 			/* unbind framebuffer object, restore drawmode, free camera */
 			raslight->UnbindShadowBuffer();
 			m_rasterizer->SetDrawingMode(drawmode);
 			cam->Release();
 		}
+		else {
+			raslight->m_shadowvalid = false;
+		}
 	}
 	/* remember that we have a valid shadow buffer for that scene */
 	scene->SetShadowDone(true);
 }
-	
+
+/* ------------------------------------------------------------------------ */
+/* BGE-Remix P8 Part B (P8.18): reflections */
+
+static IDProperty *id_prop(ID *id, const char *name)
+{
+	IDProperty *props = id ? IDP_GetProperties(id, false) : NULL;
+	return props ? IDP_GetPropertyFromGroup(props, name) : NULL;
+}
+
+static float id_float(ID *id, const char *name, float def)
+{
+	IDProperty *p = id_prop(id, name);
+	if (!p)
+		return def;
+	if (p->type == IDP_INT)
+		return (float)IDP_Int(p);
+	if (p->type == IDP_FLOAT)
+		return IDP_Float(p);
+	if (p->type == IDP_DOUBLE)
+		return (float)IDP_Double(p);
+	return def;
+}
+
+void KX_KetsjiEngine::ReleaseProbes()
+{
+	for (size_t i = 0; i < m_probes.size(); i++) {
+		GPU_probe_free(m_probes[i].slot);
+		m_probes[i].obj->Release();
+	}
+	m_probes.clear();
+	for (size_t i = 0; i < m_mirror_objects.size(); i++)
+		m_mirror_objects[i].first->Release();
+	m_mirror_objects.clear();
+	for (size_t i = 0; i < m_volumes.size(); i++) {
+		GPU_volume_grid_free(&m_volumes[i].density);
+		GPU_volume_grid_free(&m_volumes[i].flame);
+		m_volumes[i].obj->Release();
+	}
+	m_volumes.clear();
+	m_probes_scene = NULL;
+}
+
+/* the probes and the mirror candidates of the scene (looked for every
+ * second: objects added later are found then) */
+void KX_KetsjiEngine::ScanProbes(KX_Scene *scene)
+{
+	if (m_probes_scene == scene && (m_probes_scan++ % 60) != 0)
+		return;
+	if (m_probes_scene != scene) {
+		ReleaseProbes();
+		m_probes_scene = scene;
+		m_probes_scan = 1;
+	}
+	/* Static and Animated env maps: a probe at their viewpoint */
+	std::map<Object *, int> envview;
+	for (Material *ma = (Material *)G.main->mat.first; ma; ma = (Material *)ma->id.next) {
+		for (int i = 0; i < MAX_MTEX; i++) {
+			MTex *mtex = ma->mtex[i];
+			EnvMap *env = (mtex && mtex->tex && mtex->tex->type == TEX_ENVMAP) ? mtex->tex->env : NULL;
+			/* (a Planar one, whatever its source, is a mirror) */
+			if (env && env->object && env->type != ENV_PLANE && (env->stype == ENV_STATIC || env->stype == ENV_ANIM))
+				envview[env->object] = (env->stype == ENV_ANIM) ? 1 : 0;
+		}
+	}
+	CListValue *objects = scene->GetObjectList();
+	std::vector<ProbeEntry> keep;
+	std::vector<bool> volume_seen(m_volumes.size(), false);
+	std::vector<std::pair<KX_GameObject *, int> > mirrors;
+	for (int i = 0; i < objects->GetCount(); i++) {
+		KX_GameObject *obj = (KX_GameObject *)objects->GetValue(i);
+		Object *ob = obj->GetBlenderObject();
+		if (!ob)
+			continue;
+		std::map<Object *, int>::iterator env = envview.find(ob);
+		const bool probe = id_float(&ob->id, "bge_probe", 0.0f) != 0.0f || env != envview.end();
+		if (probe) {
+			bool found = false;
+			for (size_t k = 0; k < m_probes.size(); k++) {
+				if (m_probes[k].obj == obj) {
+					keep.push_back(m_probes[k]);
+					m_probes[k].obj = NULL;
+					found = true;
+					break;
+				}
+			}
+			if (!found) {
+				ProbeEntry e;
+				e.slot = GPU_probe_alloc();
+				if (e.slot >= 0) {
+					e.obj = obj;
+					obj->AddRef();
+					e.rate = (env != envview.end()) ? env->second : (int)id_float(&ob->id, "bge_probe_rate", 0.0f);
+					e.reach = id_float(&ob->id, "bge_probe_reach", 10.0f);
+					e.age = 0;
+					e.drawn = false;
+					keep.push_back(e);
+				}
+			}
+		}
+		/* a volume object (its material's type) */
+		if (obj->GetMeshCount() > 0) {
+			bool volume = false;
+			for (int c = 1; c <= ob->totcol && !volume; c++) {
+				Material *ma = give_current_material(ob, c);
+				volume = ma && ma->material_type == MA_TYPE_VOLUME;
+			}
+			bool known = false;
+			for (size_t k = 0; k < m_volumes.size(); k++) {
+				if (m_volumes[k].obj == obj && k < volume_seen.size()) {
+					known = true;
+					volume_seen[k] = true;
+				}
+			}
+			if (volume && !known) {
+				VolumeEntry v;
+				memset(&v, 0, sizeof(v));
+				v.obj = obj;
+				v.frame = -1;
+				obj->AddRef();
+				m_volumes.push_back(v);
+			}
+		}
+		/* an object whose material reads a planar mirror */
+		if (obj->GetMeshCount() > 0) {
+			for (int c = 1; c <= ob->totcol; c++) {
+				Material *ma = give_current_material(ob, c);
+				if (ma && GPU_material_planar_mirror(ma)) {
+					obj->AddRef();
+					mirrors.push_back(std::make_pair(obj, -1));
+					break;
+				}
+			}
+		}
+	}
+	/* probes whose objects are gone */
+	for (size_t k = 0; k < m_probes.size(); k++) {
+		if (m_probes[k].obj) {
+			GPU_probe_free(m_probes[k].slot);
+			m_probes[k].obj->Release();
+		}
+	}
+	m_probes.swap(keep);
+	/* volumes whose objects are gone */
+	for (size_t k = volume_seen.size(); k-- > 0;) {
+		if (!volume_seen[k]) {
+			GPU_volume_grid_free(&m_volumes[k].density);
+			GPU_volume_grid_free(&m_volumes[k].flame);
+			m_volumes[k].obj->Release();
+			m_volumes.erase(m_volumes.begin() + k);
+		}
+	}
+	for (size_t k = 0; k < m_mirror_objects.size(); k++)
+		m_mirror_objects[k].first->Release();
+	m_mirror_objects.swap(mirrors);
+}
+
+/* the scene as seen with these matrices, into the bound target (cleared) */
+void KX_KetsjiEngine::RenderView(KX_Scene *scene, const MT_Matrix4x4 &view, const MT_Matrix4x4 &proj,
+                                 KX_GameObject *hide, bool cull)
+{
+	RAS_CameraData camdata = RAS_CameraData();
+	/* (a mirrored view's frustum is turned inside out: not culled) */
+	KX_Camera *cam = new KX_Camera(scene, scene->m_callbacks, camdata, cull, true);
+	cam->SetName("__view__cam__");
+	float v[16];
+	view.getValue(v);
+	MT_Transform trans = MT_Transform(v);
+	MT_Transform camtrans;
+	camtrans.invert(trans);
+	cam->SetModelviewMatrix(view);
+	cam->SetProjectionMatrix(proj);
+	cam->NodeSetLocalPosition(camtrans.getOrigin());
+	cam->NodeSetLocalOrientation(camtrans.getBasis());
+	cam->NodeUpdateGS(0);
+	RAS_IRasterizer::StereoMode stereomode = m_rasterizer->GetStereoMode();
+	m_rasterizer->SetStereoMode(RAS_IRasterizer::RAS_STEREO_NOSTEREO);
+	m_rasterizer->SetProjectionMatrix(proj);
+	m_rasterizer->SetViewMatrix(view, cam->NodeGetWorldOrientation(), cam->NodeGetWorldPosition(),
+	                            cam->NodeGetLocalScaling(), true);
+	m_rasterizer->SetStereoMode(stereomode);
+
+	const bool visible = hide ? hide->GetVisible() : false;
+	if (hide && visible)
+		hide->SetVisible(false, false);
+	scene->CalculateVisibleMeshes(m_rasterizer, cam);
+	scene->GetWorldInfo()->RenderBackground(m_rasterizer);
+	scene->RenderBuckets(camtrans, m_rasterizer);
+	if (hide && visible)
+		hide->SetVisible(true, false);
+	cam->Release();
+}
+
+void KX_KetsjiEngine::RenderProbes(KX_Scene *scene)
+{
+	if (m_rasterizer->GetDrawingMode() != RAS_IRasterizer::KX_TEXTURED)
+		return;
+	ScanProbes(scene);
+	/* the sky the materials reflect where no probe reaches */
+	static int skyframe = 0;
+	if (scene->GetWorldInfo()->DrawsSky()) {
+		if ((skyframe++ % 30) == 0)
+			GPU_sky_cube_update(scene->GetBlenderScene(), scene->GetBlenderScene()->world);
+	}
+	else {
+		GPU_sky_cube_clear();
+	}
+	int drawn = 0;
+	for (size_t i = 0; i < m_probes.size(); i++) {
+		ProbeEntry &e = m_probes[i];
+		const MT_Point3 &p = e.obj->NodeGetWorldPosition();
+		const float center[3] = {(float)p[0], (float)p[1], (float)p[2]};
+		const bool due = !e.drawn || (e.rate > 0 && ++e.age >= e.rate);
+		if (!due || drawn >= 2) {
+			GPU_probe_place(e.slot, center, e.reach, e.drawn);
+			continue;
+		}
+		/* (at most two a frame) */
+		e.age = 0;
+		drawn++;
+		GPU_probe_place(e.slot, center, e.reach, false);
+		m_mirror_drawing = true;
+		for (int face = 0; face < 6; face++) {
+			float view[4][4], proj[4][4];
+			int size;
+			GPU_probe_face_begin(e.slot, face, view, proj, &size);
+			RenderView(scene, MT_Matrix4x4(&view[0][0]), MT_Matrix4x4(&proj[0][0]), e.obj);
+			GPU_probe_face_end();
+		}
+		m_mirror_drawing = false;
+		GPU_probe_filter(e.slot);
+		e.drawn = true;
+		GPU_probe_place(e.slot, center, e.reach, true);
+	}
+}
+
+/* each visible mirror (the nearest four): the camera's view mirrored in the
+ * object's plane (its local Z the normal), drawn with a clip plane */
+void KX_KetsjiEngine::RenderMirrors(KX_Scene *scene, KX_Camera *cam)
+{
+	for (size_t i = 0; i < m_mirror_objects.size(); i++)
+		m_mirror_objects[i].second = -1;
+	if (m_mirror_objects.empty() || m_rasterizer->GetDrawingMode() != RAS_IRasterizer::KX_TEXTURED)
+		return;
+	const MT_Point3 campos = cam->NodeGetWorldPosition();
+	std::vector<std::pair<double, size_t> > order;
+	for (size_t i = 0; i < m_mirror_objects.size(); i++) {
+		KX_GameObject *obj = m_mirror_objects[i].first;
+		if (obj->GetCulled() || !obj->GetVisible())
+			continue;
+		order.push_back(std::make_pair((double)(obj->NodeGetWorldPosition() - campos).length2(), i));
+	}
+	if (order.empty())
+		return;
+	std::sort(order.begin(), order.end());
+
+	const MT_Matrix4x4 view = m_rasterizer->GetViewMatrix();
+	const MT_Matrix4x4 proj = cam->GetProjectionMatrix();
+	World *wo = scene->GetBlenderScene()->world;
+	const float scale = CLAMPIS(wo ? id_float(&wo->id, "bge_mirror_scale", 0.5f) : 0.5f, 0.1f, 1.0f);
+	int vp[4];
+	glGetIntegerv(GL_VIEWPORT, vp);
+	m_mirror_drawing = true;
+	for (size_t k = 0; k < order.size() && k < GPU_MIRRORS; k++) {
+		KX_GameObject *obj = m_mirror_objects[order[k].second].first;
+		const MT_Vector3 n = obj->NodeGetWorldOrientation().getColumn(2).safe_normalized();
+		const MT_Point3 &p = obj->NodeGetWorldPosition();
+		double d = -n.dot(p);
+		/* the side the camera is on is kept */
+		const double side = (n.dot(campos) + d) >= 0.0 ? 1.0 : -1.0;
+		/* the reflection in the plane n.x + d = 0 */
+		MT_Matrix4x4 R;
+		R.setIdentity();
+		for (int r = 0; r < 3; r++) {
+			for (int c = 0; c < 3; c++)
+				R[r][c] = (r == c ? 1.0 : 0.0) - 2.0 * n[r] * n[c];
+			R[r][3] = -2.0 * d * n[r];
+		}
+		const MT_Matrix4x4 mview = view * R;
+		/* the clip plane in the mirrored camera's eye space: (V'^-1)^T P */
+		MT_Matrix4x4 inv = mview;
+		inv.invert();
+		const double P[4] = {side * n[0], side * n[1], side * n[2], side * d};
+		float plane[4];
+		for (int c = 0; c < 4; c++)
+			plane[c] = (float)(inv[0][c] * P[0] + inv[1][c] * P[1] + inv[2][c] * P[2] + inv[3][c] * P[3]);
+		GPU_mirror_begin((int)k, (int)(vp[2] * scale), (int)(vp[3] * scale), plane);
+		RenderView(scene, mview, proj, obj, false);
+		GPU_mirror_end((int)k);
+		m_mirror_objects[order[k].second].second = (int)k;
+	}
+	m_mirror_drawing = false;
+
+	/* the camera's own view again */
+	m_rasterizer->SetProjectionMatrix(proj);
+	m_rasterizer->SetViewMatrix(view, cam->NodeGetWorldOrientation(), cam->NodeGetWorldPosition(),
+	                            cam->NodeGetLocalScaling(), cam->GetCameraData()->m_perspective);
+	scene->CalculateVisibleMeshes(m_rasterizer, cam);
+}
+
+/* BGE-Remix P8 Part B (P8.19): volumes after the scene, over it */
+void KX_KetsjiEngine::RenderVolumes(KX_Scene *scene)
+{
+	if (scene != m_probes_scene || m_volumes.empty() ||
+	    m_rasterizer->GetDrawingMode() != RAS_IRasterizer::KX_TEXTURED)
+	{
+		return;
+	}
+	Scene *blscene = scene->GetBlenderScene();
+	for (size_t i = 0; i < m_volumes.size(); i++) {
+		VolumeEntry &e = m_volumes[i];
+		KX_GameObject *obj = e.obj;
+		Object *ob = obj->GetBlenderObject();
+		if (!ob || !obj->GetVisible() || ob->type != OB_MESH)
+			continue;
+		Material *ma = NULL;
+		for (int c = 1; c <= ob->totcol && !ma; c++) {
+			Material *m = give_current_material(ob, c);
+			if (m && m->material_type == MA_TYPE_VOLUME)
+				ma = m;
+		}
+		if (!ma)
+			continue;
+		GPUVolume v;
+		memset(&v, 0, sizeof(v));
+		obj->GetOpenGLMatrix();
+		const float *glm = obj->GetOpenGLMatrixPtr()->getPointer();
+		for (int k = 0; k < 16; k++)
+			(&v.obmat[0][0])[k] = glm[k];
+		BoundBox *bb = BKE_object_boundbox_get(ob);
+		if (bb) {
+			INIT_MINMAX(v.bbmin, v.bbmax);
+			for (int k = 0; k < 8; k++)
+				minmax_v3v3_v3(v.bbmin, v.bbmax, bb->vec[k]);
+		}
+		else {
+			v.bbmin[0] = v.bbmin[1] = v.bbmin[2] = -1.0f;
+			v.bbmax[0] = v.bbmax[1] = v.bbmax[2] = 1.0f;
+		}
+		/* a mesh whose vertices all lie on the ellipsoid in its box (a
+		 * sphere) is stepped inside that ellipsoid, others in their box */
+		{
+			const Mesh *me = (const Mesh *)ob->data;
+			bool round = me && me->totvert > 8;
+			for (int k = 0; round && k < me->totvert; k++) {
+				float q = 0.0f;
+				for (int a = 0; a < 3; a++) {
+					const float half = 0.5f * (v.bbmax[a] - v.bbmin[a]);
+					const float c = (me->mvert[k].co[a] - 0.5f * (v.bbmax[a] + v.bbmin[a])) / max_ff(half, 1e-6f);
+					q += c * c;
+				}
+				round = fabsf(q - 1.0f) < 0.1f;
+			}
+			v.shape = round ? 1 : 0;
+		}
+		const VolumeSettings &vs = ma->vol;
+		v.density = vs.density;
+		v.density_scale = vs.density_scale;
+		v.scattering = vs.scattering;
+		v.emission = vs.emission;
+		copy_v3_v3(v.emission_col, vs.emission_col);
+		copy_v3_v3(v.transmission_col, vs.transmission_col);
+		copy_v3_v3(v.reflection_col, vs.reflection_col);
+		v.reflection = vs.reflection;
+		v.asymmetry = vs.asymmetry;
+		v.stepsize = vs.stepsize;
+		v.depth_cutoff = vs.depth_cutoff;
+		v.shadeless = (vs.shade_type == MA_VOL_SHADE_SHADELESS);
+		v.self_shadow = (vs.shade_type == MA_VOL_SHADE_SHADED || vs.shade_type == MA_VOL_SHADE_MULTIPLE ||
+		                 vs.shade_type == MA_VOL_SHADE_SHADEDPLUSMULTIPLE);
+		v.ext_shadow = (vs.shade_type == MA_VOL_SHADE_SHADOWED) || (vs.shadeflag & MA_VOL_RECV_EXT_SHADOW);
+		/* Classic draws sRGB colours when the scene manages them (as the
+		 * GLSL materials' GPU_material_do_color_management) */
+		v.srgb = BKE_scene_game_pipeline(blscene) != BKE_SCENE_GAME_PIPELINE_MODERN &&
+		         BKE_scene_check_color_management_enabled(blscene) &&
+		         !(blscene->gm.flag & GAME_GLSL_NO_COLOR_MANAGEMENT);
+
+#ifdef WITH_SMOKE
+		/* a baked smoke and fire simulation: the cache frame at the game's
+		 * time (looping over the cache) */
+		SmokeModifierData *smd = (SmokeModifierData *)modifiers_findByType(ob, eModifierType_Smoke);
+		if (smd && (smd->type & MOD_SMOKE_TYPE_DOMAIN) && smd->domain && smd->domain->point_cache[0]) {
+			SmokeDomainSettings *sds = smd->domain;
+			PointCache *cache = sds->point_cache[0];
+			const int start = cache->startframe, end = std::max(cache->endframe, cache->startframe);
+			const double fps = (double)blscene->r.frs_sec / (double)std::max(blscene->r.frs_sec_base, 1e-6f);
+			const int frame = start + (int)(m_clockTime * fps) % (end - start + 1);
+			if (frame != e.frame) {
+				e.frame = frame;
+				const int cfra = blscene->r.cfra;
+				blscene->r.cfra = frame;
+				/* a smoke cache is on disk next to the file (blendcache_<file>):
+				 * the point cache reads it only when the file's path counts as
+				 * valid, which the game never says (the player loads files its
+				 * own way) */
+				const int relbase = G.relbase_valid;
+				if (G.main && G.main->name[0])
+					G.relbase_valid = 1;
+				DerivedMesh *dm = CDDM_from_mesh((Mesh *)ob->data);
+				DerivedMesh *res = smokeModifier_do(smd, blscene, ob, dm);
+				G.relbase_valid = relbase;
+				if (res && res != dm)
+					res->release(res);
+				dm->release(dm);
+				blscene->r.cfra = cfra;
+				/* (once per volume: what the cache gave, for the tests' logs) */
+				static int smoke_said = 0;
+				if (smoke_said < 4) {
+					smoke_said++;
+					if (!sds->fluid) {
+						printf("BGE-Remix volume %s: smoke frame %d: nothing read from the cache (%s)\n",
+						       ob->id.name + 2, frame, (cache->flag & PTCACHE_BAKED) ? "baked" : "not baked");
+					}
+					else {
+						float mx = 0.0f;
+						const float *dd = smoke_get_density(sds->fluid);
+						const int n = sds->res[0] * sds->res[1] * sds->res[2];
+						for (int k = 0; dd && k < n; k++)
+							mx = std::max(mx, dd[k]);
+						printf("BGE-Remix volume %s: smoke frame %d: grid %dx%dx%d, densest %.3f\n", ob->id.name + 2,
+						       frame, sds->res[0], sds->res[1], sds->res[2], mx);
+					}
+				}
+				if (sds->fluid) {
+					const bool high = sds->wt != NULL;
+					int grid[3];
+					copy_v3_v3_int(grid, high ? sds->res_wt : sds->res);
+					float *density = high ? smoke_turbulence_get_density(sds->wt) : smoke_get_density(sds->fluid);
+					if (density && grid[0] > 0 && grid[1] > 0 && grid[2] > 0)
+						GPU_volume_grid(&e.density, grid, density);
+					if (!high && smoke_has_fuel(sds->fluid)) {
+						float *flame = smoke_get_flame(sds->fluid);
+						if (flame)
+							GPU_volume_grid(&e.flame, grid, flame);
+					}
+					for (int k = 0; k < 3; k++) {
+						e.smin[k] = sds->p0[k] + sds->cell_size[k] * sds->res_min[k];
+						e.smax[k] = sds->p0[k] + sds->cell_size[k] * sds->res_max[k];
+					}
+				}
+			}
+		}
+#endif
+		v.smoke_density = e.density;
+		v.smoke_flame = e.flame;
+		copy_v3_v3(v.smoke_min, e.smin);
+		copy_v3_v3(v.smoke_max, e.smax);
+		GPU_volume_draw(&v);
+	}
+}
+
+int KX_KetsjiEngine::MirrorIndex(KX_GameObject *obj) const
+{
+	if (m_mirror_drawing)
+		return -1;
+	for (size_t i = 0; i < m_mirror_objects.size(); i++) {
+		if (m_mirror_objects[i].first == obj)
+			return m_mirror_objects[i].second;
+	}
+	return -1;
+}
+
+/* BGE-Remix P8.10: whether a lamp of the scene has contact shadows (they read
+ * the scene's depth, drawn first) */
+static bool scene_needs_depth(KX_Scene *scene)
+{
+	CListValue *lights = scene->GetLightList();
+	for (int i = 0; i < lights->GetCount(); i++) {
+		KX_LightObject *light = (KX_LightObject *)lights->GetValue(i);
+		RAS_ILightObject *data = light->GetLightData();
+		if (data && light->GetVisible() && data->m_contact > 0.0f && data->HasShadowBuffer())
+			return true;
+	}
+	return false;
+}
+
 // update graphics
 void KX_KetsjiEngine::RenderFrame(KX_Scene* scene, KX_Camera* cam)
 {
@@ -1216,6 +1937,7 @@ void KX_KetsjiEngine::RenderFrame(KX_Scene* scene, KX_Camera* cam)
 	KX_SetActiveScene(scene);
 
 #ifdef WITH_PYTHON
+	m_rasterizer->SyncOldMatrices();  /* BGE-Remix P8 Part B: for Python's bgl */
 	scene->RunDrawingCallbacks(scene->GetPreDrawSetupCB());
 #endif
 
@@ -1353,6 +2075,7 @@ void KX_KetsjiEngine::RenderFrame(KX_Scene* scene, KX_Camera* cam)
 #ifdef WITH_PYTHON
 	PHY_SetActiveEnvironment(scene->GetPhysicsEnvironment());
 	// Run any pre-drawing python callbacks
+	m_rasterizer->SyncOldMatrices();  /* BGE-Remix P8 Part B: for Python's bgl */
 	scene->RunDrawingCallbacks(scene->GetPreDrawCB());
 #endif
 
@@ -1370,14 +2093,127 @@ void KX_KetsjiEngine::RenderFrame(KX_Scene* scene, KX_Camera* cam)
 	else
 #endif
 	{
+		/* BGE-Remix P8 Part B (P8.18): planar mirrors (the first scene's main
+		 * camera), screen-space reflections (Modern scenes) */
+		if (scene == *m_scenes.begin() && cam == scene->GetActiveCamera())
+			RenderMirrors(scene, cam);
+		World *wo = scene->GetBlenderScene()->world;
+		const bool ssr = BKE_scene_game_pipeline(scene->GetBlenderScene()) == BKE_SCENE_GAME_PIPELINE_MODERN &&
+		                 (!wo || id_float(&wo->id, "bge_ssr", 1.0f) != 0.0f);
+		GPU_ssr_set(ssr);
+
+		/* BGE-Remix P8.10: the scene's depth first, for contact shadows */
+		const bool depth = m_rasterizer->GetDrawingMode() == RAS_IRasterizer::KX_TEXTURED &&
+		                   (scene_needs_depth(scene) || ssr || HasVolumes(scene) || m_sprites->HasFlares(scene));
+		if (depth) {
+			const int drawmode = m_rasterizer->GetDrawingMode();
+			GPU_scene_depth_begin(viewport.GetWidth() + 1, viewport.GetHeight() + 1);
+			m_rasterizer->SetDrawingMode(RAS_IRasterizer::KX_SHADOW);
+			scene->RenderBuckets(camtrans, m_rasterizer);
+			m_rasterizer->SetDrawingMode(drawmode);
+			GPU_scene_depth_end();
+			/* drawing marks every mesh slot culled for the next pass */
+			scene->CalculateVisibleMeshes(m_rasterizer, cam);
+		}
+
+		/* BGE-Remix P8 Part B (P8.17): the world's sky behind the first scene */
+		if (scene == *m_scenes.begin())
+			scene->GetWorldInfo()->RenderBackground(m_rasterizer);
+
 		scene->RenderBuckets(camtrans, m_rasterizer);
+		/* BGE-Remix P8 Part C (P8.22): (a Wire material leaves lines on) */
+		if (m_rasterizer->GetDrawingMode() == RAS_IRasterizer::KX_TEXTURED)
+			glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+		/* BGE-Remix P8 Part B (P8.19): volumes over the scene */
+		RenderVolumes(scene);
+
+		/* BGE-Remix P8 Part C (P8.20): halos and particles, then the halos'
+		 * flares (which read the scene's depth) */
+		if (!m_mirror_drawing && m_rasterizer->GetDrawingMode() == RAS_IRasterizer::KX_TEXTURED) {
+			/* (billboards through Modern scenes' order-independent pass) */
+			const bool oit = !m_sprites->Empty() && m_rasterizer->BeginTransparency();
+			m_sprites->Draw(scene, 0);
+			if (oit)
+				m_rasterizer->EndTransparency();
+			m_sprites->Draw(scene, 1);
+			m_sprites->Draw(scene, 2);
+		}
+
+		/* BGE-Remix P8.10: nothing else reads it (other cameras, the 3D view) */
+		if (depth)
+			GPU_scene_depth_disable();
 
 		// render all the font objects for this scene
 		scene->RenderFonts();
+
+		/* BGE-Remix P8.9: spot halos as a light cone (BGE-Remix P8 Part B
+		 * (P8.17): Modern scenes' fog grid draws them as light shafts) */
+		if (BKE_scene_game_pipeline(scene->GetBlenderScene()) != BKE_SCENE_GAME_PIPELINE_MODERN)
+			RenderSpotHalos(scene);
 	}
 
 	if (scene->GetPhysicsEnvironment())
 		scene->GetPhysicsEnvironment()->DebugDrawWorld();
+}
+
+/* BGE-Remix P8.9: a spot lamp with Halo shows its cone in the game, as F12
+ * shows the lit fog: a cone from the lamp to its distance, added to the
+ * picture, brightest at the lamp and fading to nothing at the cone's end
+ * (Blender Internal's halo is volumetric; this is its look, not its maths) */
+void KX_KetsjiEngine::RenderSpotHalos(KX_Scene *scene)
+{
+	CListValue *lights = scene->GetLightList();
+	bool started = false;
+	const int segments = 32;
+	GPUStateScope scope;
+
+	for (int i = 0; i < lights->GetCount(); i++) {
+		KX_LightObject *light = (KX_LightObject *)lights->GetValue(i);
+		Object *ob = light->GetBlenderObject();
+		Lamp *la = (ob && ob->type == OB_LAMP) ? (Lamp *)ob->data : NULL;
+		RAS_ILightObject *data = light->GetLightData();
+		if (!la || !data || la->type != LA_SPOT || !(la->mode & LA_HALO) || !light->GetVisible() ||
+		    la->haint <= 0.0f || data->m_energy <= 0.0f)
+		{
+			continue;
+		}
+		if (!started) {
+			/* BGE-Remix P8 Part B: through the layer (its matrices, the
+			 * smooth shader), the state kept in a scope */
+			started = true;
+			GPU_state_scope_begin(&scope);
+			glDisable(GL_CULL_FACE);
+			GPU_state_blend(GPU_LAYER_BLEND_NONE);
+			glEnable(GL_BLEND);
+			glBlendFunc(GL_ONE, GL_ONE);
+			GPU_state_depth(true, false);
+		}
+		const MT_Point3 &pos = light->NodeGetWorldPosition();
+		const MT_Matrix3x3 &ori = light->NodeGetWorldOrientation();
+		const MT_Vector3 x = ori.getColumn(0).safe_normalized(), y = ori.getColumn(1).safe_normalized();
+		const MT_Vector3 dir = -ori.getColumn(2).safe_normalized();
+		const float length = std::max(data->m_distance, 0.01f);
+		/* the cone's half angle (m_spotsize is the full angle, in radians) */
+		const float half = std::min(data->m_spotsize, 3.12f) * 0.5f;
+		const float radius = length * tanf(half);
+		const float k = 0.25f * la->haint * data->m_energy;
+		const float col[3] = {data->m_color[0] * k, data->m_color[1] * k, data->m_color[2] * k};
+
+		GPU_imm_begin(GL_TRIANGLE_FAN, GPU_BUILTIN_SMOOTH);
+		GPU_imm_color4f(col[0], col[1], col[2], 1.0f);
+		GPU_imm_vertex3f((float)pos[0], (float)pos[1], (float)pos[2]);
+		GPU_imm_color4f(0.0f, 0.0f, 0.0f, 1.0f);
+		for (int s = 0; s <= segments; s++) {
+			const double a = 6.283185307179586 * s / segments;
+			const MT_Point3 p = pos + dir * length + (x * cos(a) + y * sin(a)) * radius;
+			GPU_imm_vertex3f((float)p[0], (float)p[1], (float)p[2]);
+		}
+		GPU_imm_end();
+	}
+	if (started) {
+		GPU_state_scope_end(&scope);
+	}
 }
 
 /*
@@ -1390,24 +2226,30 @@ void KX_KetsjiEngine::PostRenderScene(KX_Scene* scene)
 	// We need to first make sure our viewport is correct (enabling multiple viewports can mess this up)
 	m_canvas->SetViewPort(0, 0, m_canvas->GetWidth(), m_canvas->GetHeight());
 	
+	GPU_pass_timer_begin(GPU_PASS_OVERLAYS);
 	m_rasterizer->FlushDebugShapes(scene);
+	GPU_pass_timer_end(GPU_PASS_OVERLAYS);
 #ifdef WITH_REMIX
-	if (m_remix && scene == m_remixScene && scene->Has2DFilters()) {
-		/* the filters would work on an empty depth buffer */
+	/* BGE-Remix P8 Part C (P8.23): 2D filters over Remix's picture (the
+	 * depth they read is empty: Remix's own depth does not reach OpenGL) */
+	if (m_remix && scene == m_remixScene && scene->Has2DFilters())
 		m_remix->NoteSkippedFilters();
-	}
-	else
 #endif
 	{
+		GPU_pass_timer_begin(GPU_PASS_FILTERS);
 		scene->Render2DFilters(m_canvas);
+		GPU_pass_timer_end(GPU_PASS_FILTERS);
 	}
 
 #ifdef WITH_PYTHON
 	PHY_SetActiveEnvironment(scene->GetPhysicsEnvironment());
+	m_rasterizer->SyncOldMatrices();  /* BGE-Remix P8 Part B: for Python's bgl */
 	scene->RunDrawingCallbacks(scene->GetPostDrawCB());
 
 	// Python draw callback can also call debug draw functions, so we have to clear debug shapes.
+	GPU_pass_timer_begin(GPU_PASS_OVERLAYS);
 	m_rasterizer->FlushDebugShapes(scene);
+	GPU_pass_timer_end(GPU_PASS_OVERLAYS);
 #endif
 }
 
@@ -1423,11 +2265,18 @@ void KX_KetsjiEngine::StopEngine()
 			m_sceneconverter->TestHandlesPhysicsObjectToAnimationIpo();
 		}
 
+		ReleaseProbes();  /* BGE-Remix P8 Part B (P8.18) */
+		m_sprites->Release();  /* BGE-Remix P8 Part C (P8.20) */
+
 #ifdef WITH_REMIX
 		/* the game's objects leave Remix (which keeps running for the next game) */
 		delete m_remix;
 		m_remix = NULL;
 		m_remixScene = NULL;
+		if (GPU_image_cache_loads() > 0) {
+			printf("BGE-Remix: %d images drawn from the shared texture cache\n", GPU_image_cache_loads());
+		}
+		brmx::install_gl_image_cache(false);
 		KX_RemixRenderer::Trace("game end: removing the scenes");
 #endif
 
@@ -1437,6 +2286,9 @@ void KX_KetsjiEngine::StopEngine()
 			KX_Scene* scene = *sceneit;
 			m_sceneconverter->RemoveScene(scene);
 		}
+
+		/* BGE-Remix P8.5: Blender's objects give the texture coordinates again */
+		GPU_texco_object_matrix_clear();
 #ifdef WITH_REMIX
 		KX_RemixRenderer::Trace("game end: scenes removed");
 #endif
@@ -1589,6 +2441,30 @@ void KX_KetsjiEngine::RenderDebugProperties()
 			                            m_canvas->GetHeight());
 
 			m_rasterizer->RenderBox2D(xcoord + (int)(2.2f * profile_indent), ycoord, m_canvas->GetWidth(), m_canvas->GetHeight(), (float)time/tottime);
+			ycoord += const_ysize;
+		}
+		/* BGE-Remix P8 Part B: the GPU time of each pass */
+		for (int j = 0; j < GPU_PASS_COUNT; j++) {
+			const float ms = GPU_pass_timer_ms((GPUPassTimer)j);
+			debugtxt.Format("GPU %s:", GPU_pass_timer_name((GPUPassTimer)j));
+			m_rasterizer->RenderText2D(RAS_IRasterizer::RAS_TEXT_PADDED,
+			                            debugtxt.ReadPtr(),
+			                            xcoord + const_xindent,
+			                            ycoord,
+			                            m_canvas->GetWidth(),
+			                            m_canvas->GetHeight());
+			if (ms >= 0.0f)
+				debugtxt.Format("%5.2fms | %d%%", ms, (int)(ms / (tottime * 1000.f) * 100.f));
+			else
+				debugtxt = "  -";
+			m_rasterizer->RenderText2D(RAS_IRasterizer::RAS_TEXT_PADDED,
+			                            debugtxt.ReadPtr(),
+			                            xcoord + const_xindent + profile_indent, ycoord,
+			                            m_canvas->GetWidth(),
+			                            m_canvas->GetHeight());
+			if (ms >= 0.0f)
+				m_rasterizer->RenderBox2D(xcoord + (int)(2.2f * profile_indent), ycoord, m_canvas->GetWidth(),
+				                          m_canvas->GetHeight(), ms / (tottime * 1000.f));
 			ycoord += const_ysize;
 		}
 	}

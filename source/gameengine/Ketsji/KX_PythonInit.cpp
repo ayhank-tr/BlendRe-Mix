@@ -135,6 +135,8 @@ extern "C" {
 
 extern "C" {
 #include "BKE_main.h"
+#include "BKE_scene.h"
+#include "GPU_layer.h"
 #include "BKE_global.h"
 #include "BKE_library.h"
 #include "BKE_appdir.h"
@@ -1090,6 +1092,42 @@ static PyObject *gPySetEyeSeparation(PyObject *, PyObject *args)
 	Py_RETURN_NONE;
 }
 
+/* BGE-Remix P8 Part B (P8.12): the active scene's pipeline ("CLASSIC" or
+ * "MODERN"; it is set in the scene's Render settings) */
+static PyObject *gPyGetRenderPipeline(PyObject *)
+{
+	KX_Scene *scene = KX_GetActiveScene();
+	Scene *blscene = scene ? scene->GetBlenderScene() : NULL;
+	const bool modern = blscene && BKE_scene_game_pipeline(blscene) == BKE_SCENE_GAME_PIPELINE_MODERN;
+	return PyUnicode_FromString(modern ? "MODERN" : "CLASSIC");
+}
+
+/* BGE-Remix P8 Part B: the speed features ("instancing", "gpu_culling",
+ * "gpu_skinning", "layered_shadows", "clustered_lights"), each on unless
+ * switched off */
+static PyObject *gPySetSpeedFeature(PyObject *, PyObject *args)
+{
+	char *name;
+	int on;
+	if (!PyArg_ParseTuple(args, "si:setSpeedFeature", &name, &on))
+		return NULL;
+	if (!GPU_speed_feature_set(name, on != 0)) {
+		PyErr_Format(PyExc_ValueError, "bge.render.setSpeedFeature: unknown feature \"%s\" "
+		             "(instancing, gpu_culling, gpu_skinning, layered_shadows, clustered_lights, oit, tessellation, "
+		             "screen_effects, texture_cache)", name);
+		return NULL;
+	}
+	Py_RETURN_NONE;
+}
+
+static PyObject *gPyGetSpeedFeature(PyObject *, PyObject *args)
+{
+	char *name;
+	if (!PyArg_ParseTuple(args, "s:getSpeedFeature", &name))
+		return NULL;
+	return PyBool_FromLong(GPU_speed_feature(name) ? 1 : 0);
+}
+
 static PyObject *gPyGetEyeSeparation(PyObject *)
 {
 	if (!gp_Rasterizer) {
@@ -1302,14 +1340,19 @@ static PyObject *gPySetMaterialType(PyObject *,
 	if (!PyArg_ParseTuple(args,"i:setMaterialType",&type))
 		return NULL;
 
-	if (type == KX_BLENDER_GLSL_MATERIAL)
-		gs->matmode= GAME_MAT_GLSL;
-	else if (type == KX_BLENDER_MULTITEX_MATERIAL)
-		gs->matmode= GAME_MAT_MULTITEX;
-	else {
+	if (type != KX_BLENDER_GLSL_MATERIAL && type != KX_BLENDER_MULTITEX_MATERIAL) {
 		PyErr_SetString(PyExc_ValueError, "Rasterizer.setMaterialType(int): material type is not known");
 		return NULL;
 	}
+	/* BGE-Remix P8: one material mode, GLSL; kept so old scripts run */
+	if (type == KX_BLENDER_MULTITEX_MATERIAL) {
+		static bool told = false;
+		if (!told) {
+			printf("BGE-Remix: setMaterialMode(KX_MULTITEX_MATERIAL) does nothing: there is one material mode, GLSL\n");
+			told = true;
+		}
+	}
+	gs->matmode = GAME_MAT_GLSL;
 
 	Py_RETURN_NONE;
 }
@@ -1319,11 +1362,10 @@ static PyObject *gPyGetMaterialType(PyObject *)
 	GlobalSettings *gs= gp_KetsjiEngine->GetGlobalSettings();
 	int flag;
 
-	if (gs->matmode == GAME_MAT_GLSL)
-		flag = KX_BLENDER_GLSL_MATERIAL;
-	else
-		flag = KX_BLENDER_MULTITEX_MATERIAL;
-	
+	/* BGE-Remix P8: one material mode, GLSL */
+	(void)gs;
+	flag = KX_BLENDER_GLSL_MATERIAL;
+
 	return PyLong_FromLong(flag);
 }
 
@@ -1712,6 +1754,9 @@ static struct PyMethodDef rasterizer_methods[] = {
 
 	{"setEyeSeparation", (PyCFunction) gPySetEyeSeparation, METH_VARARGS, "set the eye separation for stereo mode"},
 	{"getEyeSeparation", (PyCFunction) gPyGetEyeSeparation, METH_NOARGS, "get the eye separation for stereo mode"},
+	{"getRenderPipeline", (PyCFunction) gPyGetRenderPipeline, METH_NOARGS, "get the active scene's pipeline: 'CLASSIC' or 'MODERN'"},
+	{"setSpeedFeature", (PyCFunction) gPySetSpeedFeature, METH_VARARGS, "switch a speed feature on or off: setSpeedFeature(name, on)"},
+	{"getSpeedFeature", (PyCFunction) gPyGetSpeedFeature, METH_VARARGS, "whether a speed feature is on: getSpeedFeature(name)"},
 	{"setFocalLength", (PyCFunction) gPySetFocalLength, METH_VARARGS, "set the focal length for stereo mode"},
 	{"getFocalLength", (PyCFunction) gPyGetFocalLength, METH_VARARGS, "get the focal length for stereo mode"},
 	{"getStereoEye", (PyCFunction) gPyGetStereoEye, METH_VARARGS, "get the current stereoscopy eye being rendered"},

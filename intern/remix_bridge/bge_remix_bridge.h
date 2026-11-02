@@ -52,8 +52,13 @@ extern "C" {
  * 1: P1 (load, start, triangle test). 2: P2 (scene interface, copy and window modes).
  * 3: P3 (textures, glass, subsurface, alpha test).
  * 4: P4 (skinning, draw categories, picking, particle systems).
- * 5: P4.8 (direct presentation: brb_frame_vk). */
-#define BRB_ABI_VERSION 6
+ * 5: P4.8 (direct presentation: brb_frame_vk).
+ * 8: P8.9 (disk lights, lights' volumetric strength).
+ * 9: P8 Part B (a dome light's own sky picture).
+ * 10: P8.24 (every field of Remix's materials; DDS rows from the bottom,
+ *     texture coordinates no longer flipped).
+ * 11: P8.30 (particle systems' newer fields; instanced draws). */
+#define BRB_ABI_VERSION 11
 
 typedef enum brb_status {
 	BRB_STATUS_NOT_LOADED = 0,           /* nothing tried yet */
@@ -171,6 +176,34 @@ typedef struct brb_material_desc {
 	int subsurface;              /* 1: on */
 	float subsurface_color[3];   /* single-scattering albedo, linear */
 	float subsurface_radius[3];  /* mean free path per channel, Blender units */
+	/* interface 7 (P8.8) */
+	int additive;                /* 1: added to what is behind (Blender's Add blending) */
+
+	/* interface 10 (P8.24): the rest of Remix's material. Zero (memset) is
+	 * Remix's default for each, except where a field says otherwise. */
+	const wchar_t *height_texture;   /* BRB_TEXTURE_SCALAR: height, 0..1 */
+	const wchar_t *tangent_texture;  /* the anisotropy's direction (Remix's tangent map) */
+	const wchar_t *transmittance_texture;          /* glass: sRGB colour */
+	const wchar_t *subsurface_transmittance_texture; /* sRGB colour */
+	const wchar_t *subsurface_thickness_texture;   /* BRB_TEXTURE_SCALAR */
+	const wchar_t *subsurface_albedo_texture;      /* sRGB colour: single-scattering albedo */
+	const wchar_t *subsurface_radius_texture;      /* sRGB colour: radius per channel, times subsurface_radius */
+	float anisotropy;            /* -1..1 */
+	int thin_film;               /* 1: a thin film of thin_film_thickness */
+	float thin_film_thickness;   /* nanometres */
+	int alpha_is_thin_film;      /* 1: the albedo texture's alpha is the film's thickness */
+	float displace_in;           /* height map depth inwards (Blender units) */
+	float displace_out;          /* and outwards */
+	int blend_type;              /* 0: from the fields above; -1: none (opaque); else Remix's BlendType + 1 */
+	int inverted_blend;
+	int alpha_test_type;         /* 0: from alpha_test; else Remix's AlphaTestType + 1 */
+	int wrap_u, wrap_v;          /* 0: from clamp; else Remix's wrap mode + 1 (clamp, repeat, mirrored, clip) */
+	float thin_wall_thickness;   /* glass with thin_walled: 0 = 0.001 */
+	int use_diffuse_layer;       /* glass: a diffuse layer under it */
+	int subsurface_volumetric;   /* 1: Remix's volumetric subsurface (measurement distance) instead of the diffusion profile */
+	float subsurface_distance;   /* volumetric: the transmittance colour's measurement distance */
+	float subsurface_anisotropy; /* -1..1 */
+	float subsurface_radius_scale; /* 0 = 1 */
 } brb_material_desc;
 
 /* interface 4 (P4): bone weights of a skinned surface, bones_per_vertex
@@ -198,6 +231,7 @@ typedef enum brb_light_type {
 	BRB_LIGHT_RECT = 1,          /* position, direction, x/y axes, size */
 	BRB_LIGHT_DISTANT = 2,       /* direction (where the light travels), angular diameter */
 	BRB_LIGHT_DOME = 3,          /* uniform light from all around (sky) */
+	BRB_LIGHT_DISK = 4,          /* interface 8: position, direction, x/y axes, radii in size[], optional cone */
 } brb_light_type;
 
 typedef struct brb_light_desc {
@@ -214,6 +248,10 @@ typedef struct brb_light_desc {
 	float cone_softness;
 	float angular_diameter_deg;  /* distant lights */
 	float radiance[3];
+	float volumetric;            /* interface 8: the light's strength in volumetric fog (Remix's 1 = 0 here) */
+	/* interface 9: dome lights: an equirectangular sky picture (a DDS, Blender's
+	 * equirectangular layout, Z up), times the radiance; NULL or "": white */
+	const wchar_t *dome_texture;
 } brb_light_desc;
 
 typedef struct brb_frame_stats {
@@ -316,6 +354,16 @@ BRB_API void brb_reset_stats(void);
 /* What Remix should treat a draw as (brb_draw_desc.categories) */
 #define BRB_CATEGORY_PARTICLE 1          /* a sprite or particle (Remix's particle handling) */
 #define BRB_CATEGORY_PARTICLE_EMITTER 2  /* spawns Remix GPU particles (brb_draw_desc.particles) */
+/* P8 Part C (P8.22, P8.24): Remix's other categories a draw can take */
+#define BRB_CATEGORY_HAIR_CARDS 4        /* hair ribbons */
+#define BRB_CATEGORY_ANIMATED_WATER 8    /* water whose surface moves */
+#define BRB_CATEGORY_TERRAIN 16
+#define BRB_CATEGORY_DECAL_STATIC 32     /* a decal over a surface that does not move */
+#define BRB_CATEGORY_DECAL_DYNAMIC 64
+#define BRB_CATEGORY_SKY 128
+#define BRB_CATEGORY_WORLD_UI 256
+#define BRB_CATEGORY_BEAM 512
+#define BRB_CATEGORY_IGNORE 1024         /* not drawn by Remix */
 
 /* Remix's own GPU particles, spawned from the draw's triangles. Lengths
  * in Blender units (metres), times in seconds; colours linear RGBA. "start"
@@ -339,6 +387,13 @@ typedef struct brb_particle_desc {
 	int align_to_velocity;
 	int hide_emitter;            /* 1: the emitter mesh itself is not drawn */
 	int billboard;               /* 0 face the camera, 1 upright (turn around Z), 2 lie flat (face up) */
+	/* interface 11 (P8.30): Remix's newer particle fields (zero: as before) */
+	int use_spawn_texcoords;     /* 1: a particle takes the texture coordinates where it was born */
+	int sprite_sheet_mode;       /* Remix's ParticleSpriteSheetMode */
+	int random_flip_axis;        /* Remix's ParticleRandomFlipAxis */
+	int collision_mode;          /* 0 bounce, 1 stop, 2 kill */
+	float rotation_deviation_deg;/* random start rotation */
+	float burst_duration;        /* seconds of spawning at once (0: steady) */
 } brb_particle_desc;
 
 /* One draw with everything interface 4 adds. bones: bone_count OpenGL
@@ -356,6 +411,11 @@ typedef struct brb_draw_desc {
 } brb_draw_desc;
 
 BRB_API int brb_frame_draw_ex(const brb_draw_desc *desc);
+
+/* interface 11 (P8.30): the draw once per model matrix (OpenGL, column
+ * major, world space), in one call (Remix's GPU instancing); desc->model is
+ * not used. Returns the remixapi_ErrorCode. */
+BRB_API int brb_frame_draw_instanced(const brb_draw_desc *desc, const float *models, uint32_t count);
 
 /* Ask which pick_ids Remix drew in a rectangle of its picture (pixels, top
  * left origin, right and bottom exclusive). The answer arrives a frame or
@@ -387,6 +447,10 @@ typedef enum brb_texture_kind {
 #define BRB_TEXTURE_NO_GPU 1 /* compress on the CPU even when a GPU is there */
 #define BRB_TEXTURE_LINEAR 2 /* COLOR: the bytes are linear, not sRGB (encoded to sRGB) */
 #define BRB_TEXTURE_INVERT 4 /* SCALAR: store 1 - value */
+/* interface 10: the file's rows from the image's top (for pictures Remix
+ * samples with its own coordinates: particles, the sky); the others keep
+ * Blender's order, rows from the bottom */
+#define BRB_TEXTURE_TOP_FIRST 8
 
 typedef struct brb_texture_desc {
 	const wchar_t *path;         /* the .dds to write; its folder must exist */

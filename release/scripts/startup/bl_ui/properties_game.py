@@ -392,21 +392,89 @@ class RENDER_PT_game_shading(RenderButtonsPanel, Panel):
 
         gs = context.scene.game_settings
 
-        layout.row().prop(gs, "material_mode", expand=True)
+        # BGE-Remix P8 Part B: the pipeline (Modern applies the scene's Color
+        # Management view transform, exposure, look and gamma at the end)
+        layout.row().prop(gs, "render_pipeline", expand=True)
 
-        if gs.material_mode == 'GLSL':
-            split = layout.split()
+        # BGE-Remix P8: one material mode (GLSL), so no mode switch
+        split = layout.split()
 
-            col = split.column()
-            col.prop(gs, "use_glsl_lights", text="Lights")
-            col.prop(gs, "use_glsl_shaders", text="Shaders")
-            col.prop(gs, "use_glsl_shadows", text="Shadows")
-            col.prop(gs, "use_glsl_environment_lighting", text="Environment Lighting")
+        col = split.column()
+        col.prop(gs, "use_glsl_lights", text="Lights")
+        col.prop(gs, "use_glsl_shaders", text="Shaders")
+        col.prop(gs, "use_glsl_shadows", text="Shadows")
+        col.prop(gs, "use_glsl_environment_lighting", text="Environment Lighting")
 
-            col = split.column()
-            col.prop(gs, "use_glsl_ramps", text="Ramps")
-            col.prop(gs, "use_glsl_nodes", text="Nodes")
-            col.prop(gs, "use_glsl_extra_textures", text="Extra Textures")
+        col = split.column()
+        col.prop(gs, "use_glsl_ramps", text="Ramps")
+        col.prop(gs, "use_glsl_nodes", text="Nodes")
+        col.prop(gs, "use_glsl_extra_textures", text="Extra Textures")
+        # BGE-Remix P8: off for files saved in Multitexture (colours as they were drawn)
+        col.prop(gs, "use_glsl_color_management", text="Color Management")
+
+
+class RENDER_PT_game_effects(RenderButtonsPanel, Panel):
+    """BGE-Remix P8.23/P8.25: the Modern pipeline's camera and screen effects
+    (the game's own picture; RTX Remix gets the matching settings)"""
+    bl_label = "Camera Effects"
+    bl_options = {'DEFAULT_CLOSED'}
+    COMPAT_ENGINES = {'BLENDER_GAME'}
+
+    def draw(self, context):
+        from .game_marks import mark
+        layout = self.layout
+        scene = context.scene
+        gs = scene.game_settings
+        modern = gs.render_pipeline == 'MODERN'
+        if not modern:
+            layout.label(text="The game draws these in the Modern pipeline (Shading above)", icon='INFO')
+        col = layout.column()
+        col.active = modern
+
+        split = col.split()
+        sub = split.column()
+        sub.prop(gs, "fx_bloom")
+        sub2 = sub.column(align=True)
+        sub2.active = gs.fx_bloom
+        sub2.prop(gs, "fx_bloom_intensity", text="Intensity")
+        sub2.prop(gs, "fx_bloom_threshold", text="Threshold")
+        sub2.prop(gs, "fx_bloom_radius", text="Radius")
+        sub = split.column()
+        sub.prop(gs, "fx_auto_exposure")
+        sub2 = sub.column()
+        sub2.active = gs.fx_auto_exposure
+        sub2.prop(gs, "fx_exposure_speed", text="Speed")
+        sub.prop(gs, "fx_vignette")
+
+        col.separator()
+        split = col.split()
+        sub = split.column()
+        sub.prop(gs, "fx_depth_of_field")
+        cam = scene.camera.data if scene.camera and scene.camera.type == 'CAMERA' else None
+        if cam is not None:
+            sub2 = sub.column(align=True)
+            sub2.active = gs.fx_depth_of_field
+            sub2.prop(cam.gpu_dof, "fstop", text="F-stop")
+            sub2.prop(cam, "dof_object", text="")
+            sub2.prop(cam, "dof_distance", text="Distance")
+        sub = split.column()
+        sub.prop(scene.render, "use_motion_blur", text="Motion Blur")
+        sub2 = sub.column()
+        sub2.active = scene.render.use_motion_blur
+        sub2.prop(scene.render, "motion_blur_shutter", text="Shutter")
+        mark(sub, "The camera's motion")
+        world = scene.world
+        if world is not None:
+            col.separator()
+            light = world.light_settings
+            row = col.row()
+            row.prop(light, "use_ambient_occlusion", text="Ambient Occlusion")
+            sub = row.row(align=True)
+            sub.active = light.use_ambient_occlusion
+            sub.prop(light, "ao_factor", text="Factor")
+            sub.prop(light, "distance", text="Distance")
+        col.separator()
+        mark(col, "2D filters run over RTX Remix's picture too")
 
 
 class RENDER_PT_game_remix(RenderButtonsPanel, Panel):
@@ -435,13 +503,14 @@ class RENDER_PT_game_remix(RenderButtonsPanel, Panel):
             default=False)
         bpy.types.Scene.bge_remix_light_scale = FloatProperty(
             name="Light Scale",
-            description="Brightness factor for lamps under RTX Remix",
-            default=0.125, min=0.0, soft_max=100.0)
+            description="Brightness factor for lamps under RTX Remix (1: as bright as in Blender Internal)",
+            default=1.0, min=0.0, soft_max=100.0)
         bpy.types.Scene.bge_remix_exposure = FloatProperty(
             name="Exposure",
-            description="Stops added to RTX Remix's automatic exposure (positive: brighter); "
-                        "+1 matches Cycles' brightness",
-            default=1.0, min=-10.0, max=10.0)
+            description="Stops added to RTX Remix's exposure (positive: brighter); 0 matches Cycles' "
+                        "brightness. Remix's automatic exposure is off unless a Modern scene's camera "
+                        "effects turn it on",
+            default=0.0, min=-10.0, max=10.0)
         # P5.1: Remix's quality settings, for the game, the 3D view and F12
         # (the menus' numbers are what source/blender/remix/intern/remix_session.c reads)
         bpy.types.Scene.bge_remix_preset = EnumProperty(
@@ -862,6 +931,108 @@ class WORLD_PT_game_mist(WorldButtonsPanel, Panel):
         row.prop(world.mist_settings, "depth")
 
         layout.prop(world.mist_settings, "intensity", text="Minimum Intensity")
+        # BGE-Remix P8 Part B (P8.17): the mist's height, as F12 uses it
+        layout.prop(world.mist_settings, "height")
+
+
+class WORLD_PT_game_reflections(WorldButtonsPanel, Panel):
+    """BGE-Remix P8 Part B (P8.18): reflections (probes are Empties, mirrors a material switch)"""
+    bl_label = "Reflections"
+    COMPAT_ENGINES = {'BLENDER_GAME'}
+
+    @classmethod
+    def poll(cls, context):
+        scene = context.scene
+        return (scene.world and scene.render.engine in cls.COMPAT_ENGINES)
+
+    @classmethod
+    def register(cls):
+        from bpy.props import BoolProperty, FloatProperty, IntProperty
+        bpy.types.World.bge_ssr = BoolProperty(
+            name="Screen-Space Reflections",
+            description="Modern scenes: reflections traced through the picture (probes and the sky where it "
+                        "shows nothing)",
+            default=True)
+        bpy.types.World.bge_mirror_scale = FloatProperty(
+            name="Mirror Resolution",
+            description="The size of a planar mirror's picture, as a part of the view's",
+            default=0.5, min=0.1, max=1.0)
+        bpy.types.Object.bge_probe = BoolProperty(
+            name="Reflection Probe",
+            description="An Empty whose surroundings nearby objects reflect",
+            default=False)
+        bpy.types.Object.bge_probe_reach = FloatProperty(
+            name="Reach",
+            description="How far the probe sees and reaches (objects nearer than this reflect it)",
+            default=10.0, min=0.1, soft_max=1000.0)
+        bpy.types.Object.bge_probe_rate = IntProperty(
+            name="Update Every",
+            description="Frames between the probe's pictures (0: once, when the game starts)",
+            default=0, min=0, soft_max=600)
+        bpy.types.Material.bge_planar_mirror = BoolProperty(
+            name="Planar Mirror",
+            description="The material's Ray Mirror reflects the scene drawn mirrored in the object's plane "
+                        "(its local Z axis the normal)",
+            default=False)
+
+    @classmethod
+    def unregister(cls):
+        for cls_, name in ((bpy.types.World, "bge_ssr"), (bpy.types.World, "bge_mirror_scale"),
+                           (bpy.types.Object, "bge_probe"), (bpy.types.Object, "bge_probe_reach"),
+                           (bpy.types.Object, "bge_probe_rate"), (bpy.types.Material, "bge_planar_mirror")):
+            if hasattr(cls_, name):
+                delattr(cls_, name)
+
+    def draw(self, context):
+        layout = self.layout
+        world = context.world
+        layout.prop(world, "bge_ssr")
+        layout.prop(world, "bge_mirror_scale")
+        layout.label("Probes: an Empty's Object tab; mirrors: a material's Mirror panel", icon='INFO')
+
+
+class OBJECT_PT_game_probe(Panel):
+    """BGE-Remix P8 Part B (P8.18): an Empty as a reflection probe"""
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'WINDOW'
+    bl_context = "object"
+    bl_label = "Reflection Probe"
+    COMPAT_ENGINES = {'BLENDER_GAME'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = context.object
+        return ob and ob.type == 'EMPTY' and context.scene.render.engine in cls.COMPAT_ENGINES
+
+    def draw_header(self, context):
+        self.layout.prop(context.object, "bge_probe", text="")
+
+    def draw(self, context):
+        layout = self.layout
+        ob = context.object
+        layout.active = ob.bge_probe
+        row = layout.row()
+        row.prop(ob, "bge_probe_reach")
+        row.prop(ob, "bge_probe_rate")
+
+
+class MATERIAL_PT_game_planar_mirror(Panel):
+    """BGE-Remix P8 Part B (P8.18): the material reads a planar mirror"""
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'WINDOW'
+    bl_context = "material"
+    bl_label = "Planar Mirror"
+    COMPAT_ENGINES = {'BLENDER_GAME'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.material and context.scene.render.engine in cls.COMPAT_ENGINES
+
+    def draw_header(self, context):
+        self.layout.prop(context.material, "bge_planar_mirror", text="")
+
+    def draw(self, context):
+        self.layout.label("Uses the Mirror panel's Reflectivity, Fresnel and Gloss", icon='INFO')
 
 
 class DataButtonsPanel:
@@ -876,7 +1047,9 @@ class DATA_PT_shadow_game(DataButtonsPanel, Panel):
 
     @classmethod
     def poll(cls, context):
-        COMPAT_LIGHTS = {'SPOT', 'SUN'}
+        # BGE-Remix P8.10: every lamp casts (point and area lamps from a cube
+        # map, the sun from cascades that follow the camera)
+        COMPAT_LIGHTS = {'SPOT', 'SUN', 'POINT', 'AREA'}
         lamp = context.lamp
         engine = context.scene.render.engine
         return (lamp and lamp.type in COMPAT_LIGHTS) and (engine in cls.COMPAT_ENGINES)
@@ -897,31 +1070,37 @@ class DATA_PT_shadow_game(DataButtonsPanel, Panel):
 
         col = split.column()
         col.prop(lamp, "shadow_color", text="")
-        if lamp.type == 'SUN':
-            col.prop(lamp, "show_shadow_box")
 
         col = split.column()
         col.prop(lamp, "use_shadow_layer", text="This Layer Only")
         col.prop(lamp, "use_only_shadow")
 
+        # the softness comes from the light's size (Lamp panel: Size, Angle)
+        if lamp.type == 'SPOT':
+            col = layout.column()
+            col.label("Buffer Type:")
+            col.prop(lamp, "ge_shadow_buffer_type", text="", toggle=True)
+        variance = lamp.type == 'SPOT' and lamp.ge_shadow_buffer_type == 'VARIANCE'
         col = layout.column()
-        col.label("Buffer Type:")
-        col.prop(lamp, "ge_shadow_buffer_type", text="", toggle=True)
         col.label("Quality:")
         col = layout.column(align=True)
         col.prop(lamp, "shadow_buffer_size", text="Size")
         col.prop(lamp, "shadow_buffer_bias", text="Bias")
-        col.prop(lamp, "shadow_buffer_bleed_bias", text="Bleed Bias")
-
-        row = layout.row()
-        row.label("Clipping:")
-        row = layout.row(align=True)
-        row.prop(lamp, "shadow_buffer_clip_start", text="Clip Start")
-        row.prop(lamp, "shadow_buffer_clip_end", text="Clip End")
+        if variance:
+            col.prop(lamp, "shadow_buffer_bleed_bias", text="Bleed Bias")
 
         if lamp.type == 'SUN':
+            # the cascades cover the camera's view up to this distance
+            layout.prop(lamp, "shadow_buffer_clip_end", text="Distance")
+        else:
             row = layout.row()
-            row.prop(lamp, "shadow_frustum_size", text="Frustum Size")
+            row.label("Clipping:")
+            row = layout.row(align=True)
+            row.prop(lamp, "shadow_buffer_clip_start", text="Clip Start")
+            row.prop(lamp, "shadow_buffer_clip_end", text="Clip End")
+
+        if hasattr(bpy.types.Lamp, "bge_contact_shadow"):
+            layout.prop(lamp, "bge_contact_shadow")
 
 
 class ObjectButtonsPanel:
@@ -990,6 +1169,7 @@ classes = (
     RENDER_PT_game_player,
     RENDER_PT_game_stereo,
     RENDER_PT_game_shading,
+    RENDER_PT_game_effects,
     RENDER_PT_game_remix,
     RENDER_PT_game_system,
     RENDER_PT_game_display,
@@ -1001,6 +1181,9 @@ classes = (
     WORLD_PT_game_world,
     WORLD_PT_game_environment_lighting,
     WORLD_PT_game_mist,
+    WORLD_PT_game_reflections,
+    OBJECT_PT_game_probe,
+    MATERIAL_PT_game_planar_mirror,
     DATA_PT_shadow_game,
     OBJECT_MT_lod_tools,
     OBJECT_PT_levels_of_detail,

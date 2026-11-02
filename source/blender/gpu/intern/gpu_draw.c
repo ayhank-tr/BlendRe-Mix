@@ -79,6 +79,7 @@
 #include "GPU_basic_shader.h"
 #include "GPU_buffers.h"
 #include "GPU_draw.h"
+#include "GPU_layer.h"
 #include "GPU_extensions.h"
 #include "GPU_material.h"
 #include "GPU_shader.h"
@@ -219,6 +220,104 @@ void GPU_render_text(
 
 		BKE_image_release_ibuf(ima, first_ibuf, NULL);
 	}
+}
+
+/* BGE-Remix P8 Part B: Face Texture text through the drawing layer (its
+ * matrices, the image shader): each character a quad textured from the
+ * bitmap font image (bound to unit 0 here), in the vertex colours, the
+ * object colour (TF_OBCOL, "obcol") or white */
+void GPU_render_text_layer(
+        MTexPoly *mtexpoly, int mode,
+        const char *textstr, int textlen, unsigned int *col,
+        const float *v_quad[4], const float *uv_quad[4], const float obcol[4])
+{
+	if (!((mode & GEMAT_TEXT) && (textlen > 0) && mtexpoly->tpage))
+		return;
+
+	const float *v1 = v_quad[0];
+	const float *v2 = v_quad[1];
+	const float *v3 = v_quad[2];
+	const float *v4 = v_quad[3];
+	Image *ima = (Image *)mtexpoly->tpage;
+	const size_t textlen_st = textlen;
+	float centerx, centery, sizex, sizey, transx, transy, movex, movey, advance;
+	float line_start = 0.0f, line_height;
+	float white[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+	const float *flat = white;
+
+	if (v4)
+		line_height = max_ffff(v1[1], v2[1], v3[1], v4[2]) - min_ffff(v1[1], v2[1], v3[1], v4[2]);
+	else
+		line_height = max_fff(v1[1], v2[1], v3[1]) - min_fff(v1[1], v2[1], v3[1]);
+	line_height *= 1.2f;
+
+	if (mtexpoly->mode & TF_OBCOL) {
+		col = NULL;
+		if (obcol)
+			flat = obcol;
+	}
+
+	glActiveTexture(GL_TEXTURE0);
+	const int bind = GPU_verify_image(ima, NULL, GL_TEXTURE_2D, 0, false, false, false);
+	if (!bind)
+		return;
+	glBindTexture(GL_TEXTURE_2D, (GLuint)bind);
+
+	GPU_matrix_mode(GPU_MATRIX_MODELVIEW);
+	GPU_matrix_push();
+
+	ImBuf *first_ibuf = BKE_image_get_first_ibuf(ima);
+	matrixGlyph(first_ibuf, ' ', &centerx, &centery,
+	            &sizex, &sizey, &transx, &transy, &movex, &movey, &advance);
+	float advance_tab = advance * 4;
+
+	for (size_t index = 0; index < textlen_st; ) {
+		unsigned int character;
+		float uv[4][2];
+
+		character = BLI_str_utf8_as_unicode_and_size_safe(textstr + index, &index);
+		if (character == '\n') {
+			GPU_matrix_translate(line_start, -line_height, 0.0f);
+			line_start = 0.0f;
+			continue;
+		}
+		else if (character == '\t') {
+			GPU_matrix_translate(advance_tab, 0.0f, 0.0f);
+			line_start -= advance_tab;
+			continue;
+		}
+		else if (character > USHRT_MAX) {
+			character = '?';
+		}
+
+		matrixGlyph(first_ibuf, character, &centerx, &centery,
+		            &sizex, &sizey, &transx, &transy, &movex, &movey, &advance);
+
+		const int nv = v4 ? 4 : 3;
+		GPU_imm_begin(GL_POLYGON, GPU_BUILTIN_IMAGE);
+		for (int k = 0; k < nv; k++) {
+			const float *v = v_quad[k];
+			uv[k][0] = (uv_quad[k][0] - centerx) * sizex + transx;
+			uv[k][1] = (uv_quad[k][1] - centery) * sizey + transy;
+			if (col) {
+				/* mcol order is swapped */
+				const unsigned char *cp = (const unsigned char *)&col[k];
+				GPU_imm_color4ub(cp[3], cp[2], cp[1], 255);
+			}
+			else {
+				GPU_imm_color4f(flat[0], flat[1], flat[2], flat[3]);
+			}
+			GPU_imm_texco2f(uv[k][0], uv[k][1]);
+			GPU_imm_vertex3f(sizex * v[0] + movex, sizey * v[1] + movey, v[2]);
+		}
+		GPU_imm_end();
+
+		GPU_matrix_translate(advance, 0.0f, 0.0f);
+		line_start -= advance;
+	}
+	GPU_matrix_pop();
+
+	BKE_image_release_ibuf(ima, first_ibuf, NULL);
 }
 
 /* Checking powers of two for images since OpenGL ES requires it */
@@ -565,6 +664,84 @@ static void gpu_verify_high_bit_srgb_buffer(float *srgb_frect,
 	}
 }
 
+/* BGE-Remix P8.24: the shared compressed texture cache */
+static GPUImageCacheLoad gpu_cache_load = NULL;
+static GPUImageCacheFree gpu_cache_free = NULL;
+static int gpu_cache_loads = 0;
+
+void GPU_set_image_cache(GPUImageCacheLoad load, GPUImageCacheFree free_fn)
+{
+	if (!load && gpu_cache_load && G.main) {
+		/* the editor uploads them again as it does (painting updates its
+		 * own textures, which a compressed one cannot take) */
+		for (Image *ima = G.main->image.first; ima; ima = ima->id.next) {
+			if (ima->tpageflag & IMA_GLBIND_CACHED) {
+				GPU_free_image(ima);
+				ima->tpageflag &= ~IMA_GLBIND_CACHED;
+			}
+		}
+	}
+	gpu_cache_load = load;
+	gpu_cache_free = free_fn;
+	gpu_cache_loads = 0;
+}
+
+int GPU_image_cache_loads(void)
+{
+	return gpu_cache_loads;
+}
+
+static bool gpu_image_from_cache(unsigned int *bind, Image *ima, ImBuf *ibuf, bool mipmap)
+{
+	GPUCompressedImage img;
+	int levels;
+	if (!gpu_cache_load || !GPU_speed_feature("texture_cache")) {
+		return false;
+	}
+	memset(&img, 0, sizeof(img));
+	if (!gpu_cache_load(ima, ibuf, &img) || img.levels < 1) {
+		return false;
+	}
+	/* without mipmaps only the first level; with them, the file's chain */
+	levels = mipmap ? min_ii(img.levels, 16) : 1;
+	while (glGetError() != GL_NO_ERROR) {
+		/* earlier errors are not this upload's */
+	}
+	glGenTextures(1, (GLuint *)bind);
+	glBindTexture(GL_TEXTURE_2D, *bind);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, levels - 1);
+	for (int i = 0, w = img.width, h = img.height; i < levels; i++) {
+		glCompressedTexImage2D(GL_TEXTURE_2D, i, img.format, w, h, 0, img.size[i], img.data[i]);
+		w = max_ii(w / 2, 1);
+		h = max_ii(h / 2, 1);
+	}
+	if (gpu_cache_free) {
+		gpu_cache_free(&img);
+	}
+	if (glGetError() != GL_NO_ERROR) {
+		/* the driver refused it: uncompressed, as before */
+		glDeleteTextures(1, (GLuint *)bind);
+		*bind = 0;
+		return false;
+	}
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, gpu_get_mipmap_filter(1));
+	if (mipmap && levels > 1) {
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, gpu_get_mipmap_filter(0));
+		ima->tpageflag |= IMA_MIPMAP_COMPLETE;
+	}
+	else {
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	}
+	if (GLEW_EXT_texture_filter_anisotropic) {
+		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, GPU_get_anisotropic());
+	}
+	gpu_cache_loads++;
+	ima->tpageflag |= IMA_GLBIND_CACHED;
+	(void)ibuf;
+	return true;
+}
+
 int GPU_verify_image(
         Image *ima, ImageUser *iuser,
         int textarget, int tftile, bool compare, bool mipmap, bool is_data)
@@ -753,11 +930,17 @@ int GPU_verify_image(
 		}
 	}
 
+	/* BGE-Remix P8.24: the shared compressed texture cache (8-bit colour images) */
+	if (!GTS.tilemode && textarget == GL_TEXTURE_2D && !use_high_bit_depth && !is_data && ibuf->rect &&
+	    gpu_image_from_cache(bind, ima, ibuf, mipmap))
+	{
+		/* drawn from the cache's file */
+	}
 #ifdef WITH_DDS
-	if (ibuf->ftype == IMB_FTYPE_DDS)
+	else if (ibuf->ftype == IMB_FTYPE_DDS)
 		GPU_create_gl_tex_compressed(bind, rect, rectw, recth, textarget, mipmap, ima, ibuf);
-	else
 #endif
+	else
 		GPU_create_gl_tex(bind, rect, frect, rectw, recth, textarget, mipmap, use_high_bit_depth, ima);
 	
 	/* mark as non-color data texture */
@@ -1626,6 +1809,7 @@ static struct GPUMaterialState {
 
 	bool backface_culling;
 	bool two_sided_lighting;
+	bool game_glsl;  /* BGE-Remix P8: GLSL drawing of a game scene: as the game draws */
 
 	GPUBlendMode *alphablend;
 	GPUBlendMode alphablend_fixed[FIXEDMAT];
@@ -1765,6 +1949,11 @@ void GPU_begin_object_materials(
 	GMS.use_matcaps = use_matcap;
 
 	GMS.backface_culling = (v3d->flag2 & V3D_BACKFACE_CULLING) != 0;
+	/* BGE-Remix P8: Textured mode in a game scene draws as the game does:
+	 * each material's Backface Culling, Invisible materials left out */
+	GMS.game_glsl = glsl && BKE_scene_uses_blender_game(scene);
+	if (GMS.game_glsl)
+		GMS.backface_culling = true;
 
 	GMS.two_sided_lighting = false;
 	if (ob && ob->type == OB_MESH)
@@ -1915,6 +2104,16 @@ static void GPU_get_object_info(float oi[3], Material *mat)
 	oi[2] = random * (1.0f / (float)0xFFFFFFFF);
 }
 
+/* BGE-Remix P8: "Face Textures" in the 3D view's GLSL drawing: the face
+ * image of the faces drawn next */
+static Image *gpu_face_image = NULL;
+
+void GPU_object_material_face_image(Image *ima)
+{
+	gpu_face_image = ima;
+	GMS.lastmatnr = -1;  /* bind the material again with this image */
+}
+
 int GPU_object_material_bind(int nr, void *attribs)
 {
 	GPUVertexAttribs *gattribs = attribs;
@@ -1966,6 +2165,13 @@ int GPU_object_material_bind(int nr, void *attribs)
 	else
 		GMS.lastretval = !GMS.is_alpha_pass;
 
+	/* BGE-Remix P8: the game draws no faces of an Invisible material */
+	if (GMS.lastretval && GMS.game_glsl && gattribs && GMS.gmatbuf[nr] &&
+	    (GMS.gmatbuf[nr]->game.flag & GEMAT_INVISIBLE))
+	{
+		GMS.lastretval = 0;
+	}
+
 	if (GMS.lastretval) {
 		/* for alpha pass, use alpha blend */
 		GPUBlendMode alphablend = GMS.alphablend[nr];
@@ -1989,6 +2195,9 @@ int GPU_object_material_bind(int nr, void *attribs)
 				GPU_get_object_info(object_info, mat);
 			}
 
+			if (GPU_material_uses_face_image(gpumat)) {
+				GPU_material_set_face_image(gpumat, gpu_face_image);
+			}
 			GPU_material_bind(
 			        gpumat, GMS.gob->lay, GMS.glay, 1.0, !(GMS.gob->mode & OB_MODE_TEXTURE_PAINT),
 			        GMS.gviewmat, GMS.gviewinv, GMS.gviewcamtexcofac, GMS.gscenelock);
@@ -2005,7 +2214,7 @@ int GPU_object_material_bind(int nr, void *attribs)
 			if (GMS.is_alpha_pass) glDepthMask(1);
 
 			if (GMS.backface_culling) {
-				if (mat->game.flag)
+				if (GMS.game_glsl ? (mat->game.flag & GEMAT_BACKCULL) : mat->game.flag)
 					glEnable(GL_CULL_FACE);
 				else
 					glDisable(GL_CULL_FACE);
@@ -2070,6 +2279,29 @@ void GPU_set_material_alpha_blend(int alphablend)
 int GPU_get_material_alpha_blend(void)
 {
 	return GMS.lastalphablend;
+}
+
+/* BGE-Remix P8 Part B: the alpha test a blend mode sets (as
+ * gpu_set_alpha_blend sets it): on, and the reference alpha fragments must
+ * be greater than */
+void GPU_material_alpha_test(int alphablend, bool *r_on, float *r_ref)
+{
+	*r_on = false;
+	*r_ref = 0.0f;
+	if (ELEM(alphablend, GPU_BLEND_ALPHA, GPU_BLEND_ALPHA_SORT)) {
+		if (U.glalphaclip != 1.0f) {
+			*r_on = true;
+			*r_ref = U.glalphaclip;
+		}
+	}
+	else if (alphablend == GPU_BLEND_CLIP) {
+		*r_on = true;
+		*r_ref = 0.5f;
+	}
+	else if (alphablend == GPU_BLEND_ALPHA_TO_COVERAGE) {
+		*r_on = true;
+		*r_ref = U.glalphaclip;
+	}
 }
 
 void GPU_object_material_unbind(void)

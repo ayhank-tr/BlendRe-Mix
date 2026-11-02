@@ -111,6 +111,16 @@ def shutdown():
         _bge_remix.shutdown()
 
 
+def material_match(material):
+    """BGE-Remix P8.24: how a material reaches RTX Remix, field by field:
+    {"fields": [{"field", "level" (0 exactly, 1 approximately, 2 not at all),
+    "note"}], "notes": [...], "baked": bool, "categories": int}; None without
+    the built-in module."""
+    if _bge_remix is None or material is None:
+        return None
+    return json.loads(_bge_remix.material_match(material.as_pointer()))
+
+
 def bmp_stats(path, step=97):
     """Mean and standard deviation of a 24-bit BMP's bytes (a quick "is there a
     picture" check, no image library needed). None if unreadable."""

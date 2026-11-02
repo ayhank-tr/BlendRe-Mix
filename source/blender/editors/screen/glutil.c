@@ -195,7 +195,7 @@ void setlinestyle(int nr)
 
 /* Invert line handling */
 	
-#define GL_TOGGLE(mode, onoff)  (((onoff) ? glEnable : glDisable)(mode))
+#define GL_TOGGLE(mode, onoff)  ((onoff) ? glEnable(mode) : glDisable(mode))  /* BGE-Remix P8.26: calls (redirected) */
 
 void set_inverted_drawing(int enable) 
 {

@@ -90,7 +90,12 @@ protected:
 	// will move...
 	unsigned int			m_flag;//MaterialProps
 	int						m_multimode; // sum of values
+	/* BGE-Remix P8.9: the light layer a material was made for, where it
+	 * matters (scenes with "This Layer Only" lamps; 0 elsewhere): materials
+	 * of different light layers do not share a bucket */
+	int						m_bucketlayer;
 public:
+	void SetBucketLayer(int layer) { m_bucketlayer = layer; }
 	MT_Vector3			m_diffuse;
 	float				m_shininess;
 	MT_Vector3			m_specular;
@@ -175,7 +180,16 @@ public:
 	virtual bool		UsesLighting(RAS_IRasterizer *rasty) const;
 	virtual bool		UsesObjectColor() const;
 	virtual bool		CastsShadows() const;
+	/* BGE-Remix P8 Part B (P8.11): objects of one mesh may be drawn as instances */
+	virtual bool		CanInstance() const { return false; }
 	virtual bool		OnlyShadow() const;
+	/* BGE-Remix P8 Part B (P8.19): a volume material (drawn by the volume
+	 * pass, not as a surface) */
+	bool				IsVolume() const;
+	/* BGE-Remix P8 Part C (P8.20): a halo material (its vertices are halos) */
+	bool				IsHalo() const;
+	/* BGE-Remix P8 Part C (P8.21): its blending (GPU_BLEND_*) */
+	int					GetAlphaBlendMode() const { return m_alphablend; }
 
 	virtual void		Replace_IScene(SCA_IScene *val) {} /* overridden by KX_BlenderMaterial */
 

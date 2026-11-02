@@ -32,6 +32,7 @@
 #define _USE_MATH_DEFINES
 
 #include "GHOST_WindowWin32.h"
+#include <cstdlib>
 #include "GHOST_SystemWin32.h"
 #include "GHOST_DropTargetWin32.h"
 #include "GHOST_ContextNone.h"
@@ -636,21 +637,45 @@ GHOST_Context *GHOST_WindowWin32::newDrawingContext(GHOST_TDrawingContextType ty
 		        GHOST_OPENGL_WGL_CONTEXT_FLAGS,
 		        GHOST_OPENGL_WGL_RESET_NOTIFICATION_STRATEGY);
 #elif defined(WITH_GL_PROFILE_COMPAT)
+		/* BGE-Remix P8.1: OpenGL 4.5, a debug context in test runs
+		 * (BGE_REMIX_GL_DEBUG=1), driver resets reported. Without 4.5 the old
+		 * request is made, so Blender can say which version the card has.
+		 * BGE-Remix P8.29: the core profile (the old calls the editors still
+		 * make are emulated, GPU_legacy.h); the compatibility profile with
+		 * --gl-compat (BGE_REMIX_GL_COMPAT=1), or when the core one fails. */
+		const char *gl_debug_env = getenv("BGE_REMIX_GL_DEBUG");
+		const bool gl_debug = m_debug_context || (gl_debug_env && gl_debug_env[0] == '1');
+		/* the process environment, not the C library's copy: --gl-compat sets
+		 * it with SetEnvironmentVariableW (BLI_setenv), which getenv misses */
+		char gl_compat_env[8] = "";
+		::GetEnvironmentVariableA("BGE_REMIX_GL_COMPAT", gl_compat_env, sizeof(gl_compat_env));
+		const bool gl_compat = (gl_compat_env[0] == '1');
+		for (int attempt = gl_compat ? 1 : 0; attempt < 2; attempt++) {
+			GHOST_Context *context45 = new GHOST_ContextWGL(
+			        m_wantStereoVisual,
+			        m_wantAlphaBackground,
+			        m_wantNumOfAASamples,
+			        m_hWnd,
+			        m_hDC,
+			        attempt == 0 ? WGL_CONTEXT_CORE_PROFILE_BIT_ARB : WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB,
+			        4, 5,
+			        (gl_debug ? WGL_CONTEXT_DEBUG_BIT_ARB : 0),
+			        WGL_LOSE_CONTEXT_ON_RESET_ARB);
+			if (context45->initializeDrawingContext())
+				return context45;
+			delete context45;
+			fprintf(stderr, "BGE-Remix: no OpenGL 4.5 %s context\n", attempt == 0 ? "core" : "compatibility");
+		}
+		fprintf(stderr, "BGE-Remix: asking for the driver's default OpenGL context\n");
 		GHOST_Context *context = new GHOST_ContextWGL(
 		        m_wantStereoVisual,
 		        m_wantAlphaBackground,
 		        m_wantNumOfAASamples,
 		        m_hWnd,
 		        m_hDC,
-#if 1
 		        0, // profile bit
 		        2, 1, // GL version requested
-#else
-		        // switch to this for Blender 2.8 development
-		        WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB,
-		        3, 2,
-#endif
-		        (m_debug_context ? WGL_CONTEXT_DEBUG_BIT_ARB : 0),
+		        (gl_debug ? WGL_CONTEXT_DEBUG_BIT_ARB : 0),
 		        GHOST_OPENGL_WGL_RESET_NOTIFICATION_STRATEGY);
 #else
 #  error

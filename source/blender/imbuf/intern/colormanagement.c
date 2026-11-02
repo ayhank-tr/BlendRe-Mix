@@ -1203,6 +1203,13 @@ void IMB_colormanagement_check_is_data(ImBuf *ibuf, const char *name)
 		ibuf->colormanage_flag &= ~IMB_COLORMANAGE_IS_DATA;
 }
 
+/* BGE-Remix P8.24: whether a colour space holds data (Non-Color), not colours */
+bool IMB_colormanagement_space_name_is_data(const char *name)
+{
+	ColorSpace *colorspace = colormanage_colorspace_get_named(name);
+	return colorspace && colorspace->is_data;
+}
+
 void IMB_colormanagement_assign_float_colorspace(ImBuf *ibuf, const char *name)
 {
 	ColorSpace *colorspace = colormanage_colorspace_get_named(name);

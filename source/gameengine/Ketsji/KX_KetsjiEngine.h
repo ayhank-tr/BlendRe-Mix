@@ -45,6 +45,15 @@
 struct TaskScheduler;
 class KX_TimeCategoryLogger;
 
+/* BGE-Remix P8.30: bge.texture's new picture for an image (8-bit RGBA, rows
+ * from the bottom), so RTX Remix can show it too; set by KX_RemixRenderer
+ * while Remix runs, NULL otherwise */
+struct Image;
+extern void (*KX_LiveTextureHook)(struct Image *ima, const unsigned int *rgba, int width, int height);
+/* true when Remix wants the image's next picture: bge.texture then reads its
+ * render or mirror back to memory instead of copying it on the card */
+extern bool (*KX_LiveTextureDue)(struct Image *ima);
+
 #define LEFT_EYE  1
 #define RIGHT_EYE 2
 
@@ -138,6 +147,9 @@ private:
 	static bool				m_doRender;  /* whether or not the scene should be rendered after the logic frame */
 
 	int					m_exitcode;
+
+	/* BGE-Remix P8.1: the OpenGL state at the last frame's start (BGE_REMIX_GL_CHECK=1) */
+	struct GPUStateSnapshot *m_gl_check;  /* NULL until the first frame */
 	STR_String			m_exitstring;
 
 	float			m_cameraZoom;
@@ -218,6 +230,7 @@ private:
 
 	void					RenderFrame(KX_Scene* scene, KX_Camera* cam);
 	void					PostRenderScene(KX_Scene* scene);
+	void					RenderSpotHalos(KX_Scene *scene);  /* BGE-Remix P8.9 */
 	void					RenderDebugProperties();
 
 public:
@@ -539,7 +552,48 @@ public:
 	 */
 	void			Resize();
 
+	/* BGE-Remix P8 Part B (P8.18): the planar mirror an object reads (-1: none) */
+	int MirrorIndex(KX_GameObject *obj) const;
+	/* BGE-Remix P8 Part B (P8.19): whether the scene has volumes (the volume
+	 * pass needs the scene's depth) */
+	bool HasVolumes(KX_Scene *scene) const { return scene == m_probes_scene && !m_volumes.empty(); }
+
 protected:
+	/* BGE-Remix P8 Part B (P8.18): reflections. Probes (Empties with
+	 * "bge_probe", and the viewpoints of Static and Animated env maps) draw
+	 * their cubes when due; planar mirrors draw the main camera's view
+	 * mirrored before the scene; a view drawn into the current target */
+	struct ProbeEntry {
+		KX_GameObject *obj;   /* held (AddRef) */
+		int slot;
+		int rate;             /* frames between pictures (0: once) */
+		float reach;
+		int age;
+		bool drawn;
+	};
+	std::vector<ProbeEntry> m_probes;
+	KX_Scene *m_probes_scene;
+	int m_probes_scan;
+	std::vector<std::pair<KX_GameObject *, int> > m_mirror_objects;
+	/* BGE-Remix P8 Part B (P8.19): volume objects (held), their smoke grids */
+	struct VolumeEntry {
+		KX_GameObject *obj;
+		int frame;                 /* the smoke cache frame in the grids (-1: none) */
+		unsigned int density, flame;
+		float smin[3], smax[3];
+	};
+	std::vector<VolumeEntry> m_volumes;
+	/* BGE-Remix P8 Part C (P8.20): halos and particles */
+	class KX_Sprites *m_sprites;
+	void RenderVolumes(KX_Scene *scene);
+	bool m_mirror_drawing;
+	void ScanProbes(KX_Scene *scene);
+	void ReleaseProbes();
+	void RenderProbes(KX_Scene *scene);
+	void RenderMirrors(KX_Scene *scene, KX_Camera *cam);
+	void RenderView(KX_Scene *scene, const MT_Matrix4x4 &view, const MT_Matrix4x4 &proj, KX_GameObject *hide,
+	                bool cull = true);
+
 	/**
 	 * Processes all scheduled scene activity.
 	 * At the end, if the scene lists have changed,

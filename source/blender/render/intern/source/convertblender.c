@@ -78,6 +78,7 @@
 #include "BKE_mesh.h"
 #include "BKE_modifier.h"
 #include "BKE_node.h"
+#include "BKE_lamp_physical.h"
 #include "BKE_object.h"
 #include "BKE_particle.h"
 #include "BKE_scene.h"
@@ -3821,6 +3822,13 @@ static GroupObject *add_render_lamp(Render *re, Object *ob)
 	lar->coeff_const= la->coeff_const;
 	lar->coeff_lin= la->coeff_lin;
 	lar->coeff_quad= la->coeff_quad;
+	/* BGE-Remix P8.9: physical falloff (inverse square with the light's
+	 * size) is Inverse Coefficients with these (BKE_lamp_physical.h) */
+	if (BKE_lamp_is_physical(la)) {
+		lar->falloff_type = LA_FALLOFF_INVCOEFFICIENTS;
+		BKE_lamp_physical_coefficients(la->dist, BKE_lamp_size(la), &lar->coeff_const, &lar->coeff_lin,
+		                               &lar->coeff_quad);
+	}
 	lar->curfalloff = curvemapping_copy(la->curfalloff);
 
 	if (lar->curfalloff) {

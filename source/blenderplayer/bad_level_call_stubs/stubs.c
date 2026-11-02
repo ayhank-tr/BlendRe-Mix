@@ -312,6 +312,21 @@ void WM_operator_stack_clear(struct wmWindowManager *wm) RET_NONE
 void WM_operator_handlers_clear(wmWindowManager *wm, struct wmOperatorType *ot) RET_NONE
 bool WM_operator_is_repeat(const struct bContext *C, const struct wmOperator *op) RET_ZERO;
 
+/* BGE-Remix P7: the player prints the Game View's checks when a game starts
+ * (BL_GameView.cpp); the same file's dry conversion, which only runs inside
+ * Blender, makes a KX_BlenderCanvas, whose window calls are never made here
+ * (wm_window.h's declarations, which need Blender's context types) */
+void wm_window_make_drawable(struct wmWindowManager *wm, struct wmWindow *win);
+void wm_window_swap_buffers(struct wmWindow *win);
+void wm_window_set_swap_interval(struct wmWindow *win, int interval);
+bool wm_window_get_swap_interval(struct wmWindow *win, int *intervalOut);
+void wm_get_screensize(int *r_width, int *r_height);
+void wm_window_make_drawable(struct wmWindowManager *wm, struct wmWindow *win) RET_NONE
+void wm_window_swap_buffers(struct wmWindow *win) RET_NONE
+void wm_window_set_swap_interval(struct wmWindow *win, int interval) RET_NONE
+bool wm_window_get_swap_interval(struct wmWindow *win, int *intervalOut) RET_ZERO
+void wm_get_screensize(int *r_width, int *r_height) RET_NONE
+
 void WM_autosave_init(wmWindowManager *wm) RET_NONE
 void WM_jobs_kill_all_except(struct wmWindowManager *wm, void *owner) RET_NONE
 
