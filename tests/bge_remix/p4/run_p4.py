@@ -347,8 +347,10 @@ def run_ci(args, out):
                                                 "tree_error_deg": tree_err, "most_draws": most, "stats": r["stats"]})
 
         em = fo["emitter"]
+        # (P8.30: the particles' own copy of the emitter mesh, with their
+        # glowing material: "emitter:<object>@<particle system>")
         emit = [p2.parse_fields(l) for l in lines if l.startswith("Emitter ") and
-                hexfield(l, "mesh") in hashes("mesh", em["mesh"])]
+                hexfield(l, "mesh") in hashes("mesh", em["mesh"]) | hashes("emitter", em["mesh"] + "@Sparks")]
         e = emit[-1] if emit else {}
         life = e.get("life", [0, 0]) if isinstance(e.get("life"), list) else [0, 0]
         size = e.get("size", [0, 0]) if isinstance(e.get("size"), list) else [0, 0]

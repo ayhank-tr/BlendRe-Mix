@@ -120,7 +120,8 @@ def commands():
         "p8rtx": run("p8", "run_p8.py") + ["--ours", OURS] + off +
                  ["--mock", MOCK, "--rtx", "--before", os.path.join(ROOT, "results"),
                   "--out", os.path.join(RESULTS, "p8rtx")],
-        "p8diag": run("p8", "run_p8.py") + ["--ours", OURS, "--diag", "--out", os.path.join(RESULTS, "p8diag")],
+        "p8diag": run("p8", "run_p8.py") + ["--ours", OURS, "--diag", "--before", os.path.join(ROOT, "results"),
+                                            "--out", os.path.join(RESULTS, "p8diag")],
     }
 
 

@@ -318,6 +318,8 @@ void classic_extras(const Material *ma, MaterialSpec &s)
 	}
 }
 
+static void shadeless_glow(const Material *ma, MaterialSpec &s, bool face_image);
+
 void from_blender_internal(const Material *ma, MaterialSpec &s)
 {
 	brb_material_desc &d = s.desc;
@@ -347,11 +349,33 @@ void from_blender_internal(const Material *ma, MaterialSpec &s)
 	}
 
 	image_slots(ma, s, false);
+	shadeless_glow(ma, s, false);
 	classic_extras(ma, s);
 }
 
 /* The image texture slots (P8.7: a physical material's Hardness slot is
  * its roughness, its Ray Mirror slot its metallic value) */
+/* P8.30: a shadeless surface with a colour image glows with the image
+ * (the RTX run: textured shadeless screens came out plain white). The
+ * image stays the albedo too, for its alpha; face_image: the image replaces
+ * the colour (Face Textures) */
+static void shadeless_glow(const Material *ma, MaterialSpec &s, bool face_image)
+{
+	brb_material_desc &d = s.desc;
+	if (!(ma->mode & MA_SHLESS) || !s.textures[TEX_ALBEDO].image || s.textures[TEX_EMISSIVE].image ||
+	    (s.locked & (1u << TEX_EMISSIVE)))
+	{
+		return;
+	}
+	s.textures[TEX_EMISSIVE] = s.textures[TEX_ALBEDO];
+	if (face_image) {
+		set3(d.emissive, 1.0f, 1.0f, 1.0f);
+	}
+	d.emissive_intensity = 1.0f;
+	set3(d.albedo, 0.0f, 0.0f, 0.0f);
+	mark(s, "emissive", MATCH_APPROX, "Shadeless: shown as a glow of its image");
+}
+
 void image_slots(const Material *ma, MaterialSpec &s, bool physical)
 {
 	brb_material_desc &d = s.desc;
@@ -485,6 +509,7 @@ bool from_physical(const Material *ma, MaterialSpec &s)
 		memcpy(d.subsurface_radius, ph.subsurface_radius, sizeof(d.subsurface_radius));
 	}
 	image_slots(ma, s, true);
+	shadeless_glow(ma, s, false);
 	return true;
 }
 
@@ -1202,6 +1227,7 @@ void apply_face_image(const Material *ma, Image *face_image, MaterialSpec &r_spe
 		/* the image's alpha is the opacity */
 		d.opacity = 1.0f;
 	}
+	shadeless_glow(ma, r_spec, true);
 }
 
 bool remix_block_used(const Material *ma)

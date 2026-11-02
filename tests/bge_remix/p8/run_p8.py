@@ -3143,7 +3143,7 @@ def linear_mean(path):
     return float((0.2126 * lin[..., 0] + 0.7152 * lin[..., 1] + 0.0722 * lin[..., 2]).mean())
 
 
-def rtx_before(args, out, before):
+def rtx_before(args, out, before, variants=None):
     """T8.36: the earlier phases' Remix pictures taken again, as their RTX
     runs took them, against the ones the build before P8 made"""
     sys.path.insert(0, os.path.join(os.path.dirname(HERE), "p4"))
@@ -3157,6 +3157,16 @@ def rtx_before(args, out, before):
                   "BGE_REMIX_P2_SHOT_FRAME": "30"})
         e.update(extra or {})
         return e
+
+    variants = variants or []
+
+    def others(phase, run_one):
+        """the same picture with each variant's environment (P8.30 diagnostics)"""
+        shots = {}
+        for label, env in variants:
+            vkey = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
+            shots[label] = run_one("_" + vkey, env).get("screenshot")
+        res[phase]["variants"] = shots
 
     def keep(phase, name, run):
         ref = os.path.join(before, phase, name + ".png") if before else None
@@ -3172,6 +3182,8 @@ def rtx_before(args, out, before):
         sc, _ = p2.make_scenes(args.ours, d)
         room = os.path.join(sc, "p2_room.blend")
         keep("p2", "T2.1_room", p2.player(args.ours, d, "T2.1_room", room, timed(40), size=(1920, 1080), cwd=d))
+        others("p2", lambda sfx, env: p2.player(args.ours, d, "T2.1_room" + sfx, room, timed(40, env),
+                                                size=(1920, 1080), cwd=d))
     except BaseException as ex:  # a SystemExit from a scene maker included
         res.setdefault("p2", {})["error"] = repr(ex)
     try:
@@ -3183,6 +3195,9 @@ def rtx_before(args, out, before):
         p2.player(args.ours, d, "T3.6_cold", room, timed(25, {"BGE_REMIX_CACHE_DIR": cache}), size=(1280, 720), cwd=d)
         keep("p3", "T3.2_room", p2.player(args.ours, d, "T3.2_room", room, timed(25, {"BGE_REMIX_CACHE_DIR": cache}),
                                           size=(1280, 720), cwd=d))
+        others("p3", lambda sfx, env: p2.player(args.ours, d, "T3.2_room" + sfx, room,
+                                                timed(25, dict(env, BGE_REMIX_CACHE_DIR=cache)), size=(1280, 720),
+                                                cwd=d))
     except BaseException as ex:
         res["p3"] = {"error": repr(ex)}
     try:
@@ -3194,6 +3209,9 @@ def rtx_before(args, out, before):
         keep("p4", "T4.1_remix_default", p4.player(args.ours, d, "T4.1_remix_default",
                                                    os.path.join(sc, "p4_characters.blend"), env, size=(1280, 720),
                                                    cwd=d))
+        others("p4", lambda sfx, extra: p4.player(args.ours, d, "T4.1_remix_default" + sfx,
+                                                  os.path.join(sc, "p4_characters.blend"), dict(env, **extra),
+                                                  size=(1280, 720), cwd=d))
     except BaseException as ex:
         res["p4"] = {"error": repr(ex)}
     return res
@@ -3481,32 +3499,25 @@ def run_rtx(args, out):
 # left at the sign-off: dark worlds washed out, particles missing, many_lamps
 # dim, the overlays' white squares
 
+# exposure: Remix's automatic exposure off, the light scale and exposure
+# (stops) tried; the first is now (automatic, 0.125, +1)
+EXPOSURES = [("auto (now)", {}),
+             ("fixed, scale 0.125, +1", {"BGE_REMIX_AUTOEXPOSURE": "0"}),
+             ("fixed, scale 0.125, +3", {"BGE_REMIX_AUTOEXPOSURE": "0", "BGE_REMIX_EXPOSURE": "3"}),
+             ("fixed, scale 1, 0", {"BGE_REMIX_AUTOEXPOSURE": "0", "BGE_REMIX_LIGHT_SCALE": "1",
+                                    "BGE_REMIX_EXPOSURE": "0"}),
+             ("fixed, scale 1, +1", {"BGE_REMIX_AUTOEXPOSURE": "0", "BGE_REMIX_LIGHT_SCALE": "1"})]
 DIAG = [
     # (row, game picture's scene, Remix scene, [(label, environment)])
-    ("lamps", "lamps_gl", "lamps_rtx",
-     [("as now", {}), ("dome off", {"BGE_REMIX_DOME": "0"}), ("dome x0.1", {"BGE_REMIX_DOME": "0.1"}),
-      ("dome from ambient", {"BGE_REMIX_DOME": "ambient"}), ("light scale 1", {"BGE_REMIX_LIGHT_SCALE": "1"})]),
-    ("classic_remix", "classic_remix_gl", "classic_remix_rtx",
-     [("as now", {}), ("dome off", {"BGE_REMIX_DOME": "0"}), ("dome x0.1", {"BGE_REMIX_DOME": "0.1"}),
-      ("dome from ambient", {"BGE_REMIX_DOME": "ambient"})]),
-    ("sky: blend", "world_sky_blend_classic", "world_sky_blend_remix_rtx",
-     [("as now", {}), ("dome from ambient", {"BGE_REMIX_DOME": "ambient"})]),
-    ("transparency (smoke)", "transparency", "transparency_rtx",
-     [("as now", {}), ("test particles", {"BGE_REMIX_PARTICLE_TEST": "1"}),
-      ("units 1", {"BGE_REMIX_PARTICLE_UNITS": "1"}),
-      ("test particles, units 1", {"BGE_REMIX_PARTICLE_TEST": "1", "BGE_REMIX_PARTICLE_UNITS": "1"})]),
+    ("classic_remix", "classic_remix_gl", "classic_remix_rtx", EXPOSURES),
+    ("shadows", "shadows", "shadows_rtx", EXPOSURES),
+    ("pbr_spheres", "pbr_spheres_gl", "pbr_spheres_rtx", EXPOSURES),
+    ("sky: blend", "world_sky_blend_classic", "world_sky_blend_remix_rtx", EXPOSURES),
+    # the fixes: particles glow, shadeless images, Face Texture text
     ("hair_particles", "hair_particles", "hair_particles_remix_rtx",
-     [("as now", {}), ("test particles", {"BGE_REMIX_PARTICLE_TEST": "1"}),
-      ("units 1", {"BGE_REMIX_PARTICLE_UNITS": "1"}),
-      ("test particles, units 1", {"BGE_REMIX_PARTICLE_TEST": "1", "BGE_REMIX_PARTICLE_UNITS": "1"})]),
-    ("many_lamps", "many_lamps", "many_lamps_rtx",
-     [("as now", {}), ("auto exposure on", {"BGE_REMIX_AUTOEXPOSURE": "1"}),
-      ("light scale 1", {"BGE_REMIX_LIGHT_SCALE": "1"}),
-      ("both", {"BGE_REMIX_AUTOEXPOSURE": "1", "BGE_REMIX_LIGHT_SCALE": "1"})]),
-    ("game_overlays", "game_overlays", "game_overlays_remix_rtx",
-     [("as now (perspective copy)", {})]),
-    ("game_overlays", None, "game_overlays_remix_rtxortho",
-     [("its own orthographic camera", {})]),
+     [("now", {}), ("lit, as before", {"BGE_REMIX_PARTICLES_LIT": "1"})]),
+    ("transparency (smoke)", "transparency", "transparency_rtx", [("now", {})]),
+    ("game_overlays", "game_overlays", "game_overlays_remix_rtx", [("now", {})]),
 ]
 DIAG_NOTES = ("BGE_REMIX_", "BGE-Remix particles", "Remix's fog", "camera effects to Remix")
 
@@ -3516,16 +3527,17 @@ def run_diag(args, out):
     S = lambda n: os.path.join(scenes, n + ".blend")  # noqa: E731
     have = lambda n: bool(n) and os.path.isfile(S(n))  # noqa: E731
     names = sorted({r[2][:-4] for r in DIAG if r[2].endswith("_rtx")})
-    blender_script(args.ours, out, "remix_variants", REMIX_VARIANT, [scenes] + names + ["keep:game_overlays_remix"])
-    cells = expected.get("lamps", {}).get("cells", {})
+    blender_script(args.ours, out, "remix_variants", REMIX_VARIANT, [scenes] + names)
     items, detail = [], {}
     for row, game, remix, variants in DIAG:
         key = re.sub(r"[^a-z0-9]+", "_", row.lower()).strip("_")
         if game:
             r = play(args.ours, out, "diag_%s_game" % key, S(game), frames=110, gl_debug=False) if have(game) else {}
             items.append(("%s: the game" % row, r.get("screenshot")))
-            detail.setdefault(row, {})["game"] = {"picture": p2.has_picture(r.get("screenshot"))[1]
-                                                  if r.get("screenshot") else None}
+            shot = r.get("screenshot")
+            detail.setdefault(row, {})["game"] = {"picture": p2.has_picture(shot)[1] if shot else None,
+                                                  "brightness": round(linear_mean(shot), 3)
+                                                  if shot and linear_mean(shot) is not None else None}
         for label, env in variants:
             vkey = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
             tag = "diag_%s_%s" % (key, vkey)
@@ -3539,13 +3551,27 @@ def run_diag(args, out):
                  "lights": st.get("lights_last_frame"), "gpu_emitters": st.get("gpu_emitters"),
                  "notes": [l for l in (r.get("text") or "").splitlines() if l.startswith(DIAG_NOTES)
                            or "BGE-Remix: BGE_REMIX" in l or "BGE-Remix particles" in l][:6]}
-            if row == "lamps" and shot:
-                v["cells"] = {n: round(x, 2) for n, x in cell_ratios(picture(shot), cells).items()}
+            v["brightness"] = round(linear_mean(shot), 3) if shot and linear_mean(shot) is not None else None
             detail.setdefault(row, {})[label] = v
-    if detail.get("lamps", {}).get("game") is not None:
-        g = [x for x in items if x[0] == "lamps: the game"]
-        if g and g[0][1]:
-            detail["lamps"]["game"]["cells"] = {n: round(x, 2) for n, x in cell_ratios(picture(g[0][1]), cells).items()}
+    # the earlier phases' rooms (tuned with automatic exposure) at each exposure
+    rooms = rtx_before(args, out, args.before, EXPOSURES[1:])
+    cycles = os.path.join(args.before, "p2", "cycles_room.png") if args.before else None
+    for phase, label, what in BEFORE:
+        b = rooms.get(phase, {})
+        row = [("%s: before P8" % what, b.get("before"))]
+        if phase == "p2":
+            row.append(("%s: Cycles" % what, cycles))
+        row.append(("%s: auto (now)" % what, b.get("now")))
+        for vlabel, _ in EXPOSURES[1:]:
+            row.append(("%s: %s" % (what, vlabel), (b.get("variants") or {}).get(vlabel)))
+        items += row
+        detail["room " + phase] = {
+            "difference_from_before": {lab: picture_diff(path, b.get("before")) if path and b.get("before") else None
+                                       for lab, path in row[1:]},
+            "from_cycles": {lab: picture_diff(path, cycles) if path and cycles else None for lab, path in row[1:]}
+            if phase == "p2" else None,
+            "brightness": {lab: round(linear_mean(path), 3) if path and linear_mean(path) is not None else None
+                           for lab, path in row}}
     sheet = p2.contact_sheet(items, os.path.join(out, "sheet_p8_diag.png"))
     ran = sum(1 for row in detail.values() for k, v in row.items() if k != "game" and v.get("running"))
     total = sum(len(r[3]) for r in DIAG)

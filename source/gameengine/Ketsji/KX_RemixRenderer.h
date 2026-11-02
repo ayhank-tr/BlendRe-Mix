@@ -234,6 +234,10 @@ private:
 	bool DrawSkinned(KX_Scene *scene, KX_GameObject *obj, RAS_Deformer *def, const float model[16], uint32_t pick);
 	bool DrawDeformed(KX_Scene *scene, KX_GameObject *obj, RAS_Deformer *def, const float model[16], uint32_t pick);
 	bool DrawEmitters(KX_Scene *scene, KX_GameObject *obj, struct Object *ob, const float model[16], uint32_t pick);
+	bool DrawFaceText(KX_Scene *scene, KX_GameObject *obj, RAS_MeshObject *mesh, const float model[16], uint32_t pick);
+	uint64_t ParticleMaterial(KX_Scene *scene, struct Object *ob, struct ParticleSystem *psys);
+	uint64_t EmitterMesh(KX_Scene *scene, KX_GameObject *obj, RAS_MeshObject *mesh, struct ParticleSystem *psys,
+	                     uint64_t material);
 	/* P8.20: a halo material's vertices as glowing sprites facing the camera */
 	bool DrawHalos(KX_Scene *scene, KX_GameObject *obj, struct Object *ob, const float model[16],
 	               const MT_Matrix3x3 &camori, uint32_t pick);

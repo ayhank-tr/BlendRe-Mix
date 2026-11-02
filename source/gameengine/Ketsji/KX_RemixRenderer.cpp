@@ -54,6 +54,7 @@
 #include "RAS_ICanvas.h"
 #include "RAS_ILightObject.h"
 #include "RAS_IPolygonMaterial.h"
+#include "RAS_IRasterizer.h"  /* P8.30: RAS_RENDER_3DPOLYGON_TEXT */
 #include "RAS_MaterialBucket.h"
 #include "RAS_MeshObject.h"
 #include "RAS_Rect.h"
@@ -94,6 +95,9 @@ extern "C" {
 #  include "DNA_image_types.h"
 #  include "BKE_object.h"
 #  include "BKE_material.h"
+#  include "BKE_image.h"
+#  include "BKE_bmfont.h"
+#  include "BLI_string_utf8.h"
 }
 #include "GPU_material.h"
 
@@ -306,6 +310,11 @@ KX_RemixRenderer::Settings KX_RemixRenderer::GetSettings(KX_Scene *scene, int ov
 	const char *ls = getenv("BGE_REMIX_LIGHT_SCALE");
 	if (ls && ls[0]) {
 		s.light_scale = (float)atof(ls);
+	}
+	/* and BGE_REMIX_EXPOSURE the scene's exposure (stops) */
+	const char *ex = getenv("BGE_REMIX_EXPOSURE");
+	if (ex && ex[0]) {
+		s.exposure = (float)atof(ex);
 	}
 	if (!(s.light_scale >= 0.0f) || s.light_scale > 1e6f) {
 		s.light_scale = DEFAULT_LIGHT_SCALE;
@@ -1006,6 +1015,10 @@ void KX_RemixRenderer::Collect(KX_Scene *scene, RAS_MeshObject *mesh, void *clie
 		if (mode & RAS_IPolyMaterial::SHADOW) {
 			/* fake blob shadows, cast to the ground in OpenGL: Remix casts real ones */
 			g.shadow_faces++;
+			continue;
+		}
+		/* P8.30: Face Texture text: its letters are drawn by DrawFaceText */
+		if (mode & RAS_IRasterizer::RAS_RENDER_3DPOLYGON_TEXT) {
 			continue;
 		}
 		std::vector<brb_vertex> v;
@@ -1816,6 +1829,246 @@ bool KX_RemixRenderer::DrawHalos(KX_Scene *scene, KX_GameObject *obj, Object *ob
 /* ------------------------------------------------------------------------- */
 /* Blender particle systems as Remix GPU particles (P4.6) */
 
+/* P8.30: Face Texture text (a bitmap font image and the object's Text
+ * property): each letter a quad cut from the font image, placed as the game
+ * places it (GPU_render_text_layer), in the object's space */
+static bool mesh_has_face_text(RAS_MeshObject *mesh)
+{
+	for (std::list<RAS_MeshMaterial>::iterator mit = mesh->GetFirstMaterial(); mit != mesh->GetLastMaterial(); ++mit) {
+		RAS_IPolyMaterial *pm = mit->m_bucket ? mit->m_bucket->GetPolyMaterial() : NULL;
+		if (pm && (pm->GetDrawingMode() & RAS_IRasterizer::RAS_RENDER_3DPOLYGON_TEXT)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool KX_RemixRenderer::DrawFaceText(KX_Scene *scene, KX_GameObject *obj, RAS_MeshObject *mesh, const float model[16],
+                                    uint32_t pick)
+{
+	const STR_String &text = obj->GetPropertyText("Text");
+	const char *str = text.ReadPtr();
+	const size_t len = (size_t)text.Length();
+	Geometry g;
+	bool blend = false;
+	for (std::list<RAS_MeshMaterial>::iterator mit = mesh->GetFirstMaterial(); mit != mesh->GetLastMaterial(); ++mit) {
+		RAS_IPolyMaterial *pm = mit->m_bucket ? mit->m_bucket->GetPolyMaterial() : NULL;
+		RAS_MeshSlot *slot = mit->m_baseslot;
+		if (!pm || !slot || !(pm->GetDrawingMode() & RAS_IRasterizer::RAS_RENDER_3DPOLYGON_TEXT) || len == 0) {
+			continue;
+		}
+		MTexPoly *tp = pm->GetMTexPoly();
+		Image *ima = tp ? (Image *)tp->tpage : NULL;
+		ImBuf *ibuf = ima ? BKE_image_get_first_ibuf(ima) : NULL;
+		if (!ibuf) {
+			continue;
+		}
+		const MaterialEntry &me = EnsureMaterial(scene, pm, NULL);
+		blend = blend || me.blend;
+		std::vector<brb_vertex> verts;
+		std::vector<uint32_t> idx;
+		float cx, cy, sx, sy, tx, ty, mx, my, advance;
+		matrixGlyph(ibuf, ' ', &cx, &cy, &sx, &sy, &tx, &ty, &mx, &my, &advance);
+		const float advance_tab = advance * 4.0f;
+		RAS_MeshSlot::iterator it;
+		for (slot->begin(it); !slot->end(it); slot->next(it)) {
+			const int type = it.array->m_type;
+			if (type != RAS_DisplayArray::TRIANGLE && type != RAS_DisplayArray::QUAD) {
+				continue;
+			}
+			for (size_t i = 0; i + (size_t)type <= it.totindex; i += type) {
+				float v[4][3], uv[4][2];
+				for (int j = 0; j < type; j++) {
+					const RAS_TexVert &tv = it.vertex[it.index[i + j]];
+					memcpy(v[j], tv.getXYZ(), sizeof(v[j]));
+					memcpy(uv[j], tv.getUV(0), sizeof(uv[j]));
+				}
+				/* (as the game: its quad case reads the fourth corner's z) */
+				float lo = std::min(std::min(v[0][1], v[1][1]), v[2][1]);
+				float hi = std::max(std::max(v[0][1], v[1][1]), v[2][1]);
+				if (type == RAS_DisplayArray::QUAD) {
+					lo = std::min(lo, v[3][2]);
+					hi = std::max(hi, v[3][2]);
+				}
+				const float line_height = (hi - lo) * 1.2f;
+				float offx = 0.0f, offy = 0.0f, line_start = 0.0f;
+				for (size_t index = 0; index < len;) {
+					unsigned int ch = BLI_str_utf8_as_unicode_and_size_safe(str + index, &index);
+					if (ch == '\n') {
+						offx += line_start;
+						offy -= line_height;
+						line_start = 0.0f;
+						continue;
+					}
+					if (ch == '\t') {
+						offx += advance_tab;
+						line_start -= advance_tab;
+						continue;
+					}
+					if (ch > 0xffff) {
+						ch = '?';
+					}
+					matrixGlyph(ibuf, (unsigned short)ch, &cx, &cy, &sx, &sy, &tx, &ty, &mx, &my, &advance);
+					const uint32_t base = (uint32_t)verts.size();
+					for (int j = 0; j < type; j++) {
+						brb_vertex o;
+						memset(&o, 0, sizeof(o));
+						o.position[0] = sx * v[j][0] + mx + offx;
+						o.position[1] = sy * v[j][1] + my + offy;
+						o.position[2] = v[j][2];
+						o.normal[2] = 1.0f;
+						o.uv[0] = (uv[j][0] - cx) * sx + tx;
+						o.uv[1] = (uv[j][1] - cy) * sy + ty;
+						o.color = 0xffffffffu;
+						verts.push_back(o);
+					}
+					const uint32_t tri[6] = {0, 1, 2, 0, 2, 3};
+					for (int k = 0; k < (type == RAS_DisplayArray::QUAD ? 6 : 3); k++) {
+						idx.push_back(base + tri[k]);
+					}
+					offx += advance;
+					line_start -= advance;
+				}
+			}
+		}
+		BKE_image_release_ibuf(ima, ibuf, NULL);
+		if (!idx.empty()) {
+			g.verts.push_back(verts);
+			g.indices.push_back(idx);
+			g.materials.push_back(me.hash);
+		}
+	}
+	if (g.verts.empty()) {
+		return false;
+	}
+	/* normals: the quads' own (the letters lie in the faces' plane) */
+	for (size_t s = 0; s < g.verts.size(); s++) {
+		std::vector<brb_vertex> &vv = g.verts[s];
+		for (size_t t = 0; t + 2 < g.indices[s].size(); t += 3) {
+			const float *a = vv[g.indices[s][t]].position, *b = vv[g.indices[s][t + 1]].position,
+			            *c = vv[g.indices[s][t + 2]].position;
+			float n[3];
+			normal_tri_v3(n, a, b, c);
+			for (int k = 0; k < 3; k++) {
+				memcpy(vv[g.indices[s][t + k]].normal, n, sizeof(n));
+			}
+		}
+		g.content = hash_bytes(&vv[0], vv.size() * sizeof(brb_vertex), g.content ? g.content : 1469598103934665603ull);
+	}
+	DeformEntry &e = m_deformed[(const char *)obj + 3];
+	const std::string name = obj->GetName().ReadPtr();
+	if (e.hash == 0 || e.name != name || e.scene != scene) {
+		if (e.hash) {
+			m_bridge->mesh_destroy(e.hash);
+			m_hashes.erase(e.hash);
+		}
+		e.hash = UniqueHash("facetext", name, (const char *)obj + 3);
+		e.scene = scene;
+		e.name = name;
+		e.content = 0;
+	}
+	e.last_seen = m_frames;
+	if (e.content != g.content) {
+		if (!SendGeometry(e.hash, g)) {
+			e.content = 0;
+			return false;
+		}
+		e.content = g.content;
+	}
+	brb_draw_desc d;
+	memset(&d, 0, sizeof(d));
+	d.mesh = e.hash;
+	memcpy(d.model, model, sizeof(d.model));
+	d.flags = BRB_DRAW_DOUBLE_SIDED | (blend ? BRB_DRAW_BLEND : 0);
+	d.pick_id = pick;
+	m_bridge->frame_draw_ex(&d);
+	return true;
+}
+
+/* P8.30: the material Remix draws a particle system's particles with. The
+ * game draws particles unlit, in their material's colour and image (halos
+ * as glows), so Remix gets them as a glow too (the RTX run: lit, they came
+ * out as dark squares in dark scenes). 0: none (the emitter's own) */
+uint64_t KX_RemixRenderer::ParticleMaterial(KX_Scene *scene, Object *ob, ParticleSystem *psys)
+{
+	ParticleSettings *part = psys->part;
+	Material *ma = give_current_material(ob, part->omat);
+	if (!ma) {
+		return 0;
+	}
+	if (part->ren_as == PART_DRAW_HALO) {
+		return HaloMaterial(ma);
+	}
+	const std::pair<const void *, const void *> key(ma, psys);
+	const std::string name = std::string(ma->id.name + 2) + "@" + psys->name;
+	std::map<std::pair<const void *, const void *>, MaterialEntry>::iterator it = m_materials.find(key);
+	if (it != m_materials.end() && it->second.name == name && it->second.scene == scene) {
+		return it->second.hash;
+	}
+	MaterialEntry e;
+	e.spec.reset(new brmx::MaterialSpec());
+	brmx::translate_material(ma, *e.spec);
+	brb_material_desc &d = e.spec->desc;
+	if (e.spec->textures[brmx::TEX_ALBEDO].image && !e.spec->textures[brmx::TEX_EMISSIVE].image) {
+		e.spec->textures[brmx::TEX_EMISSIVE] = e.spec->textures[brmx::TEX_ALBEDO];
+	}
+	d.emissive[0] = ma->r;
+	d.emissive[1] = ma->g;
+	d.emissive[2] = ma->b;
+	d.emissive_intensity = 1.0f;
+	d.albedo[0] = d.albedo[1] = d.albedo[2] = 0.0f;
+	d.metallic = 0.0f;
+	d.roughness = 1.0f;
+	if (ma->game.alpha_blend == GEMAT_ADD) {
+		d.alpha_blend = 1;
+		d.additive = 1;
+	}
+	d.hash = UniqueHash("particles", name, &m_materials[key]);
+	e.hash = d.hash;
+	e.scene = scene;
+	e.name = name;
+	e.blend = d.alpha_blend != 0;
+	e.particle = true;
+	SendMaterial(e);
+	m_materials[key] = e;
+	return e.hash;
+}
+
+/* P8.30: the emitter's mesh with the particles' material (Remix's particles
+ * take the emitter's material; the emitter itself stays hidden) */
+uint64_t KX_RemixRenderer::EmitterMesh(KX_Scene *scene, KX_GameObject *obj, RAS_MeshObject *mesh,
+                                       ParticleSystem *psys, uint64_t material)
+{
+	DeformEntry &e = m_deformed[(const char *)psys + 2];
+	const std::string name = std::string(obj->GetName().ReadPtr()) + "@" + psys->name;
+	e.last_seen = m_frames;
+	if (e.hash && e.name == name && e.scene == scene && e.content == material) {
+		return e.hash;
+	}
+	if (e.hash) {
+		m_bridge->mesh_destroy(e.hash);
+		m_hashes.erase(e.hash);
+	}
+	Geometry g;
+	Collect(scene, mesh, NULL, NULL, g);
+	for (size_t i = 0; i < g.materials.size(); i++) {
+		g.materials[i] = material;
+	}
+	e.hash = UniqueHash("emitter", name, (const char *)psys + 2);
+	e.scene = scene;
+	e.name = name;
+	e.content = material;
+	e.double_sided = true;
+	e.blend = true;
+	e.particle = true;
+	e.categories = 0;
+	if (!SendGeometry(e.hash, g)) {
+		m_hashes.erase(e.hash);
+		e.hash = 0;
+	}
+	return e.hash;
+}
+
 bool KX_RemixRenderer::DrawEmitters(KX_Scene *scene, KX_GameObject *obj, Object *ob, const float model[16],
                                     uint32_t pick)
 {
@@ -1915,8 +2168,15 @@ bool KX_RemixRenderer::DrawEmitters(KX_Scene *scene, KX_GameObject *obj, Object 
 		brb_draw_desc d;
 		memset(&d, 0, sizeof(d));
 		d.mesh = me->hash;
-		memcpy(d.model, model, sizeof(d.model));
 		d.flags = me->double_sided ? BRB_DRAW_DOUBLE_SIDED : 0;
+		/* P8.30: the particles glow in their material's colour and image */
+		const uint64_t pmat = getenv("BGE_REMIX_PARTICLES_LIT") ? 0 : ParticleMaterial(scene, ob, psys);
+		const uint64_t pmesh = pmat ? EmitterMesh(scene, obj, mesh, psys, pmat) : 0;
+		if (pmesh) {
+			d.mesh = pmesh;
+			d.flags = BRB_DRAW_DOUBLE_SIDED | BRB_DRAW_BLEND;
+		}
+		memcpy(d.model, model, sizeof(d.model));
 		d.categories = BRB_CATEGORY_PARTICLE_EMITTER;
 		d.pick_id = pick;
 		d.particles = &p;
@@ -2565,6 +2825,12 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 		bool hide_emitter = false;
 		if (ob && ob->particlesystem.first) {
 			hide_emitter = DrawEmitters(scene, obj, ob, model, pick);
+		}
+		/* P8.30: Face Texture text, letter by letter */
+		if (obj->GetMeshCount() > 0 && mesh_has_face_text(obj->GetMesh(0)) &&
+		    DrawFaceText(scene, obj, obj->GetMesh(0), model, pick))
+		{
+			draws++;
 		}
 		for (int m = first; m < obj->GetMeshCount(); m++) {
 			if (m == 0 && hide_emitter) {
