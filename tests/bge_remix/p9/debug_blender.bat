@@ -14,7 +14,6 @@ set OUT=C:\BGE-Remix\tests-local\results\debug_blender
 set FILE=%~1
 if "%FILE%"=="" set FILE=C:\Users\ayhan\Downloads\Rally Cross BGE\RG_update_blend\RG_update.blend
 rem (no parenthesised block: the ")" of "(x86)" would end it)
-if not exist "%CDB%" goto nodebugger
 if exist "%OUT%" rmdir /s /q "%OUT%"
 mkdir "%OUT%\tmp"
 rem Blender's and Remix's own logs and crash reports go into the results too
@@ -22,6 +21,7 @@ set TEMP=%OUT%\tmp
 set TMP=%OUT%\tmp
 set BGE_REMIX_TRACE=1
 set BGE_REMIX_GL_DEBUG=1
+if not exist "%CDB%" goto nodebugger
 echo Starting Blender under the debugger with:
 echo   %FILE%
 "%CDB%" -G -sins -logo "%OUT%\debugger.log" -cf "%~dp0debug_blender.cdb" "%OURS%\blender.exe" "%FILE%" > "%OUT%\console.log" 2>&1
@@ -32,6 +32,13 @@ pause
 exit /b 0
 
 :nodebugger
-echo The Windows debugger is not installed: "%CDB%"
+rem Without the debugger: Blender's own console output and Remix's log, whose
+rem last lines show what it was doing when it stopped
+echo The Windows debugger is not installed; starting Blender without it, with:
+echo   %FILE%
+"%OURS%\blender.exe" "%FILE%" > "%OUT%\console.log" 2>&1
+echo.
+echo Blender ended with code %ERRORLEVEL%. The logs are in %OUT%
+echo Say "ready" to Claude.
 pause
-exit /b 1
+exit /b 0
