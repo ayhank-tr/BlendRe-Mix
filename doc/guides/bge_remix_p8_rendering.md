@@ -222,6 +222,9 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
   stop its light, so many small lamps blend into one glow.
 - `bge.texture` pictures (render to texture, mirrors, video) do not update
   in Remix: it shows the image they start from.
+- Remix's particles are lit surfaces in the emitter's material: they do
+  not glow or blend as the game's do, so smoke and sparks look darker, or
+  barely show, in dark scenes.
 - Remix's bakes use one UV map; meshes without one are reported.
 - Remix draws orthographic cameras wrongly (the picture comes out zoomed
   in): use a perspective camera for scenes shown through Remix.

@@ -1986,18 +1986,20 @@ bool KX_RemixRenderer::DrawFaceText(KX_Scene *scene, KX_GameObject *obj, RAS_Mes
  * game draws particles unlit, in their material's colour and image (halos
  * as glows), so Remix gets them as a glow too (the RTX run: lit, they came
  * out as dark squares in dark scenes). 0: none (the emitter's own) */
-/* P8.30: how the particles' material is made (BGE_REMIX_PARTICLE_MAT, for
- * the RTX runs: the second run's unlit glow drew nothing) */
+/* P8.30: how the particles' material is made (BGE_REMIX_PARTICLE_MAT). The
+ * third diagnostic run: Remix's particles show neither a glow nor blending
+ * (blended, they vanish; unblended, they are lit), so they keep the
+ * emitter's own material ("lit", as before) */
 enum { PMAT_LIT = 0, PMAT_LITGLOW, PMAT_GLOW, PMAT_GLOW_NOBLEND };
 static int particle_mat_mode()
 {
 	static int mode = -1;
 	if (mode < 0) {
 		const char *env = getenv("BGE_REMIX_PARTICLE_MAT");
-		mode = PMAT_LITGLOW;
+		mode = PMAT_LIT;
 		if (env && env[0]) {
-			mode = !strcmp(env, "lit") ? PMAT_LIT : !strcmp(env, "glow") ? PMAT_GLOW :
-			       !strcmp(env, "glow_noblend") ? PMAT_GLOW_NOBLEND : PMAT_LITGLOW;
+			mode = !strcmp(env, "litglow") ? PMAT_LITGLOW : !strcmp(env, "glow") ? PMAT_GLOW :
+			       !strcmp(env, "glow_noblend") ? PMAT_GLOW_NOBLEND : PMAT_LIT;
 			printf("BGE-Remix: BGE_REMIX_PARTICLE_MAT %s\n", env);
 		}
 	}
