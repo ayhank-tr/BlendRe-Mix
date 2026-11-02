@@ -45,6 +45,15 @@
 struct TaskScheduler;
 class KX_TimeCategoryLogger;
 
+/* BGE-Remix P8.30: bge.texture's new picture for an image (8-bit RGBA, rows
+ * from the bottom), so RTX Remix can show it too; set by KX_RemixRenderer
+ * while Remix runs, NULL otherwise */
+struct Image;
+extern void (*KX_LiveTextureHook)(struct Image *ima, const unsigned int *rgba, int width, int height);
+/* true when Remix wants the image's next picture: bge.texture then reads its
+ * render or mirror back to memory instead of copying it on the card */
+extern bool (*KX_LiveTextureDue)(struct Image *ima);
+
 #define LEFT_EYE  1
 #define RIGHT_EYE 2
 

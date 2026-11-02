@@ -267,7 +267,13 @@ static void fill_particles(const brb_particle_desc &d, ParticleExt &p)
 	i.alignParticlesToVelocity = d.align_to_velocity ? TRUE : FALSE;
 	i.hideEmitter = d.hide_emitter ? TRUE : FALSE;
 	i.billboardType = (uint8_t)std::min(std::max(d.billboard, 0), 3);
-	i.spriteSheetMode = 0;
+	/* interface 11 */
+	i.spriteSheetMode = (uint8_t)std::min(std::max(d.sprite_sheet_mode, 0), 255);
+	i.useSpawnTexcoords = d.use_spawn_texcoords ? TRUE : FALSE;
+	i.randomFlipAxis = (uint8_t)std::min(std::max(d.random_flip_axis, 0), 255);
+	i.collisionMode = (uint8_t)std::min(std::max(d.collision_mode, 0), 2);
+	i.initialRotationDeviationDegrees = std::max(d.rotation_deviation_deg, 0.0f);
+	i.spawnBurstDuration = std::max(d.burst_duration, 0.0f);
 	i.motionTrailMultiplier = 1.0f;
 	i.turbulenceFrequency = 0.05f;
 	i.turbulenceForce = 0.0f;
@@ -291,7 +297,7 @@ static void fill_particles(const brb_particle_desc &d, ParticleExt &p)
 	i.maxVelocity = {p.velocity, 2};
 }
 
-static int draw_instance(const brb_draw_desc &d)
+static int draw_instance(const brb_draw_desc &d, const float *models = nullptr, uint32_t model_count = 0)
 {
 	if (!running()) {
 		return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
@@ -308,7 +314,7 @@ static int draw_instance(const brb_draw_desc &d)
 	remixapi_InstanceInfo inst = {};
 	inst.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO;
 	inst.mesh = it->second;
-	inst.transform = to_transform(world ? identity : d.model);
+	inst.transform = to_transform((world || models) ? identity : d.model);
 	inst.categoryFlags = to_categories(d.categories);
 	inst.doubleSided = (flags & BRB_DRAW_DOUBLE_SIDED) ? TRUE : FALSE;
 	void **tail = &inst.pNext;
@@ -368,6 +374,23 @@ static int draw_instance(const brb_draw_desc &d)
 		blend.tFactor = 0xFFFFFFFFu;
 		*tail = &blend;
 		tail = &blend.pNext;
+	}
+	/* interface 11: one call, the mesh at each model matrix (the instance's
+	 * own transform the identity, so the matrices are world space whether
+	 * Remix applies them alone or after it) */
+	std::vector<remixapi_Transform> inst_tf;
+	remixapi_InstanceInfoGpuInstancingEXT gpu_inst = {};
+	if (models && model_count > 0) {
+		inst_tf.resize(model_count);
+		for (uint32_t k = 0; k < model_count; k++) {
+			inst_tf[k] = to_transform(models + (size_t)k * 16);
+		}
+		gpu_inst.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_GPU_INSTANCING_EXT;
+		gpu_inst.instanceTransforms_values = inst_tf.data();
+		gpu_inst.instanceTransforms_count = model_count;
+		*tail = &gpu_inst;
+		tail = &gpu_inst.pNext;
+		g_frame_draws += (int)model_count - 1;
 	}
 	g_frame_draws++;
 	return track(guarded("DrawInstance", [&] { return g_remix.DrawInstance(&inst); }));
@@ -836,6 +859,14 @@ BRB_API int brb_frame_draw(uint64_t mesh, const float model[16], int flags)
 	memcpy(d.model, model, sizeof(d.model));
 	d.flags = flags;
 	return draw_instance(d);
+}
+
+BRB_API int brb_frame_draw_instanced(const brb_draw_desc *desc, const float *models, uint32_t count)
+{
+	if (!desc || !models || count == 0) {
+		return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+	}
+	return draw_instance(*desc, models, count);
 }
 
 BRB_API int brb_frame_draw_ex(const brb_draw_desc *desc)

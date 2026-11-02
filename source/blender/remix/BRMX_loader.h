@@ -81,6 +81,8 @@ typedef struct BRMX_Bridge {
 	int (*texture_pending)(void);
 
 	int (*frame_draw_ex)(const brb_draw_desc *desc);
+	/* interface 11 (P8.30) */
+	int (*frame_draw_instanced)(const brb_draw_desc *desc, const float *models, uint32_t count);
 	int (*pick_request)(int left, int top, int right, int bottom);
 	int (*pick_result)(uint32_t *r_ids, int max, int *r_count);
 	int (*highlight)(const uint32_t *ids, int count, float r, float g, float b);

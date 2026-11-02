@@ -38,6 +38,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <set>
+#include <tuple>
 
 #include "GPU_glew.h"  /* BGE-Remix P8.26: the old calls redirected */
 
@@ -120,6 +121,37 @@ static const double NOTICE_SECONDS = 8.0;
 static const float DEFAULT_LIGHT_SCALE = 1.0f;
 static const float DEFAULT_EXPOSURE = 0.0f;
 static const double PI = 3.14159265358979323846;
+
+/* P8.30: bge.texture pictures for Remix (LiveTexture) */
+static KX_RemixRenderer *g_live_owner = NULL;
+
+static void live_texture_hook(Image *ima, const unsigned int *rgba, int width, int height)
+{
+	if (g_live_owner) {
+		g_live_owner->LiveTexture(ima, rgba, width, height);
+	}
+}
+
+/* pictures a second sent to Remix (BGE_REMIX_LIVE_TEXTURE_HZ, default 5; 0:
+ * none) */
+static double live_hz()
+{
+	static double hz = -1.0;
+	if (hz < 0.0) {
+		const char *env = getenv("BGE_REMIX_LIVE_TEXTURE_HZ");
+		hz = (env && env[0]) ? atof(env) : 5.0;
+		if (!(hz >= 0.0)) {
+			hz = 5.0;
+		}
+	}
+	return hz;
+}
+
+static bool live_texture_due(Image *ima)
+{
+	return g_live_owner && g_live_owner->LiveTextureDue(ima);
+}
+
 
 /* ------------------------------------------------------------------------- */
 /* Helpers */
@@ -358,6 +390,11 @@ KX_RemixRenderer::KX_RemixRenderer(RAS_ICanvas *canvas, bool window_mode_allowed
 	m_skykey = 0;
 	m_volume_scan = 0;
 	m_mist_said = false;
+	m_instanced_groups = 0;
+	m_live_updates = 0;
+	g_live_owner = this;
+	KX_LiveTextureHook = live_texture_hook;
+	KX_LiveTextureDue = live_texture_due;
 	m_materials_waiting = 0;
 	m_materials_swapped = 0;
 	m_material_notes = 0;
@@ -413,6 +450,11 @@ KX_RemixRenderer::KX_RemixRenderer(RAS_ICanvas *canvas, bool window_mode_allowed
 
 KX_RemixRenderer::~KX_RemixRenderer()
 {
+	if (g_live_owner == this) {
+		g_live_owner = NULL;
+		KX_LiveTextureHook = NULL;
+		KX_LiveTextureDue = NULL;
+	}
 	for (size_t i = 0; i < m_volume_objs.size(); i++)
 		m_volume_objs[i]->Release();
 	m_volume_objs.clear();
@@ -428,6 +470,16 @@ KX_RemixRenderer::~KX_RemixRenderer()
 		BRMX_owner_release(this);
 		BRMX_unlock();
 	}
+	/* the bge.texture pictures' files */
+	for (auto &it : m_live) {
+		const std::wstring *files[3] = {&it.second.old, &it.second.ready, &it.second.writing};
+		for (int i = 0; i < 3; i++) {
+			if (!files[i]->empty()) {
+				DeleteFileW(files[i]->c_str());
+			}
+		}
+	}
+	m_live.clear();
 	Trace("game end: freeing the picture texture");
 	BRMX_present_free();
 	delete m_cache;
@@ -570,6 +622,26 @@ bool KX_RemixRenderer::Start(KX_Scene *scene, int width, int height, const Setti
 	m_status = std::string("running (") + mode_name + ")";
 	printf("BGE-Remix: RTX Remix renders scene \"%s\" (%s, %dx%d).\n", scene->GetName().ReadPtr(),
 	       mode_name, width, height);
+	/* P8.30 diagnostics: BGE_REMIX_RTX_SET "rtx.a=1;rtx.b=2" sets Remix
+	 * options after the scene's own */
+	if (const char *set = getenv("BGE_REMIX_RTX_SET")) {
+		std::string all(set);
+		size_t at = 0;
+		while (at < all.size()) {
+			size_t end = all.find(';', at);
+			if (end == std::string::npos) {
+				end = all.size();
+			}
+			const std::string kv = all.substr(at, end - at);
+			const size_t eq = kv.find('=');
+			if (eq != std::string::npos && eq > 0) {
+				const std::string key = kv.substr(0, eq), value = kv.substr(eq + 1);
+				m_bridge->set_config(key.c_str(), value.c_str());
+				printf("BGE-Remix: BGE_REMIX_RTX_SET %s = %s\n", key.c_str(), value.c_str());
+			}
+			at = end + 1;
+		}
+	}
 	fflush(stdout);
 	return true;
 }
@@ -977,6 +1049,12 @@ void KX_RemixRenderer::SendMaterial(MaterialEntry &e)
 		if (!req.wanted()) {
 			continue;
 		}
+		/* P8.30: a bge.texture picture written for Remix */
+		std::map<Image *, LiveEntry>::const_iterator live = req.image ? m_live.find(req.image) : m_live.end();
+		if (live != m_live.end() && !live->second.ready.empty()) {
+			paths[i] = live->second.ready;
+			continue;
+		}
 		const brmx::TextureCache::State st = m_cache->request(req, paths[i]);
 		if (st != brmx::TextureCache::READY) {
 			paths[i].clear();
@@ -991,6 +1069,90 @@ void KX_RemixRenderer::SendMaterial(MaterialEntry &e)
 		m_materials_waiting += waiting ? 1 : -1;
 	}
 	e.waiting = waiting;
+}
+
+/* P8.30: bge.texture's pictures reach Remix: a few times a second the
+ * picture is written to a file of its own (two in turn) and the materials
+ * using its image are sent again with it (Remix reads a material's
+ * textures when the material is made) */
+bool KX_RemixRenderer::LiveTextureDue(Image *ima)
+{
+	const double hz = live_hz();
+	if (!m_running || !m_bridge || !ima || hz <= 0.0) {
+		return false;
+	}
+	std::map<Image *, LiveEntry>::const_iterator it = m_live.find(ima);
+	if (it == m_live.end()) {
+		return true;
+	}
+	return it->second.ticket <= 0 && now_seconds() - it->second.last >= 1.0 / hz;
+}
+
+void KX_RemixRenderer::LiveTexture(Image *ima, const unsigned int *rgba, int width, int height)
+{
+	if (!rgba || width <= 0 || height <= 0 || !LiveTextureDue(ima)) {
+		return;
+	}
+	LiveEntry &e = m_live[ima];
+	e.last = now_seconds();
+	wchar_t name[64];
+	swprintf(name, 64, L"\\live_%p_%d.dds", (void *)ima, e.flip);
+	const std::wstring folder = brmx::TextureCache::folder();
+	CreateDirectoryW(folder.c_str(), NULL);
+	e.writing = folder + name;
+	brb_texture_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.path = e.writing.c_str();
+	desc.kind = BRB_TEXTURE_COLOR;
+	desc.width = width;
+	desc.height = height;
+	desc.rgba8 = (const unsigned char *)rgba;
+	e.ticket = m_bridge->texture_submit(&desc);
+	if (e.ticket <= 0) {
+		e.ticket = 0;
+	}
+}
+
+void KX_RemixRenderer::UpdateLiveTextures()
+{
+	for (auto &it : m_live) {
+		LiveEntry &e = it.second;
+		if (e.ticket <= 0) {
+			continue;
+		}
+		brb_texture_result r;
+		memset(&r, 0, sizeof(r));
+		const int state = m_bridge->texture_poll(e.ticket, &r);
+		if (state == 0) {
+			continue;  /* still being written */
+		}
+		e.ticket = 0;
+		if (state != 1) {
+			continue;
+		}
+		/* the picture two back goes (the last one may still be loading) */
+		if (!e.old.empty()) {
+			DeleteFileW(e.old.c_str());
+		}
+		e.old = e.ready;
+		e.ready = e.writing;
+		e.flip++;
+		m_live_updates++;
+		for (auto &m : m_materials) {
+			MaterialEntry &me = m.second;
+			for (int i = 0; i < brmx::TEX_COUNT && me.spec; i++) {
+				if (me.spec->textures[i].image == it.first) {
+					SendMaterial(me);
+					break;
+				}
+			}
+		}
+		static bool said = false;
+		if (!said) {
+			printf("BGE-Remix: a bge.texture picture reaches Remix (rewritten a few times a second)\n");
+			said = true;
+		}
+	}
 }
 
 void KX_RemixRenderer::UpdateTextures(KX_Scene *scene)
@@ -2219,6 +2381,16 @@ bool KX_RemixRenderer::DrawEmitters(KX_Scene *scene, KX_GameObject *obj, Object 
 		if (part->draw & PART_DRAW_EMITTER) {
 			hide = false;
 		}
+		/* P8.30: Remix's newer particle fields: a random start rotation from
+		 * Blender's Random rotation; the RTX runs try the others
+		 * (BGE_REMIX_PARTICLE_SPAWN_UV=1, BGE_REMIX_PARTICLE_SPRITE_MODE=n) */
+		p.rotation_deviation_deg = std::min(std::max(part->randrotfac, 0.0f), 1.0f) * 180.0f;
+		{
+			const char *uv = getenv("BGE_REMIX_PARTICLE_SPAWN_UV");
+			const char *sm = getenv("BGE_REMIX_PARTICLE_SPRITE_MODE");
+			p.use_spawn_texcoords = (uv && uv[0] == '1') ? 1 : 0;
+			p.sprite_sheet_mode = (sm && sm[0]) ? atoi(sm) : 0;
+		}
 		/* P8.30 diagnostics: BGE_REMIX_PARTICLE_TEST=1 sends plain, large,
 		 * slow, opaque white particles; the description said once */
 		const char *ptest = getenv("BGE_REMIX_PARTICLE_TEST");
@@ -2830,6 +3002,7 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 	m_bridge->frame_begin();
 	UpdateBakes(scene);
 	UpdateTextures(scene);
+	UpdateLiveTextures();
 
 	float v[16], p[16], rv[16], rp[16];
 	view.getValue(v);
@@ -2867,6 +3040,15 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 		}
 	}
 
+	/* P8.30: copies of one mesh gathered for one instanced draw */
+	struct InstanceGroup {
+		brb_draw_desc first;
+		std::vector<float> models;
+	};
+	static const bool gpu_instancing = getenv("BGE_REMIX_GPU_INSTANCING") &&
+	                                   getenv("BGE_REMIX_GPU_INSTANCING")[0] == '1';
+	std::map<std::tuple<uint64_t, int, uint32_t>, InstanceGroup> groups;
+	m_instanced_groups = 0;
 	for (int i = 0; i < objects->GetCount(); i++) {
 		KX_GameObject *obj = (KX_GameObject *)objects->GetValue(i);
 		/* P8.22: text objects as their text's geometry */
@@ -2952,9 +3134,32 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 				d.categories |= BRB_CATEGORY_HAIR_CARDS;
 			}
 			d.pick_id = pick;
+			/* P8.30: BGE_REMIX_GPU_INSTANCING=1: copies of one mesh in one
+			 * call (Remix's GPU instancing); not billboards (their matrix is
+			 * the camera's) nor particles; picking keeps them apart */
+			if (gpu_instancing && !e->billboard && !e->particle && !m_pick_wanted) {
+				InstanceGroup &grp = groups[std::make_tuple(d.mesh, d.flags, d.categories)];
+				if (grp.models.empty()) {
+					grp.first = d;
+				}
+				grp.models.insert(grp.models.end(), d.model, d.model + 16);
+				continue;
+			}
 			m_bridge->frame_draw_ex(&d);
 			draws++;
 		}
+	}
+	for (auto &it : groups) {
+		InstanceGroup &grp = it.second;
+		const uint32_t count = (uint32_t)(grp.models.size() / 16);
+		if (count == 1) {
+			m_bridge->frame_draw_ex(&grp.first);
+		}
+		else {
+			m_bridge->frame_draw_instanced(&grp.first, grp.models.data(), count);
+			m_instanced_groups++;
+		}
+		draws++;
 	}
 	if (m_skinned_objects || m_deformed_objects) {
 		m_skin_ms_total += dynamic_s * 1000.0;
@@ -3142,6 +3347,8 @@ void KX_RemixRenderer::WriteStats()
 	        m_first_textured_frame, m_first_textured_seconds);
 	fprintf(f, "  \"materials_swapped\": %d,\n  \"material_notes\": %d,\n  \"swap_ms_max\": %.4f,\n",
 	        m_materials_swapped, m_material_notes, m_max_swap_ms);
+	fprintf(f, "  \"instanced_groups\": %d,\n  \"live_texture_updates\": %d,\n", m_instanced_groups,
+	        m_live_updates);
 	fprintf(f, "  \"procedural_bakes\": %d,\n  \"procedural_rebakes\": %d,\n  \"procedural_bake_ms\": %.2f,\n",
 	        m_bakes, m_rebakes, m_bake_ms);
 	fprintf(f, "  \"procedural_bakes_cached\": %d,\n  \"procedural_bake_gpu_ms\": %.2f,\n",

@@ -98,7 +98,8 @@ Render > Shading > Pipeline (`scene.game_settings.render_pipeline`):
   billboard.
 - **Particles** are simulated in the game from the description the game
   already sends to Remix's GPU particles. Halo, Billboard, Object, Group and
-  Line render types are drawn; Path and None are not.
+  Line render types are drawn; Path and None are not. Remix 1.6's particle
+  fields are sent too: Rotation > Random becomes the spawn rotation's spread.
 - **Transparency**: Modern scenes use weighted blended transparency, which
   does not depend on draw order. Classic scenes keep sorted blending, as
   stock 2.79 does.
@@ -194,6 +195,11 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
 | `BGE_REMIX_PROBE_SIZE=<pixels>` | Reflection probe size (default 128) |
 | `BGE_REMIX_FOG_GRID=WxHxD` | Volumetric fog grid size (default 160x90x64) |
 | `BGE_REMIX_MIST_FOG=<factor>` | Send the world's mist to Remix as fog, its distance times the factor (1: as set) |
+| `BGE_REMIX_LIVE_TEXTURE_HZ=<n>` | `bge.texture` pictures sent to Remix n times a second (default 5; 0: none) |
+| `BGE_REMIX_GPU_INSTANCING=1` | Objects sharing a mesh and material sent to Remix as one instanced draw |
+| `BGE_REMIX_PARTICLE_SPAWN_UV=1` | Remix's particles take their texture coordinates from where they spawn |
+| `BGE_REMIX_PARTICLE_SPRITE_MODE=<n>` | Remix's particle sprite sheet mode (0 off) |
+| `BGE_REMIX_RTX_SET=k=v;k=v` | Set Remix options (`rtx.*`) after the scene's own |
 
 ## Python additions
 
@@ -224,8 +230,9 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
   keeps to its own layer.
 - Remix's lights reach everywhere: a lamp's Distance (and Sphere) does not
   stop its light, so many small lamps blend into one glow.
-- `bge.texture` pictures (render to texture, mirrors, video) do not update
-  in Remix: it shows the image they start from.
+- `bge.texture` pictures (render to texture, mirrors, video) reach Remix up
+  to five times a second, not every frame. A render to texture or a mirror
+  shows the game's OpenGL picture there, not a ray-traced one.
 - Remix's particles are lit surfaces in the emitter's material: they do
   not glow or blend as the game's do, so smoke and sparks look darker, or
   barely show, in dark scenes.
@@ -287,7 +294,9 @@ Metal. AMD and Intel cards are not tested.
 - Halo textures are not drawn; billboard particles are unshaded. The game's
   particles match Remix's in count, rate and spread, not particle by
   particle.
-- Video textures are not sent to Remix.
+- Video textures and other `bge.texture` pictures reach Remix as
+  rewritten texture files, a few times a second (Remix 1.6.1 reads a
+  texture from its file only).
 - Displacement is a pre-subdivided mesh made on the processor.
 - Ambient occlusion is horizon-based; motion blur follows the camera only.
   2D filters over Remix's picture get no depth.
@@ -314,3 +323,8 @@ Metal. AMD and Intel cards are not tested.
   P2 room's difference from its Cycles render went from 43 to 6, and dark
   Classic scenes stopped washing out. P3's and P4's rooms are brighter than
   their sign-off pictures.
+- Remix 1.6.1's additions taken into P8 before its release: the particles'
+  new fields, GPU instancing through the API (bridge ABI 11), `bge.texture`
+  pictures in Remix, and a check of the emissive settings (boost emissives,
+  the emissive blend override). Material texture transforms need API 0.6.6,
+  newer than the pinned runtime's 0.6.5.

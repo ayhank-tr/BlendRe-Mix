@@ -327,6 +327,22 @@ private:
 	void UpdateFog(KX_Scene *scene);
 	void ForcedAutoExposure();
 	std::set<const void *> m_particles_said;  /* P8.30 diagnostics */
+	int m_instanced_groups;  /* P8.30: instanced draws in the last frame */
+	/* P8.30: bge.texture pictures written for Remix */
+	struct LiveEntry {
+		double last;
+		int ticket;
+		int flip;  /* each picture's file a new name (Remix reads a path once) */
+		std::wstring writing, ready, old;
+		LiveEntry() : last(-1e9), ticket(0), flip(0) {}
+	};
+	std::map<struct Image *, LiveEntry> m_live;
+	int m_live_updates;
+	void UpdateLiveTextures();
+public:
+	void LiveTexture(struct Image *ima, const unsigned int *rgba, int width, int height);
+	bool LiveTextureDue(struct Image *ima);
+private:
 	/* P8.23: the camera and screen effects' settings as Remix's options
 	 * (sent when they change) */
 	void UpdateCameraEffects(KX_Scene *scene, KX_Camera *cam);

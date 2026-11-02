@@ -2038,6 +2038,11 @@ def t818_remix_mode(B, expected, out):
         d["over_remix"] = {"yellow_line_pixels": yellow, "green_line_pixels": green}
         c["drawLine's square shows over Remix's picture"] = yellow >= 40
         c["the physics shapes show over Remix's picture"] = green >= 40
+    # P8.30: bge.texture's render to texture and mirror reach Remix
+    # (rewritten texture files, five a second)
+    live = (r.get("stats") or {}).get("live_texture_updates")
+    d["live_texture_updates"] = live
+    c["bge.texture's pictures reach Remix (%s updates)" % live] = bool(live)
     d["shared_memory"] = "Vulkan memory sharing is checked in the RTX run"
     cc, dd = t820(out)
     for k, v in cc.items():
@@ -3754,22 +3759,32 @@ def run_colorcopy(args, out):
 # left at the sign-off: dark worlds washed out, particles missing, many_lamps
 # dim, the overlays' white squares
 
-# P8.30 diagnostic run 3: the new defaults (automatic exposure off, light
-# scale 1, 0 stops) beside the game; the particles' material four ways; the
-# overlays with a real bitmap font
-PARTICLE_MATS = [("lit and glowing (default)", {}), ("lit, as before", {"BGE_REMIX_PARTICLE_MAT": "lit"}),
-                 ("glow", {"BGE_REMIX_PARTICLE_MAT": "glow"}),
-                 ("glow, not blended", {"BGE_REMIX_PARTICLE_MAT": "glow_noblend"})]
+# P8.30 diagnostic run 4 (Remix 1.6.1's additions): the particles' new
+# fields, the emissive settings, Remix's GPU instancing on crowd, bge.texture
+# pictures in Remix; Remix's own list of options written out (RtxOptions.md)
+BOOST_OFF = ("boost emissives off", {"BGE_REMIX_RTX_SET": "rtx.neuralRadianceCache.boostEmissives=False"})
+PARTICLE_FIELDS = [
+    ("now", {}),
+    ("spawn texture coordinates", {"BGE_REMIX_PARTICLE_SPAWN_UV": "1"}),
+    ("sprite sheet mode 1", {"BGE_REMIX_PARTICLE_SPRITE_MODE": "1"}),
+    ("sprite sheet mode 2", {"BGE_REMIX_PARTICLE_SPRITE_MODE": "2"}),
+    ("emissive blend override off", {"BGE_REMIX_RTX_SET": "rtx.enableEmissiveBlendEmissiveOverride=False"}),
+    ("lit and glowing, override 1.0", {"BGE_REMIX_PARTICLE_MAT": "litglow",
+                                       "BGE_REMIX_RTX_SET": "rtx.emissiveBlendOverrideEmissiveIntensity=1.0"}),
+    ("approximate particle lighting off", {"BGE_REMIX_RTX_SET": "rtx.neeCache.approximateParticleLighting=False"}),
+    BOOST_OFF]
 DIAG = [
     # (row, game picture's scene, Remix scene, [(label, environment)])
-    ("classic_remix", "classic_remix_gl", "classic_remix_rtx", [("new defaults", {})]),
-    ("shadows", "shadows", "shadows_rtx", [("new defaults", {})]),
-    ("pbr_spheres", "pbr_spheres_gl", "pbr_spheres_rtx", [("new defaults", {})]),
-    ("sky: blend", "world_sky_blend_classic", "world_sky_blend_remix_rtx", [("new defaults", {})]),
-    ("hair_particles", "hair_particles", "hair_particles_remix_rtx", PARTICLE_MATS),
-    ("transparency (smoke)", "transparency", "transparency_rtx", PARTICLE_MATS),
-    ("game_overlays", "game_overlays", "game_overlays_remix_rtx", [("now", {})]),
+    ("hair_particles", "hair_particles", "hair_particles_remix_rtx", PARTICLE_FIELDS),
+    ("transparency (smoke)", "transparency", "transparency_rtx", PARTICLE_FIELDS[:-1]),
+    ("classic_remix", "classic_remix_gl", "classic_remix_rtx", [("now", {}), BOOST_OFF]),
+    ("remix_extras", None, "remix_extras_remix_rtx", [("now", {}), BOOST_OFF]),
+    ("game_overlays", "game_overlays", "game_overlays_remix_rtx",
+     [("live pictures, 5 a second", {}), ("live pictures off", {"BGE_REMIX_LIVE_TEXTURE_HZ": "0"}), BOOST_OFF]),
+    ("crowd", "crowd", "crowd_rtx", [("one draw each", {}), ("GPU instancing", {"BGE_REMIX_GPU_INSTANCING": "1"})]),
 ]
+DIAG_STATS = ("draws_last_frame", "instanced_groups", "live_texture_updates", "game_ms_median", "frame_ms_max",
+              "particle_draws", "emitters")
 DIAG_NOTES = ("BGE_REMIX_", "BGE-Remix particles", "Remix's fog", "camera effects to Remix")
 
 
@@ -3803,7 +3818,16 @@ def run_diag(args, out):
                  "notes": [l for l in (r.get("text") or "").splitlines() if l.startswith(DIAG_NOTES)
                            or "BGE-Remix: BGE_REMIX" in l or "BGE-Remix particles" in l][:6]}
             v["brightness"] = round(linear_mean(shot), 3) if shot and linear_mean(shot) is not None else None
+            v.update({k: st.get(k) for k in DIAG_STATS})
+            first = detail.get(row, {}).get("_first")
+            v["difference_from_first"] = picture_diff(shot, first) if shot and first else None
             detail.setdefault(row, {})[label] = v
+            if shot and "_first" not in detail[row]:
+                detail[row]["_first"] = shot
+    for row in detail.values():
+        row.pop("_first", None)
+    # Remix's own list of its options (written where Remix runs from)
+    detail["rtx_options_md"] = rtx_options_md(args, out, S("classic_remix_rtx"))
     # the earlier phases' rooms with the new defaults
     rooms = rtx_before(args, out, args.before)
     cycles = os.path.join(args.before, "p2", "cycles_room.png") if args.before else None
@@ -3822,13 +3846,41 @@ def run_diag(args, out):
             "brightness": {lab: round(linear_mean(path), 3) if path and linear_mean(path) is not None else None
                            for lab, path in row}}
     sheet = p2.contact_sheet(items, os.path.join(out, "sheet_p8_diag.png"))
-    ran = sum(1 for key, row in detail.items() if not key.startswith("room ")
+    ran = sum(1 for key, row in detail.items() if not key.startswith("room ") and key != "rtx_options_md"
               for k, v in row.items() if k != "game" and isinstance(v, dict) and v.get("running"))
     total = sum(len(r[3]) for r in DIAG)
     lines = ["BGE-Remix P8.30 diagnostic RTX run", "=" * 70, "",
              "Remix pictures with one setting changed at a time: %d of %d ran" % (ran, total), "",
-             "Picture sheet: %s" % sheet, "", "ALL PASSED" if ran == total else "SOMETHING FAILED (see results_p8_diag.json)"]
+             "Picture sheet: %s" % sheet,
+             "Remix's options list: %s" % ((detail.get("rtx_options_md") or {}).get("copy") or "not written"),
+             "", "ALL PASSED" if ran == total else "SOMETHING FAILED (see results_p8_diag.json)"]
     return {"detail": detail, "sheet": sheet, "all_ok": ran == total}, lines
+
+
+def rtx_options_md(args, out, blend):
+    """one Remix run with DXVK_DOCUMENTATION_WRITE_RTX_OPTIONS_MD=1: Remix
+    writes RtxOptions.md (every option, its default and what it does) into
+    the folder it runs from; copied to the results as RtxOptions_runtime.md"""
+    if not os.path.isfile(blend):
+        return None
+    t0 = time.time()
+    play(args.ours, out, "diag_rtx_options", blend, dict(REMIX_ENV, DXVK_DOCUMENTATION_WRITE_RTX_OPTIONS_MD="1"),
+         frames=60, gl_debug=False)
+    found = []
+    for top in (os.path.dirname(blend), out, args.ours, os.getcwd()):
+        for folder, dirs, files in os.walk(top):
+            if folder[len(top):].count(os.sep) > 4:
+                dirs[:] = []
+            for f in files:
+                if f.lower() == "rtxoptions.md":
+                    path = os.path.join(folder, f)
+                    if os.path.getmtime(path) >= t0 - 5:
+                        found.append(path)
+    if not found:
+        return {"written": False}
+    dest = os.path.join(out, "RtxOptions_runtime.md")
+    shutil.copyfile(found[0], dest)
+    return {"written": True, "where": found[0], "copy": dest, "bytes": os.path.getsize(dest)}
 
 
 def cell_ratios(a, cells):

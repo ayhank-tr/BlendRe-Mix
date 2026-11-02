@@ -387,7 +387,11 @@ static PyObject *Texture_refresh(Texture *self, PyObject *args)
 				}
 
 				// get texture
-				unsigned int * texture = self->m_source->m_image->getImage(self->m_actTex, ts);
+				// BGE-Remix P8.30: when RTX Remix wants this image's picture,
+				// the source reads it back to memory (no copy on the card)
+				const bool live = KX_LiveTextureDue && self->m_imgTexture &&
+				                  KX_LiveTextureDue(self->m_imgTexture);
+				unsigned int * texture = self->m_source->m_image->getImage(live ? 0 : self->m_actTex, ts);
 				// if texture is available
 				if (texture != NULL)
 				{
@@ -417,6 +421,10 @@ static PyObject *Texture_refresh(Texture *self, PyObject *args)
 					}
 					// load texture for rendering
 					loadTexture(self->m_actTex, texture, size, self->m_mipmap);
+					/* BGE-Remix P8.30: the picture for RTX Remix too */
+					if (KX_LiveTextureHook && self->m_imgTexture) {
+						KX_LiveTextureHook(self->m_imgTexture, texture, size[0], size[1]);
+					}
 				}
 				// refresh texture source, if required
 				if (refreshSource) {

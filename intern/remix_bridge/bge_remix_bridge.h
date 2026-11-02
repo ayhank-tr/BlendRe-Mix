@@ -56,8 +56,9 @@ extern "C" {
  * 8: P8.9 (disk lights, lights' volumetric strength).
  * 9: P8 Part B (a dome light's own sky picture).
  * 10: P8.24 (every field of Remix's materials; DDS rows from the bottom,
- *     texture coordinates no longer flipped). */
-#define BRB_ABI_VERSION 10
+ *     texture coordinates no longer flipped).
+ * 11: P8.30 (particle systems' newer fields; instanced draws). */
+#define BRB_ABI_VERSION 11
 
 typedef enum brb_status {
 	BRB_STATUS_NOT_LOADED = 0,           /* nothing tried yet */
@@ -386,6 +387,13 @@ typedef struct brb_particle_desc {
 	int align_to_velocity;
 	int hide_emitter;            /* 1: the emitter mesh itself is not drawn */
 	int billboard;               /* 0 face the camera, 1 upright (turn around Z), 2 lie flat (face up) */
+	/* interface 11 (P8.30): Remix's newer particle fields (zero: as before) */
+	int use_spawn_texcoords;     /* 1: a particle takes the texture coordinates where it was born */
+	int sprite_sheet_mode;       /* Remix's ParticleSpriteSheetMode */
+	int random_flip_axis;        /* Remix's ParticleRandomFlipAxis */
+	int collision_mode;          /* 0 bounce, 1 stop, 2 kill */
+	float rotation_deviation_deg;/* random start rotation */
+	float burst_duration;        /* seconds of spawning at once (0: steady) */
 } brb_particle_desc;
 
 /* One draw with everything interface 4 adds. bones: bone_count OpenGL
@@ -403,6 +411,11 @@ typedef struct brb_draw_desc {
 } brb_draw_desc;
 
 BRB_API int brb_frame_draw_ex(const brb_draw_desc *desc);
+
+/* interface 11 (P8.30): the draw once per model matrix (OpenGL, column
+ * major, world space), in one call (Remix's GPU instancing); desc->model is
+ * not used. Returns the remixapi_ErrorCode. */
+BRB_API int brb_frame_draw_instanced(const brb_draw_desc *desc, const float *models, uint32_t count);
 
 /* Ask which pick_ids Remix drew in a rectangle of its picture (pixels, top
  * left origin, right and bottom exclusive). The answer arrives a frame or

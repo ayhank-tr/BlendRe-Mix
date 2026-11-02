@@ -151,6 +151,9 @@ bool   KX_KetsjiEngine::m_doRender = true;
 /**
  *	Constructor of the Ketsji Engine
  */
+void (*KX_LiveTextureHook)(struct Image *ima, const unsigned int *rgba, int width, int height) = NULL;
+bool (*KX_LiveTextureDue)(struct Image *ima) = NULL;
+
 KX_KetsjiEngine::KX_KetsjiEngine(KX_ISystem* system)
 	:	m_canvas(NULL),
 	m_rasterizer(NULL),
