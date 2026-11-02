@@ -114,8 +114,7 @@ Render > Camera Effects: bloom (intensity, threshold, radius), auto exposure
 blur uses the Render tab's shutter, and ambient occlusion the world's
 settings. In a Modern scene, Remix gets the same bloom, auto exposure,
 vignette and motion blur through its options; its runtime has no depth of
-field. A Classic scene leaves Remix's own defaults (its bloom and auto
-exposure on), as before P8.
+field. A Classic scene leaves Remix's bloom on and its auto exposure off.
 
 ## RTX Remix
 
@@ -124,6 +123,13 @@ exposure on), as before P8.
   approximately or not at all. Old files open with the block empty.
 - One compressed texture cache serves the game and Remix: the game loads the
   same files Remix reads.
+- Brightness: Remix's automatic exposure is off (a Modern scene's Auto
+  Exposure turns it on). Lamps reach Remix as bright as in Blender Internal
+  (Light Scale 1) with no exposure added (Exposure 0), so a scene looks as in
+  the game and as in Cycles, dark scenes included. Files that saved their
+  own Light Scale or Exposure keep them.
+- A shadeless material with an image glows with its image. Face Texture
+  (bitmap) text reaches Remix letter by letter.
 - The property tabs show one panel per idea, shared by the game, F12 and
   Remix. In a game scene, options that do nothing are hidden; options that
   work in only some renderers carry an "OpenGL only", "Remix only" or "F12
@@ -212,6 +218,10 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
   volumes).
 - In Remix a hemi lamp is sky light: it lights the whole scene, and no lamp
   keeps to its own layer.
+- Remix's lights reach everywhere: a lamp's Distance (and Sphere) does not
+  stop its light, so many small lamps blend into one glow.
+- `bge.texture` pictures (render to texture, mirrors, video) do not update
+  in Remix: it shows the image they start from.
 - Remix's bakes use one UV map; meshes without one are reported.
 - Remix draws orthographic cameras wrongly (the picture comes out zoomed
   in): use a perspective camera for scenes shown through Remix.
@@ -286,7 +296,9 @@ Metal. AMD and Intel cards are not tested.
 - The old code paths stay in the program for `--gl-compat`; they are skipped
   on a core context.
 - The release's RTX runs: shadow maps were added to instancing (crowd's
-  frame went from 63 to about 17 ms); the lamps' light scale for Remix stays
-  0.125 (the P2 room nearest its Cycles render; 0.25, 0.5 and 1 were
-  measured); the world's mist was left out of Remix (black at any fog
-  distance).
+  frame went from 63 to about 16 ms); the world's mist was left out of Remix
+  (black at any fog distance); Remix's automatic exposure was turned off,
+  with Light Scale 1 and Exposure 0 (before: automatic, 0.125 and +1): the
+  P2 room's difference from its Cycles render went from 43 to 6, and dark
+  Classic scenes stopped washing out. P3's and P4's rooms are brighter than
+  their sign-off pictures.

@@ -43,14 +43,14 @@
 
 namespace brmx {
 
-/* Chosen by eye against the room's Cycles render (P2 sign-off, RTX 3080):
- * with 1, the lamps outshine everything else under Remix's automatic
- * exposure (the glowing panel disappears) */
-static const float DEFAULT_LIGHT_SCALE = 0.125f;
-/* Chosen against the material grid's Cycles render (P3 sign-off, RTX 3080):
- * +1 stop matches the backdrop's mid-grey. Same default as the Rasterizer
- * panel's Exposure. */
-static const float DEFAULT_EXPOSURE = 1.0f;
+/* P8.30: Remix's automatic exposure is off (apply_exposure), so the lamps
+ * keep the units they are converted to (a white surface as bright as in
+ * Blender Internal) and no exposure is added: the P2 room then matches its
+ * Cycles render (the RTX runs' measurements: 5.7 against 43 with the P2/P3
+ * choices of 0.125 and +1 stop under automatic exposure), and dark worlds
+ * stay dark as in the game. Same defaults as the Rasterizer panel's. */
+static const float DEFAULT_LIGHT_SCALE = 1.0f;
+static const float DEFAULT_EXPOSURE = 0.0f;
 
 /* One lamp, as the game engine and Blender's Lamp both describe it. */
 struct LampInput {

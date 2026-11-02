@@ -3001,7 +3001,6 @@ def editor_benchmarks(U):
 #       room nearest Cycles; and the mist's fog: black at any distance.)
 
 FRAME_60 = 1000.0 / 60.0
-TOL_BEFORE = 12.0  # a Remix picture against the build before P8's (path traced, denoised; blurred first)
 TOL_CYCLES = 2.0   # the P2 room against Cycles: no further than the build before P8 (and this much)
 REMIX_FRAMES = 320
 # Remix compiles every shader it lacks before its first frame, so the
@@ -3347,14 +3346,12 @@ def run_rtx(args, out):
             b["from_cycles"] = {"now": now_c, "before": before_c}
             c["%s: no further from Cycles than before P8 (%s against %s)" % (what, now_c, before_c)] = \
                 None not in (now_c, before_c) and now_c <= before_c + TOL_CYCLES
-        elif phase == "p3":
-            # the first RTX run: P8 draws the sign's texture rightly (navy with
-            # a yellow arrow) where the build before P8 did not: on the sheet
-            d.setdefault("on_the_sheet_only", []).append("%s (difference %s)" % (what, b.get("difference")))
         else:
-            diff = b.get("difference")
-            c["%s: as the build before P8 drew it (within %.0f; %s)" % (what, TOL_BEFORE, diff)] = \
-                diff is not None and diff <= TOL_BEFORE
+            # P3: the first RTX run found P8 drawing the sign's texture rightly
+            # (navy with a yellow arrow) where the build before P8 did not;
+            # P3 and P4: P8.30 turned Remix's automatic exposure off (the P2
+            # room against Cycles is the check): on the sheet
+            d.setdefault("on_the_sheet_only", []).append("%s (difference %s)" % (what, b.get("difference")))
     missing, late = [], []
     for key, r in remix_runs.items():
         s = r.get("stats", {})
@@ -3718,24 +3715,20 @@ def run_colorcopy(args, out):
 # left at the sign-off: dark worlds washed out, particles missing, many_lamps
 # dim, the overlays' white squares
 
-# exposure: Remix's automatic exposure off, the light scale and exposure
-# (stops) tried; the first is now (automatic, 0.125, +1)
-EXPOSURES = [("auto (now)", {}),
-             ("fixed, scale 0.125, +1", {"BGE_REMIX_AUTOEXPOSURE": "0"}),
-             ("fixed, scale 0.125, +3", {"BGE_REMIX_AUTOEXPOSURE": "0", "BGE_REMIX_EXPOSURE": "3"}),
-             ("fixed, scale 1, 0", {"BGE_REMIX_AUTOEXPOSURE": "0", "BGE_REMIX_LIGHT_SCALE": "1",
-                                    "BGE_REMIX_EXPOSURE": "0"}),
-             ("fixed, scale 1, +1", {"BGE_REMIX_AUTOEXPOSURE": "0", "BGE_REMIX_LIGHT_SCALE": "1"})]
+# P8.30 diagnostic run 3: the new defaults (automatic exposure off, light
+# scale 1, 0 stops) beside the game; the particles' material four ways; the
+# overlays with a real bitmap font
+PARTICLE_MATS = [("lit and glowing (default)", {}), ("lit, as before", {"BGE_REMIX_PARTICLE_MAT": "lit"}),
+                 ("glow", {"BGE_REMIX_PARTICLE_MAT": "glow"}),
+                 ("glow, not blended", {"BGE_REMIX_PARTICLE_MAT": "glow_noblend"})]
 DIAG = [
     # (row, game picture's scene, Remix scene, [(label, environment)])
-    ("classic_remix", "classic_remix_gl", "classic_remix_rtx", EXPOSURES),
-    ("shadows", "shadows", "shadows_rtx", EXPOSURES),
-    ("pbr_spheres", "pbr_spheres_gl", "pbr_spheres_rtx", EXPOSURES),
-    ("sky: blend", "world_sky_blend_classic", "world_sky_blend_remix_rtx", EXPOSURES),
-    # the fixes: particles glow, shadeless images, Face Texture text
-    ("hair_particles", "hair_particles", "hair_particles_remix_rtx",
-     [("now", {}), ("lit, as before", {"BGE_REMIX_PARTICLES_LIT": "1"})]),
-    ("transparency (smoke)", "transparency", "transparency_rtx", [("now", {})]),
+    ("classic_remix", "classic_remix_gl", "classic_remix_rtx", [("new defaults", {})]),
+    ("shadows", "shadows", "shadows_rtx", [("new defaults", {})]),
+    ("pbr_spheres", "pbr_spheres_gl", "pbr_spheres_rtx", [("new defaults", {})]),
+    ("sky: blend", "world_sky_blend_classic", "world_sky_blend_remix_rtx", [("new defaults", {})]),
+    ("hair_particles", "hair_particles", "hair_particles_remix_rtx", PARTICLE_MATS),
+    ("transparency (smoke)", "transparency", "transparency_rtx", PARTICLE_MATS),
     ("game_overlays", "game_overlays", "game_overlays_remix_rtx", [("now", {})]),
 ]
 DIAG_NOTES = ("BGE_REMIX_", "BGE-Remix particles", "Remix's fog", "camera effects to Remix")
@@ -3772,17 +3765,15 @@ def run_diag(args, out):
                            or "BGE-Remix: BGE_REMIX" in l or "BGE-Remix particles" in l][:6]}
             v["brightness"] = round(linear_mean(shot), 3) if shot and linear_mean(shot) is not None else None
             detail.setdefault(row, {})[label] = v
-    # the earlier phases' rooms (tuned with automatic exposure) at each exposure
-    rooms = rtx_before(args, out, args.before, EXPOSURES[1:])
+    # the earlier phases' rooms with the new defaults
+    rooms = rtx_before(args, out, args.before)
     cycles = os.path.join(args.before, "p2", "cycles_room.png") if args.before else None
     for phase, label, what in BEFORE:
         b = rooms.get(phase, {})
         row = [("%s: before P8" % what, b.get("before"))]
         if phase == "p2":
             row.append(("%s: Cycles" % what, cycles))
-        row.append(("%s: auto (now)" % what, b.get("now")))
-        for vlabel, _ in EXPOSURES[1:]:
-            row.append(("%s: %s" % (what, vlabel), (b.get("variants") or {}).get(vlabel)))
+        row.append(("%s: new defaults" % what, b.get("now")))
         items += row
         detail["room " + phase] = {
             "difference_from_before": {lab: picture_diff(path, b.get("before")) if path and b.get("before") else None
@@ -3792,7 +3783,8 @@ def run_diag(args, out):
             "brightness": {lab: round(linear_mean(path), 3) if path and linear_mean(path) is not None else None
                            for lab, path in row}}
     sheet = p2.contact_sheet(items, os.path.join(out, "sheet_p8_diag.png"))
-    ran = sum(1 for row in detail.values() for k, v in row.items() if k != "game" and v.get("running"))
+    ran = sum(1 for key, row in detail.items() if not key.startswith("room ")
+              for k, v in row.items() if k != "game" and isinstance(v, dict) and v.get("running"))
     total = sum(len(r[3]) for r in DIAG)
     lines = ["BGE-Remix P8.30 diagnostic RTX run", "=" * 70, "",
              "Remix pictures with one setting changed at a time: %d of %d ran" % (ran, total), "",

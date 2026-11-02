@@ -682,6 +682,47 @@ def font_image():
     return p3.image("MT_font", px)
 
 
+# P8.30: a real bitmap font (Blender's BFNT format, read by
+# BKE_bmfont.c): 128 pixels wide, the top row its header (one byte in each
+# pixel's red), then 32 x 32 cells for " ", "B", "E" and "G" (5 x 7 letters
+# drawn 4 times larger). The face carrying the text maps the first cell.
+FONT_W, FONT_CELL, FONT_ADVANCE = 128, 32, 20
+FONT_GLYPHS = [(" ", None), ("B", ["1110", "1001", "1001", "1110", "1001", "1001", "1110"]),
+               ("E", ["1111", "1000", "1000", "1110", "1000", "1000", "1111"]),
+               ("G", ["0111", "1000", "1000", "1011", "1001", "1001", "0111"])]
+
+
+def bitmap_font_image(name):
+    header = list(b"BFNT") + [0, 0, 0, len(FONT_GLYPHS), 0, FONT_W, 0, FONT_W]
+    for k, (ch, _) in enumerate(FONT_GLYPHS):
+        locx, locy = k * FONT_CELL, 0
+        advance = FONT_CELL if k == 0 else FONT_ADVANCE
+        header += [0, ord(ch), locx >> 8, locx & 255, locy >> 8, locy & 255, 0, 0, FONT_CELL, FONT_CELL, advance, 0]
+
+    def px(x, y):
+        i, top = int(x * FONT_W), FONT_W - 1 - int(y * FONT_W)
+        if top == 0:
+            return (header[i] / 255.0 if i < len(header) else 0.0, 0.0, 0.0, 1.0)
+        r = top - 1
+        cell, cx = i // FONT_CELL, i % FONT_CELL
+        if r >= FONT_CELL or cell >= len(FONT_GLYPHS) or FONT_GLYPHS[cell][1] is None:
+            return (0.0, 0.0, 0.0, 0.0)
+        gx, gy = (cx - 6) // 5, (r - 2) // 4  # 4 columns of 5 px, 7 rows of 4 px
+        rows = FONT_GLYPHS[cell][1]
+        on = 0 <= gx < 4 and 0 <= gy < 7 and rows[gy][gx] == "1"
+        return (1.0, 1.0, 1.0, 1.0) if on else (0.0, 0.0, 0.0, 0.0)
+    return p3.image(name, px, size=FONT_W)
+
+
+def font_face_uvs(ob):
+    """the face's UVs on the font's first cell (the cropped picture: its
+    height without the header row)"""
+    h = float(FONT_W - 1)
+    for loop in ob.data.uv_layers[0].data:
+        u, v = loop.uv
+        loop.uv = (u * FONT_CELL / FONT_W, (h - FONT_CELL + v * FONT_CELL) / h)
+
+
 def mt_material(name, color, shadeless=True):
     ma = p2.material(name, color, ref=1.0)
     ma.use_shadeless = shadeless
@@ -799,7 +840,7 @@ def make_mt_bench(folder):
 CELL_X = (-5.0, -3.0, -1.0, 1.0, 3.0, 5.0)
 CELL_Z = (2.1, 0.0, -2.1)
 TILE = 1.9
-LIGHT_SCALE = 0.125  # Remix's bge_remix_light_scale when the scene has none
+LIGHT_SCALE = 1.0  # Remix's bge_remix_light_scale when the scene has none (P8.30: was 0.125)
 
 
 def cell_center(i):
@@ -1754,13 +1795,14 @@ def make_game_overlays(folder, E):
     txt.rotation_euler = (math.radians(90.0), 0.0, 0.0)
     scene.objects.link(txt)
     # Face Texture text (a bitmap font, a Text property)
-    font = font_image()
+    font = bitmap_font_image("OV_font")
     tm = mt_material("OV_facetext", (1.0, 1.0, 1.0))
     tm.use_face_texture = True
     tm.use_face_texture_alpha = True
     tm.game_settings.text = True
     tm.game_settings.alpha_blend = 'ALPHA'
     tob = facing_plane(scene, "OV_facetext", 5.0, 2.0, 1.2, tm)
+    font_face_uvs(tob)
     for d in tob.data.uv_textures[0].data:
         d.image = font
     scene.objects.active = tob

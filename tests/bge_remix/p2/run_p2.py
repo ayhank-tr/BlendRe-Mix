@@ -372,9 +372,10 @@ def run_ci(args, out):
     room_config = [l for l in lines if "Config " in l]
     c = {
         "the player ran 300 frames": ran(r),
-        "default exposure +1: local tone mapper 0.75 x 2 = 1.5":
-            any("rtx.localtonemap.exposure=1.5" in l for l in room_config),
-        "default exposure +1: global tone mapper bias 1": any("rtx.tonemap.exposureBias=1" in l for l in room_config),
+        # (P8.30: the default is 0 stops, automatic exposure off)
+        "default exposure 0: local tone mapper 0.75": any("rtx.localtonemap.exposure=0.75" in l for l in room_config),
+        "default exposure 0: global tone mapper bias 0": any("rtx.tonemap.exposureBias=0" in l for l in room_config),
+        "automatic exposure off": any("rtx.autoExposure.enabled=False" in l for l in room_config),
         "exposure +2: local tone mapper 0.75 x 4 = 3": any("rtx.localtonemap.exposure=3" in l for l in config),
         "exposure +2: global tone mapper bias 2": any("rtx.tonemap.exposureBias=2" in l for l in config),
     }
@@ -637,7 +638,7 @@ def run_rtx(args, out):
 
     print("T2.1: the room at higher exposure, and the spot lamp alone (sign-off)...", flush=True)
     sheet = [("Cycles", res["T2.1"]["cycles"]["image"]),
-             ("Remix (light scale 0.125, default exposure +1)", t21["screenshot"])]
+             ("Remix (default light scale and exposure)", t21["screenshot"])]
     sheet_runs = {}
     for ev in EXPOSURES:
         tag = ("%g" % ev).replace(".", "_")

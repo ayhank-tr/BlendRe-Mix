@@ -503,13 +503,14 @@ class RENDER_PT_game_remix(RenderButtonsPanel, Panel):
             default=False)
         bpy.types.Scene.bge_remix_light_scale = FloatProperty(
             name="Light Scale",
-            description="Brightness factor for lamps under RTX Remix",
-            default=0.125, min=0.0, soft_max=100.0)
+            description="Brightness factor for lamps under RTX Remix (1: as bright as in Blender Internal)",
+            default=1.0, min=0.0, soft_max=100.0)
         bpy.types.Scene.bge_remix_exposure = FloatProperty(
             name="Exposure",
-            description="Stops added to RTX Remix's automatic exposure (positive: brighter); "
-                        "+1 matches Cycles' brightness",
-            default=1.0, min=-10.0, max=10.0)
+            description="Stops added to RTX Remix's exposure (positive: brighter); 0 matches Cycles' "
+                        "brightness. Remix's automatic exposure is off unless a Modern scene's camera "
+                        "effects turn it on",
+            default=0.0, min=-10.0, max=10.0)
         # P5.1: Remix's quality settings, for the game, the 3D view and F12
         # (the menus' numbers are what source/blender/remix/intern/remix_session.c reads)
         bpy.types.Scene.bge_remix_preset = EnumProperty(

@@ -111,19 +111,14 @@ extern "C" {
 /* The world colour and the lamps, in Blender Internal's units, are turned
  * into Remix's physical units so that a white surface lit by a lamp of
  * energy 1 at distance D comes out as bright as in Blender Internal (far
- * from the lamp); bge_remix_light_scale is a global factor on top, tuned by
- * eye against the room's Cycles render (P2 sign-off). */
+ * from the lamp); bge_remix_light_scale is a global factor on top (1 by
+ * default since P8.30). */
 static const double NOTICE_SECONDS = 8.0;
-/* Chosen by eye against the room's Cycles render (P2 sign-off, RTX 3080):
- * with 1, the lamps outshine everything else under Remix's automatic
- * exposure (the glowing panel disappears) */
-static const float DEFAULT_LIGHT_SCALE = 0.125f;
-/* Chosen against the material grid's Cycles render (P3 sign-off, RTX 3080):
- * +1 stop matches the backdrop's mid-grey and keeps light balls, glass and
- * metals from washing out. (P2 picked +2 while colours were still decoded
- * from gamma twice, which darkened them.) Same default as the Rasterizer
- * panel's Exposure. */
-static const float DEFAULT_EXPOSURE = 1.0f;
+/* P8.30: brmx::DEFAULT_LIGHT_SCALE and DEFAULT_EXPOSURE (BRMX_light.h):
+ * Remix's automatic exposure off, the lamps in their own units, no stops
+ * added (the P2 room matches Cycles; dark worlds stay dark) */
+static const float DEFAULT_LIGHT_SCALE = 1.0f;
+static const float DEFAULT_EXPOSURE = 0.0f;
 static const double PI = 3.14159265358979323846;
 
 /* ------------------------------------------------------------------------- */
@@ -574,6 +569,8 @@ void KX_RemixRenderer::ApplyExposure(const Settings &settings)
 {
 	/* stops on top of Remix's automatic exposure (source/blender/remix/intern/remix_light.cc) */
 	brmx::apply_exposure(m_bridge, settings.exposure);
+	/* (it turns automatic exposure off: the camera effects are sent again) */
+	m_fx_sent.clear();
 }
 
 void KX_RemixRenderer::Trace(const char *what)
@@ -1989,9 +1986,31 @@ bool KX_RemixRenderer::DrawFaceText(KX_Scene *scene, KX_GameObject *obj, RAS_Mes
  * game draws particles unlit, in their material's colour and image (halos
  * as glows), so Remix gets them as a glow too (the RTX run: lit, they came
  * out as dark squares in dark scenes). 0: none (the emitter's own) */
+/* P8.30: how the particles' material is made (BGE_REMIX_PARTICLE_MAT, for
+ * the RTX runs: the second run's unlit glow drew nothing) */
+enum { PMAT_LIT = 0, PMAT_LITGLOW, PMAT_GLOW, PMAT_GLOW_NOBLEND };
+static int particle_mat_mode()
+{
+	static int mode = -1;
+	if (mode < 0) {
+		const char *env = getenv("BGE_REMIX_PARTICLE_MAT");
+		mode = PMAT_LITGLOW;
+		if (env && env[0]) {
+			mode = !strcmp(env, "lit") ? PMAT_LIT : !strcmp(env, "glow") ? PMAT_GLOW :
+			       !strcmp(env, "glow_noblend") ? PMAT_GLOW_NOBLEND : PMAT_LITGLOW;
+			printf("BGE-Remix: BGE_REMIX_PARTICLE_MAT %s\n", env);
+		}
+	}
+	return mode;
+}
+
 uint64_t KX_RemixRenderer::ParticleMaterial(KX_Scene *scene, Object *ob, ParticleSystem *psys)
 {
 	ParticleSettings *part = psys->part;
+	const int mode = particle_mat_mode();
+	if (mode == PMAT_LIT) {
+		return 0;
+	}
 	Material *ma = give_current_material(ob, part->omat);
 	if (!ma) {
 		return 0;
@@ -2016,10 +2035,16 @@ uint64_t KX_RemixRenderer::ParticleMaterial(KX_Scene *scene, Object *ob, Particl
 	d.emissive[1] = ma->g;
 	d.emissive[2] = ma->b;
 	d.emissive_intensity = 1.0f;
-	d.albedo[0] = d.albedo[1] = d.albedo[2] = 0.0f;
-	d.metallic = 0.0f;
-	d.roughness = 1.0f;
-	if (ma->game.alpha_blend == GEMAT_ADD) {
+	if (mode != PMAT_LITGLOW) {
+		d.albedo[0] = d.albedo[1] = d.albedo[2] = 0.0f;
+		d.metallic = 0.0f;
+		d.roughness = 1.0f;
+	}
+	if (mode == PMAT_GLOW_NOBLEND) {
+		d.alpha_blend = 0;
+		d.opacity = 1.0f;
+	}
+	else if (ma->game.alpha_blend == GEMAT_ADD) {
 		d.alpha_blend = 1;
 		d.additive = 1;
 	}
@@ -2170,11 +2195,11 @@ bool KX_RemixRenderer::DrawEmitters(KX_Scene *scene, KX_GameObject *obj, Object 
 		d.mesh = me->hash;
 		d.flags = me->double_sided ? BRB_DRAW_DOUBLE_SIDED : 0;
 		/* P8.30: the particles glow in their material's colour and image */
-		const uint64_t pmat = getenv("BGE_REMIX_PARTICLES_LIT") ? 0 : ParticleMaterial(scene, ob, psys);
+		const uint64_t pmat = ParticleMaterial(scene, ob, psys);
 		const uint64_t pmesh = pmat ? EmitterMesh(scene, obj, mesh, psys, pmat) : 0;
 		if (pmesh) {
 			d.mesh = pmesh;
-			d.flags = BRB_DRAW_DOUBLE_SIDED | BRB_DRAW_BLEND;
+			d.flags = BRB_DRAW_DOUBLE_SIDED | (particle_mat_mode() == PMAT_GLOW_NOBLEND ? 0 : BRB_DRAW_BLEND);
 		}
 		memcpy(d.model, model, sizeof(d.model));
 		d.categories = BRB_CATEGORY_PARTICLE_EMITTER;

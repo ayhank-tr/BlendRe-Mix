@@ -187,6 +187,9 @@ void apply_exposure(const BRMX_Bridge *bridge, float stops)
 		return;
 	}
 	sent = stops;
+	/* P8.30: a fixed exposure (BRMX_light.h); a Modern scene's camera
+	 * effects turn Remix's automatic exposure back on when asked */
+	bridge->set_config("rtx.autoExposure.enabled", "False");
 	char value[32];
 	snprintf(value, sizeof(value), "%g", LOCAL_TONEMAP_EXPOSURE * std::pow(2.0, (double)stops));
 	bridge->set_config("rtx.localtonemap.exposure", value);
