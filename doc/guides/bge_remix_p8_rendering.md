@@ -216,6 +216,7 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
 | `BGE_REMIX_FOG_GRID=WxHxD` | Volumetric fog grid size (default 160x90x64) |
 | `BGE_REMIX_MIST_FOG=<factor>` | Send the world's mist to Remix as fog, its distance times the factor (1: as set) |
 | `BGE_REMIX_LIVE_TEXTURE_HZ=<n>` | `bge.texture` pictures sent to Remix n times a second (default 5; 0: none) |
+| `BGE_REMIX_GUARDED_ALLOC=1` | The player uses Blender's guarded allocator: the blocks left at exit are listed by name after "Error Totblock" (P8.1) |
 | `BGE_REMIX_GPU_INSTANCING=0` | Objects sharing a mesh and material sent to Remix one by one, not as one instanced draw |
 | `BGE_REMIX_PARTICLE_SPAWN_UV=1` | Remix's particles take their texture coordinates from where they spawn |
 | `BGE_REMIX_PARTICLE_SPRITE_MODE=<n>` | Remix's particle sprite sheet mode (0 off) |

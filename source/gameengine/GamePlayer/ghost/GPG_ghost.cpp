@@ -467,6 +467,15 @@ int main(
 #endif
 	)
 {
+	/* BGE-Remix P8.1: BGE_REMIX_GUARDED_ALLOC=1 uses Blender's guarded
+	 * allocator (before anything is allocated), so the blocks left at exit
+	 * are listed by name after "Error Totblock" */
+	{
+		const char *guarded = getenv("BGE_REMIX_GUARDED_ALLOC");
+		if (guarded && guarded[0] == '1') {
+			MEM_use_guarded_allocator();
+		}
+	}
 	int i;
 	int argc_py_clamped= argc; /* use this so python args can be added after ' - ' */
 	bool error = false;

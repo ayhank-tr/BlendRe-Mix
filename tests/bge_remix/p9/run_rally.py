@@ -370,6 +370,25 @@ def diag2_plan(args, out):
     return plan
 
 
+# P8.1: the blocks left at exit ("Error Totblock: n", then with the guarded
+# allocator one line per block: "<name> len: <bytes> <address>")
+TOTBLOCK = re.compile(r"Error Totblock: (\d+)")
+BLOCK_LINE = re.compile(r"^(.*?) len: (\d+) (?:0x)?[0-9A-Fa-f]+", re.M)
+
+
+def leaked_blocks(text):
+    """the leaked blocks by name: {name: [count, bytes]}, most first"""
+    m = TOTBLOCK.search(text or "")
+    if not m:
+        return {}
+    out = {}
+    for b in BLOCK_LINE.finditer(text[m.end():]):
+        e = out.setdefault(b.group(1).strip(), [0, 0])
+        e[0] += 1
+        e[1] += int(b.group(2))
+    return dict(sorted(out.items(), key=lambda kv: -kv[1][0]))
+
+
 ERROR_LINE = re.compile(r"^.*(Traceback|Error:|Python script error|Segmentation|EXCEPTION_).*$", re.M)
 BGE_LINE = re.compile(r"^BGE-Remix(?! GL error).*$", re.M)
 
@@ -417,7 +436,9 @@ def play(build, out, tag, blend, kind, game, env_extra, route, owners, size=None
     text = text or ""
     r = p2.read_json(res) or {}
     st = p2.read_json(stats) or {}
+    m = TOTBLOCK.search(text)
     return {"exit": code, "seconds": round(time.time() - t0, 1), "ticks": r.get("ticks", 0),
+            "totblock": int(m.group(1)) if m else 0, "leaked": leaked_blocks(text),
             "finished": r.get("ticks", 0) >= ticks, "crash": crash_excerpt(text), "size": list(size),
             "speed_max": r.get("speed_max"), "car": r.get("car"), "shots": r.get("shots", []),
             "views": r.get("views", []), "rpm": r.get("rpm", []), "frame_ms_median": r.get("frame_ms_median"), "frame_ms_p95": r.get("frame_ms_p95"),
@@ -538,6 +559,10 @@ def main():
     if not args.blender_only:
         plan.append(("ours_remix_no_live", args.ours, "ours", "rally_test_plain_remix",
                      {"BGE_REMIX_LIVE_TEXTURE_HZ": "0"}))
+        # P8.1: the blocks left at exit, by name (Blender's guarded allocator)
+        plan.append(("ours_leaks", args.ours, "ours", "rally_test_plain", {"BGE_REMIX_GUARDED_ALLOC": "1"}))
+        plan.append(("ours_remix_leaks", args.ours, "ours", "rally_test_plain_remix",
+                     {"BGE_REMIX_GUARDED_ALLOC": "1"}))
     for tag, build, kind, name, env in plan:
         blend = os.path.join(folder, name + ".blend")
         if not os.path.isfile(blend):
@@ -587,6 +612,14 @@ def main():
             tag, state, r["ticks"], r["speed_max"], r["gl_error_count"],
             "%.2f" % r["frame_ms_median"] if r["frame_ms_median"] else "-",
             "/".join("-" if v is None else "%.0f" % v for v in r.get("rpm") or []) or "-", (first or "")[:90]))
+    lines += ["", "Blocks left at exit (Error Totblock): " + ", ".join(
+        "%s %s" % (tag, r.get("totblock", 0)) for tag, r in runs.items() if "missing" not in r)]
+    for tag in ("ours_leaks", "ours_remix_leaks"):
+        r = runs.get(tag) or {}
+        if r.get("leaked"):
+            lines.append("  %s, by name (count, bytes):" % tag)
+            for name, (n, size) in list(r["leaked"].items())[:40]:
+                lines.append("    %-50s %5d %9d" % (name[:50], n, size))
     lines += ["", "Inside Blender (the game started in the 3D view, as with P):"]
     for name, sres in sessions.items():
         crashed = sres["crash"] or any(f.endswith(".crash.txt") for f in sres["crash_files"])
