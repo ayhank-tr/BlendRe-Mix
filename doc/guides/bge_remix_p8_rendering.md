@@ -129,6 +129,10 @@ field. A Classic scene leaves Remix's bloom on and its auto exposure off.
   (Light Scale 1) with no exposure added (Exposure 0), so a scene looks as in
   the game and as in Cycles, dark scenes included. Files that saved their
   own Light Scale or Exposure keep them.
+- Inside Blender, Remix builds its shaders one after another, not on its
+  background threads: a game started with P in Texture or Material shading
+  crashed NVIDIA's driver while Blender built its own shaders (P8.1). Remix's
+  first start inside Blender takes a little longer; the player is unchanged.
 - A shadeless material with an image glows with its image. Face Texture
   (bitmap) text reaches Remix letter by letter.
 - Once a game draws through Remix, the scenes it switches to and the files it
@@ -201,6 +205,7 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
 | --- | --- |
 | `BGE_REMIX_GL_COMPAT=1` | The compatibility context (as `--gl-compat`; the default) |
 | `BGE_REMIX_GL_CORE=1` | The core context, the old calls emulated (as `--gl-core`) |
+| `RTX_ENABLE_ASYNC_COMPILATION=1` | Inside Blender, Remix builds its shaders on background threads again (P8.1 sets 0 there: with Texture or Material shading the driver crashed) |
 | `BGE_REMIX_GL_TIER=1` | Tier 1 only, whatever the card offers |
 | `BGE_REMIX_GL_DEBUG=1` | A debug context: driver messages in the console |
 | `BGE_REMIX_GL_CHECK=1` | Report OpenGL state left changed after each editor region and game frame |
