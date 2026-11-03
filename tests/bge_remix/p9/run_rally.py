@@ -15,6 +15,13 @@ switched off: the water (its two bge.texture renders, clip planes and GLSL
 shader), the 2D filters, the damage (shape keys); with Remix also without
 Remix's live bge.texture pictures. The answer: which run crashes or
 differs, and where.
+
+--diag (run_local.bat rallydiag, run_rally_diag.bat): the glitch
+diagnostics. Stock and ours (OpenGL) as they are, with the sun's shadow off
+and with the water's surface hidden; Remix as it is, without the water's
+scripts, without the 2D filters and without the water's surface; ours once
+more writing the sun's shadow map out (BGE_REMIX_SHADOW_DUMP). The probe
+records the camera and the lamps at each picture.
 """
 
 import argparse
@@ -77,11 +84,21 @@ if tick in SHOTS:
         path = "%%s_%%d.png" %% (base, SHOTS.index(tick))
         bge.render.makeScreenshot(path)
         rc["shots"].append(path)
+        # P9.0 diagnostics: where the camera and the lamps were
+        cam = scene.active_camera
+        views = {"tick": tick, "camera": None, "lamps": {}}
+        if cam is not None:
+            views["camera"] = {"name": cam.name, "matrix": [list(r) for r in cam.worldTransform],
+                               "projection": [list(r) for r in cam.projection_matrix],
+                               "clip": [cam.near, cam.far]}
+        for lamp in scene.lights:
+            views["lamps"][lamp.name] = {"type": lamp.type, "matrix": [list(r) for r in lamp.worldTransform]}
+        rc.setdefault("views", []).append(views)
 if tick >= int(os.environ.get("BGE_REMIX_RALLY_TICKS", "%(ticks)d")):
     t = rc["times"][60:]
     d = sorted(b - a for a, b in zip(t, t[1:]))
     out = {"ticks": tick, "shots": rc["shots"], "car": rc["car"], "speed_max": round(rc["speed_max"], 2),
-           "car_found": car is not None, "scene": scene.name,
+           "car_found": car is not None, "scene": scene.name, "views": rc.get("views", []),
            "frame_ms_median": 1000.0 * d[len(d) // 2] if d else None,
            "frame_ms_p95": 1000.0 * d[int(len(d) * 0.95)] if d else None}
     path = os.environ.get("BGE_REMIX_RALLY_OUT")
@@ -96,8 +113,8 @@ if tick >= int(os.environ.get("BGE_REMIX_RALLY_TICKS", "%(ticks)d")):
 SETUP = r"""
 import bpy, json, os, sys
 argv = sys.argv[sys.argv.index("--") + 1:]
-level, folder, probe_path, info_path = argv
-VARIANTS = ["plain", "no_water", "no_filters", "no_damage"]
+level, folder, probe_path, info_path, variants = argv
+VARIANTS = json.loads(variants)
 WATER = ("watertexture.py", "watershader_high")
 DAMAGE = ("damage_controller",)
 info = {"variants": {}, "keys": {}, "owners": {}, "switched_off": {}}
@@ -146,6 +163,19 @@ for variant in VARIANTS:
                     except AttributeError:
                         a.mode = 'DISABLE'
                     off.append("%s: 2D filter %s" % (ob.name, a.name))
+        if variant == "no_sun_shadow":
+            # P9.0 diagnostics: the sun lamps cast no shadow
+            for la in bpy.data.lamps:
+                if la.type == 'SUN' and la.shadow_method != 'NOSHADOW':
+                    la.shadow_method = 'NOSHADOW'
+                    off.append("lamp %s: shadow" % la.name)
+        if variant == "no_water_plane":
+            # P9.0 diagnostics: the water's surface (and its scripts) on
+            # layer 20, which the scene does not show
+            for ob in list(scene.objects):
+                if any(getattr(c, "text", None) is not None and c.text.name in WATER for c in ob.game.controllers):
+                    ob.layers = [i == 19 for i in range(20)]
+                    off.append("%s: moved to layer 20" % ob.name)
         info["switched_off"][variant] = off
         if remix:
             for sc in bpy.data.scenes:
@@ -265,6 +295,28 @@ BIG_SESSIONS = [
      [("blender_big_opengl", "OPENGL", 900), ("blender_big_remix", "RTX_REMIX", 3600)]),
 ]
 
+# the test copies' variants: the ordinary run's, and the diagnostics'
+VARIANTS = ["plain", "no_water", "no_filters", "no_damage"]
+DIAG_VARIANTS = ["plain", "no_water", "no_filters", "no_sun_shadow", "no_water_plane"]
+
+
+def diag_plan(args, out):
+    """P9.0 glitch diagnostics: each suspect off in stock and ours (OpenGL),
+    Remix's pictures of each, and our sun's shadow map written out"""
+    plan = []
+    for variant in ("plain", "no_sun_shadow", "no_water_plane"):
+        if args.official:
+            plan.append(("stock_%s" % variant, args.official, "stock", "rally_test_%s" % variant, {}))
+        plan.append(("ours_%s" % variant, args.ours, "ours", "rally_test_%s" % variant, {}))
+    for variant in ("plain", "no_water", "no_filters", "no_water_plane"):
+        plan.append(("ours_remix_%s" % variant, args.ours, "ours", "rally_test_%s_remix" % variant, {}))
+    dump = os.path.join(out, "shadow_dump")
+    shutil.rmtree(dump, ignore_errors=True)
+    os.makedirs(dump, exist_ok=True)
+    plan.append(("ours_shadow_dump", args.ours, "ours", "rally_test_plain", {"BGE_REMIX_SHADOW_DUMP": dump}))
+    return plan
+
+
 ERROR_LINE = re.compile(r"^.*(Traceback|Error:|Python script error|Segmentation|EXCEPTION_).*$", re.M)
 BGE_LINE = re.compile(r"^BGE-Remix(?! GL error).*$", re.M)
 
@@ -315,7 +367,7 @@ def play(build, out, tag, blend, kind, game, env_extra, route, owners, size=None
     return {"exit": code, "seconds": round(time.time() - t0, 1), "ticks": r.get("ticks", 0),
             "finished": r.get("ticks", 0) >= ticks, "crash": crash_excerpt(text), "size": list(size),
             "speed_max": r.get("speed_max"), "car": r.get("car"), "shots": r.get("shots", []),
-            "frame_ms_median": r.get("frame_ms_median"), "frame_ms_p95": r.get("frame_ms_p95"),
+            "views": r.get("views", []), "frame_ms_median": r.get("frame_ms_median"), "frame_ms_p95": r.get("frame_ms_p95"),
             "errors": [m.group(0) for m in ERROR_LINE.finditer(text)][:12],
             "gl_errors": p8.GL_ERROR.findall(text)[:12], "gl_error_count": len(p8.GL_ERROR.findall(text)),
             "bge_remix_lines": sorted(set(BGE_LINE.findall(text)))[:40],
@@ -385,6 +437,8 @@ def main():
     ap.add_argument("--game", help="Rally Cross's folder (default: %s)" % " or ".join(GAME_DIRS))
     ap.add_argument("--blender-only", action="store_true", help="only the games started inside Blender")
     ap.add_argument("--big", action="store_true", help="only the large and long Remix runs (rallybig)")
+    ap.add_argument("--diag", action="store_true", help="the glitch diagnostics (rallydiag): the sun's shadow "
+                    "off, the water's surface hidden, Remix pictures of each, a shadow dump")
     args = ap.parse_args()
     out = os.path.abspath(args.out)
     os.makedirs(out, exist_ok=True)
@@ -406,14 +460,18 @@ def main():
     info_path = os.path.join(out, "rally_info.json")
     if os.path.isfile(info_path):
         os.remove(info_path)
-    p8.blender_script(args.ours, out, "rally_setup", SETUP, [level, folder, probe, info_path], timeout=1800)
+    variants = DIAG_VARIANTS if args.diag else VARIANTS
+    p8.blender_script(args.ours, out, "rally_setup", SETUP, [level, folder, probe, info_path, json.dumps(variants)],
+                      timeout=1800)
     info = p2.read_json(info_path) or {}
     keys, owners = info.get("keys", {}), info.get("owners", {})
     route = [(keys[name], a, b) for name, a, b in ROUTE if name in keys]
     runs = {}
     plan = []
-    if args.big:
+    if args.big or args.diag:
         args.blender_only = True  # (the ordinary runs left out)
+    if args.diag:
+        plan = diag_plan(args, out)
     if args.official and not args.blender_only:
         plan.append(("stock_plain", args.official, "stock", "rally_test_plain", {}))
     for variant in ("plain", "no_water", "no_filters", "no_damage") if not args.blender_only else ():
@@ -437,7 +495,7 @@ def main():
             if os.path.isfile(blend) else {"missing": blend}
     # inside Blender (the copies without Remix set: the session sets it)
     sessions = {}
-    chosen = [(n, c, None, q) for n, c, q in SESSIONS] if not args.big else BIG_SESSIONS
+    chosen = BIG_SESSIONS if args.big else [] if args.diag else [(n, c, None, q) for n, c, q in SESSIONS]
     for name, copy, window, seq in chosen:
         blend = os.path.join(folder, copy + ".blend")
         if os.path.isfile(blend):
@@ -481,6 +539,14 @@ def main():
             lines.append("    %-26s %-10s ticks %-5s speed max %-6s frame ms %s" % (
                 tag, r["rasterizer"], r["ticks"], r["speed_max"],
                 "%.2f" % r["frame_ms_median"] if r["frame_ms_median"] else "-"))
+    if args.diag:
+        lines += ["", "Switched off in each test copy:"]
+        for variant, off in sorted(info.get("switched_off", {}).items()):
+            if variant in DIAG_VARIANTS[3:]:
+                lines.append("    %-16s %s" % (variant, "; ".join(off) or "NOTHING FOUND"))
+        dump = os.path.join(out, "shadow_dump")
+        files = sorted(os.listdir(dump)) if os.path.isdir(dump) else []
+        lines.append("Shadow dump (%s): %s" % (dump, ", ".join(files) or "none written"))
     lines += ["", "Picture sheet: %s" % sheet, "Details: results_rally.json and each run's .log", "",
               "FINISHED"]
     print("\n".join(lines))
