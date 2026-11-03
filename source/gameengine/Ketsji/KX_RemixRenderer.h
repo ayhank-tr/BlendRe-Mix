@@ -138,6 +138,9 @@ public:
 	KX_GameObject *Pick(int x, int y, bool exact);
 	/* bge.render.remixHighlight: outline these objects (empty: none). */
 	void SetHighlight(const std::vector<KX_GameObject *> &objects, const float color[3]);
+	/* P9.0: one of Remix's own settings changed while it runs (false when
+	 * Remix is not running) */
+	bool SetOption(const char *key, const char *value);
 	bool IsRunning() const { return m_running; }
 
 private:

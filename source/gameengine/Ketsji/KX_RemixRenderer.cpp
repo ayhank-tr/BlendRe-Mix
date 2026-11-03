@@ -2540,6 +2540,18 @@ void KX_RemixRenderer::SetHighlight(const std::vector<KX_GameObject *> &objects,
 	}
 }
 
+bool KX_RemixRenderer::SetOption(const char *key, const char *value)
+{
+	if (!m_running || !m_bridge || !key || !key[0] || !value) {
+		return false;
+	}
+	m_bridge->set_config(key, value);
+	char line[512];
+	snprintf(line, sizeof(line), "option %s = %s", key, value);
+	Trace(line);
+	return true;
+}
+
 void KX_RemixRenderer::SendLight(KX_Scene *scene, const void *key, const brb_light_desc &desc)
 {
 	LightEntry &e = m_lights[key];

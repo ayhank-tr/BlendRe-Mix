@@ -14,6 +14,13 @@ C:\\BGE-Remix\\transfer\\p0-results.zip, as GitHub's runs did.
   run_local.bat p8diag       P8.30's diagnostic RTX run: Remix's pictures
                              with one setting changed at a time (also
                              run_p8_diag.bat in the p8 folder)
+  run_local.bat p9study      P9.0's study: Remix settings from Python, the
+                             dry conversion of every test file (run the
+                             phases first: it reads their scenes)
+  run_local.bat p9studyrtx   P9.0's RTX study: six spheres against Remix,
+                             Remix's debug views (also run_p9_study_rtx.bat)
+  run_local.bat p9menu       P9.0: Remix's own menu, tried by hand (also
+                             run_p9_menu.bat)
 
 Needs, once: Python 3 with pillow and numpy (python -m pip install pillow
 numpy), and the official Blender 2.79b unpacked into
@@ -42,7 +49,7 @@ MOCK_SHIM = os.path.join(LOCAL, "mock_shim")
 RESULTS = os.path.join(LOCAL, "results")
 HERE = os.path.dirname(os.path.abspath(__file__))
 PHASES = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"]
-EXTRA = ["p8rtx", "p8diag"]  # only when asked for
+EXTRA = ["p8rtx", "p8diag", "p9study", "p9studyrtx", "p9menu"]  # only when asked for
 
 
 def say(text=""):
@@ -122,6 +129,11 @@ def commands():
                   "--out", os.path.join(RESULTS, "p8rtx")],
         "p8diag": run("p8", "run_p8.py") + ["--ours", OURS, "--diag", "--before", os.path.join(ROOT, "results"),
                                             "--out", os.path.join(RESULTS, "p8diag")],
+        # P9.0: the study (the dry conversion reads the phases' scenes in RESULTS)
+        "p9study": run("p9", "run_p9.py") + ["--ours", OURS, "--mock", MOCK, "--study", "--results", RESULTS,
+                                             "--out", os.path.join(RESULTS, "p9study")],
+        "p9studyrtx": run("p9", "run_p9.py") + ["--ours", OURS, "--rtx", "--out", os.path.join(RESULTS, "p9studyrtx")],
+        "p9menu": run("p9", "run_p9.py") + ["--ours", OURS, "--menu", "--out", os.path.join(RESULTS, "p9menu")],
     }
 
 

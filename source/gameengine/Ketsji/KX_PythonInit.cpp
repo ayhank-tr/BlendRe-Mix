@@ -1076,6 +1076,39 @@ static PyObject *gPyRemixHighlight(PyObject *, PyObject *args)
 	Py_RETURN_NONE;
 }
 
+/* BGE-Remix P9.0: remixSetOption(name, value): one of RTX Remix's own
+ * settings (rtx.*) changed while it runs; the value as Remix writes it in
+ * its option list (bools True/False, numbers, "a, b" for pairs); returns
+ * whether Remix took it (False when Remix is not drawing) */
+static PyObject *gPyRemixSetOption(PyObject *, PyObject *args)
+{
+	const char *name, *value_s = NULL;
+	PyObject *value;
+	if (!PyArg_ParseTuple(args, "sO:remixSetOption", &name, &value))
+		return NULL;
+	PyObject *str = NULL;
+	if (PyBool_Check(value)) {
+		value_s = (value == Py_True) ? "True" : "False";
+	}
+	else {
+		str = PyObject_Str(value);
+		if (!str)
+			return NULL;
+		value_s = _PyUnicode_AsString(str);
+	}
+	bool ok = false;
+#ifdef WITH_REMIX
+	KX_KetsjiEngine *engine = KX_GetActiveEngine();
+	KX_RemixRenderer *remix = engine ? engine->GetRemix() : NULL;
+	if (remix && value_s)
+		ok = remix->SetOption(name, value_s);
+#else
+	(void)name;
+#endif
+	Py_XDECREF(str);
+	return PyBool_FromLong(ok);
+}
+
 static PyObject *gPySetEyeSeparation(PyObject *, PyObject *args)
 {
 	float sep;
@@ -1748,6 +1781,8 @@ static struct PyMethodDef rasterizer_methods[] = {
 	 "remixPick(x, y, exact=False): the object RTX Remix drew at that window pixel, or None"},
 	{"remixHighlight",(PyCFunction) gPyRemixHighlight, METH_VARARGS,
 	 "remixHighlight(objects=None, color=(1.0, 0.6, 0.1)): outline objects in RTX Remix's picture"},
+	{"remixSetOption",(PyCFunction) gPyRemixSetOption, METH_VARARGS,
+	 "remixSetOption(name, value): change one of RTX Remix's own settings while it runs; True if Remix took it"},
 	{"setBackgroundColor",(PyCFunction)gPySetBackgroundColor,METH_O,"set Background Color (rgb)"},
 	{"enableMotionBlur",(PyCFunction)gPyEnableMotionBlur,METH_VARARGS,"enable motion blur"},
 	{"disableMotionBlur",(PyCFunction)gPyDisableMotionBlur,METH_NOARGS,"disable motion blur"},
