@@ -716,12 +716,12 @@ def add_faults(scene, folder, v):
     # a timer nothing checks
     prop(v["player"], "stopwatch", 'TIMER', 0.0)
     # a particle system the game leaves out (P8.20 draws emitters and hair
-    # rendered as Path: hair rendered as Halo is still left out)
+    # rendered as Path: hair rendered as Object is still left out)
     fountain = p2.cube(scene, "Fountain", 0.5, (-12, -6, 0.25), grey)
     scene.objects.active = fountain
     bpy.ops.object.particle_system_add()
     fountain.particle_systems[-1].settings.type = 'HAIR'
-    fountain.particle_systems[-1].settings.render_type = 'HALO'
+    fountain.particle_systems[-1].settings.render_type = 'OBJECT'
     body(fountain, 'STATIC', 'BOX')
 
     for code, owner, level, what in FAULTS:
