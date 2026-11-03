@@ -568,7 +568,8 @@ static bool ConvertMaterial(
 	const char *tfaceName,
 	MFace *mface,
 	MCol *mmcol,
-	bool glslmat)
+	bool glslmat,
+	bool from_multitexture)
 {
 	material->Initialize();
 	int texalpha = 0;
@@ -665,8 +666,12 @@ static bool ConvertMaterial(
 							material->flag[i] |= (mttmp->mapto & MAP_ALPHA) ? TEXALPHA : 0;
 							material->flag[i] |= (mttmp->texflag & MTEX_NEGATIVE) ? TEXNEG : 0;
 
-							/* BGE-Remix P8: in GLSL too (one material mode) */
-							if (material->flag[i] & TEXALPHA) {
+							/* BGE-Remix P8: in GLSL too (one material mode), for
+							 * scenes saved in Multitexture. P8.1: only those, as
+							 * stock 2.79 (a GLSL file's texture mapped to alpha
+							 * left the material solid: Rally Cross's ground was
+							 * drawn without depth writes) */
+							if ((material->flag[i] & TEXALPHA) && (!glslmat || from_multitexture)) {
 								texalpha = 1;
 							}
 						}
@@ -925,7 +930,8 @@ static RAS_MaterialBucket *material_from_mesh(Material *ma, MFace *mface, MTFace
 		/* BGE-Remix P8: a material whose GLSL shader cannot be built falls
 		 * back to the built-in classic shader */
 		ConvertMaterial(bl_mat, ma, tface, tfaceName, mface, mcol,
-			converter->GetGLSLMaterials() && converter->MaterialGLSLWorks(scene, ma));
+			converter->GetGLSLMaterials() && converter->MaterialGLSLWorks(scene, ma),
+			(scene->GetBlenderScene()->gm.flag & GAME_FROM_MULTITEXTURE) != 0);
 
 		if (ma && (ma->mode & MA_FACETEXTURE) == 0)
 			converter->CacheBlenderMaterial(scene, ma, bl_mat);

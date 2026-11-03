@@ -88,6 +88,7 @@ import sys
 import traceback
 
 import bpy
+import mathutils
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "p2"))
@@ -2848,18 +2849,27 @@ def make_transparency_scene(folder, name, order, modern):
         no_physics(ob)
 
     def texalpha():
-        # P8.1: a GLSL file's material with a texture mapped to alpha but
-        # Transparency off (Rally Cross's ground): solid, as in stock 2.79,
-        # so the near (red) card hides the far (blue) one
-        far = p2.plane(scene, "TR_fold_far", 1.4, (3.5, 0.0, 1.6), (math.radians(90.0), 0.0, 0.0),
-                       classic("TR_fold_far", (0.1, 0.2, 1.0), shadeless=True))
-        no_physics(far)
-        img = p3.image("TR_fold", lambda x, y: (0.9, 0.1, 0.1, 0.3))
-        ma = classic("TR_fold_near", (1.0, 1.0, 1.0), shadeless=True)
-        p3.bi_slot(ma, img, color=True).use_map_alpha = True
-        ma.use_transparency = False
-        ob = p3.uv_plane(scene, "TR_fold_near", 1.2, (3.5, -1.0, 1.6), (math.radians(90.0), 0.0, 0.0), ma)
-        no_physics(ob)
+        # P8.1: a GLSL file's materials with a texture mapped to alpha but
+        # Transparency off (Rally Cross's ground): solid and writing depth,
+        # as in stock 2.79, so the near (red) card hides the far (blue) one.
+        # The far card's origin is nearer the camera than the near card's:
+        # drawn without depth writes, in sorted order, the far card would
+        # cover the near one (as the ground's far slopes did its near ones)
+        def card(tag, rgba, size, y, origin_y):
+            img = p3.image("TR_fold_" + tag, lambda x, yy: rgba)
+            ma = classic("TR_fold_" + tag, (1.0, 1.0, 1.0), shadeless=True)
+            p3.bi_slot(ma, img, color=True).use_map_alpha = True
+            ma.use_transparency = False
+            ob = p3.uv_plane(scene, "TR_fold_" + tag, size, (3.5, y, 1.6), (math.radians(90.0), 0.0, 0.0), ma)
+            # the origin moved, the card kept where it is
+            bpy.context.scene.update()
+            shift = ob.matrix_world.inverted().to_3x3() * mathutils.Vector((0.0, origin_y - y, 0.0))
+            for v in ob.data.vertices:
+                v.co -= shift
+            ob.location.y = origin_y
+            no_physics(ob)
+        card("far", (0.1, 0.2, 1.0, 0.3), 1.4, 0.0, -2.0)
+        card("near", (0.9, 0.1, 0.1, 0.3), 1.2, -1.0, -1.0)
 
     parts = [lambda k=k: pane(k) for k in range(len(TR_PANES))] + [smoke, hair, fence]
     for i in order:
