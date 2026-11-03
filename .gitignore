@@ -1,0 +1,3 @@
+# BGE-Remix P8.1: compiled Python files are made where scripts run
+__pycache__/
+*.pyc
