@@ -22,6 +22,12 @@ and with the water's surface hidden; Remix as it is, without the water's
 scripts, without the 2D filters and without the water's surface; ours once
 more writing the sun's shadow map out (BGE_REMIX_SHADOW_DUMP). The probe
 records the camera and the lamps at each picture.
+
+--diag2 (run_local.bat rallydiag2, run_rally_diag2.bat): OpenGL only. Ours
+with each of P8's techniques switched off in turn (BGE_REMIX_NO_<name>) and
+all of them together; stock and ours with groups of the level's objects
+hidden (the two domes, two planes, the trees, the posts) and with the
+ground's node material off.
 """
 
 import argparse
@@ -176,6 +182,20 @@ for variant in VARIANTS:
                 if any(getattr(c, "text", None) is not None and c.text.name in WATER for c in ob.game.controllers):
                     ob.layers = [i == 19 for i in range(20)]
                     off.append("%s: moved to layer 20" % ob.name)
+        # P9.0 diagnostics 2: groups of the level's objects hidden (moved
+        # to layer 20), the ground's node material off
+        groups = {"no_domes": ("Sphere",), "no_planes": ("Plane.000", "Plane.004"), "no_trees": ("Three",),
+                  "no_circles": ("Circle.",)}
+        if variant in groups:
+            for ob in list(scene.objects):
+                if ob.name.startswith(groups[variant]) and ob.type == 'MESH':
+                    ob.layers = [i == 19 for i in range(20)]
+                    off.append(ob.name)
+        if variant == "ground_simple":
+            for ma in bpy.data.materials:
+                if ma.use_nodes and ma.name == "Ground":
+                    ma.use_nodes = False
+                    off.append("material %s: nodes" % ma.name)
         info["switched_off"][variant] = off
         if remix:
             for sc in bpy.data.scenes:
@@ -298,6 +318,10 @@ BIG_SESSIONS = [
 # the test copies' variants: the ordinary run's, and the diagnostics'
 VARIANTS = ["plain", "no_water", "no_filters", "no_damage"]
 DIAG_VARIANTS = ["plain", "no_water", "no_filters", "no_sun_shadow", "no_water_plane"]
+DIAG2_VARIANTS = ["plain", "no_domes", "no_planes", "no_trees", "no_circles", "ground_simple"]
+# our build's P8 techniques, each switched off (BGE_REMIX_NO_<name>)
+DIAG2_SWITCHES = ["instancing", "gpu_culling", "gpu_skinning", "layered_shadows", "clustered_lights",
+                  "screen_effects", "texture_cache", "tessellation", "oit"]
 
 
 def diag_plan(args, out):
@@ -314,6 +338,29 @@ def diag_plan(args, out):
     shutil.rmtree(dump, ignore_errors=True)
     os.makedirs(dump, exist_ok=True)
     plan.append(("ours_shadow_dump", args.ours, "ours", "rally_test_plain", {"BGE_REMIX_SHADOW_DUMP": dump}))
+    return plan
+
+
+def diag2_plan(args, out):
+    """P9.0 glitch diagnostics 2 (OpenGL only): our P8 techniques switched
+    off one at a time and all together; groups of the level's objects hidden
+    in stock and ours"""
+    plan = []
+    if args.official:
+        plan.append(("stock_plain", args.official, "stock", "rally_test_plain", {}))
+    plan.append(("ours_plain", args.ours, "ours", "rally_test_plain", {}))
+    every = {}
+    for name in DIAG2_SWITCHES:
+        env = {"BGE_REMIX_NO_" + name.upper(): "1"}
+        if name == "instancing":
+            env["BGE_REMIX_GPU_INSTANCING"] = "0"
+        every.update(env)
+        plan.append(("ours_no_" + name, args.ours, "ours", "rally_test_plain", env))
+    plan.append(("ours_none_of_them", args.ours, "ours", "rally_test_plain", every))
+    for variant in DIAG2_VARIANTS[1:]:
+        if args.official:
+            plan.append(("stock_" + variant, args.official, "stock", "rally_test_" + variant, {}))
+        plan.append(("ours_" + variant, args.ours, "ours", "rally_test_" + variant, {}))
     return plan
 
 
@@ -439,6 +486,8 @@ def main():
     ap.add_argument("--big", action="store_true", help="only the large and long Remix runs (rallybig)")
     ap.add_argument("--diag", action="store_true", help="the glitch diagnostics (rallydiag): the sun's shadow "
                     "off, the water's surface hidden, Remix pictures of each, a shadow dump")
+    ap.add_argument("--diag2", action="store_true", help="the glitch diagnostics 2 (rallydiag2): our P8 "
+                    "techniques off one at a time, groups of objects hidden")
     args = ap.parse_args()
     out = os.path.abspath(args.out)
     os.makedirs(out, exist_ok=True)
@@ -460,7 +509,7 @@ def main():
     info_path = os.path.join(out, "rally_info.json")
     if os.path.isfile(info_path):
         os.remove(info_path)
-    variants = DIAG_VARIANTS if args.diag else VARIANTS
+    variants = DIAG2_VARIANTS if args.diag2 else DIAG_VARIANTS if args.diag else VARIANTS
     p8.blender_script(args.ours, out, "rally_setup", SETUP, [level, folder, probe, info_path, json.dumps(variants)],
                       timeout=1800)
     info = p2.read_json(info_path) or {}
@@ -468,10 +517,12 @@ def main():
     route = [(keys[name], a, b) for name, a, b in ROUTE if name in keys]
     runs = {}
     plan = []
-    if args.big or args.diag:
+    if args.big or args.diag or args.diag2:
         args.blender_only = True  # (the ordinary runs left out)
     if args.diag:
         plan = diag_plan(args, out)
+    if args.diag2:
+        plan = diag2_plan(args, out)
     if args.official and not args.blender_only:
         plan.append(("stock_plain", args.official, "stock", "rally_test_plain", {}))
     for variant in ("plain", "no_water", "no_filters", "no_damage") if not args.blender_only else ():
@@ -495,7 +546,7 @@ def main():
             if os.path.isfile(blend) else {"missing": blend}
     # inside Blender (the copies without Remix set: the session sets it)
     sessions = {}
-    chosen = BIG_SESSIONS if args.big else [] if args.diag else [(n, c, None, q) for n, c, q in SESSIONS]
+    chosen = BIG_SESSIONS if args.big else [] if (args.diag or args.diag2) else [(n, c, None, q) for n, c, q in SESSIONS]
     for name, copy, window, seq in chosen:
         blend = os.path.join(folder, copy + ".blend")
         if os.path.isfile(blend):
@@ -539,10 +590,10 @@ def main():
             lines.append("    %-26s %-10s ticks %-5s speed max %-6s frame ms %s" % (
                 tag, r["rasterizer"], r["ticks"], r["speed_max"],
                 "%.2f" % r["frame_ms_median"] if r["frame_ms_median"] else "-"))
-    if args.diag:
+    if args.diag or args.diag2:
         lines += ["", "Switched off in each test copy:"]
         for variant, off in sorted(info.get("switched_off", {}).items()):
-            if variant in DIAG_VARIANTS[3:]:
+            if variant != "plain" and variant in (DIAG2_VARIANTS if args.diag2 else DIAG_VARIANTS[3:]):
                 lines.append("    %-16s %s" % (variant, "; ".join(off) or "NOTHING FOUND"))
         dump = os.path.join(out, "shadow_dump")
         files = sorted(os.listdir(dump)) if os.path.isdir(dump) else []

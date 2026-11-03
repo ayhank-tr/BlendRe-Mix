@@ -24,6 +24,9 @@ C:\\BGE-Remix\\transfer\\p0-results.zip, as GitHub's runs did.
   run_local.bat rallydiag    P9.0: Rally Cross's glitch diagnostics: the
                              sun's shadow off, the water hidden, Remix's
                              pictures of each (also run_rally_diag.bat)
+  run_local.bat rallydiag2   P9.0: Rally Cross's glitch diagnostics 2: our
+                             P8 techniques off in turn, objects hidden
+                             (also run_rally_diag2.bat)
 
 Needs, once: Python 3 with pillow and numpy (python -m pip install pillow
 numpy), and the official Blender 2.79b unpacked into
@@ -52,7 +55,7 @@ MOCK_SHIM = os.path.join(LOCAL, "mock_shim")
 RESULTS = os.path.join(LOCAL, "results")
 HERE = os.path.dirname(os.path.abspath(__file__))
 PHASES = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"]
-EXTRA = ["p8rtx", "p8diag", "rally", "rallybig", "rallydiag"]  # only when asked for
+EXTRA = ["p8rtx", "p8diag", "rally", "rallybig", "rallydiag", "rallydiag2"]  # only when asked for
 
 
 def say(text=""):
@@ -141,6 +144,8 @@ def commands():
         # P9.0: the glitch diagnostics (stock, ours and Remix with one suspect off)
         "rallydiag": run("p9", "run_rally.py") + ["--ours", OURS] + off + ["--diag", "--out",
                                                                             os.path.join(RESULTS, "rallydiag")],
+        "rallydiag2": run("p9", "run_rally.py") + ["--ours", OURS] + off + ["--diag2", "--out",
+                                                                             os.path.join(RESULTS, "rallydiag2")],
     }
 
 
