@@ -376,8 +376,13 @@ def play(build, out, tag, blend, env=None, frames=300, seconds=0, debug=False, g
         cmd = [CDB, "-G", "-sins", "-c", handlers + "; g"] + cmd
         e["BGE_REMIX_NO_MIMALLOC"] = "1"
         if os.path.isfile(GFLAGS):
-            pageheap = p2.run([GFLAGS, "/p", "/enable", "blenderplayer.exe", "/full"], {},
-                              os.path.join(out, tag + "_gflags.log"), timeout=60)[0] == 0
+            # (gflags needs an administrator's rights: without them the run
+            # goes on under the debugger, without Windows' page heap)
+            try:
+                pageheap = p2.run([GFLAGS, "/p", "/enable", "blenderplayer.exe", "/full"], {},
+                                  os.path.join(out, tag + "_gflags.log"), timeout=60)[0] == 0
+            except OSError:
+                pageheap = False
     try:
         code, text, secs = p2.run(cmd, e, os.path.join(out, tag + ".log"), timeout=1800,
                                   cwd=os.path.dirname(blend))
