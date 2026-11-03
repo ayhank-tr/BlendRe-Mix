@@ -21,6 +21,8 @@ set TEMP=%OUT%\tmp
 set TMP=%OUT%\tmp
 set BGE_REMIX_TRACE=1
 set BGE_REMIX_GL_DEBUG=1
+rem every emulated draw checked against what OpenGL holds (P8.1)
+set BGE_REMIX_LGL_CHECK=1
 if not exist "%CDB%" goto nodebugger
 echo Starting Blender under the debugger with:
 echo   %FILE%
