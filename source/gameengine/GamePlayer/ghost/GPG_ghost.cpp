@@ -326,7 +326,8 @@ static void usage(const char* program, bool isBlenderPlayer)
 	printf("  -c: keep console window open\n\n");
 #endif
 	printf("  -d: turn debugging on\n\n");
-	printf("  --gl-compat: an OpenGL compatibility context instead of the core one (BGE-Remix)\n\n");
+	printf("  --gl-compat: an OpenGL compatibility context (BGE-Remix: the default)\n");
+	printf("  --gl-core: an OpenGL core context, the old calls emulated (BGE-Remix)\n\n");
 	printf("  -g: game engine options:\n\n");
 	printf("       Name                       Default      Description\n");
 	printf("       ------------------------------------------------------------------------\n");
@@ -645,10 +646,13 @@ int main(
 		validArguments = argc;
 
 
-	/* BGE-Remix P8.29: --gl-compat, before the window is made */
+	/* BGE-Remix P8.29: --gl-compat (P8.1: --gl-core), before the window is made */
 	for (i = 1; i < validArguments; i++) {
 		if (strcmp(argv[i], "--gl-compat") == 0) {
 			BLI_setenv("BGE_REMIX_GL_COMPAT", "1");
+		}
+		else if (strcmp(argv[i], "--gl-core") == 0) {
+			BLI_setenv("BGE_REMIX_GL_CORE", "1");
 		}
 	}
 
@@ -668,7 +672,7 @@ int main(
 #if defined(DEBUG)
 		printf("argv[%d] = '%s'\n", i, argv[i]);
 #endif
-		if (strcmp(argv[i], "--gl-compat") == 0) {
+		if (strcmp(argv[i], "--gl-compat") == 0 || strcmp(argv[i], "--gl-core") == 0) {
 			/* BGE-Remix P8.29: taken above */
 			i++;
 		}

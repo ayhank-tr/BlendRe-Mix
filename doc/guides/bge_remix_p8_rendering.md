@@ -141,20 +141,32 @@ field. A Classic scene leaves Remix's bloom on and its auto exposure off.
   only" mark. Hidden options keep their values, and Python still reaches
   them.
 
-## The editors on OpenGL 4.5 core
+## The editors on OpenGL 4.5
+
+Blender and the player run in an OpenGL 4.5 compatibility context (since
+P8.1): the full 4.5 feature set, and the driver itself draws the old calls
+Blender 2.79's editors make. P8 had run them in a core context, where those
+calls go through an emulation; Rally Cross found a state the emulation lost
+(a crash in the 3D view), and the compatibility context also redraws faster
+(about 18 ms a window on an RTX 3080, as stock 2.79, against 23 ms).
 
 Blender 2.79's editors make about 4,700 old OpenGL calls. On a core context
-they go to one emulation in the GPU module: immediate mode, client arrays,
+(`--gl-core`) they go to one emulation in the GPU module: immediate mode, client arrays,
 display lists, the matrix and attribute stacks, lamps and materials, texture
 environments, fog, stipples, clip planes, the raster position, bitmaps,
 `glDrawPixels` and GLU's quadrics. The editors look as in stock 2.79; lines
 and text can differ by a pixel. Selection uses occlusion queries.
 
-- `--gl-compat` on the command line (Blender or the player), or the
-  environment variable `BGE_REMIX_GL_COMPAT=1`, asks for the old
-  compatibility context instead. It is kept for this release as a safety
-  net.
-- **Python `bgl`** works through the same emulation. The few old calls it
+- `--gl-core` on the command line (Blender or the player), or the
+  environment variable `BGE_REMIX_GL_CORE=1`, asks for the core context and
+  the emulation. It is kept for a later Mac version (macOS offers only core
+  contexts). `--gl-compat` (`BGE_REMIX_GL_COMPAT=1`) still asks for the
+  default.
+- In a core context each emulated draw is checked against what OpenGL holds
+  (the bound vertex array and its element buffer) and put right, with a
+  `BGE-Remix GL check:` line; `BGE_REMIX_LGL_CHECK=1` checks every attribute
+  too, `BGE_REMIX_LGL_CHECK=0` leaves the check out.
+- **Python `bgl`** works through the same emulation in a core context. The few old calls it
   does not copy are skipped, and the console names the script and line, for
   example `BGE-Remix GL emulation: bgl.glAccum is not emulated on the core
   context (skipped; my_script.py, line 79)`. They are: the accumulation
@@ -187,7 +199,8 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
 
 | Environment variable | Effect |
 | --- | --- |
-| `BGE_REMIX_GL_COMPAT=1` | The compatibility context (as `--gl-compat`) |
+| `BGE_REMIX_GL_COMPAT=1` | The compatibility context (as `--gl-compat`; the default) |
+| `BGE_REMIX_GL_CORE=1` | The core context, the old calls emulated (as `--gl-core`) |
 | `BGE_REMIX_GL_TIER=1` | Tier 1 only, whatever the card offers |
 | `BGE_REMIX_GL_DEBUG=1` | A debug context: driver messages in the console |
 | `BGE_REMIX_GL_CHECK=1` | Report OpenGL state left changed after each editor region and game frame |

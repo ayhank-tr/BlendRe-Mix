@@ -1264,14 +1264,15 @@ def t81_gl(gl):
     c["the player runs in OpenGL 4.5 or later (every run)"] = bool(player) and all(ok45(v) for v in player.values())
     c["Blender runs in OpenGL 4.5 or later"] = bool(ui) and all(ok45(v) for v in ui.values())
     c["the runs had debug contexts (driver messages on)"] = bool(player) and all(v["debug"] for v in player.values())
-    # Part C step 8: a core context unless --gl-compat asked for the other
-    compat_tags = {t for t in GL_LOG if "compat" in t}
-    core_runs = {t: v["profile"] for t, v in GL_LOG.items() if t not in compat_tags and t != "t81_fake_old_card"}
-    c["Blender and the player run in a core context"] = bool(core_runs) and \
-        all(p == "core" for p in core_runs.values())
-    c["--gl-compat gives a compatibility context"] = bool(compat_tags) and \
-        all(GL_LOG[t]["profile"] == "compatibility" for t in compat_tags)
-    d["not_core"] = sorted(t for t, p in core_runs.items() if p != "core")[:20]
+    # P8.1: a compatibility context unless --gl-core asked for the core one
+    # (Part C step 8 had core as the default)
+    core_tags = {t for t in GL_LOG if "_core" in t}
+    default_runs = {t: v["profile"] for t, v in GL_LOG.items() if t not in core_tags and t != "t81_fake_old_card"}
+    c["Blender and the player run in a compatibility context"] = bool(default_runs) and \
+        all(p == "compatibility" for p in default_runs.values())
+    c["--gl-core gives a core context"] = bool(core_tags) and \
+        all(GL_LOG[t]["profile"] == "core" for t in core_tags)
+    d["not_compatibility"] = sorted(t for t, p in default_runs.items() if p != "compatibility")[:20]
     d["versions"] = sorted({v["line"] for v in GL_LOG.values() if v["line"]})
     d["runs_without_a_version_line"] = sorted(t for t, v in GL_LOG.items() if not v["line"])[:20]
 
@@ -1664,8 +1665,8 @@ def run(args, out):
               C["runs"].get("c_camera_fx_filter_remix", {}).get("screenshot")),
              ("remix_extras: game (shared texture cache)",
               C["runs"].get("c_remix_extras_shared", {}).get("screenshot")),
-             ("editors_ui Default: core (emulated)", U["shot"].get(("core", "Default"))),
-             ("editors_ui Default: --gl-compat", U["shot"].get(("compat", "Default"))),
+             ("editors_ui Default: --gl-core (emulated)", U["shot"].get(("core", "Default"))),
+             ("editors_ui Default: default (compatibility)", U["shot"].get(("compat", "Default"))),
              ("editors_ui Default: stock 2.79", U["shot"].get(("stock", "Default"))),
              ("editors_ui Animation: core", U["shot"].get(("core", "Animation"))),
              ("editors_ui Animation: stock 2.79", U["shot"].get(("stock", "Animation"))),
@@ -2837,10 +2838,12 @@ UI_OURS_ONLY = ("PROPERTIES", "INFO", "LOGIC_EDITOR", "USER_PREFERENCES")
 
 
 def editor_runs(args, out, S, expected, startup):
-    """the probe in our build (core and --gl-compat) and stock 2.79"""
+    """the probe in our build (--gl-core and the default compatibility
+    context) and stock 2.79"""
     U = {"runs": {}, "ui": {}, "shot": {}, "bgl_shot": {}, "select": {}, "bench": {}}
     screens = expected.get("editors_ui", {}).get("screens", [])
-    builds = [("core", args.ours, ()), ("compat", args.ours, ("--gl-compat",))]
+    # (P8.1: the compatibility context is the default; --gl-core the emulation)
+    builds = [("core", args.ours, ("--gl-core",)), ("compat", args.ours, ())]
     if args.official:
         builds.append(("stock", args.official, ()))
     for kind, build, extra in builds:
@@ -2926,7 +2929,7 @@ def t831_editors(U, expected):
                 worst[name] = md
                 if md is None or md > tol:
                     over.append(name)
-    c["each editor as with --gl-compat (within %.1f)" % TOL_UI_COMPAT] = bool(worst_compat) and not over_compat
+    c["each editor with --gl-core as in the default context (within %.1f)" % TOL_UI_COMPAT] = bool(worst_compat) and not over_compat
     c["each editor as stock 2.79 (within %.1f; BGE-Remix's own editors left out)" % TOL_UI_STOCK] = \
         bool(worst_stock) and not over_stock
     d["over_compat"] = {n: worst_compat[n] for n in over_compat}
@@ -3297,12 +3300,16 @@ def judge_benchmarks(bench):
     c["B8.6 mt_bench not slower than stock 2.79 (%s against %s ms)" % (ours, stock)] = \
         ours is not None and stock is not None and ours <= stock
     d["B8.6 the P2 room with Remix off (reported: P8's fixed cost)"] = get("B8.6", "p2_room")
-    core, st = get("B8.15", "core", "edit_ms"), get("B8.15", "stock", "edit_ms")
+    # (P8.1: the default compatibility context; --gl-core reported)
+    ours, st = get("B8.15", "compat", "edit_ms"), get("B8.15", "stock", "edit_ms")
     # (the same redraw timed twice differs by a few per cent)
-    c["B8.15 edit mode not slower than stock 2.79 (%s against %s ms, 5%% allowed)" % (core, st)] = \
-        core is not None and st is not None and core <= st * 1.05
-    d["B8.15 a whole-window redraw (reported: a known difference)"] = \
-        {"core": get("B8.15", "core", "window_ms"), "stock": get("B8.15", "stock", "window_ms")}
+    c["B8.15 edit mode not slower than stock 2.79 (%s against %s ms, 5%% allowed)" % (ours, st)] = \
+        ours is not None and st is not None and ours <= st * 1.05
+    win, wst = get("B8.15", "compat", "window_ms"), get("B8.15", "stock", "window_ms")
+    c["B8.15 a whole-window redraw not slower than stock 2.79 (%s against %s ms, 5%% allowed)" % (win, wst)] = \
+        win is not None and wst is not None and win <= wst * 1.05
+    d["B8.15 with --gl-core (reported)"] = \
+        {"edit": get("B8.15", "core", "edit_ms"), "window": get("B8.15", "core", "window_ms")}
     return c, d
 
 
@@ -3522,7 +3529,8 @@ def run_rtx(args, out):
         if any(screen == x[0].split(": ")[0] for x in items):
             continue
         items.append(("%s: stock 2.79" % screen, U["shot"].get(("stock", screen))))
-        items.append(("%s: P8 (core)" % screen, U["shot"].get(("core", screen))))
+        items.append(("%s: P8.1 (compatibility)" % screen, U["shot"].get(("compat", screen))))
+        items.append(("%s: P8.1 --gl-core" % screen, U["shot"].get(("core", screen))))
     sheets["editors"] = p2.contact_sheet(items, os.path.join(out, "sheet_p8_rtx_editors.png"))
     old = []
     for phase, label, what in BEFORE:

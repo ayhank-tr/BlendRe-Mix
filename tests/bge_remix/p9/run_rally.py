@@ -77,7 +77,7 @@ if tick in SHOTS:
         path = "%%s_%%d.png" %% (base, SHOTS.index(tick))
         bge.render.makeScreenshot(path)
         rc["shots"].append(path)
-if tick >= %(ticks)d:
+if tick >= int(os.environ.get("BGE_REMIX_RALLY_TICKS", "%(ticks)d")):
     t = rc["times"][60:]
     d = sorted(b - a for a, b in zip(t, t[1:]))
     out = {"ticks": tick, "shots": rc["shots"], "car": rc["car"], "speed_max": round(rc["speed_max"], 2),
@@ -207,8 +207,11 @@ class RallyEmbedded(bpy.types.Operator):
         if state["ticks"] < 10:
             return {'PASS_THROUGH'}
         if state["i"] < len(seq):
-            tag, mode = seq[state["i"]]
+            tag, mode = seq[state["i"]][0], seq[state["i"]][1]
+            ticks = seq[state["i"]][2] if len(seq[state["i"]]) > 2 else 0
             state["i"] += 1
+            if ticks:
+                os.environ["BGE_REMIX_RALLY_TICKS"] = str(ticks)
             for sc in bpy.data.scenes:
                 sc.bge_remix = mode
             os.environ["BGE_REMIX_RALLY_RUN"] = tag
@@ -249,6 +252,19 @@ SESSIONS = [
     ("in_blender_remix_no_filters", "rally_test_no_filters", [("blender_remix_no_filters", "RTX_REMIX")]),
 ]
 
+# P9.0, the second Rally Cross run: Remix crashed inside Blender at the
+# whole 3D view's size (2566 x 1442), 48 seconds into its picture, after an
+# OpenGL game; the standalone runs (960 x 540, 15 seconds) never did. These
+# runs (run_local.bat rallybig) separate size, length and Blender:
+# (tag, test copy, width, height, ticks)
+BIG_PLAYER = [("ours_remix_big", "rally_test_plain_remix", 2560, 1440, 3600),
+              ("ours_remix_long", "rally_test_plain_remix", 960, 540, 3600)]
+# (session, test copy, Blender's window [x, y, w, h], [(run, rasterizer, ticks)])
+BIG_SESSIONS = [
+    ("in_blender_big", "rally_test_plain", [0, 0, 2600, 1500],
+     [("blender_big_opengl", "OPENGL", 900), ("blender_big_remix", "RTX_REMIX", 3600)]),
+]
+
 ERROR_LINE = re.compile(r"^.*(Traceback|Error:|Python script error|Segmentation|EXCEPTION_).*$", re.M)
 BGE_LINE = re.compile(r"^BGE-Remix(?! GL error).*$", re.M)
 
@@ -270,7 +286,7 @@ def crash_excerpt(text):
     return keep[:90]
 
 
-def play(build, out, tag, blend, kind, game, env_extra, route, owners):
+def play(build, out, tag, blend, kind, game, env_extra, route, owners, size=None, ticks=TICKS):
     res = os.path.join(out, tag + ".json")
     stats = os.path.join(out, tag + "_stats.json")
     for p in (res, stats):
@@ -279,8 +295,9 @@ def play(build, out, tag, blend, kind, game, env_extra, route, owners):
     e = p2.base_env(out, tag)
     e.update({"BGE_REMIX_RALLY_OUT": res, "BGE_REMIX_RALLY_SHOT": os.path.join(out, tag),
               "BGE_REMIX_RALLY_ROUTE": json.dumps(route), "BGE_REMIX_RALLY_OWNERS": json.dumps(owners),
-              "BGE_REMIX_STATS": stats, "BGE_REMIX_RUNTIME_DIR": None})
-    cmd = [p2.exe(build, "blenderplayer"), "-w", str(p8.SIZE[0]), str(p8.SIZE[1]), blend]
+              "BGE_REMIX_STATS": stats, "BGE_REMIX_RUNTIME_DIR": None, "BGE_REMIX_RALLY_TICKS": str(ticks)})
+    size = size or p8.SIZE
+    cmd = [p2.exe(build, "blenderplayer"), "-w", str(size[0]), str(size[1]), blend]
     if kind == "ours":
         e.update(p8.GL_ENV)
         e.update(p8.REMIX_ENV)
@@ -296,7 +313,7 @@ def play(build, out, tag, blend, kind, game, env_extra, route, owners):
     r = p2.read_json(res) or {}
     st = p2.read_json(stats) or {}
     return {"exit": code, "seconds": round(time.time() - t0, 1), "ticks": r.get("ticks", 0),
-            "finished": r.get("ticks", 0) >= TICKS, "crash": crash_excerpt(text),
+            "finished": r.get("ticks", 0) >= ticks, "crash": crash_excerpt(text), "size": list(size),
             "speed_max": r.get("speed_max"), "car": r.get("car"), "shots": r.get("shots", []),
             "frame_ms_median": r.get("frame_ms_median"), "frame_ms_p95": r.get("frame_ms_p95"),
             "errors": [m.group(0) for m in ERROR_LINE.finditer(text)][:12],
@@ -307,12 +324,13 @@ def play(build, out, tag, blend, kind, game, env_extra, route, owners):
             if st else None}
 
 
-def session(build, out, name, blend, seq, route, owners):
+def session(build, out, name, blend, seq, route, owners, window=None):
     """blender.exe with the test copy, the games started in its 3D view"""
     script = os.path.join(out, "rally_embedded.py")
     with open(script, "w", encoding="utf-8") as f:
         f.write(EMBEDDED)
-    for tag, _ in seq:
+    for entry in seq:
+        tag = entry[0]
         for x in (".json", "_stats.json"):
             if os.path.isfile(os.path.join(out, tag + x)):
                 os.remove(os.path.join(out, tag + x))
@@ -325,7 +343,8 @@ def session(build, out, name, blend, seq, route, owners):
     e.update({"BGE_REMIX_RALLY_DIR": out, "BGE_REMIX_RALLY_SEQUENCE": json.dumps(seq),
               "BGE_REMIX_RALLY_ROUTE": json.dumps(route), "BGE_REMIX_RALLY_OWNERS": json.dumps(owners),
               "BGE_REMIX_RUNTIME_DIR": None, "BGE_REMIX_TRACE": "1", "TEMP": tmp, "TMP": tmp})
-    cmd = [p2.exe(build, "blender"), blend, "--python", script]
+    cmd = [p2.exe(build, "blender")] + (["-p"] + [str(v) for v in window] if window else []) + \
+        [blend, "--python", script]
     if os.path.isfile(p8.CDB):
         handlers = "; ".join('sxe -c "%s" %s' % (p8.ON_CRASH, ev) for ev in ("av", "c0000374", "c0000409"))
         cmd = [p8.CDB, "-G", "-sins", "-c", handlers + "; g"] + cmd
@@ -341,10 +360,12 @@ def session(build, out, name, blend, seq, route, owners):
             crash_files.append(name + "_" + n)
     steps = p2.read_json(os.path.join(out, "embedded_steps.json")) or []
     runs = {}
-    for tag, mode in seq:
+    for entry in seq:
+        tag, mode = entry[0], entry[1]
+        want = entry[2] if len(entry) > 2 else TICKS
         r = p2.read_json(os.path.join(out, tag + ".json")) or {}
         st = p2.read_json(os.path.join(out, tag + "_stats.json")) or {}
-        runs[tag] = {"rasterizer": mode, "ticks": r.get("ticks", 0), "finished": r.get("ticks", 0) >= TICKS,
+        runs[tag] = {"rasterizer": mode, "ticks": r.get("ticks", 0), "finished": r.get("ticks", 0) >= want,
                      "speed_max": r.get("speed_max"), "frame_ms_median": r.get("frame_ms_median"),
                      "shots": r.get("shots", []),
                      "remix": {k: st.get(k) for k in ("running", "mode", "errors", "draws_last_frame",
@@ -363,6 +384,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--game", help="Rally Cross's folder (default: %s)" % " or ".join(GAME_DIRS))
     ap.add_argument("--blender-only", action="store_true", help="only the games started inside Blender")
+    ap.add_argument("--big", action="store_true", help="only the large and long Remix runs (rallybig)")
     args = ap.parse_args()
     out = os.path.abspath(args.out)
     os.makedirs(out, exist_ok=True)
@@ -390,6 +412,8 @@ def main():
     route = [(keys[name], a, b) for name, a, b in ROUTE if name in keys]
     runs = {}
     plan = []
+    if args.big:
+        args.blender_only = True  # (the ordinary runs left out)
     if args.official and not args.blender_only:
         plan.append(("stock_plain", args.official, "stock", "rally_test_plain", {}))
     for variant in ("plain", "no_water", "no_filters", "no_damage") if not args.blender_only else ():
@@ -406,12 +430,18 @@ def main():
             continue
         print("Rally Cross: %s" % tag, flush=True)
         runs[tag] = play(build, out, tag, blend, kind, game, env, route, owners)
+    for tag, name, w, h, ticks in (BIG_PLAYER if args.big else ()):
+        blend = os.path.join(folder, name + ".blend")
+        print("Rally Cross: %s (%dx%d, %d ticks)" % (tag, w, h, ticks), flush=True)
+        runs[tag] = play(args.ours, out, tag, blend, "ours", game, {}, route, owners, size=(w, h), ticks=ticks) \
+            if os.path.isfile(blend) else {"missing": blend}
     # inside Blender (the copies without Remix set: the session sets it)
     sessions = {}
-    for name, copy, seq in SESSIONS:
+    chosen = [(n, c, None, q) for n, c, q in SESSIONS] if not args.big else BIG_SESSIONS
+    for name, copy, window, seq in chosen:
         blend = os.path.join(folder, copy + ".blend")
         if os.path.isfile(blend):
-            sessions[name] = session(args.ours, out, name, blend, seq, route, owners)
+            sessions[name] = session(args.ours, out, name, blend, seq, route, owners, window=window)
     # the test copies go again
     for name in info.get("variants", {}):
         p = os.path.join(folder, name + ".blend")
