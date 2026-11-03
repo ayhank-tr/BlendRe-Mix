@@ -100,11 +100,17 @@ if tick in SHOTS:
         for lamp in scene.lights:
             views["lamps"][lamp.name] = {"type": lamp.type, "matrix": [list(r) for r in lamp.worldTransform]}
         rc.setdefault("views", []).append(views)
+        # P8.1: the engine's revs (the rev counter's bars) at each picture
+        gb = scene.objects.get("Gearbox")
+        try:
+            rc.setdefault("rpm", []).append(round(float(gb["rpm"]), 1) if gb is not None else None)
+        except (KeyError, TypeError, ValueError):
+            rc.setdefault("rpm", []).append(None)
 if tick >= int(os.environ.get("BGE_REMIX_RALLY_TICKS", "%(ticks)d")):
     t = rc["times"][60:]
     d = sorted(b - a for a, b in zip(t, t[1:]))
     out = {"ticks": tick, "shots": rc["shots"], "car": rc["car"], "speed_max": round(rc["speed_max"], 2),
-           "car_found": car is not None, "scene": scene.name, "views": rc.get("views", []),
+           "car_found": car is not None, "scene": scene.name, "views": rc.get("views", []), "rpm": rc.get("rpm", []),
            "frame_ms_median": 1000.0 * d[len(d) // 2] if d else None,
            "frame_ms_p95": 1000.0 * d[int(len(d) * 0.95)] if d else None}
     path = os.environ.get("BGE_REMIX_RALLY_OUT")
@@ -414,7 +420,7 @@ def play(build, out, tag, blend, kind, game, env_extra, route, owners, size=None
     return {"exit": code, "seconds": round(time.time() - t0, 1), "ticks": r.get("ticks", 0),
             "finished": r.get("ticks", 0) >= ticks, "crash": crash_excerpt(text), "size": list(size),
             "speed_max": r.get("speed_max"), "car": r.get("car"), "shots": r.get("shots", []),
-            "views": r.get("views", []), "frame_ms_median": r.get("frame_ms_median"), "frame_ms_p95": r.get("frame_ms_p95"),
+            "views": r.get("views", []), "rpm": r.get("rpm", []), "frame_ms_median": r.get("frame_ms_median"), "frame_ms_p95": r.get("frame_ms_p95"),
             "errors": [m.group(0) for m in ERROR_LINE.finditer(text)][:12],
             "gl_errors": p8.GL_ERROR.findall(text)[:12], "gl_error_count": len(p8.GL_ERROR.findall(text)),
             "bge_remix_lines": sorted(set(BGE_LINE.findall(text)))[:40],
@@ -568,8 +574,8 @@ def main():
     with open(os.path.join(out, "results_rally.json"), "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
     lines += ["Game: %s" % game, "Route (key, from tick, to tick): %s" % route, ""]
-    lines.append("%-24s %-8s %-6s %-9s %-7s %-8s %s" % ("run", "result", "ticks", "speed max", "GL errs",
-                                                        "frame ms", "first problem"))
+    lines.append("%-24s %-8s %-6s %-9s %-7s %-8s %-18s %s" % ("run", "result", "ticks", "speed max", "GL errs",
+                                                              "frame ms", "revs at pictures", "first problem"))
     for tag, r in runs.items():
         if "missing" in r:
             lines.append("%-24s missing (%s)" % (tag, r["missing"]))
@@ -577,9 +583,10 @@ def main():
         state = "CRASH" if r["crash"] else ("ok" if r["finished"] else "stopped")
         first = (r["crash"] or [None])[1] if r["crash"] and len(r["crash"]) > 1 else \
             ((r["errors"] or [""])[0] or (r["gl_errors"] or [""])[0])
-        lines.append("%-24s %-8s %-6s %-9s %-7s %-8s %s" % (
+        lines.append("%-24s %-8s %-6s %-9s %-7s %-8s %-18s %s" % (
             tag, state, r["ticks"], r["speed_max"], r["gl_error_count"],
-            "%.2f" % r["frame_ms_median"] if r["frame_ms_median"] else "-", (first or "")[:90]))
+            "%.2f" % r["frame_ms_median"] if r["frame_ms_median"] else "-",
+            "/".join("-" if v is None else "%.0f" % v for v in r.get("rpm") or []) or "-", (first or "")[:90]))
     lines += ["", "Inside Blender (the game started in the 3D view, as with P):"]
     for name, sres in sessions.items():
         crashed = sres["crash"] or any(f.endswith(".crash.txt") for f in sres["crash_files"])

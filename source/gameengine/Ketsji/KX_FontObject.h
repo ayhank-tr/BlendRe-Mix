@@ -33,6 +33,17 @@
 #define  __KX_FONTOBJECT_H__
 #include "KX_GameObject.h"
 
+#include <map>
+#include <string>
+
+struct Scene;
+class RAS_MeshObject;
+
+/* BGE-Remix P8.1: builds the Remix geometry of a text object's new text
+ * (set by the converter, which made the first one) */
+typedef class RAS_MeshObject *(*KX_FontRemixBuilder)(class KX_FontObject *font, const char *text,
+                                                     void *converter, struct Scene *blenderscene);
+
 class KX_FontObject : public KX_GameObject
 {
 public:
@@ -56,12 +67,22 @@ public:
 	virtual void ProcessReplica();
 	virtual int GetGameObjectType() { return OBJ_TEXT; }
 
-	/* BGE-Remix P8 Part C (P8.22): the text as geometry, for Remix */
-	void SetRemixMesh(class RAS_MeshObject *mesh) { m_remix_mesh = mesh; }
-	class RAS_MeshObject *GetRemixMesh() const { return m_remix_mesh; }
+	/* BGE-Remix P8 Part C (P8.22): the text as geometry, for Remix.
+	 * P8.1: made again when the text changes (each text kept) */
+	void SetRemixMesh(class RAS_MeshObject *mesh, KX_FontRemixBuilder builder, void *converter,
+	                  struct Scene *blenderscene);
+	class RAS_MeshObject *GetRemixMesh();
+	Object *GetBlenderObject() const { return m_object; }
+	/* the text as shown (the Text property, if any, applied) */
+	std::string CurrentText();
 
 protected:
 	class RAS_MeshObject *m_remix_mesh;
+	std::string m_remix_text;
+	std::map<std::string, class RAS_MeshObject *> m_remix_meshes;
+	KX_FontRemixBuilder m_remix_builder;
+	void *m_remix_converter;
+	struct Scene *m_remix_blscene;
 	std::vector<STR_String>		m_text;
 	Object*			m_object;
 	int			m_fontid;

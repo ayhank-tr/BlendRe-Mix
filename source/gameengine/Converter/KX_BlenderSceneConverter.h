@@ -138,6 +138,9 @@ public:
 	/* BGE-Remix P8 Part C: Blender data made for the game (hair ribbons,
 	 * curves as meshes), freed with the converter */
 	void RegisterTemporaryID(struct ID *id) { m_temp_ids.push_back(id); }
+	/* BGE-Remix P8.1: a mesh made while the game runs (a text's new text),
+	 * kept with its scene's meshes */
+	RAS_MeshObject *ConvertRuntimeMesh(KX_Scene *kx_scene, struct Mesh *me, struct Object *ob);
 	RAS_MeshObject *FindGameMesh(struct Mesh *for_blendermesh/*, unsigned int onlayer*/);
 
 	void RegisterPolyMaterial(RAS_IPolyMaterial *polymat);

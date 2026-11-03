@@ -981,6 +981,9 @@ typedef struct GameData {
 #define GAME_SHOW_OBSTACLE_SIMULATION		(1 << 16)
 #define GAME_NO_MATERIAL_CACHING			(1 << 17)
 #define GAME_GLSL_NO_ENV_LIGHTING			(1 << 18)
+/* BGE-Remix P8.1: the scene was saved in Multitexture (set when opened),
+ * where a texture mapped to alpha turned alpha blending on */
+#define GAME_FROM_MULTITEXTURE				(1 << 19)
 /* Note: GameData.flag is now an int (max 32 flags). A short could only take 16 flags */
 
 /* GameData.playerflag */

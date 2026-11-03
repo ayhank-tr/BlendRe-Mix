@@ -1469,6 +1469,15 @@ bool KX_BlenderSceneConverter::MergeScene(KX_Scene *to, KX_Scene *from)
 
 /* This function merges a mesh from the current scene into another main
  * it does not convert */
+RAS_MeshObject *KX_BlenderSceneConverter::ConvertRuntimeMesh(KX_Scene *kx_scene, Mesh *me, Object *ob)
+{
+	KX_Scene *was = m_currentScene;
+	m_currentScene = kx_scene;
+	RAS_MeshObject *meshobj = BL_ConvertMesh(me, ob, kx_scene, this, false);
+	m_currentScene = was;
+	return meshobj;
+}
+
 RAS_MeshObject *KX_BlenderSceneConverter::ConvertMeshSpecial(KX_Scene *kx_scene, Main *maggie, const char *name)
 {
 	/* Find a mesh in the current main */

@@ -87,6 +87,11 @@ protected:
 	bool m_owncamera;
 	/// if offscreen render
 	PyRASOffScreen *m_offscreen;
+	/// BGE-Remix P8.1: under RTX Remix, the render's own buffer (window
+	/// sized) when the script gave none, so nothing is left in the window
+	RAS_IOffScreen *m_ownOffscreen;
+	bool m_ownBound;
+	void UnbindOwn();
 	/// object to synchronize render even if no buffer transfer
 	RAS_ISync *m_sync;
 	/// for mirror operation

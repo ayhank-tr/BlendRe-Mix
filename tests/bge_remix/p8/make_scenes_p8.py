@@ -1780,6 +1780,21 @@ for i in range(4):
 '''
 
 
+# BGE-Remix P8.1: the 2D filter on (when the copy has one); the text
+# object's text changed every 30 frames (when the copy says so)
+OVERLAY_EXTRA = r'''
+import bge
+g = bge.logic.globalDict
+cont = bge.logic.getCurrentController()
+for act in cont.actuators:
+    cont.activate(act)
+own = cont.owner
+if own.get("change_text"):
+    g["p8_ov_text"] = g.get("p8_ov_text", 0) + 1
+    bge.logic.getCurrentScene().objects["OV_text"].text = "BGE %d" % (g["p8_ov_text"] // 30)
+'''
+
+
 KEEP_SWITCH = r'''
 import bge
 g = bge.logic.globalDict
@@ -1898,6 +1913,21 @@ def make_game_overlays(folder, E):
     save(scene, os.path.join(folder, "game_overlays.blend"), physical=False)
     scene["bge_remix"] = 1
     copy_save(folder, "game_overlays_remix")
+    # P8.1: over Remix with a 2D filter (invert): a bge.texture render leaves
+    # nothing of its own in the picture; then the text object's text changes
+    extra = bpy.data.objects.new("OV_extra", None)
+    scene.objects.link(extra)
+    logic(scene, extra, "p8_overlays_extra.py", OVERLAY_EXTRA)
+    bpy.ops.logic.actuator_add(type='FILTER_2D', name="OV_invert", object=extra.name)
+    act = extra.game.actuators[-1]
+    act.mode = 'INVERT'
+    extra.game.controllers[-1].link(actuator=act)
+    copy_save(folder, "game_overlays_filter_remix")
+    extra.game.controllers[-1].unlink(actuator=act)
+    scene.objects.active = extra
+    bpy.ops.object.game_property_new(type='BOOL', name="change_text")
+    extra.game.properties["change_text"].value = True
+    copy_save(folder, "game_overlays_text_remix")
     E["game_overlays"] = {
         "files": ["game_overlays"],
         # the top-left corner holds the frame rate, the profile and the debug
@@ -1907,7 +1937,10 @@ def make_game_overlays(folder, E):
                   "physics": [layout_rect(-4.5, -2.2, 0.75)[0], layout_rect(-4.5, -2.2, 0.75)[1],
                               layout_rect(-2.6, -2.2, 0.75)[2], layout_rect(-2.6, -2.2, 0.75)[3]],
                   "draw_line": layout_rect(0.0, -2.2, 0.9), "render_to_texture": layout_rect(2.6, -2.0, 1.0),
-                  "mirror": layout_rect(5.0, -1.2, 1.0)}}
+                  "mirror": layout_rect(5.0, -1.2, 1.0)},
+        # P8.1: where the render to texture (256 x 256) was drawn in the
+        # window, past the top-left overlay text
+        "rtt_centre": [WIDTH // 2 - 90, HEIGHT // 2 - 110, WIDTH // 2 + 110, HEIGHT // 2 + 110]}
 
 
 # ---- pipelines: glsl_features and pbr_spheres in Modern; a cut-out fence ----
@@ -2814,9 +2847,24 @@ def make_transparency_scene(folder, name, order, modern):
         ob = p3.uv_plane(scene, "TR_fence", 2.0, (-3.5, -0.5, 1.6), (math.radians(90.0), 0.0, 0.0), ma)
         no_physics(ob)
 
+    def texalpha():
+        # P8.1: a GLSL file's material with a texture mapped to alpha but
+        # Transparency off (Rally Cross's ground): solid, as in stock 2.79,
+        # so the near (red) card hides the far (blue) one
+        far = p2.plane(scene, "TR_fold_far", 1.4, (3.5, 0.0, 1.6), (math.radians(90.0), 0.0, 0.0),
+                       classic("TR_fold_far", (0.1, 0.2, 1.0), shadeless=True))
+        no_physics(far)
+        img = p3.image("TR_fold", lambda x, y: (0.9, 0.1, 0.1, 0.3))
+        ma = classic("TR_fold_near", (1.0, 1.0, 1.0), shadeless=True)
+        p3.bi_slot(ma, img, color=True).use_map_alpha = True
+        ma.use_transparency = False
+        ob = p3.uv_plane(scene, "TR_fold_near", 1.2, (3.5, -1.0, 1.6), (math.radians(90.0), 0.0, 0.0), ma)
+        no_physics(ob)
+
     parts = [lambda k=k: pane(k) for k in range(len(TR_PANES))] + [smoke, hair, fence]
     for i in order:
         parts[i]()
+    texalpha()
     p2.lamp(scene, "TR_sun", 'SUN', (0.0, -8.0, 6.0), (math.radians(50.0), 0.0, math.radians(15.0)))
     save(scene, os.path.join(folder, name + ".blend"), physical=False, modern=modern)
     return name
@@ -2830,7 +2878,8 @@ def make_transparency(folder, E):
              make_transparency_scene(folder, "transparency_modern", order, True),
              make_transparency_scene(folder, "transparency_modern_shuffled", shuffled, True)]
     rects = {"panes": layout_rect(0.0, 0.0, 1.6), "smoke": layout_rect(3.5, -0.8, 0.6),
-             "hair": layout_rect(-3.5, -1.3, 0.6), "fence": layout_rect(-3.5, 1.6, 0.9)}
+             "hair": layout_rect(-3.5, -1.3, 0.6), "fence": layout_rect(-3.5, 1.6, 0.9),
+             "texalpha": layout_rect(3.5, 1.6, 0.4)}
     E["transparency"] = {"files": files, "rects": rects}
 
 

@@ -1833,6 +1833,9 @@ def partb_runs(args, out, S, expected):
     # P8.30: long enough for bge.texture's pictures to be written (five a
     # second; the 110 frames above take a fraction of a second)
     remix("b_game_overlays_remix_live", "game_overlays_remix", frames=1500)
+    # P8.1: with a 2D filter over Remix; with the text object's text changing
+    remix("b_game_overlays_filter_remix", "game_overlays_filter_remix")
+    remix("b_game_overlays_text_remix", "game_overlays_text_remix")
     if have("mt_bench"):
         blender_script(args.ours, out, "b_storage", STORAGE, [os.path.dirname(S("mt_bench"))])
         for kind in STORAGES:
@@ -2052,6 +2055,26 @@ def t818_remix_mode(B, expected, out):
     live = (B["runs"].get("b_game_overlays_remix_live", {}).get("stats") or {}).get("live_texture_updates")
     d["live_texture_updates"] = live
     c["bge.texture's pictures reach Remix (%s updates)" % live] = bool(live)
+    # P8.1: under Remix a bge.texture render draws in a buffer of its own,
+    # so a 2D filter over Remix's picture finds nothing of it (the inverted
+    # picture's middle, inverted back, is the picture without the filter)
+    if E and E.get("rtt_centre"):
+        a = shot_of(r)
+        b = shot_of(B["runs"].get("b_game_overlays_filter_remix", {}))
+        md = None
+        if a is not None and b is not None:
+            qa = crop(a, E["rtt_centre"])[..., :3].astype(float)
+            qb = 255.0 - crop(b, E["rtt_centre"])[..., :3].astype(float)
+            md = round(float(abs(qa - qb).mean()), 2)
+        d["filter_over_remix_centre_diff"] = md
+        c["a 2D filter over Remix's picture finds no bge.texture render in it (P8.1)"] = md is not None and md <= 6.0
+    # P8.1: a text object's new text reaches Remix (its geometry made again)
+    def meshes(tag):
+        return sum(1 for l in B["remix"].get(tag, []) if l.startswith("CreateMesh"))
+    base_n, text_n = meshes("b_game_overlays_remix"), meshes("b_game_overlays_text_remix")
+    d["text_meshes"] = {"static text": base_n, "changing text": text_n}
+    c["a text object's new text reaches Remix (%s meshes, %s with the text fixed) (P8.1)" % (text_n, base_n)] = \
+        bool(B["runs"].get("b_game_overlays_text_remix", {}).get("ran")) and text_n >= base_n + 2
     d["shared_memory"] = "Vulkan memory sharing is checked in the RTX run"
     cc, dd = t820(out)
     for k, v in cc.items():
@@ -2627,6 +2650,13 @@ def t826_transparency(C, expected):
                 md = region_diff(pa, pb, rect)
             d["%s %s" % (mode, k)] = md
             c["%s: %s the same in both orders (within %.0f)" % (mode, k, tol)] = md is not None and md <= tol
+        # P8.1: a texture mapped to alpha without Transparency (a GLSL file)
+        # draws solid: the near red card, no blue from the far one through it
+        rect = E["rects"].get("texalpha")
+        m = rect_rgb(pa, rect) if rect else None
+        d["%s texalpha rgb" % mode] = None if m is None else [round(float(v), 1) for v in m]
+        c["%s: a texture mapped to alpha without Transparency draws solid (P8.1)" % mode] = \
+            m is not None and m[0] > 150 and m[2] - m[1] < 20
     return c, d
 
 

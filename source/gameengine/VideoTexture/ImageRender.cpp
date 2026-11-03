@@ -45,6 +45,7 @@
 #include "RAS_Polygon.h"
 #include "RAS_IOffScreen.h"
 #include "RAS_ISync.h"
+#include "KX_KetsjiEngine.h"  /* KX_LiveTextureHook: RTX Remix is running */
 #include "BLI_math.h"
 
 #include "ImageRender.h"
@@ -74,6 +75,8 @@ ImageRender::ImageRender (KX_Scene *scene, KX_Camera * camera, PyRASOffScreen * 
     m_camera(camera),
     m_owncamera(false),
     m_offscreen(offscreen),
+    m_ownOffscreen(NULL),
+    m_ownBound(false),
     m_sync(NULL),
     m_observer(NULL),
     m_mirror(NULL),
@@ -101,6 +104,15 @@ ImageRender::~ImageRender (void)
 	if (m_sync)
 		delete m_sync;
 	Py_XDECREF(m_offscreen);
+	delete m_ownOffscreen;
+}
+
+void ImageRender::UnbindOwn()
+{
+	if (m_ownBound) {
+		m_ownOffscreen->Unbind();
+		m_ownBound = false;
+	}
 }
 
 // get background color
@@ -145,6 +157,10 @@ void ImageRender::calcViewport (unsigned int texId, double ts, unsigned int form
 	else if (m_offscreen) {
 		m_offscreen->ofs->Bind(RAS_IOffScreen::RAS_OFS_BIND_READ);
 	}
+	else if (m_ownOffscreen && !m_ownBound && KX_LiveTextureHook) {
+		m_ownOffscreen->Bind(RAS_IOffScreen::RAS_OFS_BIND_READ);
+		m_ownBound = true;
+	}
 	// wait until all render operations are completed
 	WaitSync();
 	// get image from viewport (or FBO)
@@ -152,6 +168,7 @@ void ImageRender::calcViewport (unsigned int texId, double ts, unsigned int form
 	if (m_offscreen) {
 		m_offscreen->ofs->Unbind();
 	}
+	UnbindOwn();
 }
 
 bool ImageRender::Render()
@@ -246,6 +263,23 @@ bool ImageRender::Render()
 		m_canvas->UpdateViewPort(0, 0, m_offscreen->ofs->GetWidth(), m_offscreen->ofs->GetHeight());
 	}
 	else {
+		/* BGE-Remix P8.1: under RTX Remix the window shows Remix's picture,
+		 * and the 2D filters read the window: the render goes to a buffer of
+		 * its own of the window's size (the same place is drawn and read) */
+		if (KX_LiveTextureHook) {
+			const int w = area.GetLeft() + area.GetWidth(), h = area.GetBottom() + area.GetHeight();
+			if (m_ownOffscreen && (m_ownOffscreen->GetWidth() != w || m_ownOffscreen->GetHeight() != h)) {
+				UnbindOwn();
+				delete m_ownOffscreen;
+				m_ownOffscreen = NULL;
+			}
+			if (!m_ownOffscreen && w > 0 && h > 0)
+				m_ownOffscreen = m_rasterizer->CreateOffScreen(w, h, 0, RAS_IOffScreen::RAS_OFS_RENDER_BUFFER);
+			if (m_ownOffscreen) {
+				m_ownOffscreen->Bind(RAS_IOffScreen::RAS_OFS_BIND_RENDER);
+				m_ownBound = true;
+			}
+		}
 		m_canvas->SetViewPort(m_position[0], m_position[1], m_position[0]+m_capSize[0]-1, m_position[1]+m_capSize[1]-1);
 	}
 	m_canvas->ClearColor(m_background[0], m_background[1], m_background[2], m_background[3]);
@@ -378,6 +412,7 @@ void ImageRender::Unbind()
 	{
 		m_offscreen->ofs->Unbind();
 	}
+	UnbindOwn();
 }
 
 void ImageRender::WaitSync()
@@ -740,6 +775,8 @@ ImageRender::ImageRender (KX_Scene *scene, KX_GameObject *observer, KX_GameObjec
     m_done(false),
     m_scene(scene),
     m_offscreen(NULL),
+    m_ownOffscreen(NULL),
+    m_ownBound(false),
     m_sync(NULL),
     m_observer(observer),
     m_mirror(mirror),

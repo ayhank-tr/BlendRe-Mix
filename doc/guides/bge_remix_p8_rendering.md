@@ -25,7 +25,9 @@ the finished P8 differs from its plan.
   every file is drawn by the GLSL material system. Multitexture files open
   and look as they did (face textures, `setBlending`, object colours, texture
   to alpha). Their "GLSL Color Management" is turned off when opened, as
-  Multitexture had none. The Display Lists, Vertex Arrays and VBO setting
+  Multitexture had none. A texture mapped to alpha turns blending on only in
+  scenes saved in Multitexture; in GLSL files, as in stock 2.79, only
+  Transparency does (P8.1). The Display Lists, Vertex Arrays and VBO setting
   stays in files and has no effect: meshes are always drawn as batches.
 - **Physical material** (Material > Surface > Shading: Physical). Metallic,
   Roughness, Specular, Transmission with IOR, Subsurface with a radius per
@@ -250,7 +252,12 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
   stop its light, so many small lamps blend into one glow.
 - `bge.texture` pictures (render to texture, mirrors, video) reach Remix up
   to five times a second, not every frame. A render to texture or a mirror
-  shows the game's OpenGL picture there, not a ray-traced one.
+  shows the game's OpenGL picture there, not a ray-traced one. Under Remix
+  a render to texture without its own offscreen buffer draws into one of
+  its own (the window shows Remix's picture), so 2D filters find nothing
+  of it (P8.1).
+- Text objects show their current text in Remix: each new text is made
+  once and kept, at most 512 per object (P8.1).
 - Remix's particles are lit surfaces in the emitter's material: they do
   not glow or blend as the game's do, so smoke and sparks look darker, or
   barely show, in dark scenes.
