@@ -260,10 +260,16 @@ def run_ci(args, out):
     f = find_material(mats, uns["name"])
     bad = check_material(f, uns)
     notes = notes_for(text, uns["name"])
-    res["T3.5"] = dict(p2.test({"flat colour from the node's own value": not bad,
+    # P8.6/P8.24: the node Remix cannot read is baked per mesh into the
+    # colour (a material of its own, "<material>@<mesh>"), the flat colour
+    # being what is left when nothing bakes it
+    baked = mats.get(p2.fnv1a("material:MA%s@Ball_%sMesh" % (uns["name"], uns["name"])))
+    baked_ok = bool(baked) and baked.get("albedo_tex") not in (None, "-")
+    res["T3.5"] = dict(p2.test({"the node's own flat colour, or (P8) the node baked into the colour":
+                                not bad or baked_ok,
                                 "exactly one log line about it": len(notes) == 1,
                                 "the player ran 300 frames": ran(r)}),
-                       detail={"got": f, "problems": bad, "notes": notes})
+                       detail={"got": f, "problems": bad, "baked": baked, "notes": notes})
 
     # T3.2a: the room fills a new cache
     cache = fresh(os.path.join(out, "cache_room"))

@@ -2880,7 +2880,9 @@ def editor_runs(args, out, S, expected, startup):
             U["select"][kind] = r.get("select")
     # bgl in a game: ours (core) and stock
     if os.path.isfile(S("bgl_game")):
-        U["runs"]["u_bgl_game"] = play(args.ours, out, "u_bgl_game", S("bgl_game"))
+        # (P8.1: in the core context, where bgl's old calls are emulated and
+        # the one it cannot copy is skipped with a note)
+        U["runs"]["u_bgl_game"] = play(args.ours, out, "u_bgl_game_core", S("bgl_game"), {"BGE_REMIX_GL_CORE": "1"})
         if args.official:
             U["runs"]["u_stock_bgl_game"] = play(args.official, out, "u_stock_bgl_game", S("bgl_game"))
     return U

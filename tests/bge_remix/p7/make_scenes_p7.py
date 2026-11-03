@@ -56,7 +56,7 @@ FAULTS = [
     ("SCN_NEVER_REACHED", "", "NOTE", "a scene never reached"),
     ("DAT_LIBLOAD_MISSING", "Loader", "RED", "a missing LibLoad file"),
     ("TIM_TIMER_NEVER_ENDS", "Player", "NOTE", "a timer that never ends"),
-    ("LEFT_PARTICLES", "Fountain", "RED", "a particle system (left out)"),
+    ("LEFT_PARTICLES", "Fountain", "RED", "a hair particle system not rendered as Path (left out)"),
 ]
 
 # gv_remix's warnings (what RTX Remix leaves out or cannot keep)
@@ -715,10 +715,13 @@ def add_faults(scene, folder, v):
     v["load_text"].write(LOAD_SCRIPT % "gv_missing_lib.blend")
     # a timer nothing checks
     prop(v["player"], "stopwatch", 'TIMER', 0.0)
-    # a particle system
+    # a particle system the game leaves out (P8.20 draws emitters and hair
+    # rendered as Path: hair rendered as Halo is still left out)
     fountain = p2.cube(scene, "Fountain", 0.5, (-12, -6, 0.25), grey)
     scene.objects.active = fountain
     bpy.ops.object.particle_system_add()
+    fountain.particle_systems[-1].settings.type = 'HAIR'
+    fountain.particle_systems[-1].settings.render_type = 'HALO'
     body(fountain, 'STATIC', 'BOX')
 
     for code, owner, level, what in FAULTS:

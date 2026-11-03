@@ -473,7 +473,8 @@ def main():
             "%.2f" % r["frame_ms_median"] if r["frame_ms_median"] else "-", (first or "")[:90]))
     lines += ["", "Inside Blender (the game started in the 3D view, as with P):"]
     for name, sres in sessions.items():
-        state = "CRASH" if sres["crash"] or sres["crash_files"] else ("exit %s" % sres["exit"])
+        crashed = sres["crash"] or any(f.endswith(".crash.txt") for f in sres["crash_files"])
+        state = "CRASH" if crashed else ("exit %s" % sres["exit"])
         lines.append("%-30s %-8s GL errors %-4s %s" % (name, state, sres["gl_error_count"],
                                                         ((sres["crash"] or [None, ""])[1] or "")[:80]))
         for tag, r in sres["runs"].items():
