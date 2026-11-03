@@ -1297,6 +1297,12 @@ int main(
 
 	SYS_DeleteSystem(syshandle);
 
+	/* BGE-Remix P8.1: as WM_exit_ext does, the DNA and the task scheduler
+	 * (its threads and the tasks it keeps for reuse) are freed; the player
+	 * left them, which was most of "Error Totblock" */
+	DNA_sdna_current_free();
+	BLI_threadapi_exit();
+
 	int totblock= MEM_get_memory_blocks_in_use();
 	if (totblock!=0) {
 		printf("Error Totblock: %d\n",totblock);
