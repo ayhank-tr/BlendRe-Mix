@@ -133,6 +133,8 @@
 #include "DNA_action_types.h"
 #include "DNA_object_force.h"
 #include "DNA_constraint_types.h"
+#include "DNA_curve_types.h"  /* BGE-Remix P8.1: a text's body */
+#include "BLI_string_utf8.h"
 
 #include "MEM_guardedalloc.h"
 
@@ -566,7 +568,8 @@ static bool ConvertMaterial(
 	const char *tfaceName,
 	MFace *mface,
 	MCol *mmcol,
-	bool glslmat)
+	bool glslmat,
+	bool from_multitexture)
 {
 	material->Initialize();
 	int texalpha = 0;
@@ -663,8 +666,12 @@ static bool ConvertMaterial(
 							material->flag[i] |= (mttmp->mapto & MAP_ALPHA) ? TEXALPHA : 0;
 							material->flag[i] |= (mttmp->texflag & MTEX_NEGATIVE) ? TEXNEG : 0;
 
-							/* BGE-Remix P8: in GLSL too (one material mode) */
-							if (material->flag[i] & TEXALPHA) {
+							/* BGE-Remix P8: in GLSL too (one material mode), for
+							 * scenes saved in Multitexture. P8.1: only those, as
+							 * stock 2.79 (a GLSL file's texture mapped to alpha
+							 * left the material solid: Rally Cross's ground was
+							 * drawn without depth writes) */
+							if ((material->flag[i] & TEXALPHA) && (!glslmat || from_multitexture)) {
 								texalpha = 1;
 							}
 						}
@@ -923,7 +930,8 @@ static RAS_MaterialBucket *material_from_mesh(Material *ma, MFace *mface, MTFace
 		/* BGE-Remix P8: a material whose GLSL shader cannot be built falls
 		 * back to the built-in classic shader */
 		ConvertMaterial(bl_mat, ma, tface, tfaceName, mface, mcol,
-			converter->GetGLSLMaterials() && converter->MaterialGLSLWorks(scene, ma));
+			converter->GetGLSLMaterials() && converter->MaterialGLSLWorks(scene, ma),
+			(scene->GetBlenderScene()->gm.flag & GAME_FROM_MULTITEXTURE) != 0);
 
 		if (ma && (ma->mode & MA_FACETEXTURE) == 0)
 			converter->CacheBlenderMaterial(scene, ma, bl_mat);
@@ -1704,6 +1712,48 @@ static KX_Camera *gamecamera_from_bcamera(Object *ob, KX_Scene *kxscene, KX_Blen
 	return gamecamera;
 }
 
+/* BGE-Remix P8.1: a text object's geometry for another text (Remix shows
+ * what the game shows): the curve's body is swapped for the new text while
+ * the mesh is made (from a copy of the curve), then put back */
+static RAS_MeshObject *bl_font_remix_mesh(KX_FontObject *font, const char *text, void *converter_v,
+                                          Scene *blenderscene)
+{
+	KX_BlenderSceneConverter *converter = static_cast<KX_BlenderSceneConverter *>(converter_v);
+	Object *ob = font->GetBlenderObject();
+	if (!ob || ob->type != OB_FONT || !ob->data || !converter || !blenderscene)
+		return NULL;
+	Curve *cu = static_cast<Curve *>(ob->data);
+	char *old_str = cu->str;
+	CharInfo *old_info = cu->strinfo;
+	const int old_len = cu->len, old_wchar = cu->len_wchar, old_pos = cu->pos;
+	const size_t bytes = strlen(text);
+	const int chars = (int)BLI_strlen_utf8(text);
+	cu->str = (char *)MEM_mallocN(bytes + sizeof(wchar_t), "BGE-Remix text body");
+	memcpy(cu->str, text, bytes + 1);
+	cu->strinfo = (CharInfo *)MEM_callocN((chars + 4) * sizeof(CharInfo), "BGE-Remix text info");
+	if (old_info && old_wchar > 0) {
+		for (int i = 0; i < chars; i++)
+			cu->strinfo[i] = old_info[0];  /* the first character's style for all */
+	}
+	cu->len = (int)bytes;
+	cu->len_wchar = chars;
+	cu->pos = chars;
+	Mesh *me = BKE_mesh_new_from_object(G.main, blenderscene, ob, true, 2, true, false);
+	MEM_freeN(cu->str);
+	MEM_freeN(cu->strinfo);
+	cu->str = old_str;
+	cu->strinfo = old_info;
+	cu->len = old_len;
+	cu->len_wchar = old_wchar;
+	cu->pos = old_pos;
+	if (!me)
+		return NULL;
+	converter->RegisterTemporaryID(&me->id);
+	if (me->totpoly == 0)
+		return NULL;
+	return converter->ConvertRuntimeMesh(font->GetScene(), me, ob);
+}
+
 static KX_GameObject *gameobject_from_blenderobject(
 								Object *ob, 
 								KX_Scene *kxscene, 
@@ -1902,8 +1952,10 @@ static KX_GameObject *gameobject_from_blenderobject(
 		Mesh *me = BKE_mesh_new_from_object(G.main, blenderscene, ob, true, 2, true, false);
 		if (me) {
 			converter->RegisterTemporaryID(&me->id);
-			if (me->totpoly > 0)
-				static_cast<KX_FontObject*>(gameobj)->SetRemixMesh(BL_ConvertMesh(me, ob, kxscene, converter, libloading));
+			/* P8.1: with the builder, for the texts it shows later */
+			static_cast<KX_FontObject*>(gameobj)->SetRemixMesh(
+			        (me->totpoly > 0) ? BL_ConvertMesh(me, ob, kxscene, converter, libloading) : NULL,
+			        bl_font_remix_mesh, converter, blenderscene);
 		}
 		static int said_text = 0;
 		if (said_text < 8) {

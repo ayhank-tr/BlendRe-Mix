@@ -326,7 +326,8 @@ static void usage(const char* program, bool isBlenderPlayer)
 	printf("  -c: keep console window open\n\n");
 #endif
 	printf("  -d: turn debugging on\n\n");
-	printf("  --gl-compat: an OpenGL compatibility context instead of the core one (BGE-Remix)\n\n");
+	printf("  --gl-compat: an OpenGL compatibility context (BGE-Remix: the default)\n");
+	printf("  --gl-core: an OpenGL core context, the old calls emulated (BGE-Remix)\n\n");
 	printf("  -g: game engine options:\n\n");
 	printf("       Name                       Default      Description\n");
 	printf("       ------------------------------------------------------------------------\n");
@@ -466,6 +467,15 @@ int main(
 #endif
 	)
 {
+	/* BGE-Remix P8.1: BGE_REMIX_GUARDED_ALLOC=1 uses Blender's guarded
+	 * allocator (before anything is allocated), so the blocks left at exit
+	 * are listed by name after "Error Totblock" */
+	{
+		const char *guarded = getenv("BGE_REMIX_GUARDED_ALLOC");
+		if (guarded && guarded[0] == '1') {
+			MEM_use_guarded_allocator();
+		}
+	}
 	int i;
 	int argc_py_clamped= argc; /* use this so python args can be added after ' - ' */
 	bool error = false;
@@ -645,10 +655,13 @@ int main(
 		validArguments = argc;
 
 
-	/* BGE-Remix P8.29: --gl-compat, before the window is made */
+	/* BGE-Remix P8.29: --gl-compat (P8.1: --gl-core), before the window is made */
 	for (i = 1; i < validArguments; i++) {
 		if (strcmp(argv[i], "--gl-compat") == 0) {
 			BLI_setenv("BGE_REMIX_GL_COMPAT", "1");
+		}
+		else if (strcmp(argv[i], "--gl-core") == 0) {
+			BLI_setenv("BGE_REMIX_GL_CORE", "1");
 		}
 	}
 
@@ -668,7 +681,7 @@ int main(
 #if defined(DEBUG)
 		printf("argv[%d] = '%s'\n", i, argv[i]);
 #endif
-		if (strcmp(argv[i], "--gl-compat") == 0) {
+		if (strcmp(argv[i], "--gl-compat") == 0 || strcmp(argv[i], "--gl-core") == 0) {
 			/* BGE-Remix P8.29: taken above */
 			i++;
 		}
@@ -1283,6 +1296,12 @@ int main(
 	IMB_moviecache_destruct();
 
 	SYS_DeleteSystem(syshandle);
+
+	/* BGE-Remix P8.1: as WM_exit_ext does, the DNA and the task scheduler
+	 * (its threads and the tasks it keeps for reuse) are freed; the player
+	 * left them, which was most of "Error Totblock" */
+	DNA_sdna_current_free();
+	BLI_threadapi_exit();
 
 	int totblock= MEM_get_memory_blocks_in_use();
 	if (totblock!=0) {

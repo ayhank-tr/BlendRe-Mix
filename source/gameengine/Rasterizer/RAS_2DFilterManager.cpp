@@ -66,6 +66,7 @@ texturewidth(-1), textureheight(-1),
 	for (passindex =0; passindex<MAX_RENDER_PASS; passindex++)
 	{
 		m_filters[passindex] = 0;
+		m_filter_mode[passindex] = -1;
 		m_enabled[passindex] = 0;
 		texflag[passindex] = 0;
 		m_gameObjects[passindex] = NULL;
@@ -564,6 +565,8 @@ void RAS_2DFilterManager::EnableFilter(vector<STR_String>& propNames, void* game
 			glDeleteObjectARB(m_filters[pass]);
 		m_enabled[pass] = 0;
 		m_filters[pass] = 0;
+		m_filter_mode[pass] = -1;
+		m_filter_source[pass].clear();
 		m_gameObjects[pass] = NULL;
 		m_properties[pass].clear();
 		texflag[pass] = 0;
@@ -572,9 +575,18 @@ void RAS_2DFilterManager::EnableFilter(vector<STR_String>& propNames, void* game
 	
 	if (mode == RAS_2DFILTER_CUSTOMFILTER)
 	{
+		if (m_filters[pass] && m_filter_mode[pass] == (int)mode && m_filter_source[pass] == text.Ptr()) {
+			/* the same filter again: kept as it is built */
+			m_gameObjects[pass] = gameObj;
+			AnalyseShader(pass, propNames);
+			m_enabled[pass] = 1;
+			return;
+		}
 		if (m_filters[pass])
 			glDeleteObjectARB(m_filters[pass]);
 		m_filters[pass] = CreateShaderProgram(text.Ptr());
+		m_filter_mode[pass] = (int)mode;
+		m_filter_source[pass] = text.Ptr();
 		m_gameObjects[pass] = gameObj;
 		AnalyseShader(pass, propNames);
 		m_enabled[pass] = 1;
@@ -582,9 +594,17 @@ void RAS_2DFilterManager::EnableFilter(vector<STR_String>& propNames, void* game
 	}
 
 	// We've checked all other cases, which means we must be dealing with a builtin filter
+	if (m_filters[pass] && m_filter_mode[pass] == (int)mode) {
+		m_gameObjects[pass] = NULL;
+		AnalyseShader(pass, propNames);
+		m_enabled[pass] = 1;
+		return;
+	}
 	if (m_filters[pass])
 		glDeleteObjectARB(m_filters[pass]);
 	m_filters[pass] = CreateShaderProgram(mode);
+	m_filter_mode[pass] = (int)mode;
+	m_filter_source[pass].clear();
 	m_gameObjects[pass] = NULL;
 	AnalyseShader(pass, propNames);
 	m_enabled[pass] = 1;

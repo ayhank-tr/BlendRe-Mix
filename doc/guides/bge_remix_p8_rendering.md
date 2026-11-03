@@ -25,7 +25,9 @@ the finished P8 differs from its plan.
   every file is drawn by the GLSL material system. Multitexture files open
   and look as they did (face textures, `setBlending`, object colours, texture
   to alpha). Their "GLSL Color Management" is turned off when opened, as
-  Multitexture had none. The Display Lists, Vertex Arrays and VBO setting
+  Multitexture had none. A texture mapped to alpha turns blending on only in
+  scenes saved in Multitexture; in GLSL files, as in stock 2.79, only
+  Transparency does (P8.1). The Display Lists, Vertex Arrays and VBO setting
   stays in files and has no effect: meshes are always drawn as batches.
 - **Physical material** (Material > Surface > Shading: Physical). Metallic,
   Roughness, Specular, Transmission with IOR, Subsurface with a radius per
@@ -129,6 +131,10 @@ field. A Classic scene leaves Remix's bloom on and its auto exposure off.
   (Light Scale 1) with no exposure added (Exposure 0), so a scene looks as in
   the game and as in Cycles, dark scenes included. Files that saved their
   own Light Scale or Exposure keep them.
+- Inside Blender, Remix builds its shaders one after another, not on its
+  background threads: a game started with P in Texture or Material shading
+  crashed NVIDIA's driver while Blender built its own shaders (P8.1). Remix's
+  first start inside Blender takes a little longer; the player is unchanged.
 - A shadeless material with an image glows with its image. Face Texture
   (bitmap) text reaches Remix letter by letter.
 - Once a game draws through Remix, the scenes it switches to and the files it
@@ -141,20 +147,32 @@ field. A Classic scene leaves Remix's bloom on and its auto exposure off.
   only" mark. Hidden options keep their values, and Python still reaches
   them.
 
-## The editors on OpenGL 4.5 core
+## The editors on OpenGL 4.5
+
+Blender and the player run in an OpenGL 4.5 compatibility context (since
+P8.1): the full 4.5 feature set, and the driver itself draws the old calls
+Blender 2.79's editors make. P8 had run them in a core context, where those
+calls go through an emulation; Rally Cross found a state the emulation lost
+(a crash in the 3D view), and the compatibility context also redraws faster
+(about 18 ms a window on an RTX 3080, as stock 2.79, against 23 ms).
 
 Blender 2.79's editors make about 4,700 old OpenGL calls. On a core context
-they go to one emulation in the GPU module: immediate mode, client arrays,
+(`--gl-core`) they go to one emulation in the GPU module: immediate mode, client arrays,
 display lists, the matrix and attribute stacks, lamps and materials, texture
 environments, fog, stipples, clip planes, the raster position, bitmaps,
 `glDrawPixels` and GLU's quadrics. The editors look as in stock 2.79; lines
 and text can differ by a pixel. Selection uses occlusion queries.
 
-- `--gl-compat` on the command line (Blender or the player), or the
-  environment variable `BGE_REMIX_GL_COMPAT=1`, asks for the old
-  compatibility context instead. It is kept for this release as a safety
-  net.
-- **Python `bgl`** works through the same emulation. The few old calls it
+- `--gl-core` on the command line (Blender or the player), or the
+  environment variable `BGE_REMIX_GL_CORE=1`, asks for the core context and
+  the emulation. It is kept for a later Mac version (macOS offers only core
+  contexts). `--gl-compat` (`BGE_REMIX_GL_COMPAT=1`) still asks for the
+  default.
+- In a core context each emulated draw is checked against what OpenGL holds
+  (the bound vertex array and its element buffer) and put right, with a
+  `BGE-Remix GL check:` line; `BGE_REMIX_LGL_CHECK=1` checks every attribute
+  too, `BGE_REMIX_LGL_CHECK=0` leaves the check out.
+- **Python `bgl`** works through the same emulation in a core context. The few old calls it
   does not copy are skipped, and the console names the script and line, for
   example `BGE-Remix GL emulation: bgl.glAccum is not emulated on the core
   context (skipped; my_script.py, line 79)`. They are: the accumulation
@@ -187,7 +205,9 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
 
 | Environment variable | Effect |
 | --- | --- |
-| `BGE_REMIX_GL_COMPAT=1` | The compatibility context (as `--gl-compat`) |
+| `BGE_REMIX_GL_COMPAT=1` | The compatibility context (as `--gl-compat`; the default) |
+| `BGE_REMIX_GL_CORE=1` | The core context, the old calls emulated (as `--gl-core`) |
+| `RTX_ENABLE_ASYNC_COMPILATION=1` | Inside Blender, Remix builds its shaders on background threads again (P8.1 sets 0 there: with Texture or Material shading the driver crashed) |
 | `BGE_REMIX_GL_TIER=1` | Tier 1 only, whatever the card offers |
 | `BGE_REMIX_GL_DEBUG=1` | A debug context: driver messages in the console |
 | `BGE_REMIX_GL_CHECK=1` | Report OpenGL state left changed after each editor region and game frame |
@@ -196,6 +216,7 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
 | `BGE_REMIX_FOG_GRID=WxHxD` | Volumetric fog grid size (default 160x90x64) |
 | `BGE_REMIX_MIST_FOG=<factor>` | Send the world's mist to Remix as fog, its distance times the factor (1: as set) |
 | `BGE_REMIX_LIVE_TEXTURE_HZ=<n>` | `bge.texture` pictures sent to Remix n times a second (default 5; 0: none) |
+| `BGE_REMIX_GUARDED_ALLOC=1` | The player uses Blender's guarded allocator: the blocks left at exit are listed by name after "Error Totblock" (P8.1) |
 | `BGE_REMIX_GPU_INSTANCING=0` | Objects sharing a mesh and material sent to Remix one by one, not as one instanced draw |
 | `BGE_REMIX_PARTICLE_SPAWN_UV=1` | Remix's particles take their texture coordinates from where they spawn |
 | `BGE_REMIX_PARTICLE_SPRITE_MODE=<n>` | Remix's particle sprite sheet mode (0 off) |
@@ -232,7 +253,12 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
   stop its light, so many small lamps blend into one glow.
 - `bge.texture` pictures (render to texture, mirrors, video) reach Remix up
   to five times a second, not every frame. A render to texture or a mirror
-  shows the game's OpenGL picture there, not a ray-traced one.
+  shows the game's OpenGL picture there, not a ray-traced one. Under Remix
+  a render to texture without its own offscreen buffer draws into one of
+  its own (the window shows Remix's picture), so 2D filters find nothing
+  of it (P8.1).
+- Text objects show their current text in Remix: each new text is made
+  once and kept, at most 512 per object (P8.1).
 - Remix's particles are lit surfaces in the emitter's material: they do
   not glow or blend as the game's do, so smoke and sparks look darker, or
   barely show, in dark scenes.

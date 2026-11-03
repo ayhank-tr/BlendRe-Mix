@@ -25,6 +25,7 @@
  */
 
 #include <cstdio>
+#include <cwctype>
 
 #include "bridge_intern.h"
 
@@ -121,6 +122,31 @@ BRB_API brb_status brb_load(const wchar_t *runtime_dir)
 	 * the runtime folder, and the load fails. So: add the runtime folder to
 	 * the DLL search path for as long as Remix is loaded, and preload the
 	 * implementation with its own folder as the search base. */
+	/* BGE-Remix P8.1: inside Blender (the 3D view's Texture and Material
+	 * shading compile OpenGL shaders while a game starts), Remix's shaders
+	 * are built in turn, not on its background threads: the two compilers
+	 * at once crashed in NVIDIA's driver (Rally Cross, on P after choosing
+	 * RTX Remix). The player keeps Remix's default; an
+	 * RTX_ENABLE_ASYNC_COMPILATION already set is left as it is. */
+	{
+		wchar_t exe[MAX_PATH] = L"";
+		GetModuleFileNameW(nullptr, exe, MAX_PATH);
+		std::wstring name(exe);
+		const size_t slash = name.find_last_of(L"\\/");
+		if (slash != std::wstring::npos) {
+			name = name.substr(slash + 1);
+		}
+		for (wchar_t &c : name) {
+			c = (wchar_t)towlower(c);
+		}
+		wchar_t have[8];
+		if (name == L"blender.exe" &&
+		    GetEnvironmentVariableW(L"RTX_ENABLE_ASYNC_COMPILATION", have, 8) == 0)
+		{
+			SetEnvironmentVariableW(L"RTX_ENABLE_ASYNC_COMPILATION", L"0");
+			log("inside Blender: Remix's shaders built in turn (RTX_ENABLE_ASYNC_COMPILATION=0)");
+		}
+	}
 	SetDllDirectoryW(dir.c_str());
 	const std::wstring impl_path = dir + L"\\d3d9_x64.dll";
 	if (file_exists(impl_path)) {

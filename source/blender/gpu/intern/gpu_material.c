@@ -4267,8 +4267,10 @@ GPUMaterial *GPU_material_from_blender_ex(Scene *scene, Material *ma, bool use_o
 
 	/* render pipeline option */
 	bool new_shading_nodes = BKE_scene_use_new_shading_nodes(scene);
-	if (!new_shading_nodes && ((ma->mode & MA_TRANSP) || gpu_material_texture_alpha(ma) ||
-	                           gpu_material_physical_alpha(ma)))
+	/* BGE-Remix P8.1: a texture mapped to alpha blends only in scenes saved
+	 * in Multitexture, as stock 2.79 had it (GLSL needed Transparency) */
+	const bool texture_alpha = (scene->gm.flag & GAME_FROM_MULTITEXTURE) && gpu_material_texture_alpha(ma);
+	if (!new_shading_nodes && ((ma->mode & MA_TRANSP) || texture_alpha || gpu_material_physical_alpha(ma)))
 		GPU_material_enable_alpha(mat);
 	else if (new_shading_nodes && ma->alpha < 1.0f)
 		GPU_material_enable_alpha(mat);

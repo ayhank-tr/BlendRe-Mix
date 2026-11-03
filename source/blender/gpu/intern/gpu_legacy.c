@@ -561,6 +561,86 @@ static void lgl_user_clip(LglUserProg *up)
 /* one draw: prim is what OpenGL 4.5 draws; with itype the indices are in
  * ibuf at ioffset (basevertex added); prim_class: 0 points, 1 lines,
  * 2 polygons, 3 polygon outlines or corners */
+/* BGE-Remix P8.1: before each emulated draw, what OpenGL really holds
+ * against what the emulation's caches say: the bound vertex array and its
+ * element buffer (two queries; BGE_REMIX_LGL_CHECK=0 leaves them out), and
+ * with BGE_REMIX_LGL_CHECK=1 every enabled attribute's buffer too. A difference is put right and reported
+ * (Rally Cross: the 3D view's draw read indices or an attribute from
+ * address 0x40, a buffer the caches believed bound) */
+static int lgl_check_level(void)
+{
+	static int level = -1;
+	if (level < 0) {
+		const char *env = getenv("BGE_REMIX_LGL_CHECK");
+		level = (env && env[0] == '1') ? 2 : (env && env[0] == '0') ? 0 : 1;
+	}
+	return level;
+}
+
+static void lgl_check_report(const char *what, int a, int b, int c)
+{
+	static int reported = 0;
+	if (reported < 40) {
+		reported++;
+		printf("BGE-Remix GL check: %s (%d, %d, %d)\n", what, a, b, c);
+		fflush(stdout);
+	}
+}
+
+static void lgl_check_draw(LglContext *lc, GLenum itype, GLuint ibuf, const LglSrc *const at[16])
+{
+	const int level = lgl_check_level();
+	if (level == 0) {
+		return;
+	}
+	GLint bound = 0;
+	glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &bound);
+	if ((GLuint)bound != lc->vao) {
+		lgl_check_report("the emulation's vertex array was not the one bound: bound again", bound, (int)lc->vao,
+		                 (int)lc->vao_bound);
+		glBindVertexArray(lc->vao);
+		lc->vao_bound = lc->vao;
+		lc->vao_known = 1;
+	}
+	if (itype) {
+		GLint ebo = 0;
+		glGetVertexArrayiv(lc->vao, GL_ELEMENT_ARRAY_BUFFER_BINDING, &ebo);
+		if ((GLuint)ebo != ibuf) {
+			lgl_check_report("the element buffer was not the one the cache held: bound again", ebo, (int)ibuf,
+			                 (int)lc->ebo);
+			glVertexArrayElementBuffer(lc->vao, ibuf);
+			lc->ebo = ibuf;
+		}
+	}
+	if (level < 2) {
+		return;
+	}
+	for (int loc = 0; loc < 16; loc++) {
+		GLint enabled = 0, buffer = 0;
+		glGetVertexArrayIndexediv(lc->vao, (GLuint)loc, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &enabled);
+		if (!enabled) {
+			if (at[loc] && at[loc]->on) {
+				lgl_check_report("an attribute the emulation set was disabled", loc, 0, 0);
+			}
+			continue;
+		}
+		/* (the emulation's vertex array is bound here; attribute loc reads binding loc) */
+		glGetVertexAttribiv((GLuint)loc, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &buffer);
+		if (!at[loc] || !at[loc]->on) {
+			lgl_check_report("an enabled attribute the emulation did not set: disabled", loc, buffer,
+			                 lc->attr[loc].enabled);
+			glDisableVertexArrayAttrib(lc->vao, (GLuint)loc);
+			lc->attr[loc].enabled = 0;
+		}
+		else if (buffer == 0 || (GLuint)buffer != at[loc]->buffer) {
+			lgl_check_report("an attribute's buffer was not the one set: bound again", loc, buffer,
+			                 (int)at[loc]->buffer);
+			lc->attr[loc].valid = 0;
+			glVertexArrayVertexBuffer(lc->vao, (GLuint)loc, at[loc]->buffer, at[loc]->offset, at[loc]->stride);
+		}
+	}
+}
+
 static void lgl_submit(GLenum prim, GLint first, GLsizei count, GLenum itype, GLuint ibuf, GLintptr ioffset,
                        GLint basevertex, GLsizei instances, const LglSrc fixed[S_FIXED],
                        const LglSrc gen[LGL_GENERIC], int prim_class, int mode)
@@ -657,6 +737,7 @@ static void lgl_submit(GLenum prim, GLint first, GLsizei count, GLenum itype, GL
 			glVertexArrayElementBuffer(lc->vao, ibuf);
 			lc->ebo = ibuf;
 		}
+		lgl_check_draw(lc, itype, ibuf, at);
 		if (instances > 1 || basevertex) {
 			glDrawElementsInstancedBaseVertex(prim, count, itype, (const void *)ioffset, instances, basevertex);
 		}
@@ -670,6 +751,7 @@ static void lgl_submit(GLenum prim, GLint first, GLsizei count, GLenum itype, GL
 		}
 	}
 	else {
+		lgl_check_draw(lc, 0, 0, at);
 		if (instances > 1) {
 			glDrawArraysInstanced(prim, first, count, instances);
 		}
@@ -2058,6 +2140,19 @@ void GPU_lgl_BindVertexArray(GLuint vao)
 	lgl_bind_vao(lc, vao ? vao : lc->vao);
 }
 
+/* BGE-Remix P8.1: a call that changes the application's own vertex array
+ * goes to that array. The emulation's draws in between bind its own one
+ * (lgl_submit), so without this the call landed in the emulation's array:
+ * an element buffer or an attribute (a client pointer) the emulation's
+ * caches did not know of, which a later draw read (Rally Cross: the 3D
+ * view crashed in glDrawElements after the game) */
+static void lgl_app_vao_current(void)
+{
+	if (GPU_lgl_on && lgl.app_vao) {
+		lgl_bind_vao(lgl_context(), lgl.app_vao);
+	}
+}
+
 void GPU_lgl_DeleteVertexArrays(GLsizei n, const GLuint *arrays)
 {
 	if (GPU_lgl_on) {
@@ -2090,6 +2185,9 @@ void GPU_lgl_BindBuffer(GLenum target, GLuint buffer)
 		}
 		if (target == GL_ARRAY_BUFFER) {
 			lgl.app_array_buffer = buffer;
+		}
+		if (target == GL_ELEMENT_ARRAY_BUFFER) {
+			lgl_app_vao_current();
 		}
 	}
 	glBindBuffer(target, buffer);
@@ -2128,6 +2226,7 @@ void GPU_lgl_VertexAttribPointer(GLuint index, GLint size, GLenum type, GLboolea
                                  const void *pointer)
 {
 	if (!GPU_lgl_on || lgl.app_vao || index >= LGL_GENERIC) {
+		lgl_app_vao_current();
 		glVertexAttribPointer(index, size, type, normalized, stride, pointer);
 		return;
 	}
@@ -2137,6 +2236,7 @@ void GPU_lgl_VertexAttribPointer(GLuint index, GLint size, GLenum type, GLboolea
 void GPU_lgl_VertexAttribIPointer(GLuint index, GLint size, GLenum type, GLsizei stride, const void *pointer)
 {
 	if (!GPU_lgl_on || lgl.app_vao || index >= LGL_GENERIC) {
+		lgl_app_vao_current();
 		glVertexAttribIPointer(index, size, type, stride, pointer);
 		return;
 	}
@@ -2146,6 +2246,7 @@ void GPU_lgl_VertexAttribIPointer(GLuint index, GLint size, GLenum type, GLsizei
 void GPU_lgl_EnableVertexAttribArray(GLuint index)
 {
 	if (!GPU_lgl_on || lgl.app_vao || index >= LGL_GENERIC) {
+		lgl_app_vao_current();
 		glEnableVertexAttribArray(index);
 		return;
 	}
@@ -2155,6 +2256,7 @@ void GPU_lgl_EnableVertexAttribArray(GLuint index)
 void GPU_lgl_DisableVertexAttribArray(GLuint index)
 {
 	if (!GPU_lgl_on || lgl.app_vao || index >= LGL_GENERIC) {
+		lgl_app_vao_current();
 		glDisableVertexAttribArray(index);
 		return;
 	}
@@ -2164,6 +2266,7 @@ void GPU_lgl_DisableVertexAttribArray(GLuint index)
 void GPU_lgl_VertexAttribDivisor(GLuint index, GLuint divisor)
 {
 	if (!GPU_lgl_on || lgl.app_vao || index >= LGL_GENERIC) {
+		lgl_app_vao_current();
 		glVertexAttribDivisor(index, divisor);
 		return;
 	}

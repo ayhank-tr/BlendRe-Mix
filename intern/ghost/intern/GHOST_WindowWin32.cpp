@@ -642,15 +642,22 @@ GHOST_Context *GHOST_WindowWin32::newDrawingContext(GHOST_TDrawingContextType ty
 		 * request is made, so Blender can say which version the card has.
 		 * BGE-Remix P8.29: the core profile (the old calls the editors still
 		 * make are emulated, GPU_legacy.h); the compatibility profile with
-		 * --gl-compat (BGE_REMIX_GL_COMPAT=1), or when the core one fails. */
+		 * --gl-compat (BGE_REMIX_GL_COMPAT=1), or when the core one fails.
+		 * BGE-Remix P8.1: the compatibility profile by default (the driver
+		 * draws the old calls itself: no emulation; full OpenGL 4.5 all the
+		 * same), the core one with --gl-core (BGE_REMIX_GL_CORE=1); either
+		 * falls back to the other. */
 		const char *gl_debug_env = getenv("BGE_REMIX_GL_DEBUG");
 		const bool gl_debug = m_debug_context || (gl_debug_env && gl_debug_env[0] == '1');
 		/* the process environment, not the C library's copy: --gl-compat sets
 		 * it with SetEnvironmentVariableW (BLI_setenv), which getenv misses */
-		char gl_compat_env[8] = "";
+		char gl_compat_env[8] = "", gl_core_env[8] = "";
 		::GetEnvironmentVariableA("BGE_REMIX_GL_COMPAT", gl_compat_env, sizeof(gl_compat_env));
-		const bool gl_compat = (gl_compat_env[0] == '1');
-		for (int attempt = gl_compat ? 1 : 0; attempt < 2; attempt++) {
+		::GetEnvironmentVariableA("BGE_REMIX_GL_CORE", gl_core_env, sizeof(gl_core_env));
+		const bool gl_core = (gl_core_env[0] == '1') && (gl_compat_env[0] != '1');
+		for (int step = 0; step < 2; step++) {
+			/* attempt 0: core, 1: compatibility */
+			const int attempt = gl_core ? step : 1 - step;
 			GHOST_Context *context45 = new GHOST_ContextWGL(
 			        m_wantStereoVisual,
 			        m_wantAlphaBackground,

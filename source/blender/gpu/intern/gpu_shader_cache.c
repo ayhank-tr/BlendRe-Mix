@@ -254,7 +254,11 @@ void gpu_shader_cache_save(unsigned int program, unsigned long long key)
 			const bool ok = fwrite(head, sizeof(head), 1, f) == 1 && fwrite(data, (size_t)written, 1, f) == 1;
 			fclose(f);
 			if (ok) {
-				BLI_delete(path, false, false);
+				/* BGE-Remix P8.1: only an old file (deleting a missing
+				 * one printed "Unable to delete file") */
+				if (BLI_exists(path)) {
+					BLI_delete(path, false, false);
+				}
 				if (BLI_rename(tmp, path) == 0) {
 					gpu_cache.saved++;
 				}

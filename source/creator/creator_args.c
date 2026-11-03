@@ -553,6 +553,7 @@ static int arg_handle_print_help(int UNUSED(argc), const char **UNUSED(argv), vo
 
 	BLI_argsPrintArgDoc(ba, "--debug-gpumem");
 	BLI_argsPrintArgDoc(ba, "--gl-compat");
+	BLI_argsPrintArgDoc(ba, "--gl-core");
 	BLI_argsPrintArgDoc(ba, "--debug-wm");
 	BLI_argsPrintArgDoc(ba, "--debug-all");
 	BLI_argsPrintArgDoc(ba, "--debug-io");
@@ -767,12 +768,21 @@ static int arg_handle_debug_mode_io(int UNUSED(argc), const char **UNUSED(argv),
 }
 
 static const char arg_handle_gl_compat_doc[] =
-"\n\tUse an OpenGL compatibility context instead of the core one (BGE-Remix: the old drawing calls\n"
-"\tthen go to the driver instead of the emulation)."
+"\n\tUse an OpenGL compatibility context (BGE-Remix: the default since P8.1; the old drawing calls\n"
+"\tgo to the driver)."
 ;
 static int arg_handle_gl_compat(int UNUSED(argc), const char **UNUSED(argv), void *UNUSED(data))
 {
 	BLI_setenv("BGE_REMIX_GL_COMPAT", "1");
+	return 0;
+}
+
+static const char arg_handle_gl_core_doc[] =
+"\n\tUse an OpenGL core context (BGE-Remix: the old drawing calls are then emulated)."
+;
+static int arg_handle_gl_core(int UNUSED(argc), const char **UNUSED(argv), void *UNUSED(data))
+{
+	BLI_setenv("BGE_REMIX_GL_CORE", "1");
 	return 0;
 }
 
@@ -1842,6 +1852,7 @@ void main_args_setup(bContext *C, bArgs *ba, SYS_SystemHandle *syshandle)
 
 	/* BGE-Remix P8.29 */
 	BLI_argsAdd(ba, 1, NULL, "--gl-compat", CB(arg_handle_gl_compat), NULL);
+	BLI_argsAdd(ba, 1, NULL, "--gl-core", CB(arg_handle_gl_core), NULL);
 
 	BLI_argsAdd(ba, 1, NULL, "--debug-fpe",
 	            CB(arg_handle_debug_fpe_set), NULL);

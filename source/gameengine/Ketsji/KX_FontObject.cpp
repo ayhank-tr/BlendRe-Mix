@@ -88,6 +88,9 @@ KX_FontObject::KX_FontObject(void* sgReplicationInfo,
 	m_do_color_management(do_color_management)
 {
 	m_remix_mesh = NULL;  /* BGE-Remix P8 Part C */
+	m_remix_builder = NULL;
+	m_remix_converter = NULL;
+	m_remix_blscene = NULL;
 	Curve *text = static_cast<Curve *> (ob->data);
 	m_text = split_string(text->str);
 	m_fsize = text->fsize;
@@ -164,6 +167,52 @@ int GetFontId(VFont *vfont)
 		fontid = BLF_load("default");
 	
 	return fontid;
+}
+
+void KX_FontObject::SetRemixMesh(RAS_MeshObject *mesh, KX_FontRemixBuilder builder, void *converter,
+                                 Scene *blenderscene)
+{
+	m_remix_mesh = mesh;
+	m_remix_builder = builder;
+	m_remix_converter = converter;
+	m_remix_blscene = blenderscene;
+	m_remix_text = CurrentText();
+	m_remix_meshes[m_remix_text] = mesh;
+}
+
+std::string KX_FontObject::CurrentText()
+{
+	if (this->GetProperty("Text"))
+		m_text = split_string(this->GetProperty("Text")->GetText());
+	std::string s;
+	for (size_t i = 0; i < m_text.size(); i++) {
+		if (i)
+			s += '\n';
+		s += m_text[i].ReadPtr();
+	}
+	return s;
+}
+
+/* BGE-Remix P8.1: Remix shows the text it has now (a speedometer's digits):
+ * each new text is made once and kept (at most 512 per object) */
+RAS_MeshObject *KX_FontObject::GetRemixMesh()
+{
+	const std::string s = CurrentText();
+	if (s == m_remix_text || !m_remix_builder)
+		return m_remix_mesh;
+	std::map<std::string, RAS_MeshObject *>::iterator it = m_remix_meshes.find(s);
+	if (it != m_remix_meshes.end()) {
+		m_remix_mesh = it->second;
+	}
+	else if (m_remix_meshes.size() < 512) {
+		m_remix_mesh = m_remix_builder(this, s.c_str(), m_remix_converter, m_remix_blscene);
+		m_remix_meshes[s] = m_remix_mesh;
+	}
+	else {
+		return m_remix_mesh;
+	}
+	m_remix_text = s;
+	return m_remix_mesh;
 }
 
 void KX_FontObject::DrawFontText()

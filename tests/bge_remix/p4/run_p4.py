@@ -274,7 +274,9 @@ def run_ci(args, out):
     def physics():
         # T4.2a: physics
         ph = expected["physics"]
-        log, env = mock_env("physics", {"BGE_REMIX_MOCK_DRAWS_FRAME": "20,280"})
+        # (P8.1: Remix's GPU instancing off here: the bodies are told apart by
+        # their pick ids, which an instanced draw holds once for all)
+        log, env = mock_env("physics", {"BGE_REMIX_MOCK_DRAWS_FRAME": "20,280", "BGE_REMIX_GPU_INSTANCING": "0"})
         r = player(args.ours, out, "physics", os.path.join(scenes, "p4_physics.blend"), env)
         lines = p2.read_lines(log)
         dl = draws(lines)

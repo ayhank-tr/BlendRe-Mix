@@ -14,6 +14,19 @@ C:\\BGE-Remix\\transfer\\p0-results.zip, as GitHub's runs did.
   run_local.bat p8diag       P8.30's diagnostic RTX run: Remix's pictures
                              with one setting changed at a time (also
                              run_p8_diag.bat in the p8 folder)
+  run_local.bat rally        P9.0: Rally Cross driven for 15 seconds in stock
+                             2.79b, our build and RTX Remix, with each
+                             suspect switched off in turn (also
+                             run_rally.bat in the p9 folder)
+  run_local.bat rallybig     P9.0: Rally Cross with RTX Remix at 2560 x 1440
+                             and for a minute, standalone and inside Blender
+                             (also run_rally_big.bat in the p9 folder)
+  run_local.bat rallydiag    P9.0: Rally Cross's glitch diagnostics: the
+                             sun's shadow off, the water hidden, Remix's
+                             pictures of each (also run_rally_diag.bat)
+  run_local.bat rallydiag2   P9.0: Rally Cross's glitch diagnostics 2: our
+                             P8 techniques off in turn, objects hidden
+                             (also run_rally_diag2.bat)
 
 Needs, once: Python 3 with pillow and numpy (python -m pip install pillow
 numpy), and the official Blender 2.79b unpacked into
@@ -42,7 +55,7 @@ MOCK_SHIM = os.path.join(LOCAL, "mock_shim")
 RESULTS = os.path.join(LOCAL, "results")
 HERE = os.path.dirname(os.path.abspath(__file__))
 PHASES = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"]
-EXTRA = ["p8rtx", "p8diag"]  # only when asked for
+EXTRA = ["p8rtx", "p8diag", "rally", "rallybig", "rallydiag", "rallydiag2"]  # only when asked for
 
 
 def say(text=""):
@@ -122,6 +135,17 @@ def commands():
                   "--out", os.path.join(RESULTS, "p8rtx")],
         "p8diag": run("p8", "run_p8.py") + ["--ours", OURS, "--diag", "--before", os.path.join(ROOT, "results"),
                                             "--out", os.path.join(RESULTS, "p8diag")],
+        # P9.0: Rally Cross (the game stays on this PC: C:\BGE-Remix\rallycross
+        # or the Downloads folder it came in)
+        "rally": run("p9", "run_rally.py") + ["--ours", OURS] + off + ["--out", os.path.join(RESULTS, "rally")],
+        # P9.0: Rally Cross with Remix at 2560 x 1440 and for a minute, standalone
+        # and inside Blender
+        "rallybig": run("p9", "run_rally.py") + ["--ours", OURS, "--big", "--out", os.path.join(RESULTS, "rallybig")],
+        # P9.0: the glitch diagnostics (stock, ours and Remix with one suspect off)
+        "rallydiag": run("p9", "run_rally.py") + ["--ours", OURS] + off + ["--diag", "--out",
+                                                                            os.path.join(RESULTS, "rallydiag")],
+        "rallydiag2": run("p9", "run_rally.py") + ["--ours", OURS] + off + ["--diag2", "--out",
+                                                                             os.path.join(RESULTS, "rallydiag2")],
     }
 
 

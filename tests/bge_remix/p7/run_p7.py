@@ -280,7 +280,7 @@ def t72(m, r):
     u = r["steps"].get("known_unmark", {})
     c = {
         "gv_broken's particle system is listed as left out, with its reason":
-            any(w["code"] == "LEFT_PARTICLES" and "particle" in w["text"] for w in ws),
+            any(w["code"] == "LEFT_PARTICLES" and ("particle" in w["text"] or "hair" in w["text"]) for w in ws),
         "marking it as known silences it": bool(k.get("known_now")) and k.get("after") == (k.get("before") or 0) - 1,
         "and keeps it listed": bool(k.get("still_listed")) and bool(k.get("element_kept")),
         "unmarking it makes it warn again": bool(u.get("warns_again")),
