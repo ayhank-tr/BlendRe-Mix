@@ -779,8 +779,11 @@ def p92_rtx(args, out, scenes, E, tests, sheets, report_lines):
     for label, row in rows.items():
         report_lines.append("  %-16s %s" % (label, "-" if not row else "%s -> %s  diff %.1f  brightness x%s" % (
             row["opengl"], row["remix"], row["mean_diff"], row["brightness_ratio"])))
-    # diagnostic: the light's balance, both sides with a fixed ACES curve
-    # (Remix's own tone curve off: it adapts to each picture)
+    # diagnostic: the light's balance. The fallback (ACES) against Remix twice:
+    # its tone curve off (Remix then draws the light itself, no ACES: the
+    # light, before any curve, on both sides), and its global tone mapper
+    # with ACES at a fixed exposure (auto exposure off: does Remix's curve
+    # draw our ACES?)
     L = E.get("light_balance")
     if L:
         bal = {}
@@ -789,24 +792,87 @@ def p92_rtx(args, out, scenes, E, tests, sheets, report_lines):
             env = dict(p8.REMIX_ENV, BGE_REMIX_RTX_SET="rtx.tonemap.tonemappingEnabled=False")
             b = p8.play(args.ours, out, "lb_%s_remix" % case, S("p9_lb_%s_remix" % case), env, frames=p8.REMIX_FRAMES,
                         debug=True)
-            rows = sphere_compare({"spheres": {"order": L["order"], "rects": L["rects"]}}, a.get("screenshot"),
-                                  b.get("screenshot"))
-            for label, row in rows.items():
-                if row:
-                    row["linear_ratio"] = [round(aces_inverse(srgb_to_linear(rb)) /
-                                                 max(aces_inverse(srgb_to_linear(ra)), 1e-6), 3)
-                                           for ra, rb in zip(row["opengl"], row["remix"])]
+            env = dict(p8.REMIX_ENV, BGE_REMIX_RTX_SET="rtx.autoExposure.enabled=False;rtx.tonemap.exposureBias=0")
+            c = p8.play(args.ours, out, "lb_%s_remix_fixed" % case, S("p9_lb_%s_remix" % case), env,
+                        frames=p8.REMIX_FRAMES, debug=True)
+            pa, pb, pc = (p8.picture(r.get("screenshot")) for r in (a, b, c))
+            rows = {}
+            for label in L["order"]:
+                rect = L["rects"][label]
+                if pa is None or pb is None or pa.shape != pb.shape:
+                    rows[label] = None
+                    continue
+                # per pixel: the fallback's light under its ACES, Remix's (no curve)
+                fa = p8.crop(pa, rect).reshape(-1, 3)
+                fb = p8.crop(pb, rect).reshape(-1, 3)
+                la = [sum(aces_inverse(srgb_to_linear(v)) for v in fa[:, k]) / len(fa) for k in range(3)]
+                lb = [sum(srgb_to_linear(v) for v in fb[:, k]) / len(fb) for k in range(3)]
+                clipped = float((fb >= 254.5).mean())
+                row = {"fallback_light": [round(v, 3) for v in la], "remix_light": [round(v, 3) for v in lb],
+                       "ratio": round(sum(lb) / max(sum(la), 1e-6), 3), "remix_clipped": round(clipped, 3),
+                       "fallback": [round(float(v), 1) for v in fa.mean(axis=0)]}
+                if pc is not None and pc.shape == pa.shape:
+                    fc = p8.crop(pc, rect).reshape(-1, 3)
+                    row["remix_fixed"] = [round(float(v), 1) for v in fc.mean(axis=0)]
+                    row["fixed_diff"] = round(float(abs(fc.mean(axis=0) - fa.mean(axis=0)).mean()), 1)
+                if label in L["emission"]:
+                    e = L["emission"][label]
+                    y = (e * (2.51 * e + 0.03)) / (e * (2.43 * e + 0.59) + 0.14)
+                    y = min(max(y, 0.0), 1.0)
+                    srgb = 12.92 * y if y <= 0.0031308 else 1.055 * y ** (1.0 / 2.4) - 0.055
+                    row["our_aces"] = round(255.0 * srgb, 1)
+                rows[label] = row
             bal[case] = rows
             sheets["light_balance_" + case] = p2.contact_sheet(
-                [("fallback, ACES", a.get("screenshot")), ("Remix, ACES alone", b.get("screenshot"))],
+                [("fallback, ACES", a.get("screenshot")), ("Remix, tone curve off", b.get("screenshot")),
+                 ("Remix, global + ACES, exposure fixed", c.get("screenshot"))],
                 os.path.join(out, "sheet_p9_light_balance_%s.png" % case))
         tests["S9.9 Light balance (a diagnostic)"] = {"ok": True, "checks": {}, "detail": bal}
-        report_lines += ["", "Light balance, fallback -> Remix (both ACES alone; ratio: Remix's light over the "
-                         "fallback's, before the curve):"]
+        report_lines += ["", "Light balance: the light before any curve (fallback: its ACES undone; Remix: tone "
+                         "curve off), ratio Remix / fallback, share of Remix's pixels clipped to white:"]
         for case, rows in bal.items():
             for label, row in rows.items():
-                report_lines.append("  %-4s %-9s %s" % (case, label, "-" if not row else "%s -> %s  ratio %s" % (
-                    row["opengl"], row["remix"], row["linear_ratio"])))
+                report_lines.append("  %-4s %-10s %s" % (case, label, "-" if not row else
+                                    "%s -> %s  ratio %s  clipped %s" % (row["fallback_light"], row["remix_light"],
+                                                                        row["ratio"], row["remix_clipped"])))
+        report_lines += ["", "Light balance: Remix's global tone mapper + ACES at a fixed exposure against the "
+                         "fallback (glowing spheres: what our ACES draws for that light):"]
+        for case, rows in bal.items():
+            for label, row in rows.items():
+                if not row:
+                    report_lines.append("  %-4s %-10s -" % (case, label))
+                    continue
+                report_lines.append("  %-4s %-10s %s -> %s  diff %s%s" % (
+                    case, label, row["fallback"], row.get("remix_fixed", "-"), row.get("fixed_diff", "-"),
+                    "  (our ACES %s)" % row["our_aces"] if "our_aces" in row else ""))
+    # diagnostic: Remix's textures, all loaded before it draws (is the blur
+    # only the loading?): the RTX Remix materials again, how sharp each is
+    env = dict(p8.REMIX_ENV, BGE_REMIX_RTX_SET="rtx.alwaysWaitForAsyncTextures=True;"
+               "rtx.texturemanager.samplerFeedbackEnable=False")
+    wt = p8.play(args.ours, out, "rs_aces_remix_waittex", S("p9_rs_nodes_aces_remix"), env,
+                 frames=p8.REMIX_FRAMES, debug=True)
+    pg, pr, pw = (p8.picture(r.get("screenshot")) for r in (gl, rtx, wt))
+    tex = {}
+    for label in R["order"]:
+        rect = R["rects"][label]
+        if pg is None or pr is None or pw is None or not (pg.shape == pr.shape == pw.shape):
+            tex[label] = None
+            continue
+        g, r_, w_ = (p8.crop(p, rect).reshape(-1, 3) for p in (pg, pr, pw))
+        tex[label] = {"detail": [round(float(x.mean(axis=1).std()), 1) for x in (g, r_, w_)],
+                      "diff": [round(float(abs(r_.mean(axis=0) - g.mean(axis=0)).mean()), 1),
+                               round(float(abs(w_.mean(axis=0) - g.mean(axis=0)).mean()), 1)]}
+    tests["S9.10 Remix's textures, all loaded (a diagnostic)"] = {
+        "ok": True, "checks": {"ran": bool(wt["ran"])}, "detail": tex}
+    sheets["remix_textures"] = p2.contact_sheet(
+        [("fallback, ACES", gl.get("screenshot")), ("Remix", rtx.get("screenshot")),
+         ("Remix, textures all loaded", wt.get("screenshot"))],
+        os.path.join(out, "sheet_p9_remix_textures.png"))
+    report_lines += ["", "Remix's textures: detail (spread of brightness inside the sphere: fallback, Remix, "
+                     "Remix with textures all loaded) and the difference from the fallback (Remix, all loaded):"]
+    for label, row in tex.items():
+        report_lines.append("  %-16s %s" % (label, "-" if not row else "detail %s  diff %s" % (
+            row["detail"], row["diff"])))
     # diagnostic: debug views 1-60 of the spheres (what Remix receives)
     dv = os.path.join(out, "debug_views_spheres")
     shutil.rmtree(dv, ignore_errors=True)

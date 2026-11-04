@@ -622,34 +622,47 @@ def make_remix_build(folder, E):
 
 
 # P9.2 diagnostic: the light's balance between Remix and the fallback
-# (label, albedo, metallic, roughness, emission intensity)
+# (label, albedo, metallic, roughness, emission intensity): six that only
+# glow (the top row: they trace the tone curves), four lit (the bottom row;
+# matte_018 dark enough that Remix never clips it)
 BALANCE = [
+    ("emit_005", (0.0, 0.0, 0.0), 0.0, 1.0, 0.05),
+    ("emit_010", (0.0, 0.0, 0.0), 0.0, 1.0, 0.1),
     ("emit_025", (0.0, 0.0, 0.0), 0.0, 1.0, 0.25),
+    ("emit_050", (0.0, 0.0, 0.0), 0.0, 1.0, 0.5),
     ("emit_100", (0.0, 0.0, 0.0), 0.0, 1.0, 1.0),
+    ("emit_400", (0.0, 0.0, 0.0), 0.0, 1.0, 4.0),
     ("matte", (0.8, 0.8, 0.8), 0.0, 1.0, 0.0),
+    ("matte_018", (0.18, 0.18, 0.18), 0.0, 1.0, 0.0),
     ("smooth", (0.8, 0.8, 0.8), 0.0, 0.1, 0.0),
     ("metal", (0.8, 0.8, 0.8), 1.0, 0.3, 0.0),
 ]
 
 
 def make_light_balance(folder, E):
-    """five spheres in a row, RTX Remix materials, ACES: two that only glow
-    (0.25 and 1: the same light in both, to line up the two tone curves), a
-    matte one, a smooth one, a metal one; lit by one sun under a black sky
-    (p9_lb_sun) or by a plain grey sky alone (p9_lb_sky)"""
+    """ten spheres, RTX Remix materials, ACES: on top six that only glow
+    (0.05 to 4: the same light in both, to trace the two tone curves), below
+    a matte one, a dark matte one, a smooth one, a metal one; lit by one sun
+    under a black sky (p9_lb_sun) or by a plain grey sky alone (p9_lb_sky)"""
     from bl_operators.bge_remix_material import make_remix_material
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = base("P9LightBalance")
     rects = {}
-    for i, (label, col, metallic, rough, emit) in enumerate(BALANCE):
+    glow = [b for b in BALANCE if b[4] > 0.0]
+    lit = [b for b in BALANCE if b[4] <= 0.0]
+    for label, col, metallic, rough, emit in BALANCE:
         ma = physical("P9LB_" + label, col, metallic, rough)
         node = make_remix_material(ma)
         node.inputs["Emissive Color"].default_value = (1.0, 1.0, 1.0, 1.0)
         node.inputs["Emissive Intensity"].default_value = emit
-        x = (i - 2.0) * 2.2
-        ob = p3.sphere(scene, "P9LB_" + label, (x, 0.0, 0.0), ma, radius=0.9)
+        if emit > 0.0:
+            i, n, z, r, step = glow.index((label, col, metallic, rough, emit)), len(glow), 1.6, 0.75, 1.9
+        else:
+            i, n, z, r, step = lit.index((label, col, metallic, rough, emit)), len(lit), -1.5, 0.9, 2.4
+        x = (i - (n - 1) / 2.0) * step
+        ob = p3.sphere(scene, "P9LB_" + label, (x, 0.0, z), ma, radius=r)
         ob.game.physics_type = 'NO_COLLISION'
-        rects[label] = layout_rect(x, 0.0, 0.9 * 0.7)
+        rects[label] = layout_rect(x, z, r * 0.7)
     sun = p2.lamp(scene, "Sun", 'SUN', (0.0, -10.0, 6.0), (math.radians(45.0), 0.0, 0.0), energy=1.0)
     sun.data.shadow_method = 'NOSHADOW'
     w = scene.world
@@ -669,6 +682,7 @@ def make_light_balance(folder, E):
     files += [save_copy(folder, "p9_lb_sky", remix=0, tone=1), save_copy(folder, "p9_lb_sky_remix", remix=1, tone=1)]
     E["light_balance"] = {"files": files, "rects": rects, "order": [b[0] for b in BALANCE],
                           "emission": {b[0]: b[4] for b in BALANCE if b[4] > 0.0}}
+
 
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:]

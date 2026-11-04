@@ -894,7 +894,7 @@ def remix_expect(ob):
     phys = bool(la.get("bge_physical", 0)) and la.type in ('POINT', 'SPOT')
     e = {"name": ob.name}
     if la.type == 'SUN':
-        e.update(type="distant", angle=float(la.get("bge_sun_angle", 0.53)), k=math.pi * E * s)
+        e.update(type="distant", angle=float(la.get("bge_sun_angle", 0.53)), k=E * s)  # P9.2: no pi
     elif la.type == 'AREA':
         sx, sy = la.size, (la.size_y if la.shape == 'RECTANGLE' else la.size)
         e.update(type="rect", size=[sx, sy], k=math.pi * E * s * D / (sx * sy))
