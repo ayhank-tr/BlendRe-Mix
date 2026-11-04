@@ -2218,7 +2218,11 @@ void RE_shade_physical(ShadeInput *shi, const float base[3], float metallic, flo
 		diffcol[i] = base[i] * (1.0f - m) * (1.0f - CLAMPIS(transmission, 0.0f, 1.0f));
 		f0[i] = (1.0f - m) * 0.08f * CLAMPIS(specular, 0.0f, 1.0f) + m * base[i];
 	}
-	normalize_v3_v3(N, shi->vn);
+	/* Blender Internal's normal and lamp vectors point away from the viewer
+	 * and the lamp: N, L and V are the true ones, as shade_pbr_light flips
+	 * them */
+	negate_v3_v3(N, shi->vn);
+	normalize_v3(N);
 	negate_v3_v3(V, shi->view);
 	normalize_v3(V);
 	const float nv = max_ff(dot_v3v3(N, V), 1e-4f);
@@ -2236,7 +2240,9 @@ void RE_shade_physical(ShadeInput *shi, const float base[3], float metallic, flo
 		if (visifac == 0.0f) {
 			continue;
 		}
-		const float inp = dot_v3v3(N, lv);
+		const float inp = dot_v3v3(shi->vn, lv);
+		float L[3];
+		negate_v3_v3(L, lv);
 		const bool hemi = lar->type == LA_HEMI;
 		const float nl = hemi ? 0.5f * inp + 0.5f : inp;
 		const float dl = max_ff((nl + w) / (1.0f + w), 0.0f);
@@ -2256,7 +2262,7 @@ void RE_shade_physical(ShadeInput *shi, const float base[3], float metallic, flo
 		}
 		if (!(lar->mode & LA_NO_SPEC) && !hemi && nl > 0.0f) {
 			float H[3];
-			add_v3_v3v3(H, lv, V);
+			add_v3_v3v3(H, L, V);
 			normalize_v3(H);
 			const float nh = max_ff(dot_v3v3(N, H), 0.0f);
 			const float nlc = max_ff(nl, 1e-4f);
