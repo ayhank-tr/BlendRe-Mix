@@ -63,6 +63,7 @@ bool BKE_material_is_physical(const struct Material *ma);
  * unlinked inputs are the physical values (BKE_material_physical_get); the
  * game and F12 read its links too, the translator for Remix sends them. */
 struct bNode *BKE_material_remix_node(const struct Material *ma);
+bool BKE_material_remix_node_is_output(const struct Material *ma, const struct bNode *node);
 bool BKE_material_is_remix(const struct Material *ma);
 /* an input's own value (its default, used where nothing is linked) */
 float BKE_remix_node_value(const struct bNode *node, int input);

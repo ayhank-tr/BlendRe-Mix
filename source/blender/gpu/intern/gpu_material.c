@@ -3129,7 +3129,7 @@ void GPU_shade_remix_node(GPUMaterial *mat, const GPURemixLinks *links, const bN
 	*r_alpha = shr.alpha;
 	/* the material's own RTX Remix node is its output (Blender's Output node
 	 * keeps the albedo for stock 2.79, which does not know this node) */
-	if (node && BKE_material_remix_node(ma) == node) {
+	if (BKE_material_remix_node_is_output(ma, node)) {
 		GPUNodeLink *outlink;
 		GPU_link(mat, "output_node", *r_color, shr.alpha, &outlink);
 		GPU_material_output_link(mat, outlink);

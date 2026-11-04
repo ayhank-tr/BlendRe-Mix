@@ -158,7 +158,7 @@ static void node_shader_exec_remix_material(void *data, int UNUSED(thread), bNod
 
 	/* the material's own RTX Remix node is its output (Blender's Output node
 	 * keeps the albedo for stock 2.79) and its passes */
-	if (shcd->shr && BKE_material_remix_node(ma) == node) {
+	if (shcd->shr && BKE_material_remix_node_is_output(ma, node)) {
 		ShadeResult *shr = shcd->shr;
 		copy_v3_v3(shr->diff, diff);
 		copy_v3_v3(shr->diffshad, diff);

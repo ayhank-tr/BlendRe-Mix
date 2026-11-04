@@ -159,6 +159,15 @@ bNode *BKE_material_remix_node(const Material *ma)
 	return first;
 }
 
+/* node is the material's RTX Remix node, the material's output: in its tree
+ * or in a copy of it (the game's shaders are built from a localized copy of
+ * the tree, whose nodes keep their names) */
+bool BKE_material_remix_node_is_output(const Material *ma, const bNode *node)
+{
+	const bNode *own = BKE_material_remix_node(ma);
+	return own && node && (own == node || STREQ(own->name, node->name));
+}
+
 bool BKE_material_is_remix(const Material *ma)
 {
 	return BKE_material_remix_node(ma) != NULL;
