@@ -42,7 +42,7 @@ MAPS = [("use_map_color_diffuse", "diffuse_color_factor", "albedo"),
 def colors_changed(tex):
     return (getattr(tex, "use_color_ramp", False) or abs(tex.intensity - 1.0) > 1e-4 or
             abs(tex.contrast - 1.0) > 1e-4 or abs(tex.saturation - 1.0) > 1e-4 or
-            any(abs(getattr(tex, "factor_" + c) - 1.0) > 1e-4 for c in "rgb"))
+            any(abs(getattr(tex, "factor_" + c, 1.0) - 1.0) > 1e-4 for c in ("red", "green", "blue")))
 
 
 def slots_of(ma):
