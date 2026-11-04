@@ -920,7 +920,7 @@ static Image *remix_direct_image(const bNodeTree *tree, const bNodeLink *link, i
 	return tex->ima;
 }
 
-unsigned remix_node_bake_slots(const Material *ma, bool *r_alpha)
+unsigned node_bake_slots(const Material *ma, bool *r_alpha)
 {
 	const bNode *node = BKE_material_remix_node(ma);
 	unsigned slots = 0;
@@ -1034,7 +1034,7 @@ bool from_remix_node(const Material *ma, MaterialSpec &s)
 
 	/* what is wired in: images straight, the rest baked (bake_slots) */
 	bool baked_alpha = false;
-	s.bake_slots = remix_node_bake_slots(ma, &baked_alpha);
+	s.bake_slots = node_bake_slots(ma, &baked_alpha);
 	struct In {
 		int input;
 		const char *field;
@@ -1422,6 +1422,12 @@ void apply_remix_block(const Material *ma, MaterialSpec &s)
 }
 
 }  /* namespace */
+
+/* P9.2 (BRMX_material.h) */
+unsigned remix_node_bake_slots(const Material *ma, bool *r_alpha)
+{
+	return node_bake_slots(ma, r_alpha);
+}
 
 void translate_material(const Material *ma, MaterialSpec &r_spec)
 {
