@@ -896,104 +896,51 @@ def p92_rtx(args, out, scenes, E, tests, sheets, report_lines):
         "detail": {"views": [v["index"] for v in real], "folder": dv}}
 
 
-# P9.2 calibration (a report, not a gate): Remix's settings for ACES files,
-# tried one set at a time against the fallback's ACES; and Remix's texture
-# detail
-CAL_TONE = [
-    ("as set", None),
-    ("exposure +0.15", "rtx.tonemap.exposureBias=0.15"),
-    ("exposure +0.3", "rtx.tonemap.exposureBias=0.3"),
-    ("newer ACES", "rtx.useLegacyACES=False"),
-    ("newer ACES, exposure +0.15", "rtx.useLegacyACES=False;rtx.tonemap.exposureBias=0.15"),
-    ("newer ACES, exposure +0.3", "rtx.useLegacyACES=False;rtx.tonemap.exposureBias=0.3"),
-]
-CAL_TEX = [
-    ("as set", None),
-    ("detail +1 (mip bias -1)", "rtx.nativeMipBias=-1"),
-    ("detail +2 (mip bias -2)", "rtx.nativeMipBias=-2"),
-    ("upscaling off, full size", "rtx.upscalerType=0;rtx.resolutionScale=1"),
-]
-CAL_DETAIL = ("albedo_image", "normal_map", "alpha_cutout")
-
-
-def calibration_rtx(args, out, S, E, tests, sheets, report_lines):
+# P9.2 (a report): the fallback's ACES on the brightness alone (now, as
+# Remix's default ACES) against its per-channel form (P8's), both against
+# Remix at the calibrated exposure (+0.3)
+def aces_forms_rtx(args, out, S, E, tests, sheets, report_lines):
     R = E.get("remix_spheres")
     if not R:
         return
-    # the screenshots the runs above left, by their tags
-    png = os.path.join
-    gate_gl = png(out, "rs_aces_opengl.png")
-    spheres_gl = png(out, "spheres_aces_opengl.png")
-    room_gl = png(out, "p9_pipe_aces_gl_rtxrun.png")
-
-    def gate_score(remix_png):
-        rows = sphere_compare({"spheres": {"order": R["order"], "rects": R["rects"]}}, gate_gl, remix_png)
-        gated = {k: v for k, v in rows.items() if k not in R["gate_out"] and v}
-        within = sum(1 for v in gated.values() if v["mean_diff"] <= TOL_GATE)
-        mean = round(sum(v["mean_diff"] for v in gated.values()) / len(gated), 1) if gated else None
-        return rows, within, len(gated), mean
-
-    def play(tag, blend, rtx_set):
-        env = dict(p8.REMIX_ENV)
-        if rtx_set:
-            env["BGE_REMIX_RTX_SET"] = rtx_set
-        return p8.play(args.ours, out, tag, S(blend), env, frames=p8.REMIX_FRAMES, debug=True).get("screenshot")
-
-    tone, items = {}, []
-    for n, (label, rtx_set) in enumerate(CAL_TONE):
-        if rtx_set is None:
-            g, sp, rm = (png(out, t) for t in ("rs_aces_remix.png", "spheres_aces_remix.png",
-                                                 "p9_pipe_aces_remix_rtxrun.png"))
-        else:
-            g = play("cal_tone%d_gate" % n, "p9_rs_nodes_aces_remix", rtx_set)
-            sp = play("cal_tone%d_spheres" % n, "p9_study_spheres_aces_remix", rtx_set)
-            rm = play("cal_tone%d_room" % n, "p9_pipe_aces_remix", rtx_set)
-        rows, within, count, mean = gate_score(g)
-        srows = sphere_compare(E, spheres_gl, sp)
-        sd = [v["mean_diff"] for v in srows.values() if v]
-        tone[label] = {"set": rtx_set, "gate_within": within, "gate_count": count, "gate_mean": mean,
-                       "gate": {k: (v and v["mean_diff"]) for k, v in rows.items()},
-                       "spheres_mean": round(sum(sd) / len(sd), 1) if sd else None,
-                       "room": p8.picture_diff(room_gl, rm)}
-        items.append(("gate, " + label, g))
-    best = min((k for k in tone if tone[k]["gate_mean"] is not None),
-               key=lambda k: (-tone[k]["gate_within"], tone[k]["gate_mean"]), default=None)
-    tex, titems = {}, []
-    pg = p8.picture(gate_gl)
-    for n, (label, rtx_set) in enumerate(CAL_TEX):
-        g = png(out, "rs_aces_remix.png") if rtx_set is None else play("cal_tex%d_gate" % n,
-                                                                        "p9_rs_nodes_aces_remix", rtx_set)
-        pr = p8.picture(g)
-        rows, within, count, mean = gate_score(g)
-        detail = {}
-        for k in CAL_DETAIL:
-            if pg is None or pr is None or pg.shape != pr.shape:
-                detail[k] = None
+    png = os.path.join  # the screenshots the runs above left, by their tags
+    shot = {"BGE_REMIX_P2_SHOT_FRAME": "300"}
+    per = dict(shot, BGE_REMIX_ACES_PER_CHANNEL="1")
+    scenes = (("gate", "p9_rs_nodes_aces", "rs_aces_opengl", "rs_aces_remix",
+               {"spheres": {"order": R["order"], "rects": R["rects"]}}),
+              ("six spheres", "p9_study_spheres_aces", "spheres_aces_opengl", "spheres_aces_remix", E),
+              ("room", "p9_pipe_aces_gl", "p9_pipe_aces_gl_rtxrun", "p9_pipe_aces_remix_rtxrun", None))
+    rep, items = {}, []
+    for label, blend, gl_tag, rtx_tag, layout in scenes:
+        remix = png(out, rtx_tag + ".png")
+        bright = png(out, gl_tag + ".png")
+        chan = p8.play(args.ours, out, gl_tag + "_perchannel", S(blend), per, frames=p8.REMIX_FRAMES).get("screenshot")
+        row = {}
+        for form, gl in (("brightness", bright), ("per channel", chan)):
+            if layout is None:
+                row[form] = {"mean": p8.picture_diff(gl, remix)}
                 continue
-            a, b = (p8.crop(x, R["rects"][k]).reshape(-1, 3).mean(axis=1) for x in (pg, pr))
-            detail[k] = [round(float(a.std()), 1), round(float(b.std()), 1)]
-        tex[label] = {"set": rtx_set, "detail": detail, "gate_within": within, "gate_count": count,
-                      "gate_mean": mean}
-        titems.append(("textures, " + label, g))
-    tests["S9.11 Calibration: Remix's settings for ACES files (a report)"] = {
-        "ok": True, "checks": {}, "detail": {"tone": tone, "best": best, "textures": tex}}
-    sheets["calibration_tone"] = p2.contact_sheet([("fallback, ACES", gate_gl)] + items,
-                                                  os.path.join(out, "sheet_p9_calibration_tone.png"))
-    sheets["calibration_textures"] = p2.contact_sheet([("fallback, ACES", gate_gl)] + titems,
-                                                      os.path.join(out, "sheet_p9_calibration_textures.png"))
-    report_lines += ["", "Calibration, Remix with ACES (gate: spheres within %.0f, their mean difference; six "
-                     "spheres and room: mean difference):" % TOL_GATE]
-    for label, t in tone.items():
-        report_lines.append("  %-28s gate %s/%s mean %s  spheres %s  room %s%s" % (
-            label, t["gate_within"], t["gate_count"], t["gate_mean"], t["spheres_mean"], t["room"],
-            "   <- best for the gate" if label == best else ""))
-        report_lines.append("      %s" % "  ".join("%s %s" % (k, v) for k, v in t["gate"].items()))
-    report_lines += ["", "Calibration, Remix's texture detail (spread of brightness inside the sphere: fallback, "
-                     "Remix; higher is sharper) and the gate:"]
-    for label, t in tex.items():
-        report_lines.append("  %-28s %s  gate %s/%s mean %s" % (
-            label, "  ".join("%s %s" % (k, v) for k, v in t["detail"].items()), t["gate_within"], t["gate_count"],
-            t["gate_mean"]))
+            rows = sphere_compare(layout, gl, remix)
+            if label == "gate":
+                rows = {k: v for k, v in rows.items() if k not in R["gate_out"]}
+            d = {k: v["mean_diff"] for k, v in rows.items() if v}
+            row[form] = {"mean": round(sum(d.values()) / len(d), 1) if d else None, "spheres": d,
+                         "within": sum(1 for v in d.values() if v <= TOL_GATE), "count": len(d)}
+        rep[label] = row
+        items += [("%s, fallback ACES on brightness" % label, bright),
+                  ("%s, fallback ACES per channel" % label, chan)]
+    tests["S9.11 The fallback's ACES forms against Remix (a report)"] = {"ok": True, "checks": {}, "detail": rep}
+    sheets["aces_forms"] = p2.contact_sheet(items, os.path.join(out, "sheet_p9_aces_forms.png"))
+    report_lines += ["", "The fallback's ACES, on the brightness alone (now) and per channel (P8's), against "
+                     "Remix (global + ACES, exposure +0.3):"]
+    for label, row in rep.items():
+        for form, r in row.items():
+            head = "  %-12s %-12s mean %s" % (label, form, r["mean"])
+            if "within" in r:
+                head += "  within %.0f: %s/%s" % (TOL_GATE, r["within"], r["count"])
+            report_lines.append(head)
+            if r.get("spheres"):
+                report_lines.append("      %s" % "  ".join("%s %s" % kv for kv in r["spheres"].items()))
 
 
 def run_pipelines_rtx(args, out):
@@ -1044,7 +991,7 @@ def run_pipelines_rtx(args, out):
                                                                             "detail": d}
     p92_lines = []
     p92_rtx(args, out, scenes, E, tests, sheets, p92_lines)
-    calibration_rtx(args, out, S, E, tests, sheets, p92_lines)
+    aces_forms_rtx(args, out, S, E, tests, sheets, p92_lines)
     sheets["room"] = p2.contact_sheet(items, os.path.join(out, "sheet_p9_room.png"))
     res = {"tests": tests, "sheets": sheets, "all_ok": all(t["ok"] for t in tests.values())}
     lines = ["BGE-Remix P9.1-P9.2 (RTX run: your RTX card, the real RTX Remix runtime)", "=" * 70, ""]

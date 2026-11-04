@@ -67,8 +67,11 @@ cut the choice down to two:
 - **Tone Mapping** (RTX Remix panel, `scene.game_settings.remix_tone_mapping`):
   View Transform (the scene's Color Management in the fallback, Remix's own
   tone mapper in Remix, as P8's Modern scenes had it) or ACES (Remix's
-  global tone mapper finished with ACES, the same ACES curve in the
-  fallback). A scene moved to RTX Remix by hand gets ACES.
+  global tone mapper finished with ACES at an exposure 0.3 higher, measured
+  to match the fallback; the fallback's ACES works on the brightness, as
+  Remix's does, so bright colours keep their saturation). Remix's tone
+  curve still adapts to each picture: the two match closely, not exactly.
+  A scene moved to RTX Remix by hand gets ACES.
 - **RTX Remix Settings** (a closed panel under RTX Remix): the Remix options
   that matter for games, saved with the scene (`bge_rtx_*`): upscaling and
   frame generation, light bounces, emissive intensity, anti-culling,

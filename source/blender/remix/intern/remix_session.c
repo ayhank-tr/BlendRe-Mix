@@ -248,6 +248,9 @@ static const CuratedOption curated[] = {
 	{"bge_rtx_aces_local", "rtx.localtonemap.finalizeWithACES", 'b', "True"},
 	{"bge_rtx_local_exposure", "rtx.localtonemap.exposure", 'f', "0.75"},
 	{"bge_rtx_dynamic_range", "rtx.tonemap.dynamicRange", 'f', "15"},
+	/* BGE-Remix P9.2: the global tone mapper's exposure on top of its own
+	 * (ACES files: 0.3 unless set, calibrated against the fallback) */
+	{"bge_rtx_exposure_bias", "rtx.tonemap.exposureBias", 'f', "0"},
 };
 #define CURATED_COUNT ((int)(sizeof(curated) / sizeof(curated[0])))
 
@@ -286,8 +289,10 @@ int BRMX_scene_options_apply(const Scene *scene)
 	int n = 0, i;
 	char value[32];
 	/* the RTX Remix pipeline's ACES: Remix's global tone mapper finished with
-	 * ACES (the fallback draws the same curve); the curated settings below
-	 * may still change it */
+	 * ACES (the fallback draws the same curve) at an exposure 0.3 higher
+	 * (BGE-Remix P9.2: P9's calibration run, RTX 3080: the RTX Remix
+	 * materials 9 of 10 within 10 of the fallback, from 5); the curated
+	 * settings below may still change it */
 	const bool aces = scene && BKE_scene_game_rtx_pipeline(scene) &&
 	                  BKE_scene_game_tonemap(scene) == BKE_SCENE_GAME_TONEMAP_ACES;
 	if (!bridge) {
@@ -302,6 +307,10 @@ int BRMX_scene_options_apply(const Scene *scene)
 		}
 		else if (!have && aces && strcmp(o->key, "rtx.tonemap.finalizeWithACES") == 0) {
 			strcpy(value, "True");
+			have = true;
+		}
+		else if (!have && aces && strcmp(o->key, "rtx.tonemap.exposureBias") == 0) {
+			strcpy(value, "0.3");
 			have = true;
 		}
 		if (!have) {
