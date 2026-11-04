@@ -298,6 +298,9 @@ static bool node_shader_gpu_bake(GPUMaterial *mat, bNode *node, GPUNodeStack *in
 	float w;
 
 	switch (node->type) {
+		case SH_NODE_REMIX_MATERIAL:
+			/* BGE-Remix P9.2: the node keeps its inputs for the bake itself */
+			return false;
 		case SH_NODE_BSDF_PRINCIPLED:
 			color_name = "Base Color";
 			break;

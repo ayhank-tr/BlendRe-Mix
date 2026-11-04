@@ -42,6 +42,8 @@ extern "C" {
 
 struct Main;
 struct Material;
+struct bNode;
+struct bNodeTree;
 
 typedef struct MaterialPhysical {
 	float base[3];
@@ -52,8 +54,24 @@ typedef struct MaterialPhysical {
 	float emission[3], emission_strength;
 } MaterialPhysical;
 
-/* whether the material uses physical shading (NULL: no) */
+/* whether the material uses physical shading (NULL: no); P9.2: an RTX
+ * Remix material does */
 bool BKE_material_is_physical(const struct Material *ma);
+
+/* BGE-Remix P9.2: an RTX Remix material: its nodes are on and hold an RTX
+ * Remix Material node (the one wired to the output, else the first). Its
+ * unlinked inputs are the physical values (BKE_material_physical_get); the
+ * game and F12 read its links too, the translator for Remix sends them. */
+struct bNode *BKE_material_remix_node(const struct Material *ma);
+bool BKE_material_is_remix(const struct Material *ma);
+/* an input's own value (its default, used where nothing is linked) */
+float BKE_remix_node_value(const struct bNode *node, int input);
+void BKE_remix_node_color(const struct bNode *node, int input, float r[3]);
+/* the input's link, or NULL */
+struct bNodeLink *BKE_remix_node_link(const struct bNodeTree *ntree, const struct bNode *node, int input);
+/* the materials whose node tree is ntree: their base colour and alpha kept
+ * at the node's albedo and opacity (stock 2.79 and Classic views show them) */
+void BKE_material_remix_node_sync(struct Main *bmain, struct bNodeTree *ntree);
 
 /* its values (the defaults where a property is missing) */
 void BKE_material_physical_get(const struct Material *ma, MaterialPhysical *r_phys);

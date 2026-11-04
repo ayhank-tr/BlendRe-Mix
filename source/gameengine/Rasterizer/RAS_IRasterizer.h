@@ -336,6 +336,12 @@ public:
 	virtual void SetCullFace(bool enable) = 0;
 
 	/**
+	 * BGE-Remix P9.2: shadow maps drawn with both sides of every face (the
+	 * RTX Remix pipeline: a one-sided wall shadows from behind, as in Remix)
+	 */
+	virtual void SetShadowTwoSided(bool enable) = 0;
+
+	/**
 	 * Sets wireframe mode.
 	 */
 	virtual void SetLines(bool enable) = 0;

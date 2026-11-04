@@ -1346,6 +1346,9 @@ void KX_KetsjiEngine::RenderShadowBuffers(KX_Scene *scene)
 
 	frame++;
 	m_rasterizer->SetAuxilaryClientInfo(scene);
+	/* BGE-Remix P9.2: in the RTX Remix pipeline both sides of a face cast,
+	 * as in Remix (a one-sided wall shadows from behind) */
+	m_rasterizer->SetShadowTwoSided(scene->GetBlenderScene() && BKE_scene_game_rtx_pipeline(scene->GetBlenderScene()));
 
 	/* BGE-Remix P8.10: the camera the sun's cascades follow */
 	KX_Camera *viewcam = scene->GetActiveCamera();
@@ -1444,6 +1447,7 @@ void KX_KetsjiEngine::RenderShadowBuffers(KX_Scene *scene)
 			raslight->m_shadowvalid = false;
 		}
 	}
+	m_rasterizer->SetShadowTwoSided(false);
 	/* remember that we have a valid shadow buffer for that scene */
 	scene->SetShadowDone(true);
 }

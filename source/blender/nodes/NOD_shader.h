@@ -54,6 +54,7 @@ void register_node_type_sh_mix_rgb(void);
 void register_node_type_sh_valtorgb(void);
 void register_node_type_sh_rgbtobw(void);
 void register_node_type_sh_texture(void);
+void register_node_type_sh_remix_material(void); /* BGE-Remix P9.2 */
 void register_node_type_sh_normal(void);
 void register_node_type_sh_gamma(void);
 void register_node_type_sh_brightcontrast(void);

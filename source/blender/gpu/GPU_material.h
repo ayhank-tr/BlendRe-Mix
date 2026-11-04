@@ -336,6 +336,11 @@ typedef struct GPUShadeInput {
 	bool physical;
 	GPUNodeLink *metallic, *roughness;
 	GPUNodeLink *pbr_diff, *pbr_f0; /* set before the lamps */
+	/* BGE-Remix P9.2: an RTX Remix Material node's: the emitted colour (NULL:
+	 * the material's), and no texture slots (the node's inputs are its
+	 * textures) */
+	GPUNodeLink *emission;
+	bool no_slots;
 } GPUShadeInput;
 
 typedef struct GPUShadeResult {
@@ -344,6 +349,17 @@ typedef struct GPUShadeResult {
 
 void GPU_shadeinput_set(GPUMaterial *mat, struct Material *ma, GPUShadeInput *shi);
 void GPU_shaderesult_set(GPUShadeInput *shi, GPUShadeResult *shr);
+
+/* BGE-Remix P9.2: the RTX Remix Material node's inputs (links, never NULL
+ * but normal: NULL when nothing is wired to it) shaded as the physical
+ * material is (the material being built: its owner); in a bake for Remix
+ * the inputs are kept for the bake instead (r_color, r_alpha zero) */
+typedef struct GPURemixLinks {
+	GPUNodeLink *albedo, *opacity, *roughness, *metallic, *normal, *emission, *emission_intensity;
+	bool normal_directx;
+} GPURemixLinks;
+void GPU_shade_remix_node(GPUMaterial *mat, const GPURemixLinks *links, GPUNodeLink **r_color,
+                          GPUNodeLink **r_alpha);
 
 /* Export GLSL shader */
 

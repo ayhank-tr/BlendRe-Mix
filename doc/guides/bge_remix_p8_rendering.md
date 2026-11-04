@@ -81,6 +81,44 @@ Remix on; Modern with Remix on or off opens in RTX Remix with the switch as
 it was. All keep the view transform. A scene put in Classic by hand stays
 Classic, its Remix switch left as it was.
 
+## RTX Remix materials (P9.2)
+
+Material tab, under the material's name: **Classic** or **RTX Remix**.
+
+- **RTX Remix** turns the material into a node material with an **RTX Remix
+  Material** node wired to the Output node. Its values come from the
+  material: a Physical material's as they are; a Classic one's colour (times
+  its diffuse intensity), specular hardness (as roughness), emit and alpha.
+  Each texture slot becomes a Texture node read at the slot's coordinates
+  (UV through a Geometry node; a Mapping node when the slot moves or scales
+  them), wired by what the slot affects. Normal, roughness and metallic
+  images are set to Non-Color, as the slots read them.
+- **Classic** switches the nodes off and keeps the tree: RTX Remix brings it
+  back as it was. A P8 Physical material shows neither; RTX Remix takes its
+  values (P9.3 converts them when a file opens).
+- The node's inputs are every field of a Remix material: Albedo, Opacity,
+  Roughness, Metallic, Normal (a tangent-space normal map; DirectX green is an
+  option), Emissive Color and Intensity, Height with Displace In and Out,
+  Anisotropy, Thin Film (nanometres), IOR, Transmittance and its distance,
+  Thin Wall Thickness, Subsurface with its colour and radius. On the node:
+  Type (Opaque or Translucent: Remix's glass), Blend (the material's game
+  transparency), the alpha test's cutoff, Thin Walled, Particle, the Remix
+  categories, Bake Size.
+- The game draws the node with the Physical surface's shading, in both
+  pipelines; F12 reads it through the same translation to Blender Internal;
+  Remix gets every input. Height, anisotropy and thin film are drawn by Remix
+  only.
+- To Remix: an input fed by a Texture node holding an image, read at the
+  Geometry node's UV, goes as that image (its Value output: the image's
+  alpha); anything else wired into Albedo, Opacity, Roughness, Metallic,
+  Normal or the emission is baked into that channel; other inputs send their
+  own value.
+- The node's Match panel (the node editor's sidebar) and the material's RTX
+  Remix Match say, input by input, how each reaches Remix.
+- In the RTX Remix pipeline both sides of a face cast shadows, as in Remix.
+- Stock 2.79 does not know the node: it draws the Output node's own colour,
+  kept at the node's albedo.
+
 ## Lights and shadows
 
 - One light model for all lamp types, area lamps included. Point and spot

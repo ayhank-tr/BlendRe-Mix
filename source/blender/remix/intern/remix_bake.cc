@@ -644,11 +644,65 @@ uint64_t node_signature(const bNodeTree *tree, uint64_t h, int depth)
 	return h;
 }
 
+/* P9.2: what a bake reads from a texture (a Texture node's) */
+uint64_t tex_signature(const Tex *tex, uint64_t h)
+{
+	h = fnv(tex->id.name, strlen(tex->id.name), h);
+	h = fnv_v(tex->type, h);
+	h = fnv_v(tex->stype, h);
+	h = fnv_v(tex->flag, h);
+	h = fnv_v(tex->imaflag, h);
+	h = fnv_v(tex->extend, h);
+	h = fnv_v(tex->xrepeat, h);
+	h = fnv_v(tex->yrepeat, h);
+	h = fnv_v(tex->noisesize, h);
+	h = fnv_v(tex->turbul, h);
+	h = fnv_v(tex->bright, h);
+	h = fnv_v(tex->contrast, h);
+	h = fnv_v(tex->saturation, h);
+	h = fnv_v(tex->rfac, h);
+	h = fnv_v(tex->gfac, h);
+	h = fnv_v(tex->bfac, h);
+	h = fnv_v(tex->mg_H, h);
+	h = fnv_v(tex->mg_lacunarity, h);
+	h = fnv_v(tex->mg_octaves, h);
+	h = fnv_v(tex->mg_offset, h);
+	h = fnv_v(tex->mg_gain, h);
+	h = fnv_v(tex->dist_amount, h);
+	h = fnv_v(tex->ns_outscale, h);
+	h = fnv_v(tex->vn_w1, h);
+	h = fnv_v(tex->vn_w2, h);
+	h = fnv_v(tex->vn_w3, h);
+	h = fnv_v(tex->vn_w4, h);
+	h = fnv_v(tex->vn_mexp, h);
+	h = fnv_v(tex->vn_distm, h);
+	h = fnv_v(tex->vn_coltype, h);
+	h = fnv_v(tex->noisedepth, h);
+	h = fnv_v(tex->noisetype, h);
+	h = fnv_v(tex->noisebasis, h);
+	h = fnv_v(tex->noisebasis2, h);
+	h = fnv_v(tex->nabla, h);
+	if (tex->ima) {
+		h = fnv(tex->ima->id.name, strlen(tex->ima->id.name), h);
+	}
+	if (tex->coba) {
+		h = fnv_v(tex->coba->tot, h);
+		h = fnv_v(tex->coba->ipotype, h);
+		h = fnv_v(tex->coba->color_mode, h);
+		h = fnv(tex->coba->data, sizeof(CBData) * std::max<int>(0, std::min<int>(tex->coba->tot, 32)), h);
+	}
+	return h;
+}
+
 }  /* namespace */
 
 unsigned bake_slots(const Material *ma)
 {
 	unsigned slots = 0;
+	if (BKE_material_is_remix(ma)) {
+		/* P9.2: the RTX Remix node's inputs that are not images */
+		return remix_node_bake_slots(ma);
+	}
 	if (is_node_bake(ma)) {
 		/* P8.24: the whole node tree, into Remix's channels */
 		bool emission, transparent;
@@ -707,6 +761,18 @@ uint64_t bake_signature(const Material *ma)
 	if (is_node_bake(ma)) {
 		/* P8.24 */
 		h = node_signature(ma->nodetree, h, 0);
+		h = fnv_v(bake_size(ma), h);
+		return h;
+	}
+	if (BKE_material_is_remix(ma)) {
+		/* P9.2: the node tree, and the textures its Texture nodes hold */
+		h = node_signature(ma->nodetree, h, 0);
+		for (const bNode *n = (const bNode *)ma->nodetree->nodes.first; n; n = n->next) {
+			if (n->type == SH_NODE_TEXTURE && n->id) {
+				h = tex_signature((const Tex *)n->id, h);
+			}
+		}
+		h = fnv_v(ma->game.alpha_blend, h);
 		h = fnv_v(bake_size(ma), h);
 		return h;
 	}
@@ -797,6 +863,11 @@ int bake_size(const Material *ma)
 {
 	const char *env = getenv("BGE_REMIX_BAKE_SIZE");
 	int n = env ? atoi(env) : 0;
+	/* P9.2: the RTX Remix node's Bake Size */
+	const bNode *node = (n < 16) ? BKE_material_remix_node(ma) : NULL;
+	if (node && node->custom3 >= 16.0f) {
+		n = (int)node->custom3;
+	}
 	if (n < 16 && ma && ma->id.properties) {
 		const IDProperty *p = IDP_GetPropertyFromGroup(ma->id.properties, "bge_remix_bake_size");
 		n = (p && p->type == IDP_INT) ? IDP_Int(p) : 0;
@@ -913,6 +984,13 @@ bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const 
 	}
 	/* P8.24: a node tree is baked as a physical material, its emission in colour */
 	const bool nodes = is_node_bake(ma);
+	/* P9.2: an RTX Remix node's inputs, as physical values, emission in colour */
+	bool remix_alpha = false;
+	const bool remix = BKE_material_is_remix(ma);
+	if (remix) {
+		remix_node_bake_slots(ma, &remix_alpha);
+	}
+	const bool emit_rgb = nodes || remix;
 	const bool physical = nodes || BKE_material_is_physical(ma);
 	MaterialPhysical ph;
 	BKE_material_physical_get(ma, &ph);
@@ -935,6 +1013,9 @@ bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const 
 	if (nodes) {
 		node_kinds(ma, node_emission, alpha_textured);
 	}
+	if (remix) {
+		alpha_textured = remix_alpha;
+	}
 	/* the most emit can reach: the material's, plus every emit slot's */
 	float emit_scale = std::max(physical ? ph.emission_strength : ma->emit, 0.0f);
 	if (nodes) {
@@ -955,6 +1036,10 @@ bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const 
 		if (mtex && mtex->tex && !(ma->septex & (1 << i)) && (mtex->mapto & MAP_EMIT)) {
 			emit_scale += std::fabs(mtex->emitfac);
 		}
+	}
+	if (remix) {
+		/* the node's intensity (unlinked), at least 1 */
+		emit_scale = std::max(BKE_remix_node_value(BKE_material_remix_node(ma), SH_REMIX_IN_EMISSIVE_INTENSITY), 1.0f);
 	}
 	emit_scale = std::max(emit_scale, 1e-3f);
 	r.has_alpha = alpha_textured;
@@ -1032,7 +1117,7 @@ bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const 
 		pp.physical = physical;
 		pp.spec_zero = ma->spec < 0.01f;
 		pp.alpha_textured = alpha_textured;
-		pp.nodes = nodes;
+		pp.nodes = emit_rgb;
 		copy_v3_v3(pp.emission, ph.emission);
 		for (int s = 0; s < BAKE_SLOTS; s++) {
 			if (slots & (1u << s)) {
@@ -1106,7 +1191,7 @@ bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const 
 				for (int c = 0; c < 3; c++) {
 					const float col = physical ? ph.emission[c] : srgb_to_linear(px[i * 4 + c] / 255.0f);
 					/* P8.24: a node tree's emission is its colour already */
-					img->rgba[i * 4 + c] = nodes ? value[i * 4 + c] : to_byte(linear_to_srgb(col * e));
+					img->rgba[i * 4 + c] = emit_rgb ? value[i * 4 + c] : to_byte(linear_to_srgb(col * e));
 				}
 			}
 			r.images[BAKE_EMISSIVE] = img;

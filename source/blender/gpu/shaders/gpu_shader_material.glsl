@@ -4974,3 +4974,21 @@ void shade_skylight(vec4 col_in, vec3 diffcol, float refl, vec3 vn, vec3 horicol
 	col_out = col_in;
 	col_out.rgb += refl * diffcol * sky;
 }
+
+/* BGE-Remix P9.2: the RTX Remix Material node's normal map (tangent space, as
+ * a texture slot's: green up, or down for DirectX maps) */
+void remix_normal_map(vec4 tangent, vec3 vn, vec4 color, float directx, out vec3 outnormal)
+{
+	float g = (directx != 0.0) ? 1.0 - color.g : color.g;
+	vec3 t = 2.0 * (vec3(-color.r, g, color.b) - vec3(-0.5, 0.5, 0.5));
+	mtex_nspace_tangent(tangent, vn, t, outnormal);
+}
+
+/* and its emitted colour for a bake: colour times intensity times scale, sRGB */
+void bake_out_emission(vec4 col, float strength, float scale, float srgb, vec3 uv, out vec4 result)
+{
+	vec4 c = vec4(max(col.rgb * strength * scale, vec3(0.0)), 1.0);
+	if (srgb != 0.0)
+		linearrgb_to_srgb(c, c);
+	result = vec4(clamp(c.rgb, 0.0, 1.0), 1.0);
+}

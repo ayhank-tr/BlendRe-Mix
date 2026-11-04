@@ -177,6 +177,8 @@ static EnumPropertyItem node_sampler_type_items[] = {
 
 #include "BKE_global.h"
 
+#include "GPU_material.h"  /* BGE-Remix P9.2 */
+
 #include "ED_node.h"
 #include "ED_render.h"
 
@@ -3024,6 +3026,52 @@ static void rna_ShaderNodePrincipled_update(Main *bmain, Scene *scene, PointerRN
 	rna_Node_update(bmain, scene, ptr);
 }
 
+/* BGE-Remix P9.2: the RTX Remix Material node's Blend is its material's
+ * game transparency (what the game draws with) */
+static Material *rna_ShaderNodeRemixMaterial_owner(PointerRNA *ptr)
+{
+	bNodeTree *ntree = (bNodeTree *)ptr->id.data;
+	for (Material *ma = G.main ? G.main->mat.first : NULL; ma; ma = ma->id.next) {
+		if (ma->nodetree == ntree) {
+			return ma;
+		}
+	}
+	return NULL;
+}
+
+static int rna_ShaderNodeRemixMaterial_blend_get(PointerRNA *ptr)
+{
+	Material *ma = rna_ShaderNodeRemixMaterial_owner(ptr);
+	if (!ma) {
+		return 0;
+	}
+	switch (ma->game.alpha_blend) {
+		case GEMAT_SOLID: return 0;
+		case GEMAT_CLIP: return 1;
+		case GEMAT_ADD: return 3;
+		default: return 2;
+	}
+}
+
+static void rna_ShaderNodeRemixMaterial_blend_set(PointerRNA *ptr, int value)
+{
+	static const int blend[4] = {GEMAT_SOLID, GEMAT_CLIP, GEMAT_ALPHA, GEMAT_ADD};
+	Material *ma = rna_ShaderNodeRemixMaterial_owner(ptr);
+	if (ma && value >= 0 && value < 4) {
+		ma->game.alpha_blend = blend[value];
+	}
+}
+
+static void rna_ShaderNodeRemixMaterial_update(Main *bmain, Scene *scene, PointerRNA *ptr)
+{
+	Material *ma = rna_ShaderNodeRemixMaterial_owner(ptr);
+	if (ma) {
+		/* the game's shader depends on the transparency and the options */
+		GPU_material_free(&ma->gpumaterial);
+	}
+	rna_Node_update(bmain, scene, ptr);
+}
+
 static void rna_ShaderNodeSubsurface_update(Main *bmain, Scene *scene, PointerRNA *ptr)
 {
 	bNodeTree *ntree = (bNodeTree *)ptr->id.data;
@@ -4220,6 +4268,92 @@ static void def_glass(StructRNA *srna)
 	RNA_def_property_enum_sdna(prop, NULL, "custom1");
 	RNA_def_property_enum_items(prop, node_glass_items);
 	RNA_def_property_ui_text(prop, "Distribution", "");
+	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
+}
+
+/* BGE-Remix P9.2 */
+static void def_sh_remix_material(StructRNA *srna)
+{
+	static EnumPropertyItem remix_type_items[] = {
+		{0, "OPAQUE", 0, "Opaque", "Remix's opaque material (metal, roughness, subsurface, thin film)"},
+		{SH_NODE_REMIX_TRANSLUCENT, "TRANSLUCENT", 0, "Translucent",
+		 "Remix's glass: light passes through, bent by the IOR"},
+		{0, NULL, 0, NULL, NULL}
+	};
+	static EnumPropertyItem remix_blend_items[] = {
+		{0, "OPAQUE", 0, "Opaque", "Not see-through"},
+		{1, "ALPHA_TEST", 0, "Alpha Test", "Cut out where the opacity is below the cutoff"},
+		{2, "BLENDED", 0, "Blended", "Blended by the opacity"},
+		{3, "ADDITIVE", 0, "Additive", "Added to what is behind"},
+		{0, NULL, 0, NULL, NULL}
+	};
+	/* the Remix categories (bge_remix_bridge.h BRB_CATEGORY_*), shifted */
+#define C(f) ((f) << SH_NODE_REMIX_CATEGORY_SHIFT)
+	static EnumPropertyItem remix_category_items[] = {
+		{C(1), "PARTICLE", 0, "Particle", "Remix's particle handling (sprites)"},
+		{C(4), "HAIR", 0, "Hair", "Hair cards"},
+		{C(8), "WATER", 0, "Animated Water", "Water whose surface moves"},
+		{C(16), "TERRAIN", 0, "Terrain", "Ground that Remix's terrain baker covers"},
+		{C(32), "DECAL_STATIC", 0, "Decal (Static)", "A decal over a surface that does not move"},
+		{C(64), "DECAL_DYNAMIC", 0, "Decal (Dynamic)", "A decal over a moving surface"},
+		{C(128), "SKY", 0, "Sky", "Part of the sky"},
+		{C(256), "WORLD_UI", 0, "World UI", "A screen or sign in the world, shown as it is"},
+		{C(512), "BEAM", 0, "Beam", "A light beam or laser"},
+		{C(1024), "IGNORE", 0, "Ignore", "Not drawn by Remix"},
+		{0, NULL, 0, NULL, NULL}
+	};
+#undef C
+	PropertyRNA *prop;
+
+	prop = RNA_def_property(srna, "remix_type", PROP_ENUM, PROP_NONE);
+	RNA_def_property_enum_bitflag_sdna(prop, NULL, "custom1");
+	RNA_def_property_enum_items(prop, remix_type_items);
+	RNA_def_property_ui_text(prop, "Type", "Remix's material type");
+	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_ShaderNodeRemixMaterial_update");
+
+	prop = RNA_def_property(srna, "blend", PROP_ENUM, PROP_NONE);
+	RNA_def_property_enum_items(prop, remix_blend_items);
+	RNA_def_property_enum_funcs(prop, "rna_ShaderNodeRemixMaterial_blend_get",
+	                            "rna_ShaderNodeRemixMaterial_blend_set", NULL);
+	RNA_def_property_ui_text(prop, "Blend", "How the surface is drawn over what is behind it "
+	                         "(the material's game transparency)");
+	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_ShaderNodeRemixMaterial_update");
+
+	prop = RNA_def_property(srna, "alpha_cutoff", PROP_FLOAT, PROP_FACTOR);
+	RNA_def_property_float_sdna(prop, NULL, "custom4");
+	RNA_def_property_range(prop, 0.0f, 1.0f);
+	RNA_def_property_ui_text(prop, "Cutoff", "Alpha Test: the opacity below which the surface is cut out");
+	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
+
+	prop = RNA_def_property(srna, "use_normal_directx", PROP_BOOLEAN, PROP_NONE);
+	RNA_def_property_boolean_sdna(prop, NULL, "custom1", SH_NODE_REMIX_NORMAL_DIRECTX);
+	RNA_def_property_ui_text(prop, "DirectX Normal Map",
+	                         "The normal map's green channel points down (DirectX), not up (OpenGL, Blender's)");
+	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_ShaderNodeRemixMaterial_update");
+
+	prop = RNA_def_property(srna, "use_thin_walled", PROP_BOOLEAN, PROP_NONE);
+	RNA_def_property_boolean_sdna(prop, NULL, "custom1", SH_NODE_REMIX_THIN_WALLED);
+	RNA_def_property_ui_text(prop, "Thin Walled", "Translucent: a thin shell (no refraction offset)");
+	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
+
+	prop = RNA_def_property(srna, "use_particle", PROP_BOOLEAN, PROP_NONE);
+	RNA_def_property_boolean_sdna(prop, NULL, "custom1", SH_NODE_REMIX_PARTICLE);
+	RNA_def_property_ui_text(prop, "Particle", "Remix treats surfaces with this material as particles or sprites");
+	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
+
+	prop = RNA_def_property(srna, "categories", PROP_ENUM, PROP_NONE);
+	RNA_def_property_enum_bitflag_sdna(prop, NULL, "custom1");
+	RNA_def_property_enum_items(prop, remix_category_items);
+	RNA_def_property_flag(prop, PROP_ENUM_FLAG);
+	RNA_def_property_ui_text(prop, "Categories", "How RTX Remix treats surfaces with this material");
+	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
+
+	prop = RNA_def_property(srna, "bake_size", PROP_FLOAT, PROP_NONE);
+	RNA_def_property_float_sdna(prop, NULL, "custom3");
+	RNA_def_property_range(prop, 0.0f, 8192.0f);
+	RNA_def_property_ui_range(prop, 0.0f, 4096.0f, 1600.0f, 0);
+	RNA_def_property_ui_text(prop, "Bake Size", "The size of the images the inputs that are not images are baked "
+	                         "into for Remix (0: 1024)");
 	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
 }
 

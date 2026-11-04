@@ -24,6 +24,7 @@
 #include "DNA_ID.h"
 #include "DNA_image_types.h"
 #include "DNA_material_types.h"
+#include "DNA_node_types.h"
 #include "DNA_texture_types.h"
 
 #include "BLI_listbase.h"
@@ -36,6 +37,7 @@
 #include "BKE_library.h"
 #include "BKE_main.h"
 #include "BKE_material_physical.h"
+#include "BKE_node.h"
 #include "BKE_texture.h"
 
 /* ------------------------------------------------------------------------- */
@@ -126,7 +128,122 @@ static void set_float3(Material *ma, const char *name, const float v[3])
 
 bool BKE_material_is_physical(const Material *ma)
 {
-	return ma && prop_int(ma, "bge_physical", 0) != 0;
+	return ma && (prop_int(ma, "bge_physical", 0) != 0 || BKE_material_remix_node(ma) != NULL);
+}
+
+/* ------------------------------------------------------------------------- */
+/* BGE-Remix P9.2: the RTX Remix Material node */
+
+bNode *BKE_material_remix_node(const Material *ma)
+{
+	bNode *first = NULL;
+	if (!ma || !ma->use_nodes || !ma->nodetree) {
+		return NULL;
+	}
+	for (bNode *node = ma->nodetree->nodes.first; node; node = node->next) {
+		if (node->type != SH_NODE_REMIX_MATERIAL || (node->flag & NODE_MUTED)) {
+			continue;
+		}
+		if (!first) {
+			first = node;
+		}
+		/* the one wired to the active output */
+		for (bNodeLink *link = ma->nodetree->links.first; link; link = link->next) {
+			if (link->fromnode == node && link->tonode && link->tonode->type == SH_NODE_OUTPUT &&
+			    (link->tonode->flag & NODE_DO_OUTPUT))
+			{
+				return node;
+			}
+		}
+	}
+	return first;
+}
+
+bool BKE_material_is_remix(const Material *ma)
+{
+	return BKE_material_remix_node(ma) != NULL;
+}
+
+static bNodeSocket *remix_input(const bNode *node, int input)
+{
+	return node ? BLI_findlink(&node->inputs, input) : NULL;
+}
+
+float BKE_remix_node_value(const bNode *node, int input)
+{
+	bNodeSocket *sock = remix_input(node, input);
+	if (sock && sock->default_value && sock->type == SOCK_FLOAT) {
+		return ((bNodeSocketValueFloat *)sock->default_value)->value;
+	}
+	return 0.0f;
+}
+
+void BKE_remix_node_color(const bNode *node, int input, float r[3])
+{
+	bNodeSocket *sock = remix_input(node, input);
+	zero_v3(r);
+	if (sock && sock->default_value) {
+		if (sock->type == SOCK_RGBA) {
+			copy_v3_v3(r, ((bNodeSocketValueRGBA *)sock->default_value)->value);
+		}
+		else if (sock->type == SOCK_VECTOR) {
+			copy_v3_v3(r, ((bNodeSocketValueVector *)sock->default_value)->value);
+		}
+	}
+}
+
+bNodeLink *BKE_remix_node_link(const bNodeTree *ntree, const bNode *node, int input)
+{
+	bNodeSocket *sock = remix_input(node, input);
+	if (!ntree || !sock) {
+		return NULL;
+	}
+	/* from the tree's links (sock->link is set by an update) */
+	for (bNodeLink *link = ntree->links.first; link; link = link->next) {
+		if (link->tosock == sock) {
+			/* a muted node counts as none */
+			if (!link->fromnode || (link->fromnode->flag & NODE_MUTED)) {
+				return NULL;
+			}
+			return link;
+		}
+	}
+	return NULL;
+}
+
+void BKE_material_remix_node_sync(Main *bmain, bNodeTree *ntree)
+{
+	if (!bmain || !ntree) {
+		return;
+	}
+	for (Material *ma = bmain->mat.first; ma; ma = ma->id.next) {
+		if (ma->nodetree != ntree) {
+			continue;
+		}
+		const bNode *node = BKE_material_remix_node(ma);
+		if (!node) {
+			continue;
+		}
+		BKE_remix_node_color(node, SH_REMIX_IN_ALBEDO, &ma->r);
+		ma->alpha = BKE_remix_node_value(node, SH_REMIX_IN_OPACITY);
+		/* and the Output node's own Color and Alpha: what stock 2.79, which
+		 * does not know the node, draws */
+		for (bNodeLink *link = ntree->links.first; link; link = link->next) {
+			if (link->fromnode != node || !link->tonode || link->tonode->type != SH_NODE_OUTPUT || !link->tosock ||
+			    !link->tosock->default_value)
+			{
+				continue;
+			}
+			if (link->tosock->type == SOCK_RGBA) {
+				float *v = ((bNodeSocketValueRGBA *)link->tosock->default_value)->value;
+				copy_v3_v3(v, &ma->r);
+				v[3] = 1.0f;
+			}
+			else if (link->tosock->type == SOCK_FLOAT) {
+				((bNodeSocketValueFloat *)link->tosock->default_value)->value = ma->alpha;
+			}
+		}
+	}
 }
 
 void BKE_material_physical_get(const Material *ma, MaterialPhysical *r)
@@ -142,6 +259,22 @@ void BKE_material_physical_get(const Material *ma, MaterialPhysical *r)
 	r->subsurface_radius[2] = 0.1f;
 	r->emission[0] = r->emission[1] = r->emission[2] = 1.0f;
 	if (!ma) {
+		return;
+	}
+	/* BGE-Remix P9.2: an RTX Remix material's values are its node's */
+	const bNode *node = BKE_material_remix_node(ma);
+	if (node) {
+		BKE_remix_node_color(node, SH_REMIX_IN_ALBEDO, r->base);
+		r->alpha = BKE_remix_node_value(node, SH_REMIX_IN_OPACITY);
+		r->metallic = BKE_remix_node_value(node, SH_REMIX_IN_METALLIC);
+		r->roughness = BKE_remix_node_value(node, SH_REMIX_IN_ROUGHNESS);
+		r->specular = 0.5f;  /* Remix's dielectrics: 4% head-on */
+		r->transmission = (node->custom1 & SH_NODE_REMIX_TRANSLUCENT) ? 1.0f : 0.0f;
+		r->ior = BKE_remix_node_value(node, SH_REMIX_IN_IOR);
+		r->subsurface = BKE_remix_node_value(node, SH_REMIX_IN_SUBSURFACE);
+		BKE_remix_node_color(node, SH_REMIX_IN_SUBSURFACE_RADIUS, r->subsurface_radius);
+		BKE_remix_node_color(node, SH_REMIX_IN_EMISSIVE, r->emission);
+		r->emission_strength = BKE_remix_node_value(node, SH_REMIX_IN_EMISSIVE_INTENSITY);
 		return;
 	}
 	r->base[0] = ma->r;
@@ -182,6 +315,7 @@ float BKE_material_roughness_to_hardness(float roughness)
 typedef struct RenderBackup {
 	struct RenderBackup *next, *prev;
 	Material *ma;
+	float r, g, b; /* P9.2 */
 	float ref, spec, specr, specg, specb, ray_mirror, fresnel_mir, fresnel_mir_i, mirr, mirg, mirb;
 	float gloss_mir, gloss_tra, alpha, ang, fresnel_tra, fresnel_tra_i, filter, emit;
 	float sss_radius[3], sss_col[3], sss_scale, sss_colfac;
@@ -208,6 +342,9 @@ void BKE_material_physical_render_begin(Material *ma)
 	}
 	RenderBackup *b = MEM_callocN(sizeof(RenderBackup), "physical render backup");
 	b->ma = ma;
+	b->r = ma->r;
+	b->g = ma->g;
+	b->b = ma->b;
 	b->ref = ma->ref;
 	b->spec = ma->spec;
 	b->specr = ma->specr;
@@ -242,6 +379,8 @@ void BKE_material_physical_render_begin(Material *ma)
 	BLI_mutex_unlock(&g_render_backup_lock);
 
 	BKE_material_physical_get(ma, &ph);
+	/* P9.2: an RTX Remix node's albedo is the base colour */
+	copy_v3_v3(&ma->r, ph.base);
 	const float metal = CLAMPIS(ph.metallic, 0.0f, 1.0f);
 	const bool glass = ph.transmission >= 0.5f;
 	/* diffuse: the base colour, less what metal and glass take */
@@ -303,6 +442,9 @@ void BKE_material_physical_render_end(Material *ma)
 		}
 	}
 	if (b) {
+		ma->r = b->r;
+		ma->g = b->g;
+		ma->b = b->b;
 		ma->ref = b->ref;
 		ma->spec = b->spec;
 		ma->specr = b->specr;

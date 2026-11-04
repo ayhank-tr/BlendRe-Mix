@@ -1132,6 +1132,27 @@ static void node_buts_output_linestyle(uiLayout *layout, bContext *UNUSED(C), Po
 }
 
 /* only once called */
+/* BGE-Remix P9.2: the RTX Remix Material node's options */
+static void node_shader_buts_remix_material(uiLayout *layout, bContext *UNUSED(C), PointerRNA *ptr)
+{
+	uiItemR(layout, ptr, "remix_type", 0, "", ICON_NONE);
+	uiItemR(layout, ptr, "blend", 0, "", ICON_NONE);
+	if (RNA_enum_get(ptr, "blend") == 1) {
+		uiItemR(layout, ptr, "alpha_cutoff", 0, NULL, ICON_NONE);
+	}
+}
+
+static void node_shader_buts_remix_material_ex(uiLayout *layout, bContext *C, PointerRNA *ptr)
+{
+	node_shader_buts_remix_material(layout, C, ptr);
+	uiItemR(layout, ptr, "use_normal_directx", 0, NULL, ICON_NONE);
+	uiItemR(layout, ptr, "use_thin_walled", 0, NULL, ICON_NONE);
+	uiItemR(layout, ptr, "use_particle", 0, NULL, ICON_NONE);
+	uiItemR(layout, ptr, "bake_size", 0, NULL, ICON_NONE);
+	uiItemL(layout, IFACE_("Categories:"), ICON_NONE);
+	uiItemR(layout, ptr, "categories", 0, NULL, ICON_NONE);
+}
+
 static void node_shader_set_butfunc(bNodeType *ntype)
 {
 	switch (ntype->type) {
@@ -1236,6 +1257,10 @@ static void node_shader_set_butfunc(bNodeType *ntype)
 		case SH_NODE_BSDF_REFRACTION:
 		case SH_NODE_BSDF_PRINCIPLED:
 			ntype->draw_buttons = node_shader_buts_glossy;
+			break;
+		case SH_NODE_REMIX_MATERIAL:
+			ntype->draw_buttons = node_shader_buts_remix_material;
+			ntype->draw_buttons_ex = node_shader_buts_remix_material_ex;
 			break;
 		case SH_NODE_BSDF_ANISOTROPIC:
 			ntype->draw_buttons = node_shader_buts_anisotropic;

@@ -28,6 +28,7 @@ _modules = [
     "add_mesh_torus",
     "anim",
     "bge_remix",
+    "bge_remix_material",
     "clip",
     "console",
     "file",

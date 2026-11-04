@@ -871,6 +871,250 @@ struct Nodes {
 	}
 };
 
+/* ------------------------------------------------------------------------- */
+/* P9.2: the RTX Remix Material node (node_shader_remix_material.c) */
+
+static int socket_index(const ListBase *list, const bNodeSocket *sock)
+{
+	int i = 0;
+	for (const bNodeSocket *s = (const bNodeSocket *)list->first; s; s = s->next, i++) {
+		if (s == sock) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+/* An input fed straight by an image: Blender Internal's Texture node holding
+ * an image, read at the Geometry node's UV (as the tree builder wires it).
+ * r_output: the texture node's output used (0 Value = the image's alpha,
+ * 1 Color, 2 Normal). NULL: none, or not so. */
+static Image *remix_direct_image(const bNodeTree *tree, const bNodeLink *link, int *r_output, const Tex **r_tex)
+{
+	if (!tree || !link || !link->fromnode || link->fromnode->type != SH_NODE_TEXTURE || !link->fromnode->id) {
+		return NULL;
+	}
+	const bNode *tn = link->fromnode;
+	const Tex *tex = (const Tex *)tn->id;
+	if (tex->type != TEX_IMAGE || !tex->ima) {
+		return NULL;
+	}
+	const bNodeSocket *vec = (const bNodeSocket *)tn->inputs.first;
+	bool uv = false;
+	for (const bNodeLink *l = (const bNodeLink *)tree->links.first; l; l = l->next) {
+		if (l->tosock == vec) {
+			uv = l->fromnode && l->fromnode->type == SH_NODE_GEOMETRY && l->fromsock &&
+			     strcmp(l->fromsock->name, "UV") == 0;
+			break;
+		}
+	}
+	if (!uv) {
+		return NULL;
+	}
+	if (r_output) {
+		*r_output = socket_index(&tn->outputs, link->fromsock);
+	}
+	if (r_tex) {
+		*r_tex = tex;
+	}
+	return tex->ima;
+}
+
+unsigned remix_node_bake_slots(const Material *ma, bool *r_alpha)
+{
+	const bNode *node = BKE_material_remix_node(ma);
+	unsigned slots = 0;
+	if (r_alpha) {
+		*r_alpha = false;
+	}
+	if (!node) {
+		return 0;
+	}
+	const bNodeTree *tree = ma->nodetree;
+	struct In {
+		int input, slot;
+	};
+	static const In ins[] = {{SH_REMIX_IN_ALBEDO, BAKE_ALBEDO}, {SH_REMIX_IN_ROUGHNESS, BAKE_ROUGHNESS},
+	                         {SH_REMIX_IN_METALLIC, BAKE_METALLIC}, {SH_REMIX_IN_NORMAL, BAKE_NORMAL},
+	                         {SH_REMIX_IN_EMISSIVE, BAKE_EMISSIVE}, {SH_REMIX_IN_EMISSIVE_INTENSITY, BAKE_EMISSIVE}};
+	for (size_t i = 0; i < sizeof(ins) / sizeof(ins[0]); i++) {
+		const bNodeLink *link = BKE_remix_node_link(tree, node, ins[i].input);
+		if (link && !remix_direct_image(tree, link, NULL, NULL)) {
+			slots |= 1u << ins[i].slot;
+		}
+	}
+	/* the opacity: the albedo image's alpha (its texture node's Value), or
+	 * baked into the albedo's alpha */
+	const bNodeLink *op = BKE_remix_node_link(tree, node, SH_REMIX_IN_OPACITY);
+	if (op) {
+		int out = -1;
+		Image *ima = remix_direct_image(tree, op, &out, NULL);
+		Image *alb = remix_direct_image(tree, BKE_remix_node_link(tree, node, SH_REMIX_IN_ALBEDO), NULL, NULL);
+		if (!(ima && ima == alb && out == 0) || (slots & (1u << BAKE_ALBEDO))) {
+			slots |= 1u << BAKE_ALBEDO;
+			if (r_alpha) {
+				*r_alpha = true;
+			}
+		}
+	}
+	return slots;
+}
+
+/* an image's sampling settings (P8.22, as the texture slots) */
+static void remix_tex_settings(const Tex *tex, brb_material_desc &d)
+{
+	if (tex->extend == TEX_EXTEND || tex->extend == TEX_CLIP) {
+		d.clamp = 1;
+	}
+	if (!(tex->imaflag & TEX_INTERPOL)) {
+		d.filter_nearest = 1;
+	}
+}
+
+bool from_remix_node(const Material *ma, MaterialSpec &s)
+{
+	const bNode *node = BKE_material_remix_node(ma);
+	if (!node) {
+		return false;
+	}
+	const bNodeTree *tree = ma->nodetree;
+	brb_material_desc &d = s.desc;
+	MaterialPhysical ph;
+	BKE_material_physical_get(ma, &ph);
+	s.source = MaterialSpec::REMIX_NODE;
+	memcpy(d.albedo, ph.base, sizeof(d.albedo));
+	d.opacity = ph.alpha;
+	d.roughness = ph.roughness;
+	d.metallic = ph.metallic;
+	float emissive[3];
+	BKE_remix_node_color(node, SH_REMIX_IN_EMISSIVE, emissive);
+	const float intensity = BKE_remix_node_value(node, SH_REMIX_IN_EMISSIVE_INTENSITY);
+	if (intensity > 0.0f) {
+		memcpy(d.emissive, emissive, sizeof(d.emissive));
+		d.emissive_intensity = intensity;
+	}
+	if (ma->mode & MA_SHLESS) {
+		set3(d.albedo, 0.0f, 0.0f, 0.0f);
+		memcpy(d.emissive, ph.base, sizeof(d.emissive));
+		d.emissive_intensity = 1.0f;
+	}
+	/* blending: the material's game transparency (the node's Blend) */
+	game_alpha(ma, d);
+	if (ma->game.alpha_blend == GEMAT_ADD) {
+		d.additive = 1;
+	}
+	if (d.alpha_test) {
+		d.alpha_cutoff = std::min(std::max(node->custom4, 0.0f), 1.0f);
+	}
+	if (node->custom1 & SH_NODE_REMIX_TRANSLUCENT) {
+		d.type = BRB_MATERIAL_TRANSLUCENT;
+		d.ior = std::min(std::max(BKE_remix_node_value(node, SH_REMIX_IN_IOR), 1.0f), 3.0f);
+		BKE_remix_node_color(node, SH_REMIX_IN_TRANSMITTANCE, d.transmittance);
+		d.transmittance_distance = std::max(BKE_remix_node_value(node, SH_REMIX_IN_TRANSMITTANCE_DISTANCE), 0.001f);
+		d.thin_walled = (node->custom1 & SH_NODE_REMIX_THIN_WALLED) ? 1 : 0;
+		d.thin_wall_thickness = BKE_remix_node_value(node, SH_REMIX_IN_THIN_WALL_THICKNESS);
+	}
+	else if (ph.subsurface > 0.0f) {
+		d.subsurface = 1;
+		BKE_remix_node_color(node, SH_REMIX_IN_SUBSURFACE_COLOR, d.subsurface_color);
+		memcpy(d.subsurface_radius, ph.subsurface_radius, sizeof(d.subsurface_radius));
+	}
+	d.anisotropy = std::min(std::max(BKE_remix_node_value(node, SH_REMIX_IN_ANISOTROPY), -1.0f), 1.0f);
+	const float film = BKE_remix_node_value(node, SH_REMIX_IN_THIN_FILM);
+	if (film > 0.0f && d.type != BRB_MATERIAL_TRANSLUCENT) {
+		d.thin_film = 1;
+		d.thin_film_thickness = film;
+	}
+	d.displace_in = BKE_remix_node_value(node, SH_REMIX_IN_DISPLACE_IN);
+	d.displace_out = BKE_remix_node_value(node, SH_REMIX_IN_DISPLACE_OUT);
+	s.categories |= (unsigned)(node->custom1 >> SH_NODE_REMIX_CATEGORY_SHIFT) & 0x7ffu;
+	if (node->custom1 & SH_NODE_REMIX_PARTICLE) {
+		s.particle = true;
+	}
+
+	/* what is wired in: images straight, the rest baked (bake_slots) */
+	bool baked_alpha = false;
+	s.bake_slots = remix_node_bake_slots(ma, &baked_alpha);
+	struct In {
+		int input;
+		const char *field;
+		int tex, kind;
+	};
+	static const In ins[] = {
+	    {SH_REMIX_IN_ALBEDO, "albedo", TEX_ALBEDO, BRB_TEXTURE_COLOR},
+	    {SH_REMIX_IN_OPACITY, "opacity", -1, 0},
+	    {SH_REMIX_IN_ROUGHNESS, "roughness", TEX_ROUGHNESS, BRB_TEXTURE_SCALAR},
+	    {SH_REMIX_IN_METALLIC, "metallic", TEX_METALLIC, BRB_TEXTURE_SCALAR},
+	    {SH_REMIX_IN_NORMAL, "normal", TEX_NORMAL, BRB_TEXTURE_NORMAL},
+	    {SH_REMIX_IN_EMISSIVE, "emissive", TEX_EMISSIVE, BRB_TEXTURE_COLOR},
+	    {SH_REMIX_IN_EMISSIVE_INTENSITY, "emissive", -1, 0},
+	    {SH_REMIX_IN_HEIGHT, "height", TEX_HEIGHT, BRB_TEXTURE_SCALAR},
+	    {SH_REMIX_IN_TRANSMITTANCE, "transmittance", TEX_TRANSMITTANCE, BRB_TEXTURE_COLOR},
+	    {SH_REMIX_IN_SUBSURFACE_COLOR, "sss_albedo", TEX_SSS_ALBEDO, BRB_TEXTURE_COLOR},
+	    {SH_REMIX_IN_DISPLACE_IN, "height", -1, 0},
+	    {SH_REMIX_IN_DISPLACE_OUT, "height", -1, 0},
+	    {SH_REMIX_IN_ANISOTROPY, "anisotropy", -1, 0},
+	    {SH_REMIX_IN_THIN_FILM, "thin film", -1, 0},
+	    {SH_REMIX_IN_IOR, "glass", -1, 0},
+	    {SH_REMIX_IN_TRANSMITTANCE_DISTANCE, "transmittance", -1, 0},
+	    {SH_REMIX_IN_THIN_WALL_THICKNESS, "glass", -1, 0},
+	    {SH_REMIX_IN_SUBSURFACE, "subsurface", -1, 0},
+	    {SH_REMIX_IN_SUBSURFACE_RADIUS, "sss_radius", -1, 0},
+	};
+	for (size_t i = 0; i < sizeof(ins) / sizeof(ins[0]); i++) {
+		const In &in = ins[i];
+		const bNodeLink *link = BKE_remix_node_link(tree, node, in.input);
+		if (!link) {
+			continue;
+		}
+		const std::string what = std::string("the node's ") + link->tosock->name;
+		int out = -1;
+		const Tex *tex = NULL;
+		Image *ima = remix_direct_image(tree, link, &out, &tex);
+		if (in.input == SH_REMIX_IN_OPACITY) {
+			/* the albedo image's alpha (else baked with the albedo) */
+			if (!baked_alpha && (d.alpha_blend || d.alpha_test)) {
+				d.opacity = 1.0f;
+			}
+			continue;
+		}
+		if (in.input == SH_REMIX_IN_EMISSIVE_INTENSITY) {
+			/* baked with the colour (bake_slots) */
+			continue;
+		}
+		if (ima && in.tex >= 0) {
+			int channel = 0, flags = 0;
+			if (in.kind == BRB_TEXTURE_SCALAR && out == 0) {
+				channel = 3; /* the texture node's Value: the image's alpha */
+			}
+			if (in.kind == BRB_TEXTURE_NORMAL && (node->custom1 & SH_NODE_REMIX_NORMAL_DIRECTX)) {
+				flags |= BRMX_TEXTURE_FLIP_GREEN;
+			}
+			if (in.kind == BRB_TEXTURE_NORMAL && out != 1) {
+				note(s, what + ": a normal map is read from the texture's Color");
+				mark(s, in.field, MATCH_APPROX, what + ": not the texture's Color");
+			}
+			s.textures[in.tex] = texture(ima, in.kind, channel, flags);
+			remix_tex_settings(tex, d);
+			if (in.input == SH_REMIX_IN_ALBEDO) {
+				set3(d.albedo, 1.0f, 1.0f, 1.0f);
+			}
+			if (in.input == SH_REMIX_IN_EMISSIVE) {
+				set3(d.emissive, 1.0f, 1.0f, 1.0f);
+			}
+			continue;
+		}
+		const bool bakeable = in.input == SH_REMIX_IN_ALBEDO || in.input == SH_REMIX_IN_ROUGHNESS ||
+		                      in.input == SH_REMIX_IN_METALLIC || in.input == SH_REMIX_IN_NORMAL ||
+		                      in.input == SH_REMIX_IN_EMISSIVE;
+		if (!bakeable) {
+			note(s, what + ": only an image texture read by UV reaches Remix here; its own value is sent");
+			mark(s, in.field, MATCH_NONE, what + ": not an image texture read by UV");
+		}
+	}
+	return true;
+}
+
 const bNode *cycles_output(const bNodeTree *tree)
 {
 	const bNode *any = NULL;
@@ -1190,7 +1434,8 @@ void translate_material(const Material *ma, MaterialSpec &r_spec)
 	                  (ma->game.face_orientation & GEMAT_HALO) != 0;
 	/* P8.7: the RTX Remix panel's values are the physical material's now
 	 * (BKE_material_physical_from_remix_panel) */
-	if (!from_nodes(ma, r_spec) && !from_physical(ma, r_spec)) {
+	/* P9.2: an RTX Remix material first */
+	if (!from_remix_node(ma, r_spec) && !from_nodes(ma, r_spec) && !from_physical(ma, r_spec)) {
 		from_blender_internal(ma, r_spec);
 	}
 	/* P8.24: the Remix block over the translation */
@@ -1207,7 +1452,7 @@ void apply_face_image(const Material *ma, Image *face_image, MaterialSpec &r_spe
 	if (!uses_face_image(ma) || !face_image) {
 		return;
 	}
-	if (r_spec.source == MaterialSpec::NODES) {
+	if (r_spec.source == MaterialSpec::NODES || r_spec.source == MaterialSpec::REMIX_NODE) {
 		/* as Blender Internal and the game: the node tree decides */
 		return;
 	}
@@ -1273,7 +1518,8 @@ void material_match(const Material *ma, const MaterialSpec &s, std::vector<Field
 	const brb_material_desc &d = s.desc;
 	const bool glass = d.type == BRB_MATERIAL_TRANSLUCENT;
 	static const char *source_names[] = {"Blender's default material", "the RTX Remix panel", "the Cycles nodes",
-	                                     "Blender Internal's settings", "the physical material"};
+	                                     "Blender Internal's settings", "the physical material",
+	                                     "the RTX Remix Material node"};
 	const std::string from = std::string("from ") + source_names[s.source];
 	const std::string unused = "not used (Remix's default)";
 	struct Row {
@@ -1325,7 +1571,15 @@ void material_match(const Material *ma, const MaterialSpec &s, std::vector<Field
 			m.note = unused;
 		}
 		else if (std::string(row.field) == "categories") {
-			m.note = "set in the RTX Remix panel";
+			m.note = (s.source == MaterialSpec::REMIX_NODE) ? "set on the RTX Remix Material node" :
+			                                                  "set in the RTX Remix panel";
+		}
+		else if (s.source == MaterialSpec::REMIX_NODE &&
+		         (std::string(row.field) == "anisotropy" || std::string(row.field) == "thin film" ||
+		          std::string(row.field) == "height"))
+		{
+			/* P9.2: only Remix draws these */
+			m.note = "Remix only (the game and F12 do not draw it)";
 		}
 		else {
 			m.note = from;
@@ -1334,7 +1588,8 @@ void material_match(const Material *ma, const MaterialSpec &s, std::vector<Field
 			const TextureRequest &t = s.textures[row.tex];
 			if (t.baked) {
 				m.level = MATCH_APPROX;
-				m.note = s.nodes_baked ? "the node tree, baked into an image" : "procedural textures, baked into an image";
+				m.note = (s.source == MaterialSpec::REMIX_NODE) ? "what is wired into the node, baked into an image" :
+				         s.nodes_baked ? "the node tree, baked into an image" : "procedural textures, baked into an image";
 			}
 			else if (t.image) {
 				m.note += std::string(" (image ") + (t.image->id.name + 2) + ")";

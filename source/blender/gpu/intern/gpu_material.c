@@ -179,6 +179,10 @@ struct GPUMaterial {
 	/* BGE-Remix P8.4: made for the game (its shader reads the game's batches) */
 	bool is_game;
 
+	/* BGE-Remix P9.2: a bake's RTX Remix Material node inputs */
+	GPUShadeInput bake_shi;
+	bool has_bake_shi;
+
 	/* BGE-Remix P8: "Face Textures" (the face image, set per draw) */
 	bool use_face_image;
 	struct Image *face_image;
@@ -3082,6 +3086,43 @@ void GPU_shadeinput_set(GPUMaterial *mat, Material *ma, GPUShadeInput *shi)
 	}
 }
 
+/* BGE-Remix P9.2: the RTX Remix Material node */
+void GPU_shade_remix_node(GPUMaterial *mat, const GPURemixLinks *links, GPUNodeLink **r_color, GPUNodeLink **r_alpha)
+{
+	GPUShadeInput shi;
+	GPUShadeResult shr;
+	Material *ma = mat->ma;
+
+	GPU_shadeinput_set(mat, ma, &shi);
+	shi.physical = true;
+	shi.no_slots = true;
+	shi.rgb = links->albedo;
+	if (mat->alpha) {
+		shi.alpha = links->opacity;
+	}
+	shi.roughness = links->roughness;
+	shi.metallic = links->metallic;
+	shi.emit = links->emission_intensity;
+	shi.emission = links->emission;
+	if (links->normal) {
+		/* a tangent-space normal map, as the texture slots read one */
+		float directx = links->normal_directx ? 1.0f : 0.0f;
+		GPU_link(mat, "remix_normal_map", GPU_attribute(CD_TANGENT, ""), shi.vn, links->normal,
+		         GPU_uniform(&directx), &shi.vn);
+	}
+	if (mat->bake_channel > 0) {
+		/* a bake for Remix reads the inputs (GPU_material_bake_create) */
+		mat->bake_shi = shi;
+		mat->has_bake_shi = true;
+		GPU_link(mat, "set_rgba_zero", r_color);
+		GPU_link(mat, "set_value_zero", r_alpha);
+		return;
+	}
+	GPU_shaderesult_set(&shi, &shr);
+	GPU_link(mat, "mtex_alpha_to_col", shr.combined, shr.alpha, r_color);
+	*r_alpha = shr.alpha;
+}
+
 void GPU_mist_update_height(float height)
 {
 	GPUWorld.misthi = height;
@@ -3393,8 +3434,14 @@ static void gpu_shade_physical(GPUShadeInput *shi, GPUShadeResult *shr)
 			gpu_shade_skylight(shi, shi->pbr_diff, GPU_uniform(&gpu_one), &shr->diff);
 		}
 	}
-	/* emission: its colour times its (textured) strength */
-	GPU_link(mat, "set_rgb", GPU_uniform(ph.emission), &emission);
+	/* emission: its colour times its (textured) strength (P9.2: the RTX
+	 * Remix node's colour may be wired) */
+	if (shi->emission) {
+		emission = shi->emission;
+	}
+	else {
+		GPU_link(mat, "set_rgb", GPU_uniform(ph.emission), &emission);
+	}
 	GPU_link(mat, "shade_maddf", shr->diff, shi->emit, emission, &shr->diff);
 
 	GPU_link(mat, "shade_add", shr->diff, shr->spec, &shr->combined);
@@ -3443,7 +3490,10 @@ void GPU_shaderesult_set(GPUShadeInput *shi, GPUShadeResult *shr)
 		}
 	}
 
-	do_material_tex(shi);
+	/* BGE-Remix P9.2: an RTX Remix node's textures are its inputs */
+	if (!shi->no_slots) {
+		do_material_tex(shi);
+	}
 
 	if (shi->physical) {
 		/* BGE-Remix P8.7 */
@@ -4179,15 +4229,46 @@ static GPUMaterial *gpu_material_bake_nodes(Scene *scene, Material *ma, int chan
 	return mat;
 }
 
+static void gpu_material_bake_out(GPUMaterial *mat, GPUShadeInput *shi_in, int channel, float scale,
+                                  GPUNodeLink **r_out);
+
+/* BGE-Remix P9.2: an RTX Remix material's channel: its node's inputs, as
+ * the node reads them (GPU_shade_remix_node keeps them for the bake) */
+static GPUMaterial *gpu_material_bake_remix(Scene *scene, Material *ma, int channel, float scale)
+{
+	GPUMaterial *mat = GPU_material_construct_begin(ma);
+	GPUNodeLink *out = NULL;
+	mat->scene = scene;
+	mat->type = GPU_MATERIAL_TYPE_MESH_BAKE;
+	mat->is_opensubdiv = false;
+	mat->alpha = 1;
+	mat->bake_channel = channel + 1;
+
+	ntreeGPUMaterialNodes(ma->nodetree, mat, NODE_OLD_SHADING);
+	if (!mat->has_bake_shi) {
+		GPU_material_bake_free(mat);
+		return NULL;
+	}
+	gpu_material_bake_out(mat, &mat->bake_shi, channel, scale, &out);
+	mat->outlink = out;
+	if (!gpu_material_construct_end(mat, "bake RTX Remix node")) {
+		GPU_material_bake_free(mat);
+		return NULL;
+	}
+	return mat;
+}
+
 GPUMaterial *GPU_material_bake_create(Scene *scene, Material *ma, int channel, float scale)
 {
 	GPUMaterial *mat;
 	GPUShadeInput shi;
-	GPUNodeLink *uv, *out = NULL, *value;
-	float srgb, one = 1.0f;
+	GPUNodeLink *out = NULL;
 
 	if (!ma) {
 		return NULL;
+	}
+	if (BKE_material_is_remix(ma)) {
+		return gpu_material_bake_remix(scene, ma, channel, scale);
 	}
 	if (ma->use_nodes && ma->nodetree) {
 		return gpu_material_bake_nodes(scene, ma, channel, scale);
@@ -4203,6 +4284,24 @@ GPUMaterial *GPU_material_bake_create(Scene *scene, Material *ma, int channel, f
 		shi.rgb = shi.vcol;
 	}
 	do_material_tex(&shi);
+
+	gpu_material_bake_out(mat, &shi, channel, scale, &out);
+	GPU_material_output_link(mat, out);
+
+	if (!gpu_material_construct_end(mat, "bake")) {
+		GPU_material_bake_free(mat);
+		return NULL;
+	}
+	return mat;
+}
+
+/* one channel of a material's shading inputs, for a bake */
+static void gpu_material_bake_out(GPUMaterial *mat, GPUShadeInput *shi_in, int channel, float scale,
+                                  GPUNodeLink **r_out)
+{
+	GPUShadeInput shi = *shi_in;
+	GPUNodeLink *uv, *out = NULL, *value;
+	float srgb, one = 1.0f;
 
 	GPU_link(mat, "texco_uv", GPU_attribute(CD_MTFACE, ""), &uv);
 	switch (channel) {
@@ -4233,7 +4332,16 @@ GPUMaterial *GPU_material_bake_create(Scene *scene, Material *ma, int channel, f
 			break;
 		case GPU_BAKE_EMIT:
 			scale = (scale > 0.0f) ? 1.0f / scale : 1.0f;
-			GPU_link(mat, "bake_out_value", shi.emit, GPU_uniform(&scale), uv, &out);
+			if (shi.emission) {
+				/* P9.2: the RTX Remix node's emitted colour times its
+				 * intensity, as sRGB (as a node tree's emission) */
+				srgb = 1.0f;
+				GPU_link(mat, "bake_out_emission", shi.emission, shi.emit, GPU_uniform(&scale), GPU_uniform(&srgb),
+				         uv, &out);
+			}
+			else {
+				GPU_link(mat, "bake_out_value", shi.emit, GPU_uniform(&scale), uv, &out);
+			}
 			break;
 		case GPU_BAKE_NORMAL:
 			GPU_link(mat, "bake_out_normal", shi.vn, GPU_builtin(GPU_VIEW_NORMAL),
@@ -4244,13 +4352,7 @@ GPUMaterial *GPU_material_bake_create(Scene *scene, Material *ma, int channel, f
 			GPU_link(mat, "bake_out_value", value, GPU_uniform(&one), uv, &out);
 			break;
 	}
-	GPU_material_output_link(mat, out);
-
-	if (!gpu_material_construct_end(mat, "bake")) {
-		GPU_material_bake_free(mat);
-		return NULL;
-	}
-	return mat;
+	*r_out = out;
 }
 
 void GPU_material_bake_free(GPUMaterial *material)

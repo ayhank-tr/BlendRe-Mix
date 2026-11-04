@@ -294,6 +294,23 @@ TextureCache::State TextureCache::request(const TextureRequest &req, std::wstrin
 			shrink(rgbaf, w, h, req.max_size, 0.0f);
 		}
 	}
+	/* P9.2: a DirectX normal map: its green flipped (Remix reads OpenGL's) */
+	if (req.flags & BRMX_TEXTURE_FLIP_GREEN) {
+		if (rgba8) {
+			if (rgba8 != rgba8_small.data()) {
+				rgba8_small.assign(rgba8, rgba8 + (size_t)w * h * 4);
+			}
+			for (size_t i = 0; i < (size_t)w * h; i++) {
+				rgba8_small[i * 4 + 1] = (unsigned char)(255 - rgba8_small[i * 4 + 1]);
+			}
+			rgba8 = rgba8_small.data();
+		}
+		else {
+			for (size_t i = 0; i < (size_t)w * h; i++) {
+				rgbaf[i * 4 + 1] = 1.0f - rgbaf[i * 4 + 1];
+			}
+		}
+	}
 	BLI_HashMurmur2A mm;
 	/* P8.24: "RMX2": rows from the bottom (interface 10), so no file from
 	 * before (rows from the top) is taken for one */
@@ -338,7 +355,7 @@ TextureCache::State TextureCache::request(const TextureRequest &req, std::wstrin
 	d.rgba8 = rgba8;
 	d.rgbaf = rgba8 ? NULL : rgbaf.data();
 	d.channel = req.channel;
-	d.flags = req.flags;
+	d.flags = req.flags & ~BRMX_TEXTURE_FLIP_GREEN;  /* (the cache's own) */
 	wchar_t no_gpu[8];
 	if (GetEnvironmentVariableW(L"BGE_REMIX_TEXTURE_NO_GPU", no_gpu, 8) > 0) {
 		d.flags |= BRB_TEXTURE_NO_GPU;

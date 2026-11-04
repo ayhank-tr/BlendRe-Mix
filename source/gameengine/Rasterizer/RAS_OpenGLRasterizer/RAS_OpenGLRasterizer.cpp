@@ -109,6 +109,7 @@ RAS_OpenGLRasterizer::RAS_OpenGLRasterizer(RAS_ICanvas* canvas, RAS_STORAGE_TYPE
 	m_clientobject(NULL),
 	m_auxilaryClientInfo(NULL),
 	m_drawingmode(KX_TEXTURED),
+	m_shadowTwoSided(false),
 	m_texco_num(0),
 	m_attrib_num(0),
 	//m_last_alphablend(GPU_BLEND_SOLID),
@@ -1083,8 +1084,18 @@ bool RAS_OpenGLRasterizer::GetCameraOrtho()
 	return m_camortho;
 }
 
+void RAS_OpenGLRasterizer::SetShadowTwoSided(bool enable)
+{
+	m_shadowTwoSided = enable;
+	if (enable)
+		glDisable(GL_CULL_FACE);
+}
+
 void RAS_OpenGLRasterizer::SetCullFace(bool enable)
 {
+	/* BGE-Remix P9.2: a shadow map of the RTX Remix pipeline: both sides */
+	if (m_shadowTwoSided && m_drawingmode == KX_SHADOW)
+		enable = false;
 	if (enable)
 		glEnable(GL_CULL_FACE);
 	else

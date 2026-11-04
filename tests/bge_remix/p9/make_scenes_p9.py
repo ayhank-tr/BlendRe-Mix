@@ -20,6 +20,14 @@ whose Remix switch was left on, once for each look fix (the sun's shadow on,
 a black sky), with ACES (Remix off and on), and with a Classic copy of the
 room the game switches to and back from (p9_pipe_switch).
 
+P9.2's spheres (p9_rs_*.blend): twelve spheres in two rows, each a P8
+Physical material (p9_rs_physical) and the same made RTX Remix materials
+(p9_rs_nodes*: plain albedo, an albedo image, roughness 0, 0.5 and 1, gold
+metal, emissive, a normal map, an alpha cut-out, glass, a thin film, a
+height map), with Remix off and on, with ACES, with a black sky for F12.
+P9.2's build (p9_rb_*.blend): four materials before and after picking RTX
+Remix, and two of them back to Classic.
+
 All hold the study's logic object (P9Study): with BGE_REMIX_P9_MODE set it
 calls bge.render.remixSetOption ("api": once; "sweep": every debug view in
 turn, a picture of each; "menu": Remix's own menu on); unset, it does
@@ -399,13 +407,227 @@ def make_pipelines(folder, E):
                       "scenes": ["P9Room", "P9RoomClassic"]}
 
 
+# ---------------------------------------------------------------------------
+# P9.2: the RTX Remix Material node
+
+# (label, base colour, metallic, roughness, extra physical settings, what
+# else: 'image' an albedo image, 'normal' a normal map, 'cutout' an albedo
+# image with cut-out alpha, 'glass', 'film' a thin film, 'height' a height
+# map; the last two only on the node, which only Remix draws)
+REMIX_SPHERES = [
+    ("albedo", (0.75, 0.25, 0.2), 0.0, 0.5, {}, None),
+    ("albedo_image", (1.0, 1.0, 1.0), 0.0, 0.5, {}, 'image'),
+    ("rough_000", (0.55, 0.6, 0.65), 0.0, 0.0, {}, None),
+    ("rough_050", (0.6, 0.55, 0.65), 0.0, 0.5, {}, None),
+    ("rough_100", (0.65, 0.6, 0.55), 0.0, 1.0, {}, None),
+    ("gold", (1.0, 0.77, 0.34), 1.0, 0.3, {}, None),
+    ("emissive", (0.2, 0.21, 0.22), 0.0, 0.5, {"emission_strength": 2.0}, None),
+    ("normal_map", (0.62, 0.62, 0.6), 0.0, 0.4, {}, 'normal'),
+    ("alpha_cutout", (1.0, 1.0, 1.0), 0.0, 0.5, {}, 'cutout'),
+    ("glass", (0.95, 0.97, 1.0), 0.0, 0.05, {"transmission": 1.0, "ior": 1.5}, 'glass'),
+    ("thin_film", (0.5, 0.5, 0.55), 0.0, 0.2, {}, 'film'),
+    ("height", (0.6, 0.6, 0.58), 0.0, 0.6, {}, 'height'),
+]
+THIN_FILM_NM = 400.0
+
+
+def slot_image(ma, img, color=False, normal=False, alpha=False):
+    """a UV texture slot holding an image"""
+    tex = bpy.data.textures.new(ma.name + "_" + img.name, 'IMAGE')
+    tex.image = img
+    tex.use_normal_map = normal
+    slot = ma.texture_slots.add()
+    slot.texture = tex
+    slot.texture_coords = 'UV'
+    slot.use_map_color_diffuse = color
+    slot.use_map_normal = normal
+    slot.use_map_alpha = alpha
+    if normal:
+        slot.normal_map_space = 'TANGENT'
+    return slot
+
+
+def remix_spheres_scene(name):
+    """the spheres of REMIX_SPHERES as P8 Physical materials (two rows of six
+    under one sun, shadows on, and the world's sky), and their rectangles"""
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    scene = base(name)
+    back = bpy.data.materials.new("P9RS_backdrop")
+    back.diffuse_color = (0.35, 0.35, 0.35)
+    back["bge_physical"] = 1
+    back["bge_roughness"] = 0.8
+    wall = p2.plane(scene, "P9RS_backdrop", 30.0, (0.0, 3.0, 0.0), (math.radians(90.0), 0.0, 0.0), back)
+    wall.game.physics_type = 'NO_COLLISION'
+    checker = p3.image("P9RS_checker", p3.checker, size=128)
+    cutout = p3.image("P9RS_cutout", lambda x, y: p3.checker(x, y)[:3] + ((1.0 if int(y * 10) % 2 == 0 else 0.0),),
+                      size=128)
+    bumps = p3.image("P9RS_bumps", p3.bumps, size=128, non_color=True)
+    rects, mats = {}, {}
+    for i, (label, col, metallic, rough, extra, what) in enumerate(REMIX_SPHERES):
+        ma = physical("P9RS_" + label, col, metallic, rough, **extra)
+        if label == "emissive":
+            ma["bge_emission"] = [1.0, 0.5, 0.1]
+        if what == 'glass':
+            ma.game_settings.alpha_blend = 'ALPHA'
+        if what == 'image':
+            slot_image(ma, checker, color=True)
+        if what == 'normal':
+            slot_image(ma, bumps, normal=True)
+        if what == 'cutout':
+            slot_image(ma, cutout, color=True, alpha=True)
+            ma.alpha = 0.0
+            ma.game_settings.alpha_blend = 'CLIP'
+        row, k = divmod(i, 6)
+        x, z = (k - 2.5) * 1.8, (1.2 if row == 0 else -1.0)
+        ob = p3.sphere(scene, "P9RS_" + label, (x, 0.0, z), ma, radius=RADIUS)
+        ob.game.physics_type = 'NO_COLLISION'
+        rects[label] = layout_rect(x, z, RADIUS * 0.7)
+        mats[label] = ma.name
+    sun = p2.lamp(scene, "Sun", 'SUN', (0.0, -10.0, 6.0), (math.radians(50.0), 0.0, math.radians(-30.0)),
+                  energy=1.0)
+    sun.data.shadow_soft_size = 0.2
+    sun.data.shadow_method = 'RAY_SHADOW'
+    logic(scene, "P9Study", STUDY_SCRIPT)
+    p2.add_probe(scene)
+    for sc in bpy.data.scenes:
+        sc["bge_remix_pipeline"] = 1
+        sc["bge_remix"] = 0
+    scene.update()
+    return scene, rects, mats
+
+
+def save_copy(folder, name, remix=None, tone=None):
+    for sc in bpy.data.scenes:
+        if remix is not None:
+            sc["bge_remix"] = remix
+        if tone is not None:
+            sc["bge_remix_tonemap"] = tone
+    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, name + ".blend"), check_existing=False,
+                                compress=False, copy=True)
+    return name
+
+
+def make_remix_spheres(folder, E):
+    """p9_rs_physical: the P8 Physical twins; p9_rs_nodes*: the same made RTX
+    Remix materials (Material: RTX Remix), the thin film and height map then
+    set on their nodes; with Remix on, with ACES, with a black sky (F12)"""
+    from bl_operators.bge_remix_material import make_remix_material
+    scene, rects, mats = remix_spheres_scene("P9RemixSpheres")
+    files = [save_copy(folder, "p9_rs_physical", remix=0)]
+    heights = p3.image("P9RS_heights", p3.tiles_rough, size=128, non_color=True)
+    for label, col, metallic, rough, extra, what in REMIX_SPHERES:
+        ma = bpy.data.materials[mats[label]]
+        node = make_remix_material(ma)
+        if what == 'film':
+            node.inputs["Thin Film"].default_value = THIN_FILM_NM
+        if what == 'height':
+            nt = ma.node_tree
+            geo = nt.nodes.new("ShaderNodeGeometry")
+            tex = nt.nodes.new("ShaderNodeTexture")
+            tex.texture = bpy.data.textures.new("P9RS_heights", 'IMAGE')
+            tex.texture.image = heights
+            nt.links.new(geo.outputs["UV"], tex.inputs["Vector"])
+            nt.links.new(tex.outputs["Color"], node.inputs["Height"])
+            node.inputs["Displace In"].default_value = 0.05
+        if what == 'glass':
+            node.blend = 'BLENDED'
+    files.append(save_copy(folder, "p9_rs_nodes", remix=0, tone=0))
+    files.append(save_copy(folder, "p9_rs_nodes_remix", remix=1, tone=0))
+    files.append(save_copy(folder, "p9_rs_nodes_aces", remix=0, tone=1))
+    files.append(save_copy(folder, "p9_rs_nodes_aces_remix", remix=1, tone=1))
+    # F12 against the game: a black sky (Blender Internal lights nothing by it)
+    w = scene.world
+    w.horizon_color = (0.0, 0.0, 0.0)
+    w.zenith_color = (0.0, 0.0, 0.0)
+    files.append(save_copy(folder, "p9_rs_nodes_dark", remix=0, tone=0))
+    expect = {}
+    for label, col, metallic, rough, extra, what in REMIX_SPHERES:
+        expect[label] = {"material": mats[label], "what": what, "albedo": list(col), "metallic": metallic,
+                         "roughness": rough, "emission": [1.0, 0.5, 0.1] if label == "emissive" else None,
+                         "intensity": extra.get("emission_strength", 0.0), "ior": extra.get("ior")}
+    E["remix_spheres"] = {"files": files, "rects": rects, "order": [s[0] for s in REMIX_SPHERES],
+                          "spheres": expect, "thin_film_nm": THIN_FILM_NM, "size": [WIDTH, HEIGHT],
+                          "gate_out": ["glass", "thin_film"]}
+
+
+def make_remix_build(folder, E):
+    """four materials before and after Material: RTX Remix (a coloured
+    Classic one, a Classic one with colour, normal and alpha images, a P8
+    Physical one, a Physical one with a procedural texture on its roughness),
+    and after Material: Classic again"""
+    from bl_operators.bge_remix_material import make_remix_material, make_classic_material
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    scene = base("P9RemixBuild")
+    back = bpy.data.materials.new("P9RB_backdrop")
+    back.diffuse_color = (0.35, 0.35, 0.35)
+    back["bge_physical"] = 0
+    wall = p2.plane(scene, "P9RB_backdrop", 30.0, (0.0, 3.0, 0.0), (math.radians(90.0), 0.0, 0.0), back)
+    wall.game.physics_type = 'NO_COLLISION'
+    checker = p3.image("P9RB_checker", lambda x, y: p3.checker(x, y)[:3] + ((1.0 if int(x * 8) % 2 == 0 else 0.4),),
+                       size=128)
+    bumps = p3.image("P9RB_bumps", p3.bumps, size=128, non_color=True)
+    m = {}
+    cc = p2.material("P9RB_classic_colour", (0.2, 0.5, 0.8), ref=0.8, hard=50)
+    cc["bge_physical"] = 0
+    m["classic_colour"] = cc
+    ci = p2.material("P9RB_classic_images", (1.0, 1.0, 1.0), ref=1.0, hard=80)
+    ci["bge_physical"] = 0
+    slot_image(ci, checker, color=True, alpha=True)
+    slot_image(ci, bumps, normal=True)
+    ci.alpha = 0.0
+    ci.game_settings.alpha_blend = 'ALPHA'
+    m["classic_images"] = ci
+    ph = physical("P9RB_physical", (0.7, 0.4, 0.2), 0.3, 0.4)
+    m["physical"] = ph
+    pp = physical("P9RB_physical_proc", (0.5, 0.6, 0.4), 0.0, 0.5)
+    clouds = bpy.data.textures.new("P9RB_clouds", 'CLOUDS')
+    clouds.noise_scale = 0.4
+    slot = pp.texture_slots.add()
+    slot.texture = clouds
+    slot.texture_coords = 'ORCO'
+    slot.use_map_color_diffuse = False
+    slot.use_map_hardness = True
+    m["physical_proc"] = pp
+    rects = {}
+    for i, label in enumerate(("classic_colour", "classic_images", "physical", "physical_proc")):
+        x = (i - 1.5) * 2.4
+        ob = p3.sphere(scene, "P9RB_" + label, (x, 0.0, 0.3), m[label], radius=0.9)
+        ob.game.physics_type = 'NO_COLLISION'
+        rects[label] = layout_rect(x, 0.3, 0.9 * 0.7)
+    sun = p2.lamp(scene, "Sun", 'SUN', (0.0, -10.0, 6.0), (math.radians(50.0), 0.0, math.radians(-30.0)),
+                  energy=1.0)
+    sun.data.shadow_method = 'RAY_SHADOW'
+    for la in bpy.data.lamps:
+        la["bge_physical"] = 0
+    logic(scene, "P9Study", STUDY_SCRIPT)
+    p2.add_probe(scene)
+    for sc in bpy.data.scenes:
+        sc["bge_remix_pipeline"] = 1
+        sc["bge_remix"] = 0
+    scene.update()
+    files = [save_copy(folder, "p9_rb_before", remix=0)]
+    for label in ("classic_colour", "classic_images", "physical", "physical_proc"):
+        make_remix_material(m[label])
+    files.append(save_copy(folder, "p9_rb_after", remix=0))
+    files.append(save_copy(folder, "p9_rb_after_remix", remix=1))
+    for label in ("classic_colour", "classic_images"):
+        make_classic_material(m[label])
+    files.append(save_copy(folder, "p9_rb_back", remix=0))
+    E["remix_build"] = {"files": files, "rects": rects,
+                        "materials": {k: v.name for k, v in m.items()},
+                        "classic_colour": {"albedo": [0.2 * 0.8, 0.5 * 0.8, 0.8 * 0.8],
+                                           "roughness": (2.0 / 52.0) ** 0.25},
+                        "physical": {"albedo": [0.7, 0.4, 0.2], "metallic": 0.3, "roughness": 0.4}}
+
+
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:]
     folder = argv[0]
     os.makedirs(folder, exist_ok=True)
     E = {"failed": {}}
     import traceback
-    for name, maker in (("spheres", make_spheres), ("pipelines", make_pipelines)):
+    for name, maker in (("spheres", make_spheres), ("pipelines", make_pipelines),
+                        ("remix_spheres", make_remix_spheres), ("remix_build", make_remix_build)):
         try:
             maker(folder, E)
         except Exception:

@@ -88,6 +88,7 @@ extern "C" {
 	#include "BKE_customdata.h"
 	#include "BKE_object.h"
 	#include "BKE_scene.h"  /* BGE-Remix P9.1: the pipeline */
+	#include "BKE_material_physical.h"  /* BGE-Remix P9.2 */
 	#include "BKE_text.h"
 
 	#include "BLI_fileops.h"
@@ -1214,7 +1215,9 @@ void GVBuilder::Rendering()
 				if (!ma) {
 					continue;
 				}
-				const int el = Add("material", ma->id.name + 2, ob, ma->use_nodes ? "node material" : "Blender Internal");
+				const int el = Add("material", ma->id.name + 2, ob,
+				                   BKE_material_is_remix(ma) ? "RTX Remix material" :  /* BGE-Remix P9.2 */
+				                   ma->use_nodes ? "node material" : "Blender Internal");
 				/* P8: a material whose GLSL shader could not be built */
 				if (m_conv.glsl_fallback.count(ma->id.name + 2)) {
 					Warn(el, "REN_GLSL_FALLBACK", GV_WARN_NOTE,

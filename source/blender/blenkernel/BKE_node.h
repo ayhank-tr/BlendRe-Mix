@@ -787,11 +787,45 @@ struct ShadeResult;
 #define SH_NODE_UVALONGSTROKE			191
 #define SH_NODE_TEX_POINTDENSITY		192
 #define SH_NODE_BSDF_PRINCIPLED         193
+/* BGE-Remix P9.2: the RTX Remix Material node (node_shader_remix_material.c) */
+#define SH_NODE_REMIX_MATERIAL          290
 
 /* custom defines options for Material node */
 #define SH_NODE_MAT_DIFF   1
 #define SH_NODE_MAT_SPEC   2
 #define SH_NODE_MAT_NEG    4
+
+/* BGE-Remix P9.2: the RTX Remix Material node's options (custom1: these
+ * flags, the Remix categories BRB_CATEGORY_* << SH_NODE_REMIX_CATEGORY_SHIFT;
+ * custom3: Bake Size, 0 = 1024; custom4: the alpha test's cutoff) and its
+ * inputs, in order */
+#define SH_NODE_REMIX_TRANSLUCENT      1   /* Remix's glass */
+#define SH_NODE_REMIX_NORMAL_DIRECTX   2   /* the normal map's green points down */
+#define SH_NODE_REMIX_THIN_WALLED      4   /* glass as a thin shell */
+#define SH_NODE_REMIX_PARTICLE         8   /* drawn as a particle or sprite */
+#define SH_NODE_REMIX_CATEGORY_SHIFT   4
+enum {
+	SH_REMIX_IN_ALBEDO = 0,
+	SH_REMIX_IN_OPACITY,
+	SH_REMIX_IN_ROUGHNESS,
+	SH_REMIX_IN_METALLIC,
+	SH_REMIX_IN_NORMAL,
+	SH_REMIX_IN_EMISSIVE,
+	SH_REMIX_IN_EMISSIVE_INTENSITY,
+	SH_REMIX_IN_HEIGHT,
+	SH_REMIX_IN_DISPLACE_IN,
+	SH_REMIX_IN_DISPLACE_OUT,
+	SH_REMIX_IN_ANISOTROPY,
+	SH_REMIX_IN_THIN_FILM,
+	SH_REMIX_IN_IOR,
+	SH_REMIX_IN_TRANSMITTANCE,
+	SH_REMIX_IN_TRANSMITTANCE_DISTANCE,
+	SH_REMIX_IN_THIN_WALL_THICKNESS,
+	SH_REMIX_IN_SUBSURFACE,
+	SH_REMIX_IN_SUBSURFACE_COLOR,
+	SH_REMIX_IN_SUBSURFACE_RADIUS,
+	SH_REMIX_IN_COUNT
+};
 
 /* API */
 

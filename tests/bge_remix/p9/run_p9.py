@@ -451,8 +451,11 @@ def run_pipelines(args, out):
                                          for x in list(runs.values()) + [r])
     tests["T9.4 Remix on and off (the fake runtime)"] = {"ok": all(c.values()), "checks": c, "detail": d}
 
+    # P9.2
+    p92_tests(args, out, scenes, E, tests, sheets)
+
     res = {"tests": tests, "sheets": sheets, "all_ok": all(t["ok"] for t in tests.values())}
-    lines = ["BGE-Remix P9.1: Classic and RTX Remix (normal run)", "=" * 70, ""]
+    lines = ["BGE-Remix P9.1-P9.2: Classic and RTX Remix, the RTX Remix Material node (normal run)", "=" * 70, ""]
     for name, t in tests.items():
         lines.append("%-44s %s" % (name, p2.mark(t["ok"])))
         for check, ok in t["checks"].items():
@@ -460,6 +463,307 @@ def run_pipelines(args, out):
     lines += ["", "Picture sheets:"] + ["  %-14s %s" % kv for kv in sheets.items()]
     lines += ["", "ALL PASSED" if res["all_ok"] else "SOMETHING FAILED (see results_p9.json and the logs)"]
     return res, lines, "p9"
+
+
+# ---------------------------------------------------------------------------
+# P9.2: the RTX Remix Material node
+
+TOL_TWIN = 0.5      # a sphere as the same material with P8's Physical surface
+TOL_F12_NODE = 6.0  # F12 against the game (P8's)
+TOL_GATE = 10.0     # the fallback against Remix (P8's), every sphere but glass and thin film
+F12_OUT = ("glass", "alpha_cutout")  # raytraced glass, soft-edged cut-out in F12
+
+MATCH_CHECK = r'''
+import bpy, json, os, sys
+argv = sys.argv[sys.argv.index("--") + 1:]
+target, folder = argv[0], argv[1]
+r = {}
+try:
+    import bge_remix
+except ImportError:
+    bge_remix = None
+from bl_operators.bge_remix_material import kind, remix_node
+
+def node_state(ma):
+    node = remix_node(ma)
+    s = {"kind": kind(ma), "use_nodes": ma.use_nodes, "has_tree": ma.node_tree is not None,
+         "node": node is not None}
+    if node is not None:
+        s["values"] = {sock.name: (list(sock.default_value) if hasattr(sock.default_value, "__len__")
+                                   else sock.default_value) for sock in node.inputs}
+        s["links"] = {}
+        for link in ma.node_tree.links:
+            if link.to_node == node:
+                s["links"][link.to_socket.name] = [link.from_node.bl_idname, link.from_socket.name,
+                                                    getattr(getattr(link.from_node, "texture", None), "name", None)]
+        s["to_output"] = any(l.from_node == node and l.to_node.bl_idname == "ShaderNodeOutput"
+                             for l in ma.node_tree.links)
+        s["remix_type"] = node.remix_type
+        s["blend"] = node.blend
+    if bge_remix is not None:
+        try:
+            s["match"] = bge_remix.material_match(ma)
+        except Exception as ex:
+            s["match"] = {"error": str(ex)}
+    return s
+
+for name in argv[2:]:
+    bpy.ops.wm.open_mainfile(filepath=os.path.join(folder, name + ".blend"))
+    r[name] = {ma.name: node_state(ma) for ma in bpy.data.materials if ma.users and ma.name.startswith("P9R")}
+with open(target, "w") as f:
+    json.dump(r, f, indent=1)
+print("P9-MATCH done")
+'''
+
+
+def mock_materials(lines):
+    """the fake runtime's CreateMaterial lines, as dicts"""
+    mats = []
+    for l in lines:
+        if not l.startswith("CreateMaterial "):
+            continue
+        d = {}
+        for part in l.split(" ")[1:]:
+            if "=" in part:
+                k, v = part.split("=", 1)
+                d[k] = v
+        mats.append(d)
+    return mats
+
+
+def near(text, want, tol=0.002):
+    try:
+        got = [float(x) for x in text.split(",")]
+    except (ValueError, AttributeError):
+        return False
+    want = want if isinstance(want, (list, tuple)) else [want]
+    return len(got) == len(want) and all(abs(a - b) <= tol for a, b in zip(got, want))
+
+
+def sphere_found(mats, label, e, film_nm):
+    """the sphere's material among the fake runtime's, by what sets it apart"""
+    what = e["what"]
+    tex = lambda m, key, name: name in m.get(key, "")  # noqa: E731
+    for m in mats:
+        if what == 'image' and tex(m, "albedo_tex", "P9RS_checker") and m.get("alphatest") == "0":
+            return m
+        if what == 'cutout' and tex(m, "albedo_tex", "P9RS_cutout") and m.get("alphatest") == "1":
+            return m
+        if what == 'normal' and tex(m, "normal_tex", "P9RS_bumps"):
+            return m
+        if what == 'glass' and m.get("type") == "translucent" and near(m.get("ior"), e["ior"]):
+            return m
+        if what == 'film' and m.get("thinfilm") == "1" and near(m.get("thinfilm_nm"), film_nm, 0.01):
+            return m
+        if what == 'height' and tex(m, "height_tex", "P9RS_heights") and near(m.get("displace_in"), 0.05):
+            return m
+        if what is None and m.get("type") == "opaque" and near(m.get("albedo"), e["albedo"]) and \
+                near(m.get("roughness"), e["roughness"]) and near(m.get("metallic"), e["metallic"]):
+            if e["intensity"] > 0.0:
+                if near(m.get("intensity"), e["intensity"]) and near(m.get("emissive"), e["emission"]):
+                    return m
+            else:
+                return m
+    return None
+
+
+def rect_diffs(a, b, rects, labels, blur=False):
+    out = {}
+    for k in labels:
+        if a is None or b is None or a.shape != b.shape:
+            out[k] = None
+            continue
+        aa, bb = (p8.blurred(a), p8.blurred(b)) if blur else (a, b)
+        out[k] = p8.region_diff(aa, bb, rects[k])
+    return out
+
+
+def p92_tests(args, out, scenes, E, tests, sheets):
+    S = lambda n: os.path.join(scenes, n + ".blend")  # noqa: E731
+    R, B = E.get("remix_spheres"), E.get("remix_build")
+    if not R or not B:
+        tests["T9.5 The RTX Remix Material node"] = {"ok": False, "checks": {"the P9.2 scenes were made": False},
+                                                     "detail": E.get("failed")}
+        return
+    order, rects = R["order"], R["rects"]
+    # the node's view of things (Blender, background)
+    target = os.path.join(out, "match_check.json")
+    if os.path.isfile(target):
+        os.remove(target)
+    p8.blender_script(args.ours, out, "p9_match", MATCH_CHECK,
+                      [target, scenes, "p9_rs_nodes", "p9_rb_before", "p9_rb_after", "p9_rb_back"])
+    M = p2.read_json(target) or {}
+
+    # T9.5: the node draws as the Physical surface, F12 reads it, Remix gets it
+    c, d = {}, {}
+    twin = pipe_play(args.ours, out, "p9_rs_physical", S("p9_rs_physical"))
+    node = pipe_play(args.ours, out, "p9_rs_nodes", S("p9_rs_nodes"))
+    c["the spheres played (Physical twins and RTX Remix materials)"] = bool(twin["ran"] and node["ran"])
+    diffs = rect_diffs(p8.shot_of(twin), p8.shot_of(node), rects, order)
+    d["against the Physical twins"] = diffs
+    for k in order:
+        c["%s: as its Physical twin (within %.1f: %s)" % (k, TOL_TWIN, diffs[k])] = diffs[k] is not None and \
+            diffs[k] <= TOL_TWIN
+    dark = pipe_play(args.ours, out, "p9_rs_nodes_dark", S("p9_rs_nodes_dark"))
+    f12 = os.path.join(out, "p9_rs_nodes_dark_f12.png")
+    if os.path.isfile(f12):
+        os.remove(f12)
+    p8.blender_script(args.ours, out, "p9_f12", p8.RENDER, [f12], blend=S("p9_rs_nodes_dark"), timeout=1800)
+    fd = rect_diffs(p8.shot_of(dark), p8.picture(f12), rects, order, blur=True)
+    d["F12 against the game (black sky)"] = fd
+    c["F12 rendered the RTX Remix materials"] = os.path.isfile(f12)
+    for k in order:
+        if k in F12_OUT:
+            continue
+        c["%s: F12 as the game (within %.0f: %s)" % (k, TOL_F12_NODE, fd[k])] = fd[k] is not None and \
+            fd[k] <= TOL_F12_NODE
+    log, env = p8.mock_env(args, out, "p9_rs_nodes_mock", os.path.join(out, "cache_rs"))
+    r = pipe_play(args.ours, out, "p9_rs_nodes_mock", S("p9_rs_nodes_remix"), env)
+    mats = mock_materials(mock_lines(log))
+    d["the fake runtime's materials"] = len(mats)
+    c["Remix drew the RTX Remix materials (the fake runtime)"] = bool(r["ran"]) and \
+        (r.get("stats") or {}).get("running") is True
+    found = {}
+    for k in order:
+        m = sphere_found(mats, k, R["spheres"][k], R["thin_film_nm"])
+        found[k] = m
+        c["%s: Remix got its inputs" % k] = m is not None
+    d["materials found"] = {k: (v and {x: v.get(x) for x in ("type", "albedo", "roughness", "metallic", "intensity",
+                                                             "albedo_tex", "normal_tex", "height_tex")})
+                            for k, v in found.items()}
+    nodes = M.get("p9_rs_nodes") or {}
+    match_ok = {}
+    for k in order:
+        st = nodes.get(R["spheres"][k]["material"]) or {}
+        mt = st.get("match") or {}
+        ok = st.get("kind") == "RTX_REMIX" and mt.get("source") == 5
+        fields = {f["field"]: f for f in mt.get("fields", [])}
+        if k == "thin_film":
+            ok = ok and "Remix only" in (fields.get("thin film") or {}).get("note", "")
+        if k == "height":
+            ok = ok and "Remix only" in (fields.get("height") or {}).get("note", "")
+        if k == "albedo_image":
+            ok = ok and "P9RS_checker" in (fields.get("albedo") or {}).get("note", "")
+        match_ok[k] = ok
+        c["%s: Match reads the node" % k] = ok
+    d["match"] = {k: (nodes.get(R["spheres"][k]["material"]) or {}).get("match") for k in order}
+    tests["T9.5 The RTX Remix Material node"] = {"ok": all(c.values()), "checks": c, "detail": d}
+    sheets["remix_spheres"] = p2.contact_sheet([("P8 Physical twins", twin.get("screenshot")),
+                                                ("RTX Remix materials", node.get("screenshot")),
+                                                ("black sky, game", dark.get("screenshot")),
+                                                ("black sky, F12", f12 if os.path.isfile(f12) else None)],
+                                               os.path.join(out, "sheet_p9_remix_spheres.png"))
+
+    # T9.6: picking RTX Remix, and Classic again
+    c, d = {}, {}
+    mn = B["materials"]
+    after = M.get("p9_rb_after") or {}
+    back = M.get("p9_rb_back") or {}
+    st = {k: after.get(v) or {} for k, v in mn.items()}
+    d["after"] = {k: {x: v.get(x) for x in ("kind", "links", "remix_type", "blend")} for k, v in st.items()}
+    for k, v in st.items():
+        c["%s: a node tree with the RTX Remix Material node wired to the output" % k] = \
+            v.get("kind") == "RTX_REMIX" and bool(v.get("to_output"))
+    vals = lambda k: st[k].get("values") or {}  # noqa: E731
+    cc = B["classic_colour"]
+    c["classic_colour: its colour and hardness copied (albedo, roughness)"] = \
+        near(",".join(str(x) for x in vals("classic_colour").get("Albedo", [])[:3]), cc["albedo"], 0.002) and \
+        abs(vals("classic_colour").get("Roughness", -1) - cc["roughness"]) < 0.002
+    links = st["classic_images"].get("links") or {}
+    c["classic_images: its images wired (colour, normal, alpha)"] = \
+        (links.get("Albedo") or [None, None])[1] == "Color" and (links.get("Normal") or [None, None])[1] == "Color" \
+        and (links.get("Opacity") or [None, None])[1] == "Value"
+    ph = B["physical"]
+    c["physical: its values copied (albedo, metallic, roughness)"] = \
+        near(",".join(str(x) for x in vals("physical").get("Albedo", [])[:3]), ph["albedo"], 0.002) and \
+        abs(vals("physical").get("Metallic", -1) - ph["metallic"]) < 0.002 and \
+        abs(vals("physical").get("Roughness", -1) - ph["roughness"]) < 0.002
+    c["physical_proc: its procedural wired to the roughness"] = "Roughness" in (st["physical_proc"].get("links") or {})
+    mt = st["physical_proc"].get("match") or {}
+    c["physical_proc: the procedural reaches Remix baked (Match)"] = bool(int(mt.get("bake_slots", 0)) & 2)
+    bk = {k: back.get(v) or {} for k, v in mn.items()}
+    for k in ("classic_colour", "classic_images"):
+        c["%s: back to Classic, its tree kept" % k] = bk[k].get("kind") == "CLASSIC" and bool(bk[k].get("has_tree"))
+    runs = {n: pipe_play(args.ours, out, n, S(n)) for n in ("p9_rb_before", "p9_rb_after", "p9_rb_back")}
+    pic = {n: p8.shot_of(r) for n, r in runs.items()}
+    brects = B["rects"]
+    md = p8.region_diff(pic["p9_rb_before"], pic["p9_rb_after"], brects["physical"])
+    d["physical: before against after"] = md
+    c["physical: looks the same after (within %.1f: %s)" % (TOL_TWIN, md)] = md is not None and md <= TOL_TWIN
+    for k in ("classic_colour", "classic_images"):
+        md = p8.region_diff(pic["p9_rb_before"], pic["p9_rb_back"], brects[k])
+        d["%s: back to Classic against before" % k] = md
+        c["%s: back to Classic as it was (within %.1f: %s)" % (k, TOL_TWIN, md)] = md is not None and md <= TOL_TWIN
+    log, env = p8.mock_env(args, out, "p9_rb_after_mock", os.path.join(out, "cache_rb"))
+    r = pipe_play(args.ours, out, "p9_rb_after_mock", S("p9_rb_after_remix"), env)
+    mats = mock_materials(mock_lines(log))
+    proc = [m for m in mats if near(m.get("albedo"), [0.5, 0.6, 0.4]) or "roughness" in m.get("roughness_tex", "")]
+    d["physical_proc in the fake runtime"] = proc[:2]
+    c["physical_proc: Remix got a baked roughness image"] = bool(r["ran"]) and \
+        any(m.get("roughness_tex", "-") != "-" for m in proc)
+    if args.official:
+        stock = p8.play(args.official, out, "stock_p9_rb_after", S("p9_rb_after"))
+        sp = p8.shot_of(stock)
+        means = {k: (None if sp is None else round(float(p8.crop(sp, brects[k]).mean()), 1)) for k in brects}
+        d["stock 2.79b: each sphere's mean"] = means
+        c["stock 2.79b opens the file and plays it"] = bool(stock.get("frames"))
+        c["stock 2.79b draws each sphere (not black)"] = all(v is not None and v > 20.0 for v in means.values())
+        sheets["remix_build_stock"] = stock.get("screenshot")
+    tests["T9.6 Picking RTX Remix"] = {"ok": all(c.values()), "checks": c, "detail": d}
+    sheets["remix_build"] = p2.contact_sheet([("before", runs["p9_rb_before"].get("screenshot")),
+                                              ("RTX Remix", runs["p9_rb_after"].get("screenshot")),
+                                              ("two back to Classic", runs["p9_rb_back"].get("screenshot"))],
+                                             os.path.join(out, "sheet_p9_remix_build.png"))
+
+
+def p92_rtx(args, out, scenes, E, tests, sheets, report_lines):
+    """the gate: the fallback within 10 of Remix for every sphere but glass and
+    thin film (ACES); and a diagnostic: Remix's debug views 1-60 of the P9.0
+    spheres (gold, emissive)"""
+    S = lambda n: os.path.join(scenes, n + ".blend")  # noqa: E731
+    R = E.get("remix_spheres")
+    if not R:
+        tests["S9.7 RTX Remix materials against Remix (the gate)"] = {"ok": False, "checks": {"made": False},
+                                                                      "detail": E.get("failed")}
+        return
+    shot = {"BGE_REMIX_P2_SHOT_FRAME": "300"}
+    gl = p8.play(args.ours, out, "rs_aces_opengl", S("p9_rs_nodes_aces"), shot, frames=p8.REMIX_FRAMES)
+    rtx = p8.play(args.ours, out, "rs_aces_remix", S("p9_rs_nodes_aces_remix"), p8.REMIX_ENV, frames=p8.REMIX_FRAMES,
+                  debug=True)
+    rows = sphere_compare({"spheres": {"order": R["order"], "rects": R["rects"]}}, gl.get("screenshot"),
+                          rtx.get("screenshot"))
+    c = {"the RTX Remix materials ran in OpenGL and in Remix": bool(gl["ran"] and rtx["ran"])}
+    for label, row in rows.items():
+        if label in R["gate_out"]:
+            continue
+        c["%s: the fallback within %.0f of Remix (%s)" % (label, TOL_GATE, row and row["mean_diff"])] = \
+            bool(row) and row["mean_diff"] <= TOL_GATE
+    tests["S9.7 RTX Remix materials against Remix (the gate)"] = {"ok": all(c.values()), "checks": c, "detail": rows}
+    sheets["remix_spheres"] = p2.contact_sheet([("fallback, ACES", gl.get("screenshot")),
+                                                ("RTX Remix, ACES", rtx.get("screenshot"))],
+                                               os.path.join(out, "sheet_p9_remix_spheres_rtx.png"))
+    report_lines += ["", "RTX Remix materials, mean colour fallback -> Remix (gate %.0f; out: %s):" % (
+        TOL_GATE, ", ".join(R["gate_out"]))]
+    for label, row in rows.items():
+        report_lines.append("  %-16s %s" % (label, "-" if not row else "%s -> %s  diff %.1f  brightness x%s" % (
+            row["opengl"], row["remix"], row["mean_diff"], row["brightness_ratio"])))
+    # diagnostic: debug views 1-60 of the spheres (what Remix receives)
+    dv = os.path.join(out, "debug_views_spheres")
+    shutil.rmtree(dv, ignore_errors=True)
+    os.makedirs(dv)
+    env = dict(p8.REMIX_ENV)
+    env.update({"BGE_REMIX_P9_DIR": dv, "BGE_REMIX_P9_FIRST": "1", "BGE_REMIX_P9_LAST": "60",
+                "BGE_REMIX_P9_START": str(DV_START), "BGE_REMIX_P9_STEP": str(DV_STEP)})
+    r = study_play(args.ours, out, "debug_views_spheres", S("p9_study_spheres_aces_remix"), "sweep", env=env,
+                   frames=DV_START + DV_STEP * 62 + 30, debug=True)
+    views = sweep_report(dv)
+    real = [v for v in views if v["kind"] == "a view"]
+    sheets["spheres_debug_views"] = thumb_sheet([("final picture", os.path.join(dv, "dv_0000.png"))] +
+                                                [("view %d" % v["index"], v["path"]) for v in real],
+                                                os.path.join(out, "sheet_p9_spheres_debug_views.png"))
+    tests["S9.8 Debug views of the spheres (a diagnostic)"] = {
+        "ok": True, "checks": {"the sweep ran": bool(r["p9"].get("done"))},
+        "detail": {"views": [v["index"] for v in real], "folder": dv}}
 
 
 def run_pipelines_rtx(args, out):
@@ -508,9 +812,11 @@ def run_pipelines_rtx(args, out):
         items += [("room fallback, " + label, a.get("screenshot")), ("room Remix, " + label, b.get("screenshot"))]
     tests["S9.6 The room: fallback against Remix (a report, not a gate)"] = {"ok": all(c.values()), "checks": c,
                                                                             "detail": d}
+    p92_lines = []
+    p92_rtx(args, out, scenes, E, tests, sheets, p92_lines)
     sheets["room"] = p2.contact_sheet(items, os.path.join(out, "sheet_p9_room.png"))
     res = {"tests": tests, "sheets": sheets, "all_ok": all(t["ok"] for t in tests.values())}
-    lines = ["BGE-Remix P9.1 (RTX run: your RTX card, the real RTX Remix runtime)", "=" * 70, ""]
+    lines = ["BGE-Remix P9.1-P9.2 (RTX run: your RTX card, the real RTX Remix runtime)", "=" * 70, ""]
     for name, t in tests.items():
         lines.append("%-62s %s" % (name, p2.mark(t["ok"])))
         for check, ok in t["checks"].items():
@@ -523,6 +829,7 @@ def run_pipelines_rtx(args, out):
                 row["opengl"], row["remix"], row["mean_diff"], row["brightness_ratio"])))
     lines += ["", "The room, mean difference fallback -> Remix:"] + \
              ["  %-16s %s" % (k, v["mean_diff"]) for k, v in d.items()]
+    lines += p92_lines
     lines += ["", "Picture sheets:"] + ["  %-10s %s" % kv for kv in sheets.items()]
     lines += ["", "ALL PASSED" if res["all_ok"] else "SOMETHING FAILED (see results_p9_rtx.json and the logs)"]
     return res, lines, "p9_rtx"

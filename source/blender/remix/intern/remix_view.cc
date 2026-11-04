@@ -1881,13 +1881,15 @@ const char *BRMX_material_match_json(Material *ma)
 	static const int bake_tex[brmx::BAKE_SLOTS] = {brmx::TEX_ALBEDO, brmx::TEX_ROUGHNESS, brmx::TEX_EMISSIVE,
 	                                              brmx::TEX_NORMAL, brmx::TEX_METALLIC};
 	const bool nodes = spec.source == brmx::MaterialSpec::NODES;
+	const bool remix = spec.source == brmx::MaterialSpec::REMIX_NODE;  /* P9.2 */
 	char size[64];
 	snprintf(size, sizeof(size), " (%d px)", brmx::bake_size(ma));
 	for (int i = 0; i < brmx::BAKE_SLOTS; i++) {
 		if ((baked & (1u << i)) && !(spec.locked & (1u << bake_tex[i]))) {
 			spec.marks[bake_fields[i]] = std::make_pair(
 			    (int)brmx::MATCH_APPROX,
-			    std::string(nodes ? "the node tree, baked into an image" : "procedural textures, baked into an image") +
+			    std::string(remix ? "what is wired into the node, baked into an image" :
+			                nodes ? "the node tree, baked into an image" : "procedural textures, baked into an image") +
 			        size);
 		}
 	}
@@ -1912,7 +1914,8 @@ const char *BRMX_material_match_json(Material *ma)
 		json_string(json, spec.notes[i]);
 	}
 	json += std::string("], \"baked\": ") + (baked ? "true" : "false") + ", \"categories\": " +
-	        std::to_string(spec.categories) + "}";
+	        std::to_string(spec.categories) + ", \"source\": " + std::to_string((int)spec.source) +
+	        ", \"bake_slots\": " + std::to_string(baked) + "}";
 	return json.c_str();
 }
 

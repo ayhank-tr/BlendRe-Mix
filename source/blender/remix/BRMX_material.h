@@ -122,7 +122,7 @@ struct MaterialSpec {
 	/* every value; the texture fields stay NULL here (see TextureCache) */
 	brb_material_desc desc;
 	TextureRequest textures[TEX_COUNT];
-	enum Source { DEFAULT, PANEL, NODES, BLENDER_INTERNAL, PHYSICAL } source;
+	enum Source { DEFAULT, PANEL, NODES, BLENDER_INTERNAL, PHYSICAL, REMIX_NODE } source;
 	/* what the translator could not represent, one line each */
 	std::vector<std::string> notes;
 	/* P4: drawn as a particle or sprite (Halo face orientation, or the RTX
@@ -154,6 +154,15 @@ bool remix_block_used(const Material *ma);
 /* P8.24: a node material the translator cannot follow, to bake: its Remix
  * block's Bake Nodes (Automatic: when the translation left something out) */
 bool nodes_need_bake(const Material *ma);
+
+/* P9.2: an RTX Remix material's inputs to bake (bits of 1 << BakeSlot,
+ * BRMX_bake.h): those wired to something other than an image texture read
+ * by UV; and whether the albedo's bake carries the opacity */
+unsigned remix_node_bake_slots(const Material *ma, bool *r_alpha = NULL);
+
+/* P9.2: the texture cache flips an image's green channel first (a DirectX
+ * normal map); never passed to the bridge */
+#define BRMX_TEXTURE_FLIP_GREEN (1 << 7)
 
 /* The Remix version of a material (NULL: Blender's default material).
  * desc.hash is left 0 for the caller. */
