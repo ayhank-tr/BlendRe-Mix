@@ -24,7 +24,6 @@
 
 #include <math.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <vector>
 
@@ -98,18 +97,7 @@ static const char *comp_frag =
         "	}\n"
         "	c = max(c * e, vec3(0.0));\n"
         "	if (bge_aces != 0) {\n"
-        /* BGE-Remix P9.2: on the brightness alone (bge_aces 2), as Remix's
-         * default ("legacy") ACES: bright colours keep their saturation;
-         * or on each channel (1) */
-        "		vec3 a;\n"
-        "		if (bge_aces == 2) {\n"
-        "			float l = dot(c, vec3(0.2126, 0.7152, 0.0722));\n"
-        "			float m = (l * (2.51 * l + 0.03)) / (l * (2.43 * l + 0.59) + 0.14);\n"
-        "			a = clamp(c * (clamp(m, 0.0, 1.0) / max(l, 1e-8)), 0.0, 1.0);\n"
-        "		}\n"
-        "		else {\n"
-        "			a = clamp((c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14), 0.0, 1.0);\n"
-        "		}\n"
+        "		vec3 a = clamp((c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14), 0.0, 1.0);\n"
         "		vec3 srgb = mix(a * 12.92, 1.055 * pow(a, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), a));\n"
         "		return (bge_gamma != 1.0) ? pow(max(srgb, vec3(0.0)), vec3(bge_gamma)) : srgb;\n"
         "	}\n"
@@ -151,19 +139,6 @@ static const char *comp_frag =
         "	gl_FragDepth = texelFetch(bge_depth, p, 0).r;\n"
         "#endif\n"
         "}\n";
-
-/* BGE-Remix P9.2: the ACES form (the shader's bge_aces): 2 on the
- * brightness alone, as Remix's default ACES; BGE_REMIX_ACES_PER_CHANNEL=1
- * (a test's comparison) keeps P8's per-channel form, 1 */
-static int aces_form()
-{
-	static int form = 0;
-	if (form == 0) {
-		const char *e = getenv("BGE_REMIX_ACES_PER_CHANNEL");
-		form = (e && e[0] && e[0] != '0') ? 1 : 2;
-	}
-	return form;
-}
 
 RAS_Pipeline::RAS_Pipeline()
     :m_active(false),
@@ -596,7 +571,7 @@ void RAS_Pipeline::End(const float *view, const float *proj, const int *viewport
 	if ((loc = glGetUniformLocation(program, "bge_gamma")) >= 0)
 		glUniform1f(loc, m_gamma);
 	if ((loc = glGetUniformLocation(program, "bge_aces")) >= 0)
-		glUniform1i(loc, m_aces ? aces_form() : 0);
+		glUniform1i(loc, m_aces ? 1 : 0);
 	if ((loc = glGetUniformLocation(program, "bge_fog")) >= 0)
 		glUniform1i(loc, fogtex ? 1 : 0);
 	if (fogtex) {

@@ -684,6 +684,53 @@ def make_light_balance(folder, E):
                           "emission": {b[0]: b[4] for b in BALANCE if b[4] > 0.0}}
 
 
+
+# P9.2 diagnostic: Remix's tone curve on colours. 54 spheres that only glow,
+# on black with no lamps: a row per colour (grey first: Remix's own curve),
+# a column per brightness
+COLOUR_ROWS = [
+    ("grey", (1.0, 1.0, 1.0)),
+    ("orange", (1.0, 0.5, 0.1)),
+    ("red", (1.0, 0.05, 0.05)),
+    ("green", (0.05, 1.0, 0.05)),
+    ("blue", (0.05, 0.05, 1.0)),
+    ("cyan", (0.05, 1.0, 1.0)),
+]
+COLOUR_LEVELS = [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0]
+
+
+def make_colour_curve(folder, E):
+    """the 54 glowing spheres (RTX Remix materials, black albedo, ACES), in
+    the fallback and in Remix: p9_cc / p9_cc_remix"""
+    from bl_operators.bge_remix_material import make_remix_material
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    scene = base("P9ColourCurve")
+    rects, spheres = {}, {}
+    for r, (row, col) in enumerate(COLOUR_ROWS):
+        for k, level in enumerate(COLOUR_LEVELS):
+            label = "%s_%g" % (row, level)
+            ma = physical("P9CC_" + label, (0.0, 0.0, 0.0), 0.0, 1.0)
+            node = make_remix_material(ma)
+            node.inputs["Emissive Color"].default_value = col + (1.0,)
+            node.inputs["Emissive Intensity"].default_value = level
+            x, z = (k - (len(COLOUR_LEVELS) - 1) / 2.0) * 1.25, (2.5 - r) * 1.05
+            ob = p3.sphere(scene, "P9CC_" + label, (x, 0.0, z), ma, radius=0.42)
+            ob.game.physics_type = 'NO_COLLISION'
+            rects[label] = layout_rect(x, z, 0.42 * 0.7)
+            spheres[label] = {"row": row, "colour": list(col), "level": level}
+    w = scene.world
+    w.use_sky_blend = False
+    w.horizon_color = (0.0, 0.0, 0.0)
+    w.zenith_color = (0.0, 0.0, 0.0)
+    w.ambient_color = (0.0, 0.0, 0.0)
+    logic(scene, "P9Study", STUDY_SCRIPT)
+    p2.add_probe(scene)
+    for sc in bpy.data.scenes:
+        sc["bge_remix_pipeline"] = 1
+    scene.update()
+    files = [save_copy(folder, "p9_cc", remix=0, tone=1), save_copy(folder, "p9_cc_remix", remix=1, tone=1)]
+    E["colour_curve"] = {"files": files, "rects": rects, "order": list(rects), "spheres": spheres}
+
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:]
     folder = argv[0]
@@ -692,7 +739,7 @@ def main():
     import traceback
     for name, maker in (("spheres", make_spheres), ("pipelines", make_pipelines),
                         ("remix_spheres", make_remix_spheres), ("remix_build", make_remix_build),
-                        ("light_balance", make_light_balance)):
+                        ("light_balance", make_light_balance), ("colour_curve", make_colour_curve)):
         try:
             maker(folder, E)
         except Exception:

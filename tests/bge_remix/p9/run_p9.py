@@ -896,51 +896,124 @@ def p92_rtx(args, out, scenes, E, tests, sheets, report_lines):
         "detail": {"views": [v["index"] for v in real], "folder": dv}}
 
 
-# P9.2 (a report): the fallback's ACES on the brightness alone (now, as
-# Remix's default ACES) against its per-channel form (P8's), both against
-# Remix at the calibrated exposure (+0.3)
-def aces_forms_rtx(args, out, S, E, tests, sheets, report_lines):
-    R = E.get("remix_spheres")
-    if not R:
+# P9.2 diagnostic: Remix's tone curve on colours. The grey row gives Remix's
+# own curve T (light in, picture out); each rule then predicts the coloured
+# spheres from T, and the report says which comes closest
+CC_LUMA = (0.2126, 0.7152, 0.0722)
+
+
+def linear_to_srgb255(y):
+    y = min(max(y, 0.0), 1.0)
+    return 255.0 * (12.92 * y if y <= 0.0031308 else 1.055 * y ** (1.0 / 2.4) - 0.055)
+
+
+def curve_from(points):
+    """T(x) through (light, picture's linear value) points, straight in
+    log2(light) between them and above them, in proportion below them"""
+    import math
+    pts = sorted((math.log2(x), y) for x, y in points if x > 0.0)
+
+    def T(x):
+        if x <= 0.0:
+            return 0.0
+        u = math.log2(x)
+        if u < pts[0][0]:
+            # below the dimmest grey: in proportion (every curve is straight
+            # near black)
+            return min(max(pts[0][1] * x / 2.0 ** pts[0][0], 0.0), 1.0)
+        i = 0
+        while i < len(pts) - 2 and u > pts[i + 1][0]:
+            i += 1
+        (u0, y0), (u1, y1) = pts[i], pts[i + 1]
+        return min(max(y0 + (y1 - y0) * (u - u0) / (u1 - u0), 0.0), 1.0)
+    return T
+
+
+def colour_predictions(T, c, t=0.5):
+    l = sum(w * v for w, v in zip(CC_LUMA, c))
+    m = max(c)
+    a = [T(v) for v in c]
+    b = [v * T(l) / l for v in c] if l > 0.0 else [0.0] * 3
+    x = [v * T(m) / m for v in c] if m > 0.0 else [0.0] * 3
+    return {"a per channel": a, "b brightness": b, "c brightest channel": x,
+            "d blend": [(1.0 - t) * p + t * q for p, q in zip(a, b)]}
+
+
+def colour_curve_rtx(args, out, S, E, tests, sheets, report_lines):
+    C = E.get("colour_curve")
+    if not C:
         return
-    png = os.path.join  # the screenshots the runs above left, by their tags
     shot = {"BGE_REMIX_P2_SHOT_FRAME": "300"}
-    per = dict(shot, BGE_REMIX_ACES_PER_CHANNEL="1")
-    scenes = (("gate", "p9_rs_nodes_aces", "rs_aces_opengl", "rs_aces_remix",
-               {"spheres": {"order": R["order"], "rects": R["rects"]}}),
-              ("six spheres", "p9_study_spheres_aces", "spheres_aces_opengl", "spheres_aces_remix", E),
-              ("room", "p9_pipe_aces_gl", "p9_pipe_aces_gl_rtxrun", "p9_pipe_aces_remix_rtxrun", None))
-    rep, items = {}, []
-    for label, blend, gl_tag, rtx_tag, layout in scenes:
-        remix = png(out, rtx_tag + ".png")
-        bright = png(out, gl_tag + ".png")
-        chan = p8.play(args.ours, out, gl_tag + "_perchannel", S(blend), per, frames=p8.REMIX_FRAMES).get("screenshot")
-        row = {}
-        for form, gl in (("brightness", bright), ("per channel", chan)):
-            if layout is None:
-                row[form] = {"mean": p8.picture_diff(gl, remix)}
-                continue
-            rows = sphere_compare(layout, gl, remix)
-            if label == "gate":
-                rows = {k: v for k, v in rows.items() if k not in R["gate_out"]}
-            d = {k: v["mean_diff"] for k, v in rows.items() if v}
-            row[form] = {"mean": round(sum(d.values()) / len(d), 1) if d else None, "spheres": d,
-                         "within": sum(1 for v in d.values() if v <= TOL_GATE), "count": len(d)}
-        rep[label] = row
-        items += [("%s, fallback ACES on brightness" % label, bright),
-                  ("%s, fallback ACES per channel" % label, chan)]
-    tests["S9.11 The fallback's ACES forms against Remix (a report)"] = {"ok": True, "checks": {}, "detail": rep}
-    sheets["aces_forms"] = p2.contact_sheet(items, os.path.join(out, "sheet_p9_aces_forms.png"))
-    report_lines += ["", "The fallback's ACES, on the brightness alone (now) and per channel (P8's), against "
-                     "Remix (global + ACES, exposure +0.3):"]
-    for label, row in rep.items():
-        for form, r in row.items():
-            head = "  %-12s %-12s mean %s" % (label, form, r["mean"])
-            if "within" in r:
-                head += "  within %.0f: %s/%s" % (TOL_GATE, r["within"], r["count"])
-            report_lines.append(head)
-            if r.get("spheres"):
-                report_lines.append("      %s" % "  ".join("%s %s" % kv for kv in r["spheres"].items()))
+    gl = p8.play(args.ours, out, "cc_opengl", S("p9_cc"), shot, frames=p8.REMIX_FRAMES).get("screenshot")
+    runs = [("as set (global + ACES, exposure +0.3)", "cc_remix", None),
+            ("auto exposure off", "cc_remix_fixed", "rtx.autoExposure.enabled=False")]
+    pg = p8.picture(gl)
+    detail, items = {}, [("fallback, ACES", gl)]
+    for label, tag, rtx_set in runs:
+        env = dict(p8.REMIX_ENV)
+        if rtx_set:
+            env["BGE_REMIX_RTX_SET"] = rtx_set
+        png = p8.play(args.ours, out, tag, S("p9_cc_remix"), env, frames=p8.REMIX_FRAMES, debug=True).get("screenshot")
+        items.append(("Remix, " + label, png))
+        pr = p8.picture(png)
+        if pr is None:
+            detail[label] = None
+            continue
+        meas = {k: [float(v) for v in p8.crop(pr, C["rects"][k]).reshape(-1, 3).mean(axis=0)] for k in C["order"]}
+        ours = {k: [float(v) for v in p8.crop(pg, C["rects"][k]).reshape(-1, 3).mean(axis=0)]
+                for k in C["order"]} if pg is not None and pg.shape == pr.shape else {}
+        greys = [(C["spheres"][k]["level"], sum(srgb_to_linear(v) for v in meas[k]) / 3.0)
+                 for k in C["order"] if C["spheres"][k]["row"] == "grey"]
+        T = curve_from(greys)
+        coloured = [k for k in C["order"] if C["spheres"][k]["row"] != "grey"]
+
+        def err(rule, t=0.5, rows=None):
+            e = []
+            for k in coloured:
+                sp = C["spheres"][k]
+                if rows and sp["row"] not in rows:
+                    continue
+                c = [v * sp["level"] for v in sp["colour"]]
+                pred = colour_predictions(T, c, t)[rule]
+                e.append(sum(abs(linear_to_srgb255(y) - m) for y, m in zip(pred, meas[k])) / 3.0)
+            return round(sum(e) / len(e), 1) if e else None
+        best_t = min((i / 20.0 for i in range(21)), key=lambda t: err("d blend", t))
+        rules = ("a per channel", "b brightness", "c brightest channel", "d blend")
+        names = []
+        for k in coloured:
+            if C["spheres"][k]["row"] not in names:
+                names.append(C["spheres"][k]["row"])
+        rows_err = {rule: {row: err(rule, best_t, (row,)) for row in names} for rule in rules}
+        ours_err = None
+        if ours:
+            d = [sum(abs(a - b) for a, b in zip(ours[k], meas[k])) / 3.0 for k in coloured]
+            ours_err = round(sum(d) / len(d), 1)
+        detail[label] = {"grey_curve": [[x, round(linear_to_srgb255(y), 1)] for x, y in greys],
+                         "rules": {rule: err(rule, best_t) for rule in rules}, "blend_t": best_t,
+                         "rows": rows_err, "fallback_diff": ours_err,
+                         "measured": {k: [round(v, 1) for v in meas[k]] for k in C["order"]},
+                         "fallback": {k: [round(v, 1) for v in ours[k]] for k in ours}}
+    tests["S9.12 Remix's tone curve on colours (a diagnostic)"] = {"ok": True, "checks": {}, "detail": detail}
+    sheets["colour_curve"] = p2.contact_sheet(items, os.path.join(out, "sheet_p9_colour_curve.png"))
+    report_lines += ["", "Remix's tone curve on colours (54 glowing spheres; each rule predicts the coloured "
+                     "spheres from Remix's own grey row; mean difference, 0-255):"]
+    for label, d in detail.items():
+        if not d:
+            report_lines.append("  %s: -" % label)
+            continue
+        report_lines.append("  %s" % label)
+        report_lines.append("      grey row (light -> picture): %s" % "  ".join(
+            "%g->%s" % (x, y) for x, y in d["grey_curve"]))
+        for rule, e in d["rules"].items():
+            report_lines.append("      %-22s %s%s   by row: %s" % (
+                rule, e, " (t %.2f: 0 per channel, 1 brightness)" % d["blend_t"] if rule == "d blend" else "",
+                "  ".join("%s %s" % kv for kv in d["rows"][rule].items())))
+        report_lines.append("      our fallback (per-channel ACES) against Remix: %s" % d["fallback_diff"])
+        for row in ("orange", "red", "blue"):
+            ks = [k for k in E["colour_curve"]["order"] if E["colour_curve"]["spheres"][k]["row"] == row]
+            report_lines.append("      %-6s Remix %s" % (row, "  ".join(str(d["measured"][k]) for k in ks)))
+            if d["fallback"]:
+                report_lines.append("      %-6s ours  %s" % (row, "  ".join(str(d["fallback"][k]) for k in ks)))
 
 
 def run_pipelines_rtx(args, out):
@@ -991,7 +1064,7 @@ def run_pipelines_rtx(args, out):
                                                                             "detail": d}
     p92_lines = []
     p92_rtx(args, out, scenes, E, tests, sheets, p92_lines)
-    aces_forms_rtx(args, out, S, E, tests, sheets, p92_lines)
+    colour_curve_rtx(args, out, S, E, tests, sheets, p92_lines)
     sheets["room"] = p2.contact_sheet(items, os.path.join(out, "sheet_p9_room.png"))
     res = {"tests": tests, "sheets": sheets, "all_ok": all(t["ok"] for t in tests.values())}
     lines = ["BGE-Remix P9.1-P9.2 (RTX run: your RTX card, the real RTX Remix runtime)", "=" * 70, ""]
