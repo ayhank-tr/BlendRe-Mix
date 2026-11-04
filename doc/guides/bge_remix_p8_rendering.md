@@ -51,14 +51,35 @@ the finished P8 differs from its plan.
 
 ## Pipelines
 
-Render > Shading > Pipeline (`scene.game_settings.render_pipeline`):
+Render > Shading > Pipeline (`scene.game_settings.render_pipeline`). P9.1
+cut the choice down to two:
 
-- **Classic**: 8-bit colour, drawn as Blender 2.79 drew the game. Files from
+- **Classic** (`'CLASSIC'`): 8-bit colour, drawn as Blender 2.79 drew the
+  game. Classic never uses RTX Remix, whatever its switch says. Files from
   before P8 open with it.
-- **Modern**: half-float colour; the scene's exposure, view transform, look
-  and gamma (Color Management) are applied at the end. Modern adds the
-  camera effects, order-independent transparency, tessellated displacement
-  and volumetric fog with light shafts.
+- **RTX Remix** (`'RTX_REMIX'`, P8's Modern): Remix draws the game when the
+  RTX Remix panel's switch is On and Remix can draw; otherwise its OpenGL
+  fallback does. The fallback is P8's Modern drawing (half-float colour, the
+  camera effects, order-independent transparency, tessellated displacement,
+  volumetric fog with light shafts) made to look like Remix: the world's sky
+  lights the scene as Remix's dome does (in place of Environment Lighting),
+  and a sun always casts shadows.
+- **Tone Mapping** (RTX Remix panel, `scene.game_settings.remix_tone_mapping`):
+  View Transform (the scene's Color Management in the fallback, Remix's own
+  tone mapper in Remix, as P8's Modern scenes had it) or ACES (Remix's
+  global tone mapper finished with ACES, the same ACES curve in the
+  fallback). A scene moved to RTX Remix by hand gets ACES.
+- **RTX Remix Settings** (a closed panel under RTX Remix): the Remix options
+  that matter for games, saved with the scene (`bge_rtx_*`): upscaling and
+  frame generation, light bounces, emissive intensity, anti-culling,
+  chromatic aberration, particles and, with the view transform, Remix's tone
+  mapper. A setting left alone keeps Remix's default.
+
+P8's files open as follows: Classic with Remix off stays Classic; Classic
+with Remix on (or rendered with the RTX Remix engine) opens in RTX Remix with
+Remix on; Modern with Remix on or off opens in RTX Remix with the switch as
+it was. All keep the view transform. A scene put in Classic by hand stays
+Classic, its Remix switch left as it was.
 
 ## Lights and shadows
 
@@ -224,7 +245,12 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
 
 ## Python additions
 
-- `bge.render.getRenderPipeline()`: `'CLASSIC'` or `'MODERN'`.
+- `bge.render.getRenderPipeline()`: `'CLASSIC'` or `'RTX_REMIX'` (P9.1; was
+  `'MODERN'`).
+- `bge.render.isRemixDrawing()` (P9.1): True when RTX Remix drew the active
+  scene (the last frame), False when OpenGL did.
+- `bge.render.remixSetOption(name, value)` (P9.0): change one of Remix's own
+  settings (`rtx.*`) while it runs; True if Remix took it.
 - `bge.render.setSpeedFeature(name, on)` and `bge.render.getSpeedFeature(name)`.
 - `mistHeight` on the game scene's `world`.
 - `gpu.draw_stats(reset=True)` in Blender: what the drawing sent since the

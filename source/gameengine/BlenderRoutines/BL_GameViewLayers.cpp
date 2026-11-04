@@ -87,6 +87,7 @@ extern "C" {
 	#include "BKE_material.h"
 	#include "BKE_customdata.h"
 	#include "BKE_object.h"
+	#include "BKE_scene.h"  /* BGE-Remix P9.1: the pipeline */
 	#include "BKE_text.h"
 
 	#include "BLI_fileops.h"
@@ -813,7 +814,9 @@ void GVBuilder::Build()
 	IDProperty *props = m_scene->id.properties;
 	const int physx = idprop_int(props, BGE_PHYSX_IDPROP, 0);
 	m_physx = m_scene->gm.physicsEngine == WOPHY_NONE ? -1 : (physx == 1 || physx == 2 ? physx : 0);
-	m_remix = idprop_int(props, "bge_remix", 0) != 0 || STREQ(m_scene->r.engine, "RTX_REMIX");
+	/* BGE-Remix P9.1: only the RTX Remix pipeline uses Remix */
+	m_remix = BKE_scene_game_rtx_pipeline(m_scene) &&
+	          (idprop_int(props, "bge_remix", 0) != 0 || STREQ(m_scene->r.engine, "RTX_REMIX"));
 
 	IDProperty *t = props ? IDP_GetPropertyFromGroup(props, "_gameview_targets") : NULL;
 	if (t && t->type == IDP_GROUP) {

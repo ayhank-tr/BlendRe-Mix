@@ -4962,3 +4962,15 @@ void mtex_probe_refl(vec3 co, vec3 vn, mat4 viewinv, float planar, out float val
 	}
 	value = 1.0;
 }
+
+/* BGE-Remix P9.1: RTX Remix's OpenGL fallback lit by the world's sky as
+ * Remix's dome lights the scene: the sky over the normal's half (horizon to
+ * zenith) on the diffuse colour */
+void shade_skylight(vec4 col_in, vec3 diffcol, float refl, vec3 vn, vec3 horicol, vec3 zencol, mat4 viewinv,
+                    out vec4 col_out)
+{
+	vec3 N = (viewinv * vec4(-normalize(vn), 0.0)).xyz;
+	vec3 sky = mix(horicol, zencol, clamp(0.5 + 0.5 * N.z, 0.0, 1.0));
+	col_out = col_in;
+	col_out.rgb += refl * diffcol * sky;
+}

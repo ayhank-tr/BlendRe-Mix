@@ -82,6 +82,12 @@ void BRMX_quality_from_scene(const struct Scene *scene, BRMX_Quality *r_quality)
  * number of settings sent. */
 int BRMX_quality_apply(const BRMX_Quality *quality);
 
+/* BGE-Remix P9.1: the Render tab's curated RTX Remix settings (scene ID
+ * properties bge_rtx_*) and the RTX Remix pipeline's tone mapping, sent
+ * when they differ from what Remix has (a setting the scene no longer sets
+ * goes back to Remix's default). Returns the number sent. */
+int BRMX_scene_options_apply(const struct Scene *scene);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1839,6 +1839,12 @@ def make_remix_keep(folder, E):
     scenes[2]["bge_remix"] = 0
     E["remix_keep"] = {"switch_at": 40, "scenes": ["KeepA", "KeepB", "KeepC"]}
     save(scenes[2], os.path.join(folder, "remix_keep.blend"))
+    # P9.1: only the RTX Remix pipeline uses Remix, so KeepB (no setting of
+    # its own, keeping Remix) is in it; KeepA moves to it when opened
+    if not STOCK:
+        scenes[1]["bge_remix_pipeline"] = 1
+        bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, "remix_keep.blend"), check_existing=False,
+                                    compress=False)
 
 
 def make_game_overlays(folder, E):

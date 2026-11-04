@@ -1,5 +1,18 @@
-"""BGE-Remix P9.0: the study (run_local.bat p9study; run_p9_study_rtx.bat;
-run_p9_menu.bat).
+"""BGE-Remix P9: the pipelines (run_local.bat p9; run_p9_rtx.bat) and P9.0's
+study (run_local.bat p9study; run_p9_study_rtx.bat; run_p9_menu.bat).
+
+--pipelines (normal, no RTX card needed; P9.1):
+  the room saved as P8 saved its four pipeline combinations opens in the
+  right pipeline with the right Remix switch; the pipeline setting by hand
+  (ACES on the way to RTX Remix); Classic unchanged (against stock 2.79b, the
+  look fixes left out); RTX Remix's OpenGL fallback lit by the sky, the sun
+  always casting shadows, ACES when set; with the fake Remix runtime, Remix
+  on in RTX Remix only, its settings reaching it, the game switching from
+  the RTX Remix room to a Classic copy and back; getRenderPipeline and
+  isRemixDrawing.
+--pipelines-rtx (the real RTX Remix runtime; P9.1): the six spheres and the
+  room in the fallback against Remix, with ACES (and Remix's other tone
+  mappers) and with the view transform (a progress report, not a gate).
 
 --study (normal, no RTX card needed):
   the study's scenes made; bge.render.remixSetOption checked (False in
@@ -45,7 +58,7 @@ def make_scenes(ours, out):
                             os.path.join(HERE, "make_scenes_p9.py"), "--", scenes],
                            p2.base_env(out, "make"), os.path.join(out, "make_scenes_p9.log"), timeout=900)
     expected = p2.read_json(os.path.join(scenes, "p9_expected.json")) or {}
-    if code != 0 or not expected.get("spheres"):
+    if code != 0 or not expected.get("spheres") or expected.get("failed"):
         print("\n".join((text or "").splitlines()[-40:]))
         raise SystemExit("making the P9 study scenes failed, see make_scenes_p9.log")
     return scenes, expected
@@ -228,6 +241,297 @@ def run_study(args, out):
     lines += [""] + dry_lines(summary) + ["", "Details: results_p9_study.json, dry_conversion.json", ""]
     lines.append("ALL PASSED" if res["all_ok"] else "SOMETHING FAILED (see results_p9_study.json and the logs)")
     return res, lines, "p9_study"
+
+
+# ---------------------------------------------------------------------------
+# P9.1: the pipelines (normal run)
+
+TOL_CLASSIC = 3.0      # Classic against stock 2.79b (the same GLSL code)
+TOL_SAME = 0.5         # two files that must draw the same picture
+SKY_GAIN = 3.0         # the sky's light on a wall or the floor (levels, at least)
+TOL_SKY_NONE = 1.0     # Classic: the sky lights nothing
+
+OPEN_CHECK = r'''
+import bpy, json, os, sys
+argv = sys.argv[sys.argv.index("--") + 1:]
+target, folder, names = argv[0], argv[1], argv[2:]
+r = {"files": {}}
+
+def state(sc):
+    gs = sc.game_settings
+    remix = getattr(sc, "bge_remix", None)
+    if remix is None:
+        remix = "RTX_REMIX" if sc.get("bge_remix") else "OPENGL"
+    return {"pipeline": gs.render_pipeline, "remix": remix, "tone": gs.remix_tone_mapping,
+            "stored_pipeline": sc.get("bge_remix_pipeline"), "stored_tone": sc.get("bge_remix_tonemap")}
+
+def path(n):
+    return os.path.join(folder, n + ".blend")
+
+for n in names:
+    bpy.ops.wm.open_mainfile(filepath=path(n))
+    r["files"][n] = state(bpy.context.scene)
+# the pipeline set by hand: ACES on the way to RTX Remix, kept on the way back
+bpy.ops.wm.open_mainfile(filepath=path("p9_pipe_classic_gl"))
+sc = bpy.context.scene
+sc.game_settings.render_pipeline = 'RTX_REMIX'
+r["to_rtx"] = state(sc)
+sc.game_settings.render_pipeline = 'CLASSIC'
+r["to_classic"] = state(sc)
+r["new_scene"] = state(bpy.data.scenes.new("P9New"))
+# a P8 file moved to RTX Remix on opening, put back in Classic by hand,
+# saved and opened again: it stays Classic
+bpy.ops.wm.open_mainfile(filepath=path("p9_pipe_classic_remix"))
+bpy.context.scene.game_settings.render_pipeline = 'CLASSIC'
+again = path("p9_pipe_roundtrip")
+bpy.ops.wm.save_as_mainfile(filepath=again, copy=True)
+bpy.ops.wm.open_mainfile(filepath=again)
+r["roundtrip"] = state(bpy.context.scene)
+with open(target, "w") as f:
+    json.dump(r, f, indent=1)
+print("P9-OPEN done")
+'''
+
+
+def pipe_play(build, out, tag, blend, env=None, frames=170):
+    """the player, the room's own answers (getRenderPipeline,
+    isRemixDrawing at frames 30, 90 and 150)"""
+    res = os.path.join(out, tag + "_pipe.json")
+    if os.path.isfile(res):
+        os.remove(res)
+    e = {"BGE_REMIX_P9_PIPE_OUT": res}
+    e.update(env or {})
+    r = p8.play(build, out, tag, blend, e, frames=frames)
+    r["pipe"] = (p2.read_json(res) or {}).get("samples", {})
+    return r
+
+
+def samples_say(r, pipeline, drawing):
+    got = r.get("pipe") or {}
+    return bool(got) and all(v.get("pipeline") == pipeline and v.get("drawing") is drawing for v in got.values())
+
+
+def masked_diff(a, b, rect):
+    """mean difference outside a rectangle (blurred a little)"""
+    if a is None or b is None or a.shape != b.shape:
+        return None
+    import numpy as np
+    a, b = p8.blurred(a), p8.blurred(b)
+    mask = np.ones(a.shape[:2], dtype=bool)
+    left, top, right, bottom = rect
+    mask[max(top, 0):bottom, max(left, 0):right] = False
+    return round(float(abs(a - b)[mask].mean()), 2)
+
+
+def run_pipelines(args, out):
+    scenes, E = make_scenes(args.ours, out)
+    P = E.get("pipelines")
+    if not P:
+        raise SystemExit("making the P9.1 room failed, see make_scenes_p9.log")
+    S = lambda n: os.path.join(scenes, n + ".blend")  # noqa: E731
+    tests, sheets = {}, {}
+    # T9.1: opening the files; the setting by hand
+    names = [f["file"] for f in P["files"]]
+    target = os.path.join(out, "open_check.json")
+    if os.path.isfile(target):
+        os.remove(target)
+    p8.blender_script(args.ours, out, "p9_open", OPEN_CHECK, [target, scenes] + names)
+    R = p2.read_json(target) or {}
+    c, d = {}, {"opened": R.get("files"), "by_hand": {k: R.get(k) for k in ("to_rtx", "to_classic", "new_scene",
+                                                                              "roundtrip")}}
+    for f in P["files"]:
+        got = (R.get("files") or {}).get(f["file"]) or {}
+        want = f["opens"]
+        c["%s opens as %s, Remix %s, %s" % (f["file"], want[0], want[1], want[2])] = \
+            [got.get("pipeline"), got.get("remix"), got.get("tone")] == want
+    t = R.get("to_rtx") or {}
+    c["Classic moved to RTX Remix by hand: ACES"] = t.get("pipeline") == "RTX_REMIX" and t.get("tone") == "ACES"
+    t = R.get("to_classic") or {}
+    c["and back to Classic: Classic, ACES kept"] = t.get("pipeline") == "CLASSIC" and t.get("tone") == "ACES"
+    t = R.get("new_scene") or {}
+    c["a new scene starts in RTX Remix (the view transform)"] = \
+        t.get("pipeline") == "RTX_REMIX" and t.get("tone") == "VIEW_TRANSFORM"
+    t = R.get("roundtrip") or {}
+    c["a P8 file put back in Classic by hand stays Classic when saved and opened again"] = \
+        t.get("pipeline") == "CLASSIC"
+    tests["T9.1 Old files and the Pipeline setting"] = {"ok": all(c.values()), "checks": c, "detail": d}
+
+    # the OpenGL pictures
+    gl = {}
+    for name in ("p9_pipe_classic_gl", "p9_pipe_classic_gl_shadow", "p9_pipe_classic_gl_nosky",
+                 "p9_pipe_modern_gl", "p9_pipe_modern_gl_shadow", "p9_pipe_modern_gl_nosky", "p9_pipe_aces_gl"):
+        gl[name] = pipe_play(args.ours, out, name, S(name))
+    pic = {k: p8.shot_of(r) for k, r in gl.items()}
+    rects = P["rects"]
+    surfaces = ("floor", "back_wall", "left_wall")
+
+    # T9.2: Classic unchanged
+    c, d = {}, {}
+    c["the Classic files played"] = all(gl[k]["ran"] for k in gl if "classic" in k)
+    c["getRenderPipeline says CLASSIC, isRemixDrawing False"] = all(
+        samples_say(gl[k], "CLASSIC", False) for k in gl if "classic" in k)
+    if args.official:
+        stock = p8.play(args.official, out, "stock_p9_pipe_classic_gl", S("p9_pipe_classic_gl"))
+        md = masked_diff(pic["p9_pipe_classic_gl"], p8.shot_of(stock), rects["ball"])
+        d["against stock 2.79b (the Physical ball left out)"] = md
+        c["Classic as stock 2.79b draws it (within %.0f: %s)" % (TOL_CLASSIC, md)] = md is not None and \
+            md <= TOL_CLASSIC
+        sheets["classic_stock"] = p2.contact_sheet([("ours, Classic", gl["p9_pipe_classic_gl"].get("screenshot")),
+                                                    ("stock 2.79b", stock.get("screenshot"))],
+                                                   os.path.join(out, "sheet_p9_classic_stock.png"))
+    sky = {k: p8.region_diff(pic["p9_pipe_classic_gl"], pic["p9_pipe_classic_gl_nosky"], rects[k]) for k in surfaces}
+    d["Classic, sky against black sky (walls, floor)"] = sky
+    c["Classic: the sky lights nothing"] = all(v is not None and v <= TOL_SKY_NONE for v in sky.values())
+    md = p8.whole_diff(pic["p9_pipe_classic_gl"], pic["p9_pipe_classic_gl_shadow"])
+    d["Classic, the sun's shadow switched on"] = md
+    c["Classic: the sun casts a shadow only when it is set to (%s)" % md] = md is not None and md > 2 * TOL_SAME
+    tests["T9.2 Classic unchanged"] = {"ok": all(c.values()), "checks": c, "detail": d}
+
+    # T9.3: RTX Remix's OpenGL fallback
+    c, d = {}, {}
+    c["the RTX Remix files played"] = all(gl[k]["ran"] for k in gl if "classic" not in k)
+    c["getRenderPipeline says RTX_REMIX, isRemixDrawing False (Remix off)"] = all(
+        samples_say(gl[k], "RTX_REMIX", False) for k in gl if "classic" not in k)
+    a, b = pic["p9_pipe_modern_gl"], pic["p9_pipe_modern_gl_nosky"]
+    gain = {}
+    for k in surfaces:
+        if a is None or b is None:
+            gain[k] = None
+        else:
+            gain[k] = round(float(p8.crop(a, rects[k]).mean() - p8.crop(b, rects[k]).mean()), 1)
+    d["the sky's light (levels added, walls and floor)"] = gain
+    c["the sky lights the room (each surface at least %.0f brighter)" % SKY_GAIN] = \
+        all(v is not None and v >= SKY_GAIN for v in gain.values())
+    md = p8.whole_diff(pic["p9_pipe_modern_gl"], pic["p9_pipe_modern_gl_shadow"])
+    d["the sun's shadow switched on as well"] = md
+    c["the sun casts its shadow anyway (the same picture: %s)" % md] = md is not None and md <= TOL_SAME
+    md = p8.whole_diff(pic["p9_pipe_modern_gl"], pic["p9_pipe_classic_gl"])
+    d["against Classic"] = md
+    md = p8.whole_diff(pic["p9_pipe_modern_gl"], pic["p9_pipe_aces_gl"])
+    d["ACES against the view transform"] = md
+    text = lambda k: gl[k].get("text") or ""  # noqa: E731
+    c["ACES when set (the picture changes: %s)" % md] = md is not None and md > 2.0 and \
+        "tone mapping ACES" in text("p9_pipe_aces_gl")
+    c["P8's files keep the view transform"] = "tone mapping ACES" not in text("p9_pipe_modern_gl")
+    tests["T9.3 RTX Remix's OpenGL fallback"] = {"ok": all(c.values()), "checks": c, "detail": d}
+    sheets["pipelines"] = p2.contact_sheet(
+        [(k.replace("p9_pipe_", ""), gl[k].get("screenshot")) for k in gl], os.path.join(out, "sheet_p9_pipelines.png"))
+
+    # T9.4: the fake Remix runtime
+    c, d = {}, {}
+    runs = {}
+    for name in ("p9_pipe_classic_remix", "p9_pipe_modern_remix", "p9_pipe_aces_remix", "p9_pipe_classic_kept"):
+        log, env = p8.mock_env(args, out, name + "_mock", os.path.join(out, "cache_" + name))
+        r = pipe_play(args.ours, out, name + "_mock", S(name), env)
+        r["lines"] = mock_lines(log)
+        runs[name] = r
+        d[name] = {"running": (r.get("stats") or {}).get("running"), "samples": r.get("pipe")}
+    for name in ("p9_pipe_classic_remix", "p9_pipe_modern_remix", "p9_pipe_aces_remix"):
+        r = runs[name]
+        c["%s: Remix draws it" % name] = bool(r["ran"]) and (r.get("stats") or {}).get("running") is True and \
+            samples_say(r, "RTX_REMIX", True)
+    r = runs["p9_pipe_classic_kept"]
+    c["p9_pipe_classic_kept (Classic, the switch left on): OpenGL draws it"] = bool(r["ran"]) and \
+        (r.get("stats") or {}).get("running") is not True and samples_say(r, "CLASSIC", False)
+    lines = runs["p9_pipe_aces_remix"]["lines"]
+    sent = {k: config_sets(lines, k)[-1:] for k in ("rtx.tonemappingMode", "rtx.tonemap.finalizeWithACES",
+                                                    "rtx.pathMaxBounces")}
+    d["ACES file: settings sent"] = sent
+    c["ACES: Remix's global tone mapper finished with ACES"] = sent["rtx.tonemappingMode"] == ["0"] and \
+        sent["rtx.tonemap.finalizeWithACES"] == ["True"]
+    c["a curated setting reaches Remix (Max Bounces 8)"] = sent["rtx.pathMaxBounces"] == ["8"]
+    lines = runs["p9_pipe_modern_remix"]["lines"]
+    c["the view transform: Remix's own tone mapping left alone"] = \
+        not config_sets(lines, "rtx.tonemappingMode") and not config_sets(lines, "rtx.tonemap.finalizeWithACES")
+    # the RTX Remix room, its Classic copy, the room again
+    log, env = p8.mock_env(args, out, "p9_pipe_switch_mock", os.path.join(out, "cache_switch"))
+    env["BGE_REMIX_P9_PIPE_SWITCH"] = "1"
+    r = pipe_play(args.ours, out, "p9_pipe_switch_mock", S(P["switch"]), env)
+    got = r.get("pipe") or {}
+    d["switch"] = got
+    want = {"30": ["P9Room", "RTX_REMIX", True], "90": ["P9RoomClassic", "CLASSIC", False],
+            "150": ["P9Room", "RTX_REMIX", True]}
+    c["the game switches Remix off for the Classic copy and on again for the room"] = bool(r["ran"]) and all(
+        [(got.get(k) or {}).get(x) for x in ("scene", "pipeline", "drawing")] == v for k, v in want.items())
+    c["no crash, no Python error"] = all(not x.get("crashed") and not x.get("traceback_in_output")
+                                         for x in list(runs.values()) + [r])
+    tests["T9.4 Remix on and off (the fake runtime)"] = {"ok": all(c.values()), "checks": c, "detail": d}
+
+    res = {"tests": tests, "sheets": sheets, "all_ok": all(t["ok"] for t in tests.values())}
+    lines = ["BGE-Remix P9.1: Classic and RTX Remix (normal run)", "=" * 70, ""]
+    for name, t in tests.items():
+        lines.append("%-44s %s" % (name, p2.mark(t["ok"])))
+        for check, ok in t["checks"].items():
+            lines.append("      %s %s" % ("ok    " if ok else "FAILED", check))
+    lines += ["", "Picture sheets:"] + ["  %-14s %s" % kv for kv in sheets.items()]
+    lines += ["", "ALL PASSED" if res["all_ok"] else "SOMETHING FAILED (see results_p9.json and the logs)"]
+    return res, lines, "p9"
+
+
+def run_pipelines_rtx(args, out):
+    """the fallback against Remix: the six spheres and the room, with ACES
+    (Remix's tone mappers in turn) and with the view transform"""
+    scenes, E = make_scenes(args.ours, out)
+    S = lambda n: os.path.join(scenes, n + ".blend")  # noqa: E731
+    tests, sheets, report = {}, {}, {}
+    shot = {"BGE_REMIX_P2_SHOT_FRAME": "300"}
+    gl_aces = p8.play(args.ours, out, "spheres_aces_opengl", S("p9_study_spheres_aces"), shot,
+                      frames=p8.REMIX_FRAMES)
+    gl_view = p8.play(args.ours, out, "spheres_view_opengl", S("p9_study_spheres"), shot, frames=p8.REMIX_FRAMES)
+    variants = [("ACES: global + ACES (as set)", "spheres_aces_remix", "p9_study_spheres_aces_remix", None),
+                ("ACES file, ACES alone (tone curve off)", "spheres_aces_only", "p9_study_spheres_aces_remix",
+                 "rtx.tonemap.tonemappingEnabled=False"),
+                ("ACES file, Remix's local tone mapper + ACES", "spheres_aces_local", "p9_study_spheres_aces_remix",
+                 "rtx.tonemappingMode=1"),
+                ("view transform (P8's Modern)", "spheres_view_remix", "p9_study_spheres_remix", None)]
+    c, items = {}, []
+    for label, tag, blend, rtx_set in variants:
+        env = dict(p8.REMIX_ENV)
+        if rtx_set:
+            env["BGE_REMIX_RTX_SET"] = rtx_set
+        r = p8.play(args.ours, out, tag, S(blend), env, frames=p8.REMIX_FRAMES, debug=True)
+        base = gl_view if "view" in tag else gl_aces
+        rows = sphere_compare(E, base.get("screenshot"), r.get("screenshot"))
+        diffs = [row["mean_diff"] for row in rows.values() if row]
+        report[label] = {"rows": rows, "mean": round(sum(diffs) / len(diffs), 1) if diffs else None}
+        c["%s: ran" % label] = bool(r["ran"])
+        items.append((label, r.get("screenshot")))
+    tests["S9.5 Six spheres: fallback against Remix (a report, not a gate)"] = {
+        "ok": all(c.values()), "checks": c, "detail": report}
+    sheets["spheres"] = p2.contact_sheet([("fallback, ACES", gl_aces.get("screenshot")),
+                                          ("fallback, view transform", gl_view.get("screenshot"))] + items,
+                                         os.path.join(out, "sheet_p9_spheres_tonemap.png"))
+    # the room
+    c, d, items = {}, {}, []
+    for label, gl_name, rtx_name in (("ACES", "p9_pipe_aces_gl", "p9_pipe_aces_remix"),
+                                     ("view transform", "p9_pipe_modern_gl", "p9_pipe_modern_remix")):
+        a = p8.play(args.ours, out, gl_name + "_rtxrun", S(gl_name), shot, frames=p8.REMIX_FRAMES)
+        b = p8.play(args.ours, out, rtx_name + "_rtxrun", S(rtx_name), p8.REMIX_ENV, frames=p8.REMIX_FRAMES,
+                    debug=True)
+        md = p8.picture_diff(a.get("screenshot"), b.get("screenshot"))
+        d[label] = {"mean_diff": md}
+        c["room, %s: ran in OpenGL and in Remix" % label] = bool(a["ran"] and b["ran"])
+        items += [("room fallback, " + label, a.get("screenshot")), ("room Remix, " + label, b.get("screenshot"))]
+    tests["S9.6 The room: fallback against Remix (a report, not a gate)"] = {"ok": all(c.values()), "checks": c,
+                                                                            "detail": d}
+    sheets["room"] = p2.contact_sheet(items, os.path.join(out, "sheet_p9_room.png"))
+    res = {"tests": tests, "sheets": sheets, "all_ok": all(t["ok"] for t in tests.values())}
+    lines = ["BGE-Remix P9.1 (RTX run: your RTX card, the real RTX Remix runtime)", "=" * 70, ""]
+    for name, t in tests.items():
+        lines.append("%-62s %s" % (name, p2.mark(t["ok"])))
+        for check, ok in t["checks"].items():
+            lines.append("      %s %s" % ("ok    " if ok else "FAILED", check))
+    lines += ["", "Spheres, mean colour difference fallback -> Remix (P8's tolerance: %.0f):" % TOL_SPHERE]
+    for label, rep in report.items():
+        lines.append("  %s: mean %s" % (label, rep["mean"]))
+        for sphere, row in rep["rows"].items():
+            lines.append("      %-16s %s" % (sphere, "-" if not row else "%s -> %s  diff %.1f  brightness x%s" % (
+                row["opengl"], row["remix"], row["mean_diff"], row["brightness_ratio"])))
+    lines += ["", "The room, mean difference fallback -> Remix:"] + \
+             ["  %-16s %s" % (k, v["mean_diff"]) for k, v in d.items()]
+    lines += ["", "Picture sheets:"] + ["  %-10s %s" % kv for kv in sheets.items()]
+    lines += ["", "ALL PASSED" if res["all_ok"] else "SOMETHING FAILED (see results_p9_rtx.json and the logs)"]
+    return res, lines, "p9_rtx"
 
 
 # ---------------------------------------------------------------------------
@@ -415,13 +719,21 @@ def main():
     ap.add_argument("--study", action="store_true")
     ap.add_argument("--rtx", action="store_true")
     ap.add_argument("--menu", action="store_true")
+    ap.add_argument("--pipelines", action="store_true", help="P9.1's tests (normal run)")
+    ap.add_argument("--pipelines-rtx", action="store_true", help="P9.1's RTX run")
     args = ap.parse_args()
     args.ours = os.path.abspath(args.ours)
     p8.OURS["build"] = args.ours
     out = os.path.abspath(args.out)
     os.makedirs(out, exist_ok=True)
     args.results = os.path.abspath(args.results or os.path.dirname(out))
-    if args.rtx:
+    if args.pipelines_rtx:
+        res, lines, name = run_pipelines_rtx(args, out)
+    elif args.pipelines:
+        if not args.mock:
+            ap.error("--mock is needed (the fake RTX Remix runtime)")
+        res, lines, name = run_pipelines(args, out)
+    elif args.rtx:
         res, lines, name = run_rtx(args, out)
     elif args.menu:
         res, lines, name = run_menu(args, out)

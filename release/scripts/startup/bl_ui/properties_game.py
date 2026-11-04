@@ -392,8 +392,8 @@ class RENDER_PT_game_shading(RenderButtonsPanel, Panel):
 
         gs = context.scene.game_settings
 
-        # BGE-Remix P8 Part B: the pipeline (Modern applies the scene's Color
-        # Management view transform, exposure, look and gamma at the end)
+        # BGE-Remix P9.1: Classic or RTX Remix (RTX Remix draws in OpenGL,
+        # half-float with the camera effects, when Remix cannot or is off)
         layout.row().prop(gs, "render_pipeline", expand=True)
 
         # BGE-Remix P8: one material mode (GLSL), so no mode switch
@@ -425,9 +425,10 @@ class RENDER_PT_game_effects(RenderButtonsPanel, Panel):
         layout = self.layout
         scene = context.scene
         gs = scene.game_settings
-        modern = gs.render_pipeline == 'MODERN'
+        modern = gs.render_pipeline == 'RTX_REMIX'
         if not modern:
-            layout.label(text="The game draws these in the Modern pipeline (Shading above)", icon='INFO')
+            layout.label(text="In the RTX Remix pipeline (Shading above): Remix and its OpenGL fallback",
+                         icon='INFO')
         col = layout.column()
         col.active = modern
 
@@ -483,18 +484,21 @@ class RENDER_PT_game_remix(RenderButtonsPanel, Panel):
     The settings are custom properties of the scene (bge_remix,
     bge_remix_fast, bge_remix_light_scale), which stock Blender 2.79b
     keeps and ignores."""
-    bl_label = "Rasterizer"
+    bl_label = "RTX Remix"
     COMPAT_ENGINES = {'BLENDER_GAME'}
 
     @classmethod
     def register(cls):
         from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty
+        # P9.1: RTX Remix on or off inside the RTX Remix pipeline (off: its
+        # OpenGL fallback draws the scene); the values keep P8's names
         bpy.types.Scene.bge_remix = EnumProperty(
-            name="Rasterizer",
-            description="How the game engine draws this scene",
-            items=(('OPENGL', "OpenGL", "Blender's own game engine drawing", 0),
-                   ('RTX_REMIX', "RTX Remix", "Path traced by NVIDIA RTX Remix (needs an RTX card "
-                    "and the runtime from Preferences > System)", 1)),
+            name="RTX Remix",
+            description="Whether RTX Remix draws this scene (RTX Remix pipeline)",
+            items=(('OPENGL', "Off", "The scene draws in OpenGL, RTX Remix's fallback (half-float colour, "
+                    "camera effects, the sky's light)", 0),
+                   ('RTX_REMIX', "On", "Path traced by NVIDIA RTX Remix (needs an RTX card and the runtime "
+                    "from Preferences > System); OpenGL draws when Remix cannot", 1)),
             default='OPENGL')
         bpy.types.Scene.bge_remix_fast = BoolProperty(
             name="Window Mode",
@@ -589,7 +593,12 @@ class RENDER_PT_game_remix(RenderButtonsPanel, Panel):
     def draw(self, context):
         layout = self.layout
         scene = context.scene
+        gs = scene.game_settings
+        if gs.render_pipeline != 'RTX_REMIX':
+            layout.label("Choose the RTX Remix pipeline (Shading) to draw with RTX Remix", icon='INFO')
+            return
         layout.row().prop(scene, "bge_remix", expand=True)
+        layout.prop(gs, "remix_tone_mapping")
         if scene.bge_remix != 'RTX_REMIX':
             return
         RENDER_PT_game_remix.draw_remix_settings(layout, scene)
@@ -604,6 +613,105 @@ class RENDER_PT_game_remix(RenderButtonsPanel, Panel):
             layout.label("RTX Remix is not installed: Preferences > System > RTX Remix", icon='ERROR')
         else:
             layout.label("2D filters and 3D text: OpenGL only for now", icon='INFO')
+
+
+# BGE-Remix P9.1: the curated RTX Remix settings (scene properties bge_rtx_*;
+# source/blender/remix/intern/remix_session.c sends them). Defaults are
+# Remix's own: a setting is sent once it was changed here.
+RTX_CURATED = (
+    ("Upscaling", (
+        ("bge_rtx_frame_generation", 'BOOL', "Frame Generation", "DLSS Frame Generation", True),
+        ("bge_rtx_reflex", 'REFLEX', "Reflex", "NVIDIA Reflex latency reduction", 1),
+        ("bge_rtx_resolution_scale", 'FLOAT', "Resolution Scale",
+         "Remix's resolution scale for its upscalers (a share of the picture size)", 0.75, 0.1, 1.0))),
+    ("Quality", (
+        ("bge_rtx_min_bounces", 'INT', "Min Bounces", "Light bounces each path always makes", 1, 0, 16),
+        ("bge_rtx_max_bounces", 'INT', "Max Bounces", "Most light bounces a path makes", 4, 0, 16),
+        ("bge_rtx_secondary_bounces", 'BOOL', "Secondary Bounces", "Light bounced more than once", True),
+        ("bge_rtx_russian_roulette", 'BOOL', "Russian Roulette", "Paths end early where they carry little light",
+         True),
+        ("bge_rtx_firefly_threshold", 'FLOAT', "Firefly Threshold",
+         "Brightness above which single bright pixels are filtered", 1000.0, 0.0, 1.0e6))),
+    ("Lighting", (
+        ("bge_rtx_emissive_intensity", 'FLOAT', "Emissive Intensity", "Remix's factor on every emissive surface",
+         1.0, 0.0, 100.0),
+        ("bge_rtx_anticull_lights", 'BOOL', "Keep Lights Off Screen",
+         "Remix keeps lights that left the view (anti-culling)", False),
+        ("bge_rtx_anticull_objects", 'BOOL', "Keep Objects Off Screen",
+         "Remix keeps objects that left the view, for reflections and shadows (anti-culling)", False))),
+    ("Effects", (
+        ("bge_rtx_chromatic_aberration", 'BOOL', "Chromatic Aberration",
+         "Remix's colour fringes (with motion blur or vignette on)", True),
+        ("bge_rtx_particles", 'BOOL', "Particles", "Remix's own particle systems", True))),
+    ("Picture (View Transform tone mapping)", (
+        ("bge_rtx_tonemapper", 'TONEMAPPER', "Tone Mapper", "Remix's tone mapper", 1),
+        ("bge_rtx_aces_global", 'BOOL', "ACES (Global)", "The global tone mapper ends with ACES", False),
+        ("bge_rtx_aces_local", 'BOOL', "ACES (Local)", "The local tone mapper ends with ACES", True),
+        ("bge_rtx_local_exposure", 'FLOAT', "Local Exposure", "The local tone mapper's exposure factor",
+         0.75, 0.0, 10.0),
+        ("bge_rtx_dynamic_range", 'FLOAT', "Dynamic Range",
+         "Stops the global tone mapper fits into the picture", 15.0, 0.0, 30.0))),
+)
+
+
+class RENDER_PT_game_remix_advanced(RenderButtonsPanel, Panel):
+    """BGE-Remix P9.1: RTX Remix's settings that matter for games, saved with
+    the scene (the rest of Remix's options: bge.render.remixSetOption)"""
+    bl_label = "RTX Remix Settings"
+    bl_options = {'DEFAULT_CLOSED'}
+    COMPAT_ENGINES = {'BLENDER_GAME'}
+
+    @classmethod
+    def poll(cls, context):
+        scene = context.scene
+        return (scene.render.engine in cls.COMPAT_ENGINES and scene.game_settings.render_pipeline == 'RTX_REMIX'
+                and scene.bge_remix == 'RTX_REMIX')
+
+    @classmethod
+    def register(cls):
+        from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty
+        for group, items in RTX_CURATED:
+            for item in items:
+                name, kind, label, desc, default = item[:5]
+                if kind == 'BOOL':
+                    prop = BoolProperty(name=label, description=desc, default=default)
+                elif kind == 'INT':
+                    prop = IntProperty(name=label, description=desc, default=default, min=item[5], max=item[6])
+                elif kind == 'FLOAT':
+                    prop = FloatProperty(name=label, description=desc, default=default, min=item[5],
+                                         soft_max=item[6])
+                elif kind == 'REFLEX':
+                    prop = EnumProperty(name=label, description=desc, default='ON',
+                                        items=(('OFF', "Off", "", 0), ('ON', "On", "", 1),
+                                               ('BOOST', "On + Boost", "", 2)))
+                else:
+                    prop = EnumProperty(name=label, description=desc, default='LOCAL',
+                                        items=(('GLOBAL', "Global", "One curve for the whole picture", 0),
+                                               ('LOCAL', "Local", "Shadows and highlights balanced by area "
+                                                "(Remix's default)", 1)))
+                setattr(bpy.types.Scene, name, prop)
+
+    @classmethod
+    def unregister(cls):
+        for group, items in RTX_CURATED:
+            for item in items:
+                if hasattr(bpy.types.Scene, item[0]):
+                    delattr(bpy.types.Scene, item[0])
+
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+        aces = scene.game_settings.remix_tone_mapping == 'ACES'
+        for group, items in RTX_CURATED:
+            picture = group.startswith("Picture")
+            if picture and aces:
+                layout.label("Picture: ACES tone mapping (RTX Remix panel)", icon='INFO')
+                continue
+            box = layout.box()
+            box.label(group + ":")
+            col = box.column()
+            for item in items:
+                col.prop(scene, item[0])
 
 
 class RENDER_PT_game_system(RenderButtonsPanel, Panel):
@@ -1171,6 +1279,7 @@ classes = (
     RENDER_PT_game_shading,
     RENDER_PT_game_effects,
     RENDER_PT_game_remix,
+    RENDER_PT_game_remix_advanced,
     RENDER_PT_game_system,
     RENDER_PT_game_display,
     SCENE_PT_game_physics,

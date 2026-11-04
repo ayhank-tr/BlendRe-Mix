@@ -3334,6 +3334,31 @@ static bool gpu_material_physical_alpha(Material *ma)
 	return ph.transmission > 0.0f || ma->game.alpha_blend != GEMAT_SOLID;
 }
 
+/* BGE-Remix P9.1: RTX Remix lights the scene with the world's sky (its dome),
+ * so its OpenGL fallback does too: the game's materials in the RTX Remix
+ * pipeline get the sky's light on their diffuse colour (times refl) */
+static float gpu_one = 1.0f;
+
+static bool gpu_material_rtx_skylight(GPUMaterial *mat)
+{
+	return mat->is_game && mat->scene && mat->scene->world && BKE_scene_game_rtx_pipeline(mat->scene) &&
+	       !(mat->scene->gm.flag & GAME_GLSL_NO_LIGHTS);
+}
+
+static void gpu_shade_skylight(GPUShadeInput *shi, GPUNodeLink *diffcol, GPUNodeLink *refl, GPUNodeLink **col)
+{
+	GPUMaterial *mat = shi->gpumat;
+	World *world = mat->scene->world;
+	/* a Blend sky runs from the horizon to the zenith, any other is the
+	 * horizon colour all round */
+	GPUNodeLink *zen = (world->skytype & WO_SKYBLEND) ?
+	        GPU_dynamic_uniform(GPUWorld.zencol, GPU_DYNAMIC_ZENITH_COLOR, NULL) :
+	        GPU_dynamic_uniform(GPUWorld.horicol, GPU_DYNAMIC_HORIZON_COLOR, NULL);
+	GPU_link(mat, "shade_skylight", *col, diffcol, refl, shi->vn,
+	         GPU_dynamic_uniform(GPUWorld.horicol, GPU_DYNAMIC_HORIZON_COLOR, NULL), zen,
+	         GPU_builtin(GPU_INVERSE_VIEW_MATRIX), col);
+}
+
 /* BGE-Remix P8.7: a physical material lit by the lamps and the world */
 static void gpu_shade_physical(GPUShadeInput *shi, GPUShadeResult *shr)
 {
@@ -3363,6 +3388,9 @@ static void gpu_shade_physical(GPUShadeInput *shi, GPUShadeResult *shr)
 			         GPU_dynamic_uniform(GPUWorld.horicol, GPU_DYNAMIC_HORIZON_COLOR, NULL),
 			         GPU_dynamic_uniform(GPUWorld.zencol, GPU_DYNAMIC_ZENITH_COLOR, NULL),
 			         GPU_builtin(GPU_INVERSE_VIEW_MATRIX), shr->diff, &shr->diff);
+		}
+		if (gpu_material_rtx_skylight(mat)) {
+			gpu_shade_skylight(shi, shi->pbr_diff, GPU_uniform(&gpu_one), &shr->diff);
 		}
 	}
 	/* emission: its colour times its (textured) strength */
@@ -3462,8 +3490,13 @@ void GPU_shaderesult_set(GPUShadeInput *shi, GPUShadeResult *shr)
 					ulinfac, ulogfac, &shr->spec);
 			}
 
+			/* BGE-Remix P9.1: in the RTX Remix pipeline the sky lights it, as
+			 * Remix's dome does (in place of Environment Lighting) */
+			if (gpu_material_rtx_skylight(mat)) {
+				gpu_shade_skylight(shi, shi->rgb, shi->refl, &shr->combined);
+			}
 			/* environment lighting */
-			if (!(mat->scene->gm.flag & GAME_GLSL_NO_ENV_LIGHTING) &&
+			else if (!(mat->scene->gm.flag & GAME_GLSL_NO_ENV_LIGHTING) &&
 			    (world->mode & WO_ENV_LIGHT) &&
 			    (mat->scene->r.mode & R_SHADOW) &&
 			    !BKE_scene_use_new_shading_nodes(mat->scene))
@@ -4613,7 +4646,10 @@ static bool gpu_lamp_shadow_create(GPULamp *lamp)
 {
 	Lamp *la = lamp->la;
 	/* the lamp's type (BGE-Remix P8 Part B: it may differ from the Lamp's) */
-	const int kind = (!BKE_lamp_casts_shadow(la) || lamp->type == LA_HEMI) ? GPU_LAMP_SHADOW_NONE :
+	/* BGE-Remix P9.1: in the RTX Remix pipeline a sun always casts shadows,
+	 * as it does in Remix */
+	const bool rtx_sun = lamp->type == LA_SUN && lamp->scene && BKE_scene_game_rtx_pipeline(lamp->scene);
+	const int kind = ((!BKE_lamp_casts_shadow(la) && !rtx_sun) || lamp->type == LA_HEMI) ? GPU_LAMP_SHADOW_NONE :
 	                 (lamp->type == LA_SPOT) ? GPU_LAMP_SHADOW_SPOT :
 	                 (lamp->type == LA_SUN) ? GPU_LAMP_SHADOW_CASCADE : GPU_LAMP_SHADOW_CUBE;
 	if (kind == GPU_LAMP_SHADOW_NONE) {

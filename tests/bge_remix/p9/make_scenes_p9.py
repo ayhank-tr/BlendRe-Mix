@@ -11,8 +11,16 @@ p9_study_spheres.blend        six spheres in a row on a grey backdrop, under
                               1, IOR 1.5). Modern pipeline, Remix off: the
                               OpenGL fallback's picture
 p9_study_spheres_remix.blend  the same with RTX Remix on
+p9_study_spheres_aces(_remix) P9.1: the same two with ACES tone mapping
 
-Both hold the study's logic object (P9Study): with BGE_REMIX_P9_MODE set it
+P9.1's room (p9_pipe_*.blend): a floor, three walls open to the sky, a table
+with a box and a sphere, a sun without a shadow of its own and a point lamp,
+saved as P8 saved its four pipeline combinations, as P9 saves a Classic scene
+whose Remix switch was left on, once for each look fix (the sun's shadow on,
+a black sky), with ACES (Remix off and on), and with a Classic copy of the
+room the game switches to and back from (p9_pipe_switch).
+
+All hold the study's logic object (P9Study): with BGE_REMIX_P9_MODE set it
 calls bge.render.remixSetOption ("api": once; "sweep": every debug view in
 turn, a picture of each; "menu": Remix's own menu on); unset, it does
 nothing.
@@ -199,8 +207,193 @@ def make_spheres(folder, E):
         sc["bge_remix"] = 1
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, "p9_study_spheres_remix.blend"),
                                 check_existing=False, compress=False, copy=True)
-    E["spheres"] = {"files": ["p9_study_spheres", "p9_study_spheres_remix"], "rects": rects,
+    # P9.1: the same with ACES tone mapping (Remix's global tone mapper
+    # finished with ACES, the same curve in the fallback), Remix off and on
+    for remix in (0, 1):
+        for sc in bpy.data.scenes:
+            sc["bge_remix"] = remix
+            sc["bge_remix_tonemap"] = 1
+        bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, "p9_study_spheres_aces%s.blend" %
+                                                          ("_remix" if remix else "")),
+                                    check_existing=False, compress=False, copy=True)
+    E["spheres"] = {"files": ["p9_study_spheres", "p9_study_spheres_remix", "p9_study_spheres_aces",
+                              "p9_study_spheres_aces_remix"], "rects": rects,
                     "order": [s[0] for s in SPHERES], "size": [WIDTH, HEIGHT]}
+
+
+# ---------------------------------------------------------------------------
+# P9.1: the pipelines (a lit room saved as P8 saved it, and as P9 does)
+
+PIPE_SCRIPT = r'''
+# BGE-Remix P9.1: what the game says of its pipeline and of Remix
+import json, os
+import bge
+env = os.environ
+g = bge.logic.globalDict
+n = g.get("p9_pipe_n", 0) + 1
+g["p9_pipe_n"] = n
+st = g.setdefault("p9_pipe", {"samples": {}})
+sc = bge.logic.getCurrentScene()
+if n in (30, 90, 150):
+    st["samples"][str(n)] = {"scene": sc.name, "pipeline": bge.render.getRenderPipeline(),
+                             "drawing": bool(bge.render.isRemixDrawing())}
+    out = env.get("BGE_REMIX_P9_PIPE_OUT", "")
+    if out:
+        with open(out, "w") as f:
+            json.dump(st, f, indent=1)
+if env.get("BGE_REMIX_P9_PIPE_SWITCH") == "1" and n in (60, 120):
+    # the RTX Remix room to its Classic copy and back
+    sc.replace("P9RoomClassic" if sc.name == "P9Room" else "P9Room")
+'''
+
+# (file, pipeline as stored: 0 Classic / 1 P8's Modern, Remix switch, tone
+# mapping as stored (None: not stored, a P8 file), changes, what it opens as:
+# pipeline, Remix switch, tone mapping)
+PIPE_FILES = [
+    ("p9_pipe_classic_gl", 0, 0, None, {}, ("CLASSIC", "OPENGL", "VIEW_TRANSFORM")),
+    ("p9_pipe_classic_remix", 0, 1, None, {}, ("RTX_REMIX", "RTX_REMIX", "VIEW_TRANSFORM")),
+    ("p9_pipe_modern_remix", 1, 1, None, {}, ("RTX_REMIX", "RTX_REMIX", "VIEW_TRANSFORM")),
+    ("p9_pipe_modern_gl", 1, 0, None, {}, ("RTX_REMIX", "OPENGL", "VIEW_TRANSFORM")),
+    # saved by P9 (its tone mapping stored): Classic, Remix's switch left on
+    ("p9_pipe_classic_kept", 0, 1, 0, {}, ("CLASSIC", "RTX_REMIX", "VIEW_TRANSFORM")),
+    # the look fixes, one at a time
+    ("p9_pipe_modern_gl_shadow", 1, 0, None, {"shadow": True}, ("RTX_REMIX", "OPENGL", "VIEW_TRANSFORM")),
+    ("p9_pipe_classic_gl_shadow", 0, 0, None, {"shadow": True}, ("CLASSIC", "OPENGL", "VIEW_TRANSFORM")),
+    ("p9_pipe_modern_gl_nosky", 1, 0, None, {"nosky": True}, ("RTX_REMIX", "OPENGL", "VIEW_TRANSFORM")),
+    ("p9_pipe_classic_gl_nosky", 0, 0, None, {"nosky": True}, ("CLASSIC", "OPENGL", "VIEW_TRANSFORM")),
+    ("p9_pipe_aces_gl", 1, 0, 1, {}, ("RTX_REMIX", "OPENGL", "ACES")),
+    ("p9_pipe_aces_remix", 1, 1, 1, {"max_bounces": 8}, ("RTX_REMIX", "RTX_REMIX", "ACES")),
+]
+PIPE_CAMERA = ((0.0, -9.0, 3.2), (0.0, 0.0, 1.2), 30.0)
+
+
+def screen_rect(scene, points):
+    """the on-screen rectangle (left, top, right, bottom; pixels from the
+    top left) around world points, seen by the scene's camera"""
+    from bpy_extras.object_utils import world_to_camera_view
+    from mathutils import Vector
+    xs, ys = [], []
+    for co in points:
+        v = world_to_camera_view(scene, scene.camera, Vector(co))
+        xs.append(v.x)
+        ys.append(v.y)
+    return [int(round(min(xs) * WIDTH)), int(round((1.0 - max(ys)) * HEIGHT)),
+            int(round(max(xs) * WIDTH)), int(round((1.0 - min(ys)) * HEIGHT))]
+
+
+def classic_material(name, col):
+    ma = p2.material(name, col)
+    ma["bge_physical"] = 0
+    return ma
+
+
+def box(scene, name, location, size, ma):
+    ob = p2.cube(scene, name, 1.0, location, ma)
+    ob.scale = size
+    ob.game.physics_type = 'NO_COLLISION'
+    return ob
+
+
+def make_pipelines(folder, E):
+    """the room: a floor, three walls (open at the front and the top, under
+    the world's sky), a table with a box and a sphere on it, a sun (no
+    shadow of its own) and a point lamp; Classic materials and lamps but the
+    sphere (Physical)"""
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    scene = p2.empty_scene()
+    scene.name = "P9Room"
+    gs = scene.game_settings
+    gs.resolution_x, gs.resolution_y = WIDTH, HEIGHT
+    gs.material_mode = 'GLSL'
+    scene.render.resolution_x, scene.render.resolution_y = WIDTH, HEIGHT
+    scene.render.resolution_percentage = 100
+    scene.view_settings.view_transform = 'Default'
+    w = bpy.data.worlds.new("World")
+    w.use_sky_blend = True
+    w.horizon_color = (0.45, 0.5, 0.6)
+    w.zenith_color = (0.1, 0.2, 0.45)
+    w.ambient_color = (0.0, 0.0, 0.0)
+    scene.world = w
+    loc, target, lens = PIPE_CAMERA
+    p2.camera(scene, loc, target, lens=lens)
+    floor = classic_material("P9R_floor", (0.55, 0.5, 0.45))
+    wall = classic_material("P9R_wall", (0.7, 0.7, 0.7))
+    wood = classic_material("P9R_wood", (0.45, 0.3, 0.2))
+    red = classic_material("P9R_red", (0.8, 0.15, 0.1))
+    ob = p2.plane(scene, "P9R_floor", 8.0, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), floor)
+    ob.game.physics_type = 'NO_COLLISION'
+    for name, location, rotation in (("P9R_back", (0.0, 4.0, 2.0), (math.radians(90.0), 0.0, 0.0)),
+                                     ("P9R_left", (-4.0, 0.0, 2.0), (0.0, math.radians(90.0), 0.0)),
+                                     ("P9R_right", (4.0, 0.0, 2.0), (0.0, math.radians(90.0), 0.0))):
+        ob = p2.plane(scene, name, 8.0, location, rotation, wall)
+        # (the back wall 8 wide and 4 high, the side walls 8 deep and 4 high)
+        ob.scale = (1.0, 0.5, 1.0) if name == "P9R_back" else (0.5, 1.0, 1.0)
+        ob.game.physics_type = 'NO_COLLISION'
+    box(scene, "P9R_table", (0.0, 0.5, 0.8), (2.4, 1.4, 0.1), wood)
+    for i, (x, y) in enumerate(((-1.1, -0.1), (1.1, -0.1), (-1.1, 1.1), (1.1, 1.1))):
+        box(scene, "P9R_leg_%d" % i, (x, y, 0.375), (0.1, 0.1, 0.75), wood)
+    box(scene, "P9R_box", (-0.5, 0.5, 1.1), (0.5, 0.5, 0.5), red)
+    ball = physical("P9R_ball", (0.8, 0.8, 0.8), 0.0, 0.4)
+    sph = p3.sphere(scene, "P9R_ball", (0.6, 0.5, 1.2), ball, radius=0.35)
+    sph.game.physics_type = 'NO_COLLISION'
+    sun = p2.lamp(scene, "P9R_sun", 'SUN', (0.0, -6.0, 8.0), (math.radians(50.0), 0.0, math.radians(-30.0)),
+                  energy=1.0)
+    sun.data.shadow_method = 'NOSHADOW'
+    p2.lamp(scene, "P9R_fill", 'POINT', (-2.0, -2.0, 3.0), energy=1.0, distance=8.0)
+    for la in bpy.data.lamps:
+        la["bge_physical"] = 0
+    logic(scene, "P9Pipe", PIPE_SCRIPT)
+    p2.add_probe(scene)
+    scene.update()
+    rects = {"floor": screen_rect(scene, [(-3.0, -3.0, 0.0), (-1.5, -1.5, 0.0)]),
+             "back_wall": screen_rect(scene, [(1.8, 3.95, 2.6), (3.4, 3.95, 3.6)]),
+             "left_wall": screen_rect(scene, [(-3.95, 0.5, 2.2), (-3.95, 3.0, 3.4)]),
+             "ball": screen_rect(scene, [(0.25, 0.5, 0.85), (0.95, 0.5, 1.55)])}
+
+    def store(sc, pipeline, remix, tone):
+        sc["bge_remix_pipeline"] = pipeline
+        sc["bge_remix"] = remix
+        if tone is None:
+            if "bge_remix_tonemap" in sc:
+                del sc["bge_remix_tonemap"]
+        else:
+            sc["bge_remix_tonemap"] = tone
+
+    files = []
+    for name, pipeline, remix, tone, changes, opens in PIPE_FILES:
+        sun.data.shadow_method = 'RAY_SHADOW' if changes.get("shadow") else 'NOSHADOW'
+        dark = changes.get("nosky")
+        w.horizon_color = (0.0, 0.0, 0.0) if dark else (0.45, 0.5, 0.6)
+        w.zenith_color = (0.0, 0.0, 0.0) if dark else (0.1, 0.2, 0.45)
+        if "max_bounces" in changes:
+            scene["bge_rtx_max_bounces"] = changes["max_bounces"]
+        elif "bge_rtx_max_bounces" in scene:
+            del scene["bge_rtx_max_bounces"]
+        store(scene, pipeline, remix, tone)
+        bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, name + ".blend"), check_existing=False,
+                                    compress=False, copy=True)
+        files.append({"file": name, "opens": list(opens)})
+    sun.data.shadow_method = 'NOSHADOW'
+    w.horizon_color, w.zenith_color = (0.45, 0.5, 0.6), (0.1, 0.2, 0.45)
+    store(scene, 0, 1, None)
+    if "bge_rtx_max_bounces" in scene:
+        del scene["bge_rtx_max_bounces"]
+    # the room (saved by P8 as Classic + Remix: it opens in RTX Remix) and
+    # its Classic copy, a second scene the game switches to and back from
+    copy = bpy.data.scenes.new("P9RoomClassic")
+    copy.render.engine = 'BLENDER_GAME'
+    copy.game_settings.resolution_x, copy.game_settings.resolution_y = WIDTH, HEIGHT
+    copy.game_settings.material_mode = 'GLSL'
+    copy.view_settings.view_transform = 'Default'
+    copy.world = w
+    for ob in scene.objects:
+        copy.objects.link(ob)
+    copy.camera = scene.camera
+    copy["bge_remix_pipeline"] = 0
+    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, "p9_pipe_switch.blend"), check_existing=False,
+                                compress=False, copy=True)
+    E["pipelines"] = {"files": files, "switch": "p9_pipe_switch", "rects": rects, "size": [WIDTH, HEIGHT],
+                      "scenes": ["P9Room", "P9RoomClassic"]}
 
 
 def main():
@@ -208,12 +401,13 @@ def main():
     folder = argv[0]
     os.makedirs(folder, exist_ok=True)
     E = {"failed": {}}
-    try:
-        make_spheres(folder, E)
-    except Exception:
-        import traceback
-        E["failed"]["spheres"] = traceback.format_exc()
-        print("BGE-Remix: making the study spheres failed:\n" + E["failed"]["spheres"])
+    import traceback
+    for name, maker in (("spheres", make_spheres), ("pipelines", make_pipelines)):
+        try:
+            maker(folder, E)
+        except Exception:
+            E["failed"][name] = traceback.format_exc()
+            print("BGE-Remix: making the P9 %s scenes failed:\n%s" % (name, E["failed"][name]))
     with open(os.path.join(folder, "p9_expected.json"), "w") as f:
         json.dump(E, f, indent=1)
     print("BGE-Remix: wrote", os.path.join(folder, "p9_expected.json"))

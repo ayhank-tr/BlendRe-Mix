@@ -1709,7 +1709,7 @@ sc = bpy.context.scene
 r = {"opened": sc.game_settings.render_pipeline}
 new = bpy.data.scenes.new("P8Pipeline")
 r["new_scene"] = new.game_settings.render_pipeline
-sc.game_settings.render_pipeline = 'MODERN'
+sc.game_settings.render_pipeline = 'RTX_REMIX'   # P9.1: P8's Modern
 r["set_modern"] = sc.game_settings.render_pipeline
 r["stored"] = sc.get("bge_remix_pipeline")
 sc.game_settings.render_pipeline = 'CLASSIC'
@@ -1993,8 +1993,8 @@ def t816_pipelines(B, expected, shots):
     pc = B.get("pipeline_check") or {}
     d["pipeline_setting"] = pc
     c["an old file opens Classic"] = pc.get("opened") == "CLASSIC"
-    c["a new scene starts Modern"] = pc.get("new_scene") == "MODERN"
-    c["the setting moves a scene both ways"] = pc.get("set_modern") == "MODERN" and pc.get("stored") == 1 and \
+    c["a new scene starts Modern (P9.1: RTX Remix)"] = pc.get("new_scene") == "RTX_REMIX"
+    c["the setting moves a scene both ways"] = pc.get("set_modern") == "RTX_REMIX" and pc.get("stored") == 1 and \
         pc.get("set_classic") == "CLASSIC"
     E = expected.get("pipelines")
     if E:

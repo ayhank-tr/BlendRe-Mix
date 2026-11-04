@@ -330,14 +330,18 @@ KX_RemixRenderer::Settings KX_RemixRenderer::GetSettings(KX_Scene *scene, int ov
 	Settings s = {0, 0, DEFAULT_LIGHT_SCALE, DEFAULT_EXPOSURE, 0};
 	Scene *bscene = scene ? scene->GetBlenderScene() : NULL;
 	IDProperty *props = bscene ? bscene->id.properties : NULL;
+	/* P9.1: only the RTX Remix pipeline uses Remix (Classic never does,
+	 * whatever its switch or the command line say) */
+	const bool rtx = bscene && BKE_scene_game_rtx_pipeline(bscene);
 	/* P5: a scene rendered with the RTX Remix engine plays with Remix too */
-	s.enabled = idprop_int(props, "bge_remix", 0) != 0 || (bscene && strcmp(bscene->r.engine, "RTX_REMIX") == 0);
+	s.enabled = rtx && (idprop_int(props, "bge_remix", 0) != 0 || strcmp(bscene->r.engine, "RTX_REMIX") == 0);
 	s.window_mode = idprop_int(props, "bge_remix_fast", 0) != 0;
-	s.explicit_off = !s.enabled && idprop_int(props, "bge_remix", -1) == 0;
+	/* (a Classic scene the game switches to does not keep Remix either) */
+	s.explicit_off = !rtx || (!s.enabled && idprop_int(props, "bge_remix", -1) == 0);
 	s.light_scale = idprop_float(props, "bge_remix_light_scale", DEFAULT_LIGHT_SCALE);
 	s.exposure = idprop_float(props, "bge_remix_exposure", DEFAULT_EXPOSURE);
 	if (override_enabled >= 0) {
-		s.enabled = override_enabled != 0;
+		s.enabled = rtx && override_enabled != 0;
 	}
 	if (override_fast >= 0) {
 		s.window_mode = override_fast != 0;
@@ -601,6 +605,8 @@ bool KX_RemixRenderer::Start(KX_Scene *scene, int width, int height, const Setti
 		BRMX_Quality quality;
 		BRMX_quality_from_scene(scene->GetBlenderScene(), &quality);
 		BRMX_quality_apply(&quality);
+		/* P9.1: the Render tab's curated settings and the tone mapping */
+		BRMX_scene_options_apply(scene->GetBlenderScene());
 	}
 	{
 		/* P8.22: Blender's anisotropic filtering (User Preferences) */

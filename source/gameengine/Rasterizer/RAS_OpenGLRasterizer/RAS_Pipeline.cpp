@@ -71,6 +71,8 @@ static const char *comp_frag =
         "uniform int bge_modern;\n"
         "uniform float bge_exposure;\n"   /* a multiplier */
         "uniform float bge_gamma;\n"      /* the exponent (1 / gamma) */
+        /* P9.1: ACES, as RTX Remix's tone mapping is set to (else the view transform) */
+        "uniform int bge_aces;\n"
         /* P8.23: auto exposure (a 1x1 texture) and vignette */
         "uniform int bge_autoexp;\n"
         "uniform sampler2D bge_expo;\n"
@@ -94,6 +96,11 @@ static const char *comp_frag =
         "		e *= max(1.0 - bge_vignette * pow(dot(q, q) * 0.5, 1.5), 0.0);\n"
         "	}\n"
         "	c = max(c * e, vec3(0.0));\n"
+        "	if (bge_aces != 0) {\n"
+        "		vec3 a = clamp((c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14), 0.0, 1.0);\n"
+        "		vec3 srgb = mix(a * 12.92, 1.055 * pow(a, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), a));\n"
+        "		return (bge_gamma != 1.0) ? pow(max(srgb, vec3(0.0)), vec3(bge_gamma)) : srgb;\n"
+        "	}\n"
         "	vec3 s = clamp((log2(max(c, vec3(1e-30))) - LUT_LO) / (LUT_HI - LUT_LO), 0.0, 1.0);\n"
         "	s = mix(vec3(0.0), s, step(vec3(1e-30), c));\n"
         "	vec3 d = texture(bge_lut, s * ((LUT_N - 1.0) / LUT_N) + 0.5 / LUT_N).rgb;\n"
@@ -153,7 +160,8 @@ RAS_Pipeline::RAS_Pipeline()
     m_fbmodern(false),
     m_lut(0),
     m_exposure(1.0f),
-    m_gamma(1.0f)
+    m_gamma(1.0f),
+    m_aces(false)
 {
 	m_area[0] = m_area[1] = m_area[2] = m_area[3] = 0;
 	m_size[0] = m_size[1] = 0;
@@ -296,6 +304,12 @@ void RAS_Pipeline::UpdateLUT(const Scene *scene)
 	const ColorManagedDisplaySettings *ds = &scene->display_settings;
 	m_exposure = powf(2.0f, vs->exposure);
 	m_gamma = (vs->gamma > 0.0f) ? 1.0f / vs->gamma : 1.0f;
+	/* P9.1: RTX Remix's tone mapping set to ACES (Remix and its fallback) */
+	const bool aces = BKE_scene_game_rtx_pipeline(scene) && BKE_scene_game_tonemap(scene) == BKE_SCENE_GAME_TONEMAP_ACES;
+	if (aces != m_aces) {
+		m_aces = aces;
+		printf("BGE-Remix: RTX Remix's OpenGL fallback: tone mapping %s\n", aces ? "ACES" : "the view transform");
+	}
 
 	/* what the table is made from (exposure and gamma are the shader's) */
 	char key[512];
@@ -556,6 +570,8 @@ void RAS_Pipeline::End(const float *view, const float *proj, const int *viewport
 		glUniform1f(loc, m_exposure);
 	if ((loc = glGetUniformLocation(program, "bge_gamma")) >= 0)
 		glUniform1f(loc, m_gamma);
+	if ((loc = glGetUniformLocation(program, "bge_aces")) >= 0)
+		glUniform1i(loc, m_aces ? 1 : 0);
 	if ((loc = glGetUniformLocation(program, "bge_fog")) >= 0)
 		glUniform1i(loc, fogtex ? 1 : 0);
 	if (fogtex) {

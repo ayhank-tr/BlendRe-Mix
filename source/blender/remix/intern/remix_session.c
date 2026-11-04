@@ -30,11 +30,15 @@
 #include <windows.h>
 
 #include <stdio.h>
+#include <string.h>
 
 #include "DNA_ID.h"
 #include "DNA_scene_types.h"
 
+#include "BLI_utildefines.h"
+
 #include "BKE_idprop.h"
+#include "BKE_scene.h"
 
 #include "BRMX_loader.h"
 #include "BRMX_session.h"
@@ -207,5 +211,114 @@ int BRMX_quality_apply(const BRMX_Quality *q)
 		       q->ray_reconstruction ? "on" : "off", q->volumetrics ? "on" : "off");
 		fflush(stdout);
 	}
+	return n;
+}
+
+/* ------------------------------------------------------------------------- */
+/* The curated settings (P9.1) */
+
+typedef struct CuratedOption {
+	const char *prop;   /* the scene's ID property (Render tab, properties_game.py) */
+	const char *key;    /* Remix's option */
+	char kind;          /* 'b' bool, 'i' int, 'f' float */
+	const char *def;    /* Remix's default (rtx.conf may differ: only sent once set) */
+} CuratedOption;
+
+static const CuratedOption curated[] = {
+	/* upscaling */
+	{"bge_rtx_frame_generation", "rtx.dlfg.enable", 'b', "True"},
+	{"bge_rtx_reflex", "rtx.reflexMode", 'i', "1"},
+	{"bge_rtx_resolution_scale", "rtx.resolutionScale", 'f', "0.75"},
+	/* quality */
+	{"bge_rtx_min_bounces", "rtx.pathMinBounces", 'i', "1"},
+	{"bge_rtx_max_bounces", "rtx.pathMaxBounces", 'i', "4"},
+	{"bge_rtx_secondary_bounces", "rtx.enableSecondaryBounces", 'b', "True"},
+	{"bge_rtx_russian_roulette", "rtx.enableRussianRoulette", 'b', "True"},
+	{"bge_rtx_firefly_threshold", "rtx.fireflyFilteringLuminanceThreshold", 'f', "1000"},
+	/* lighting */
+	{"bge_rtx_emissive_intensity", "rtx.emissiveIntensity", 'f', "1"},
+	{"bge_rtx_anticull_lights", "rtx.antiCulling.light.enable", 'b', "False"},
+	{"bge_rtx_anticull_objects", "rtx.antiCulling.object.enable", 'b', "False"},
+	/* effects */
+	{"bge_rtx_chromatic_aberration", "rtx.postfx.enableChromaticAberration", 'b', "True"},
+	{"bge_rtx_particles", "rtx.particles.enable", 'b', "True"},
+	/* picture */
+	{"bge_rtx_tonemapper", "rtx.tonemappingMode", 'i', "1"},
+	{"bge_rtx_aces_global", "rtx.tonemap.finalizeWithACES", 'b', "False"},
+	{"bge_rtx_aces_local", "rtx.localtonemap.finalizeWithACES", 'b', "True"},
+	{"bge_rtx_local_exposure", "rtx.localtonemap.exposure", 'f', "0.75"},
+	{"bge_rtx_dynamic_range", "rtx.tonemap.dynamicRange", 'f', "15"},
+};
+#define CURATED_COUNT ((int)(sizeof(curated) / sizeof(curated[0])))
+
+/* what was sent ("" = nothing yet: Remix has its default or rtx.conf's) */
+static char curated_sent[CURATED_COUNT][32];
+
+static bool curated_value(IDProperty *props, const CuratedOption *o, char *out, size_t size)
+{
+	IDProperty *p = props ? IDP_GetPropertyFromGroup(props, o->prop) : NULL;
+	double v;
+	if (!p) {
+		return false;
+	}
+	switch (p->type) {
+		case IDP_INT: v = IDP_Int(p); break;
+		case IDP_FLOAT: v = IDP_Float(p); break;
+		case IDP_DOUBLE: v = IDP_Double(p); break;
+		default: return false;
+	}
+	if (o->kind == 'b') {
+		snprintf(out, size, "%s", v != 0.0 ? "True" : "False");
+	}
+	else if (o->kind == 'i') {
+		snprintf(out, size, "%d", (int)v);
+	}
+	else {
+		snprintf(out, size, "%.6g", v);
+	}
+	return true;
+}
+
+int BRMX_scene_options_apply(const Scene *scene)
+{
+	const BRMX_Bridge *bridge = BRMX_bridge();
+	IDProperty *props = scene ? scene->id.properties : NULL;
+	int n = 0, i;
+	char value[32];
+	/* the RTX Remix pipeline's ACES: Remix's global tone mapper finished with
+	 * ACES (the fallback draws the same curve); the curated settings below
+	 * may still change it */
+	const bool aces = scene && BKE_scene_game_rtx_pipeline(scene) &&
+	                  BKE_scene_game_tonemap(scene) == BKE_SCENE_GAME_TONEMAP_ACES;
+	if (!bridge) {
+		return 0;
+	}
+	for (i = 0; i < CURATED_COUNT; i++) {
+		const CuratedOption *o = &curated[i];
+		bool have = curated_value(props, o, value, sizeof(value));
+		if (!have && aces && strcmp(o->key, "rtx.tonemappingMode") == 0) {
+			strcpy(value, "0");
+			have = true;
+		}
+		else if (!have && aces && strcmp(o->key, "rtx.tonemap.finalizeWithACES") == 0) {
+			strcpy(value, "True");
+			have = true;
+		}
+		if (!have) {
+			/* no longer set: back to Remix's default, if something was sent */
+			if (curated_sent[i][0] == '\0') {
+				continue;
+			}
+			snprintf(value, sizeof(value), "%s", o->def);
+		}
+		if (strcmp(value, curated_sent[i]) == 0) {
+			continue;
+		}
+		bridge->set_config(o->key, value);
+		printf("BGE-Remix: RTX Remix setting %s = %s\n", o->key, value);
+		snprintf(curated_sent[i], sizeof(curated_sent[i]), "%s", have ? value : "");
+		n++;
+	}
+	fflush(stdout);
 	return n;
 }

@@ -70,6 +70,7 @@
 #include "BKE_modifier.h"
 #include "BKE_node.h"
 #include "BKE_scene.h"
+#include "BKE_idprop.h"  /* BGE-Remix P9.1 */
 #include "BKE_sequencer.h"
 #include "BKE_screen.h"
 #include "BKE_tracking.h"
@@ -1704,9 +1705,37 @@ static void do_versions_bge_remix_one_material_mode(Main *main)
 	}
 }
 
+/* BGE-Remix P9.1: the pipelines are Classic and RTX Remix. A scene saved as
+ * Classic with RTX Remix on opens in the RTX Remix pipeline (its Classic
+ * materials still translate for Remix as before); the other three P8
+ * combinations already read as the plan has them (Modern with Remix off is
+ * RTX Remix with Remix off). Runs on every load; a scene whose tone mapping
+ * is set is no P8 file (P9.1 sets it whenever the pipeline is changed by
+ * hand), so a Classic scene saved since with Remix's switch on stays
+ * Classic. The scene converted keeps P8's look: the view transform. (A
+ * Classic scene rendered with the RTX Remix engine played with Remix: it
+ * moves too.) */
+static void do_versions_bge_remix_p9_pipeline(Main *main)
+{
+	for (Scene *sce = main->scene.first; sce; sce = sce->id.next) {
+		IDProperty *props = sce->id.properties;
+		IDProperty *remix = props ? IDP_GetPropertyFromGroup(props, "bge_remix") : NULL;
+		/* (a scene rendered with the RTX Remix engine played with Remix too) */
+		const bool on = (remix && remix->type == IDP_INT && IDP_Int(remix) != 0) ||
+		                STREQ(sce->r.engine, "RTX_REMIX");
+		if (on && BKE_scene_game_pipeline(sce) == BKE_SCENE_GAME_PIPELINE_CLASSIC &&
+		    !BKE_scene_game_tonemap_is_set(sce))
+		{
+			BKE_scene_game_pipeline_set(sce, BKE_SCENE_GAME_PIPELINE_RTX_REMIX);
+			BKE_scene_game_tonemap_set(sce, BKE_SCENE_GAME_TONEMAP_VIEW);
+		}
+	}
+}
+
 void do_versions_after_linking_270(Main *main)
 {
 	do_versions_bge_remix_one_material_mode(main);
+	do_versions_bge_remix_p9_pipeline(main);
 	/* BGE-Remix P8.7: the RTX Remix panel merged into the physical material */
 	BKE_material_physical_from_remix_panel(main);
 

@@ -113,6 +113,7 @@ private:
 	unsigned int m_lut;
 	std::string m_lutkey;
 	float m_exposure, m_gamma;
+	bool m_aces;  /* P9.1: ACES in place of the view transform */
 
 	bool MakeTarget(int width, int height, int samples, bool modern);
 	void ScreenEffectSettings(RAS_ScreenEffects::Settings &s) const;
