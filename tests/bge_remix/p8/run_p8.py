@@ -184,8 +184,11 @@ for name in ("proc_textures", "pbr_spheres", "pbr_classic", "classic_remix"):
     if not os.path.isfile(path):
         continue
     bpy.ops.wm.open_mainfile(filepath=path)
+    # (made Classic with Remix on: P9.1 opens them in RTX Remix; their
+    # OpenGL copies are Classic again, as made)
     for sc in bpy.data.scenes:
         sc["bge_remix"] = 0
+        sc["bge_remix_pipeline"] = 0
     save(name + "_gl")
     if name == "proc_textures":
         for ob in list(bpy.data.objects):
