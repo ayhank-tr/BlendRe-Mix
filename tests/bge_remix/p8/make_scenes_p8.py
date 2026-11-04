@@ -2187,8 +2187,11 @@ def make_crowd_scene(folder, E, name, rocks, walkers, keyed_every):
     save(scene, os.path.join(folder, name + ".blend"), physical=False, modern=True)
     files = [name]
     if name == "crowd_small":
-        sun.data.use_shadow = False
+        # P9.1: a sun in the RTX Remix pipeline always casts, so the
+        # characters themselves cast nothing here (their material)
+        body_ma.use_cast_buffer_shadows = False
         files.append(copy_save(folder, "crowd_small_noshadow"))
+        body_ma.use_cast_buffer_shadows = True
     # the walkers' band, with their shadows (screen rectangles)
     rows = (walkers + cols - 1) // cols
     rects = {"walkers": screen_rect(scene, (-10.0, -0.3, 0.0), (10.0, rows * 1.1, 1.8), shrink=1.0),

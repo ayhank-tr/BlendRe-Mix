@@ -324,7 +324,8 @@ def make_pipelines(folder, E):
     ob.game.physics_type = 'NO_COLLISION'
     for name, location, rotation in (("P9R_back", (0.0, 4.0, 2.0), (math.radians(90.0), 0.0, 0.0)),
                                      ("P9R_left", (-4.0, 0.0, 2.0), (0.0, math.radians(90.0), 0.0)),
-                                     ("P9R_right", (4.0, 0.0, 2.0), (0.0, math.radians(90.0), 0.0))):
+                                     ("P9R_right", (4.0, 0.0, 2.0), (0.0, math.radians(-90.0), 0.0))):
+        # (each wall faces into the room: the right one turned the other way)
         ob = p2.plane(scene, name, 8.0, location, rotation, wall)
         # (the back wall 8 wide and 4 high, the side walls 8 deep and 4 high)
         ob.scale = (1.0, 0.5, 1.0) if name == "P9R_back" else (0.5, 1.0, 1.0)
@@ -348,6 +349,8 @@ def make_pipelines(folder, E):
     rects = {"floor": screen_rect(scene, [(-3.0, -3.0, 0.0), (-1.5, -1.5, 0.0)]),
              "back_wall": screen_rect(scene, [(1.8, 3.95, 2.6), (3.4, 3.95, 3.6)]),
              "left_wall": screen_rect(scene, [(-3.95, 0.5, 2.2), (-3.95, 3.0, 3.4)]),
+             "right_wall": screen_rect(scene, [(3.95, 0.5, 2.2), (3.95, 3.0, 3.4)]),
+             "table": screen_rect(scene, [(-1.1, -0.2, 0.85), (-0.85, 1.2, 0.85)]),
              "ball": screen_rect(scene, [(0.25, 0.5, 0.85), (0.95, 0.5, 1.55)])}
 
     def store(sc, pipeline, remix, tone):

@@ -46,7 +46,8 @@ T8.18 Remix mode: the overlays over Remix's picture (fake runtime); P2-P5
 T8.20 many lamps: each of 256 lamps lights its spot; with 8 lamps clustered
       equals per-lamp; a lamp's type changes while playing
 T8.21 also: crowd's characters cast, the same with GPU skinning
-T8.22 sky and mist: each sky and Sky & Atmosphere as F12, Modern as Classic;
+T8.22 sky and mist: each sky and Sky & Atmosphere as F12, Modern's sky as
+      Classic's and its ground lit by the sky (P9.1);
       mist with distance and height; Remix's sky picture and fog (log);
       Modern's light shafts and their shadows
 T8.23 reflections: the chrome ball's walls, the floor mirror, the moving
@@ -2164,11 +2165,20 @@ def t822_sky(B, expected):
         sa, sb = blurred(a), blurred(b)
         sky = aligned_diff(sa, sb, E["sky_rect"])
         ground = aligned_diff(sa, sb, E["ground_rect"])
-        modern = whole_diff(a, shot_of(R.get("b_" + f.replace("_classic", "_modern"))))
-        d["sky"][name] = {"sky": sky, "ground": ground, "modern_vs_classic": modern}
+        # P9.1: Modern (RTX Remix's fallback) draws the same sky, and the
+        # sky lights its ground as Remix's dome does (Classic's ground: not)
+        m = shot_of(R.get("b_" + f.replace("_classic", "_modern")))
+        modern = region_diff(blurred(a), blurred(m), E["sky_rect"]) if a is not None and m is not None else None
+        lit = None if a is None or m is None else \
+            round(float(crop(m, E["ground_rect"]).mean() - crop(a, E["ground_rect"]).mean()), 1)
+        d["sky"][name] = {"sky": sky, "ground": ground, "modern_vs_classic_sky": modern,
+                          "modern_ground_brighter_by": lit}
         c["%s: the sky as F12 (within %.0f)" % (name, TOL_SKY)] = sky is not None and sky <= TOL_SKY
         c["%s: the ground as F12 (within %.0f)" % (name, TOL_SKY)] = ground is not None and ground <= TOL_SKY
-        c["%s: Modern as Classic (within %.0f)" % (name, TOL_F12)] = modern is not None and modern <= TOL_F12
+        c["%s: Modern's sky as Classic's (within %.0f)" % (name, TOL_F12)] = modern is not None and \
+            modern <= TOL_F12
+        if not name.startswith("atmosphere"):
+            c["%s: the sky lights Modern's ground (P9.1)" % name] = lit is not None and lit > 1.0
 
     posts = E["posts"]
     d["mist"] = {}

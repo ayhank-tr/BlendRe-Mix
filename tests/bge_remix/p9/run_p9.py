@@ -250,6 +250,7 @@ TOL_CLASSIC = 3.0      # Classic against stock 2.79b (the same GLSL code)
 TOL_SAME = 0.5         # two files that must draw the same picture
 SKY_GAIN = 3.0         # the sky's light on a wall or the floor (levels, at least)
 TOL_SKY_NONE = 1.0     # Classic: the sky lights nothing
+STOCK_SURFACES = ("floor", "back_wall", "left_wall", "right_wall", "table")
 
 OPEN_CHECK = r'''
 import bpy, json, os, sys
@@ -311,18 +312,6 @@ def samples_say(r, pipeline, drawing):
     return bool(got) and all(v.get("pipeline") == pipeline and v.get("drawing") is drawing for v in got.values())
 
 
-def masked_diff(a, b, rect):
-    """mean difference outside a rectangle (blurred a little)"""
-    if a is None or b is None or a.shape != b.shape:
-        return None
-    import numpy as np
-    a, b = p8.blurred(a), p8.blurred(b)
-    mask = np.ones(a.shape[:2], dtype=bool)
-    left, top, right, bottom = rect
-    mask[max(top, 0):bottom, max(left, 0):right] = False
-    return round(float(abs(a - b)[mask].mean()), 2)
-
-
 def run_pipelines(args, out):
     scenes, E = make_scenes(args.ours, out)
     P = E.get("pipelines")
@@ -363,7 +352,7 @@ def run_pipelines(args, out):
         gl[name] = pipe_play(args.ours, out, name, S(name))
     pic = {k: p8.shot_of(r) for k, r in gl.items()}
     rects = P["rects"]
-    surfaces = ("floor", "back_wall", "left_wall")
+    surfaces = ("floor", "back_wall", "left_wall", "right_wall")
 
     # T9.2: Classic unchanged
     c, d = {}, {}
@@ -372,10 +361,15 @@ def run_pipelines(args, out):
         samples_say(gl[k], "CLASSIC", False) for k in gl if "classic" in k)
     if args.official:
         stock = p8.play(args.official, out, "stock_p9_pipe_classic_gl", S("p9_pipe_classic_gl"))
-        md = masked_diff(pic["p9_pipe_classic_gl"], p8.shot_of(stock), rects["ball"])
-        d["against stock 2.79b (the Physical ball left out)"] = md
-        c["Classic as stock 2.79b draws it (within %.0f: %s)" % (TOL_CLASSIC, md)] = md is not None and \
-            md <= TOL_CLASSIC
+        # the room's surfaces (P8 draws the world's sky in Classic, stock
+        # 2.79b its horizon colour: the sky is P8's T8.22; the ball is
+        # Physical, which stock does not know)
+        sp = p8.shot_of(stock)
+        md = {k: p8.region_diff(p8.blurred(pic["p9_pipe_classic_gl"]), p8.blurred(sp), rects[k])
+              if pic["p9_pipe_classic_gl"] is not None and sp is not None else None for k in STOCK_SURFACES}
+        d["against stock 2.79b (walls, floor, table)"] = md
+        c["Classic as stock 2.79b draws the room (each surface within %.0f)" % TOL_CLASSIC] = \
+            all(v is not None and v <= TOL_CLASSIC for v in md.values())
         sheets["classic_stock"] = p2.contact_sheet([("ours, Classic", gl["p9_pipe_classic_gl"].get("screenshot")),
                                                     ("stock 2.79b", stock.get("screenshot"))],
                                                    os.path.join(out, "sheet_p9_classic_stock.png"))
