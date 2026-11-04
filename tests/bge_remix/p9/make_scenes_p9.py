@@ -718,6 +718,9 @@ def make_colour_curve(folder, E):
             ob.game.physics_type = 'NO_COLLISION'
             rects[label] = layout_rect(x, z, 0.42 * 0.7)
             spheres[label] = {"row": row, "colour": list(col), "level": level}
+    # a lamp that gives no light: an orthographic scene with no lamps is a
+    # 2D screen, drawn in OpenGL even with Remix on (P8.30)
+    p2.lamp(scene, "Sun", 'SUN', (0.0, -10.0, 6.0), (math.radians(45.0), 0.0, 0.0), energy=0.0)
     w = scene.world
     w.use_sky_blend = False
     w.horizon_color = (0.0, 0.0, 0.0)

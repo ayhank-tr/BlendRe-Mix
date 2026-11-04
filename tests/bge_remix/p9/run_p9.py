@@ -959,6 +959,10 @@ def colour_curve_rtx(args, out, S, E, tests, sheets, report_lines):
         if pr is None:
             detail[label] = None
             continue
+        if pg is not None and pg.shape == pr.shape and float(abs(pr - pg).max()) < 1.0:
+            # the same picture as the fallback's: Remix did not draw it
+            detail[label] = {"not_drawn_by_remix": True}
+            continue
         meas = {k: [float(v) for v in p8.crop(pr, C["rects"][k]).reshape(-1, 3).mean(axis=0)] for k in C["order"]}
         ours = {k: [float(v) for v in p8.crop(pg, C["rects"][k]).reshape(-1, 3).mean(axis=0)]
                 for k in C["order"]} if pg is not None and pg.shape == pr.shape else {}
@@ -998,8 +1002,8 @@ def colour_curve_rtx(args, out, S, E, tests, sheets, report_lines):
     report_lines += ["", "Remix's tone curve on colours (54 glowing spheres; each rule predicts the coloured "
                      "spheres from Remix's own grey row; mean difference, 0-255):"]
     for label, d in detail.items():
-        if not d:
-            report_lines.append("  %s: -" % label)
+        if not d or d.get("not_drawn_by_remix"):
+            report_lines.append("  %s: -%s" % (label, " (Remix did not draw it: the fallback's picture)" if d else ""))
             continue
         report_lines.append("  %s" % label)
         report_lines.append("      grey row (light -> picture): %s" % "  ".join(
