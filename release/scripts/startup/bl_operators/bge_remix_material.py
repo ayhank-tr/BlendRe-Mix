@@ -21,7 +21,8 @@
 """BGE-Remix P9.2: a material's kind, Classic or RTX Remix.
 
 Picking RTX Remix turns the material into a node material at once: an RTX
-Remix Material node wired to the Output node, its values taken from the
+Remix Material node as its output (the Output node, unwired, holds its albedo
+and opacity for stock 2.79), its values taken from the
 material (a Physical material's as they are; a Classic one's colour,
 specular hardness, emit and alpha), and a Texture node for every texture
 slot, read at the slot's coordinates and wired by what the slot affects.
@@ -39,7 +40,8 @@ COORDS = {'UV': "UV", 'ORCO': "Orco", 'GLOBAL': "Global", 'NORMAL': "Normal", 'O
 
 
 def remix_node(mat):
-    """the material's RTX Remix Material node (wired to the output first)"""
+    """the material's RTX Remix Material node, its output (one wired to an
+    Output node first, as older trees had it)"""
     if mat is None or mat.node_tree is None:
         return None
     nodes = [n for n in mat.node_tree.nodes if n.bl_idname == REMIX_NODE and not n.mute]
@@ -184,12 +186,11 @@ def make_remix_material(mat):
     for link in list(nt.links):
         if link.to_node == out:
             nt.links.remove(link)
-    nt.links.new(node.outputs["Color"], out.inputs["Color"])
-    nt.links.new(node.outputs["Alpha"], out.inputs["Alpha"])
-    # the Output node's own colour: what stock 2.79, which does not know the
-    # node, draws (the node keeps it in step)
+    # the RTX Remix node is the material's output; the Output node, left
+    # unwired, holds its albedo and opacity: what stock 2.79, which does not
+    # know the node, draws (the node keeps them in step)
+    out.label = "Stock 2.79's colour (the RTX Remix node is the output)"
     out.inputs["Color"].default_value = tuple(node.inputs["Albedo"].default_value)[:3] + (1.0,)
-    out.inputs["Alpha"].default_value = node.inputs["Opacity"].default_value
     # the texture slots as Texture nodes
     if slots:
         geometry = nt.nodes.new("ShaderNodeGeometry")
@@ -227,6 +228,9 @@ def make_remix_material(mat):
                 nt.links.new(tex.outputs["Color"], node.inputs["Emissive Color"])
                 if values.get("Emissive Intensity", 0.0) <= 0.0:
                     _set(node, "Emissive Intensity", slot.emit_factor)
+    # (an opacity from a texture: opaque for stock 2.79)
+    out.inputs["Alpha"].default_value = 1.0 if node.inputs["Opacity"].is_linked else \
+        node.inputs["Opacity"].default_value
     # a Physical material's values are the node's now: back to Classic
     # gives Classic
     if "bge_physical" in mat:

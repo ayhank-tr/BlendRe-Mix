@@ -224,23 +224,28 @@ void BKE_material_remix_node_sync(Main *bmain, bNodeTree *ntree)
 		if (!node) {
 			continue;
 		}
-		BKE_remix_node_color(node, SH_REMIX_IN_ALBEDO, &ma->r);
-		ma->alpha = BKE_remix_node_value(node, SH_REMIX_IN_OPACITY);
-		/* and the Output node's own Color and Alpha: what stock 2.79, which
-		 * does not know the node, draws */
-		for (bNodeLink *link = ntree->links.first; link; link = link->next) {
-			if (link->fromnode != node || !link->tonode || link->tonode->type != SH_NODE_OUTPUT || !link->tosock ||
-			    !link->tosock->default_value)
-			{
+		/* (not the material's own colour and alpha: they are its Classic
+		 * settings, back when Classic is picked again) */
+		float albedo[3];
+		/* (an opacity from a texture: opaque, the texture is lost there) */
+		const float opacity = BKE_remix_node_link(ntree, node, SH_REMIX_IN_OPACITY) ?
+		                      1.0f : BKE_remix_node_value(node, SH_REMIX_IN_OPACITY);
+		BKE_remix_node_color(node, SH_REMIX_IN_ALBEDO, albedo);
+		/* the Output nodes' own Color and Alpha (left unwired: the RTX Remix
+		 * node is the output): what stock 2.79, which does not know the
+		 * node, draws */
+		for (bNode *out = ntree->nodes.first; out; out = out->next) {
+			if (out->type != SH_NODE_OUTPUT) {
 				continue;
 			}
-			if (link->tosock->type == SOCK_RGBA) {
-				float *v = ((bNodeSocketValueRGBA *)link->tosock->default_value)->value;
-				copy_v3_v3(v, &ma->r);
+			bNodeSocket *col = BLI_findlink(&out->inputs, 0), *alpha = BLI_findlink(&out->inputs, 1);
+			if (col && col->type == SOCK_RGBA && col->default_value) {
+				float *v = ((bNodeSocketValueRGBA *)col->default_value)->value;
+				copy_v3_v3(v, albedo);
 				v[3] = 1.0f;
 			}
-			else if (link->tosock->type == SOCK_FLOAT) {
-				((bNodeSocketValueFloat *)link->tosock->default_value)->value = ma->alpha;
+			if (alpha && alpha->type == SOCK_FLOAT && alpha->default_value) {
+				((bNodeSocketValueFloat *)alpha->default_value)->value = opacity;
 			}
 		}
 	}
@@ -379,8 +384,10 @@ void BKE_material_physical_render_begin(Material *ma)
 	BLI_mutex_unlock(&g_render_backup_lock);
 
 	BKE_material_physical_get(ma, &ph);
-	/* P9.2: an RTX Remix node's albedo is the base colour */
+	/* P9.2: an RTX Remix node's albedo and opacity are the base colour and
+	 * alpha (a Physical material's are its own already) */
 	copy_v3_v3(&ma->r, ph.base);
+	ma->alpha = ph.alpha;
 	const float metal = CLAMPIS(ph.metallic, 0.0f, 1.0f);
 	const bool glass = ph.transmission >= 0.5f;
 	/* diffuse: the base colour, less what metal and glass take */
@@ -394,7 +401,10 @@ void BKE_material_physical_render_begin(Material *ma)
 	/* reflections: metals mirror their colour; dielectrics a little, with
 	 * Fresnel; blurred by the roughness */
 	ma->mode &= ~MA_RAYMIRROR;
-	if (metal > 0.0f || ph.roughness < 0.5f) {
+	/* (P9.2: an RTX Remix node shades its reflections itself, as the game
+	 * does: RE_shade_physical; no raytraced mirror, no subsurface pass) */
+	const bool remix = BKE_material_is_remix(ma);
+	if (!remix && (metal > 0.0f || ph.roughness < 0.5f)) {
 		ma->mode |= MA_RAYMIRROR;
 		ma->ray_mirror = metal + (1.0f - metal) * 0.08f * ph.specular * 4.0f;
 		ma->fresnel_mir = metal > 0.5f ? 0.0f : 4.0f;
@@ -421,7 +431,7 @@ void BKE_material_physical_render_begin(Material *ma)
 		}
 	}
 	/* subsurface */
-	if (ph.subsurface > 0.0f && !glass) {
+	if (ph.subsurface > 0.0f && !glass && !remix) {
 		ma->sss_flag |= MA_DIFF_SSS;
 		copy_v3_v3(ma->sss_col, ph.base);
 		copy_v3_v3(ma->sss_radius, ph.subsurface_radius);

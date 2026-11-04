@@ -3087,7 +3087,13 @@ void GPU_shadeinput_set(GPUMaterial *mat, Material *ma, GPUShadeInput *shi)
 }
 
 /* BGE-Remix P9.2: the RTX Remix Material node */
-void GPU_shade_remix_node(GPUMaterial *mat, const GPURemixLinks *links, GPUNodeLink **r_color, GPUNodeLink **r_alpha)
+bool GPU_material_is_remix(GPUMaterial *mat)
+{
+	return mat && BKE_material_is_remix(mat->ma);
+}
+
+void GPU_shade_remix_node(GPUMaterial *mat, const GPURemixLinks *links, const bNode *node, GPUNodeLink **r_color,
+                          GPUNodeLink **r_alpha)
 {
 	GPUShadeInput shi;
 	GPUShadeResult shr;
@@ -3121,6 +3127,13 @@ void GPU_shade_remix_node(GPUMaterial *mat, const GPURemixLinks *links, GPUNodeL
 	GPU_shaderesult_set(&shi, &shr);
 	GPU_link(mat, "mtex_alpha_to_col", shr.combined, shr.alpha, r_color);
 	*r_alpha = shr.alpha;
+	/* the material's own RTX Remix node is its output (Blender's Output node
+	 * keeps the albedo for stock 2.79, which does not know this node) */
+	if (node && BKE_material_remix_node(ma) == node) {
+		GPUNodeLink *outlink;
+		GPU_link(mat, "output_node", *r_color, shr.alpha, &outlink);
+		GPU_material_output_link(mat, outlink);
+	}
 }
 
 void GPU_mist_update_height(float height)

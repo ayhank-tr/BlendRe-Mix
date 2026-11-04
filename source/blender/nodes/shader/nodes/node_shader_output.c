@@ -32,6 +32,8 @@
 
 #include "node_shader_util.h"
 
+#include "BKE_material_physical.h"  /* BGE-Remix P9.2 */
+
 /* **************** OUTPUT ******************** */
 static bNodeSocketTemplate sh_node_output_in[] = {
 	{	SOCK_RGBA, 1, N_("Color"),		0.0f, 0.0f, 0.0f, 1.0f},
@@ -54,7 +56,9 @@ static void node_shader_exec_output(void *data, int UNUSED(thread), bNode *node,
 			node->lasty = shi->ys;
 		}
 		
-		if (node->flag & NODE_DO_OUTPUT) {
+		/* BGE-Remix P9.2: an RTX Remix material's output is its RTX Remix
+		 * Material node (this one keeps the albedo for stock 2.79) */
+		if ((node->flag & NODE_DO_OUTPUT) && !BKE_material_is_remix(shi->mat)) {
 			ShadeResult *shr = ((ShaderCallData *)data)->shr;
 			
 			copy_v4_v4(shr->combined, col);
@@ -74,6 +78,9 @@ static int gpu_shader_output(GPUMaterial *mat, bNode *UNUSED(node), bNodeExecDat
 		GPU_material_enable_alpha(mat);
 #endif
 
+	/* BGE-Remix P9.2: an RTX Remix material's output is its node */
+	if (GPU_material_is_remix(mat))
+		return 0;
 	GPU_stack_link(mat, "output_node", in, out, &outlink);
 	GPU_material_output_link(mat, outlink);
 

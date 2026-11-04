@@ -1288,14 +1288,14 @@ class MATERIAL_PT_remix_node(MaterialButtonsPanel, Panel):
         mat = context.material
         node = remix_node(mat)
         ntree = mat.node_tree
-        out = next((n for n in ntree.nodes if n.bl_idname == "ShaderNodeOutput"), None)
-        if out is not None and out.inputs["Color"].is_linked:
-            layout.template_node_view(ntree, out, out.inputs["Color"])
-        else:
-            layout.label("The RTX Remix Material node is not wired to the Output node", icon='ERROR')
-            for sock in node.inputs:
-                if not sock.is_linked:
-                    layout.prop(sock, "default_value", text=sock.name)
+        # the node's options, then each input and what feeds it
+        col = layout.column()
+        col.prop(node, "remix_type")
+        col.prop(node, "blend")
+        if node.blend == 'ALPHA_TEST':
+            col.prop(node, "alpha_cutoff")
+        for sock in node.inputs:
+            layout.template_node_view(ntree, node, sock)
 
 
 class MATERIAL_PT_game_remix(MaterialButtonsPanel, Panel):

@@ -37,6 +37,7 @@
 #include "BLI_utildefines.h"
 
 #include "BKE_colortools.h"
+#include "BKE_scene.h"  /* BGE-Remix P9.2: the pipeline */
 #include "BKE_material.h"
 #include "BKE_texture.h"
 
@@ -2181,4 +2182,127 @@ float RE_fresnel_dielectric(float incoming[3], float normal[3], float eta)
 	}
 
 	return result;
+}
+
+/* ------------------------------------------------------------------------- */
+/* BGE-Remix P9.2: the physical material's light (RE_shader_ext.h), the same
+ * maths as the game's GLSL */
+
+static float pbr_ggx_c(float nh, float a)
+{
+	const float a2 = a * a;
+	const float d = nh * nh * (a2 - 1.0f) + 1.0f;
+	return a2 / ((float)M_PI * d * d);
+}
+
+static float pbr_smith_c(float nv, float nl, float a)
+{
+	const float k = a * 0.5f;
+	return (nv / (nv * (1.0f - k) + k)) * (nl / (nl * (1.0f - k) + k));
+}
+
+void RE_shade_physical(ShadeInput *shi, const float base[3], float metallic, float roughness, float specular,
+                       float transmission, float subsurface, float r_diff[3], float r_spec[3])
+{
+	GroupObject *go;
+	float diffcol[3], f0[3], N[3], V[3];
+	const float m = CLAMPIS(metallic, 0.0f, 1.0f);
+	const float rough = CLAMPIS(roughness, 0.0f, 1.0f);
+	const float a = max_ff(rough * rough, 0.002f);
+	const float w = 0.5f * CLAMPIS(subsurface, 0.0f, 1.0f);
+	int i;
+
+	zero_v3(r_diff);
+	zero_v3(r_spec);
+	for (i = 0; i < 3; i++) {
+		diffcol[i] = base[i] * (1.0f - m) * (1.0f - CLAMPIS(transmission, 0.0f, 1.0f));
+		f0[i] = (1.0f - m) * 0.08f * CLAMPIS(specular, 0.0f, 1.0f) + m * base[i];
+	}
+	normalize_v3_v3(N, shi->vn);
+	negate_v3_v3(V, shi->view);
+	normalize_v3(V);
+	const float nv = max_ff(dot_v3v3(N, V), 1e-4f);
+
+	for (go = R.lights.first; go; go = go->next) {
+		LampRen *lar = go->lampren;
+		float lv[3], dist;
+		if (!lar || ((lar->mode & LA_LAYER) && (lar->lay & shi->obi->lay) == 0) || (lar->lay & shi->lay) == 0) {
+			continue;
+		}
+		if (lar->mode & LA_ONLYSHADOW) {
+			continue;
+		}
+		const float visifac = lamp_get_visibility(lar, shi->co, lv, &dist);
+		if (visifac == 0.0f) {
+			continue;
+		}
+		const float inp = dot_v3v3(N, lv);
+		const bool hemi = lar->type == LA_HEMI;
+		const float nl = hemi ? 0.5f * inp + 0.5f : inp;
+		const float dl = max_ff((nl + w) / (1.0f + w), 0.0f);
+		/* the shadow: the lamp's own (ray or buffer), with its colour */
+		float shadfac = 1.0f;
+		if (!hemi && inp > 0.0f && (R.r.mode & R_SHADOW) && (lar->shb || (lar->mode & LA_SHAD_RAY))) {
+			float sf[4];
+			lamp_get_shadow(lar, shi, inp, sf, shi->depth);
+			shadfac = sf[3];
+		}
+		const float light[3] = {lar->r * visifac, lar->g * visifac, lar->b * visifac};
+		const float shdw[3] = {lar->shdwr, lar->shdwg, lar->shdwb};
+		if (!(lar->mode & LA_NO_DIFF)) {
+			for (i = 0; i < 3; i++) {
+				r_diff[i] += diffcol[i] * dl * light[i] * (shdw[i] + (1.0f - shdw[i]) * shadfac);
+			}
+		}
+		if (!(lar->mode & LA_NO_SPEC) && !hemi && nl > 0.0f) {
+			float H[3];
+			add_v3_v3v3(H, lv, V);
+			normalize_v3(H);
+			const float nh = max_ff(dot_v3v3(N, H), 0.0f);
+			const float nlc = max_ff(nl, 1e-4f);
+			const float vh = CLAMPIS(dot_v3v3(V, H), 0.0f, 1.0f);
+			const float fr = powf(1.0f - vh, 5.0f);
+			const float k = pbr_ggx_c(nh, a) * pbr_smith_c(nv, nlc, a) / (4.0f * nv * nlc) * (float)M_PI * nlc;
+			for (i = 0; i < 3; i++) {
+				const float F = f0[i] + (1.0f - f0[i]) * fr;
+				r_spec[i] += F * k * light[i] * shadfac;
+			}
+		}
+	}
+
+	/* the world: its ambient colour on the diffuse part, the sky reflected
+	 * (rougher: more even), as shade_pbr_ambient (no probe, no screen) */
+	if (R.wrld.horr + R.wrld.horg + R.wrld.horb + R.wrld.zenr + R.wrld.zeng + R.wrld.zenb + R.wrld.ambr +
+	    R.wrld.ambg + R.wrld.ambb > 0.0f)
+	{
+		const float *hor = &R.wrld.horr, *zen = &R.wrld.zenr, *ambcol = &R.wrld.ambr;
+		float Rv[3], Rw[3], Nw[3], sky[3];
+		const float amb = shi->amb;
+		/* R = reflect(-V, N), into the world */
+		for (i = 0; i < 3; i++) {
+			Rv[i] = -V[i] + 2.0f * dot_v3v3(N, V) * N[i];
+		}
+		mul_v3_mat3_m4v3(Rw, R.viewinv, Rv);
+		const float t = CLAMPIS(Rw[2], 0.0f, 1.0f);
+		const float fr = powf(1.0f - max_ff(dot_v3v3(N, V), 0.0f), 5.0f);
+		for (i = 0; i < 3; i++) {
+			float sk = hor[i] + (zen[i] - hor[i]) * t;
+			sk = sk + (0.5f * (hor[i] + zen[i]) - sk) * rough;
+			const float F = f0[i] + (max_ff(1.0f - rough, f0[i]) - f0[i]) * fr;
+			r_diff[i] += amb * ambcol[i] * diffcol[i];
+			r_spec[i] += amb * F * sk;
+		}
+		/* BGE-Remix P9.1: in the RTX Remix pipeline the sky lights the
+		 * surface, as Remix's dome does (shade_skylight) */
+		if (R.scene && BKE_scene_game_rtx_pipeline(R.scene)) {
+			mul_v3_mat3_m4v3(Nw, R.viewinv, N);
+			const float s = CLAMPIS(0.5f + 0.5f * Nw[2], 0.0f, 1.0f);
+			const bool blend = (R.wrld.skytype & WO_SKYBLEND) != 0;
+			for (i = 0; i < 3; i++) {
+				const float z = blend ? zen[i] : hor[i];
+				sky[i] = hor[i] + (z - hor[i]) * s;
+				r_diff[i] += diffcol[i] * sky[i];
+			}
+		}
+	}
 }

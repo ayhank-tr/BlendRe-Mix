@@ -69,8 +69,8 @@ float BKE_remix_node_value(const struct bNode *node, int input);
 void BKE_remix_node_color(const struct bNode *node, int input, float r[3]);
 /* the input's link, or NULL */
 struct bNodeLink *BKE_remix_node_link(const struct bNodeTree *ntree, const struct bNode *node, int input);
-/* the materials whose node tree is ntree: their base colour and alpha kept
- * at the node's albedo and opacity (stock 2.79 and Classic views show them) */
+/* the materials whose node tree is ntree: their Output node's own colour and
+ * alpha kept at the node's albedo and opacity */
 void BKE_material_remix_node_sync(struct Main *bmain, struct bNodeTree *ntree);
 
 /* its values (the defaults where a property is missing) */

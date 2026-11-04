@@ -23,10 +23,11 @@
  *
  * BGE-Remix P9.2: the RTX Remix Material node. One input per field of an
  * RTX Remix material; wired to the Material Output (Blender Internal's
- * Output node), it is the material. The game draws it with the physical
- * shading of P8's Physical surface (GPU_shade_remix_node), F12 through
- * P8's physical translation into Blender Internal's settings (the exec
- * below), and the translator for Remix reads its inputs
+ * Output node's place: the node is the material's output, the Output
+ * node keeps the albedo for stock 2.79), it is the material. The game draws
+ * it with the physical shading of P8's Physical surface
+ * (GPU_shade_remix_node), F12 with the same maths (RE_shade_physical, the
+ * exec below), and the translator for Remix reads its inputs
  * (source/blender/remix/intern/remix_material.cc). Its unlinked values are
  * the material's physical values (BKE_material_physical_get).
  */
@@ -82,48 +83,45 @@ static void node_shader_update_remix_material(bNodeTree *ntree, bNode *UNUSED(no
 }
 
 /* ---------------------------------------------------------------------- */
-/* F12 (Blender Internal): the material's settings as P8's physical
- * translation made them (BKE_material_physical_render_begin), with what is
- * wired into the node over them */
+/* F12 (Blender Internal): the node shaded as the game shades it
+ * (RE_shade_physical: each lamp's GGX and Lambert, the world, the sky in
+ * the RTX Remix pipeline), its emission added; glass keeps Blender
+ * Internal's raytraced transparency (BKE_material_physical_render_begin) */
+
+static float remix_value(bNodeStack **in, int i)
+{
+	float v;
+	nodestack_get_vec(&v, SOCK_FLOAT, in[i]);
+	return v;
+}
 
 static void node_shader_exec_remix_material(void *data, int UNUSED(thread), bNode *node, bNodeExecData *UNUSED(execdata),
                                             bNodeStack **in, bNodeStack **out)
 {
 	ShaderCallData *shcd = data;
 	ShadeInput *shi;
-	ShadeResult shrnode;
 	Material *ma;
-	char linked[SH_REMIX_IN_COUNT] = {0};
-	float col[4], emission[3], intensity;
-	bNodeSocket *sock;
-	int i, mode;
+	float col[4], base[3], emission[3], diff[3], spec[3], alpha;
+	int i;
 
 	if (!shcd || !shcd->shi || !shcd->shi->mat) {
 		return;
 	}
 	shi = shcd->shi;
 	ma = shi->mat;
-	for (sock = node->inputs.first, i = 0; sock && i < SH_REMIX_IN_COUNT; sock = sock->next, ++i) {
-		linked[i] = (sock->link != NULL);
-	}
 
-	/* copy all relevant material vars, as the Material node does */
-	memcpy(&shi->r, &ma->r, 23 * sizeof(float));
-	shi->har = ma->har;
+	nodestack_get_vec(base, SOCK_VECTOR, in[SH_REMIX_IN_ALBEDO]);
+	const float opacity = remix_value(in, SH_REMIX_IN_OPACITY);
+	const float roughness = remix_value(in, SH_REMIX_IN_ROUGHNESS);
+	const float metallic = remix_value(in, SH_REMIX_IN_METALLIC);
+	const float intensity = remix_value(in, SH_REMIX_IN_EMISSIVE_INTENSITY);
+	const float subsurface = remix_value(in, SH_REMIX_IN_SUBSURFACE);
+	const bool glass = (node->custom1 & SH_NODE_REMIX_TRANSLUCENT) != 0;
+	nodestack_get_vec(emission, SOCK_VECTOR, in[SH_REMIX_IN_EMISSIVE]);
 
-	if (linked[SH_REMIX_IN_ALBEDO]) {
-		nodestack_get_vec(&shi->r, SOCK_VECTOR, in[SH_REMIX_IN_ALBEDO]);
-	}
-	if (linked[SH_REMIX_IN_OPACITY]) {
-		nodestack_get_vec(&shi->alpha, SOCK_FLOAT, in[SH_REMIX_IN_OPACITY]);
-	}
-	if (linked[SH_REMIX_IN_ROUGHNESS]) {
-		float rough;
-		nodestack_get_vec(&rough, SOCK_FLOAT, in[SH_REMIX_IN_ROUGHNESS]);
-		shi->har = (int)BKE_material_roughness_to_hardness(rough);
-	}
 	/* the normal map, in tangent space as a texture slot's */
-	if (linked[SH_REMIX_IN_NORMAL] && (ma->mode_l & MA_NORMAP_TANG)) {
+	bNodeSocket *nor = BLI_findlink(&node->inputs, SH_REMIX_IN_NORMAL);
+	if (nor && nor->link && (ma->mode_l & MA_NORMAP_TANG)) {
 		float c[4], t[3], B[3], tv[3];
 		const float *no = shi->nmapnorm;
 		nodestack_get_vec(c, SOCK_RGBA, in[SH_REMIX_IN_NORMAL]);
@@ -141,37 +139,33 @@ static void node_shader_exec_remix_material(void *data, int UNUSED(thread), bNod
 		copy_v3_v3(shi->vn, shi->vno);
 	}
 
-	/* emission: the node's colour (Blender Internal would emit the diffuse
-	 * colour), added after the lamps */
-	nodestack_get_vec(emission, SOCK_VECTOR, in[SH_REMIX_IN_EMISSIVE]);
-	nodestack_get_vec(&intensity, SOCK_FLOAT, in[SH_REMIX_IN_EMISSIVE_INTENSITY]);
-	shi->emit = 0.0f;
-
-	mode = shi->mode;
-	if (ma->mode & MA_TRANSP) {
-		shi->mode |= MA_TRANSP;
+	if (ma->mode & MA_SHLESS) {
+		copy_v3_v3(diff, base);
+		zero_v3(spec);
 	}
-	shi->nodes = 1;
-	node_shader_lamp_loop(shi, &shrnode);  /* clears shrnode */
-	shi->nodes = 0;
-	shi->mode = mode;
-
-	copy_v3_v3(col, shrnode.combined);
-	if (intensity > 0.0f && !(ma->mode & MA_SHLESS)) {
-		madd_v3_v3fl(col, emission, intensity);
+	else {
+		RE_shade_physical(shi, base, metallic, roughness, 0.5f, glass ? 1.0f : 0.0f, subsurface, diff, spec);
+		if (intensity > 0.0f) {
+			madd_v3_v3fl(diff, emission, intensity);
+		}
 	}
-	col[3] = shrnode.alpha;
+	add_v3_v3v3(col, diff, spec);
+	/* glass: Blender Internal's raytraced transparency sees through it */
+	alpha = glass ? ma->alpha : opacity;
+	col[3] = alpha;
 	copy_v4_v4(out[0]->vec, col);
-	out[1]->vec[0] = shrnode.alpha;
+	out[1]->vec[0] = alpha;
 
-	/* the material's passes are this node's */
-	{
-		float combined[4], alpha;
-		copy_v4_v4(combined, shcd->shr->combined);
-		alpha = shcd->shr->alpha;
-		*(shcd->shr) = shrnode;
-		copy_v4_v4(shcd->shr->combined, combined);
-		shcd->shr->alpha = alpha;
+	/* the material's own RTX Remix node is its output (Blender's Output node
+	 * keeps the albedo for stock 2.79) and its passes */
+	if (shcd->shr && BKE_material_remix_node(ma) == node) {
+		ShadeResult *shr = shcd->shr;
+		copy_v3_v3(shr->diff, diff);
+		copy_v3_v3(shr->diffshad, diff);
+		copy_v3_v3(shr->spec, spec);
+		copy_v3_v3(shr->combined, col);
+		shr->combined[3] = alpha;
+		shr->alpha = alpha;
 	}
 }
 
@@ -213,7 +207,7 @@ static int gpu_shader_remix_material(GPUMaterial *mat, bNode *node, bNodeExecDat
 	links.normal = (nor && nor->link && in[SH_REMIX_IN_NORMAL].link) ? in[SH_REMIX_IN_NORMAL].link : NULL;
 	links.normal_directx = (node->custom1 & SH_NODE_REMIX_NORMAL_DIRECTX) != 0;
 
-	GPU_shade_remix_node(mat, &links, &out[0].link, &out[1].link);
+	GPU_shade_remix_node(mat, &links, node, &out[0].link, &out[1].link);
 	return true;
 }
 

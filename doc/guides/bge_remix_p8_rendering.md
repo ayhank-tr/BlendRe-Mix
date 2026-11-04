@@ -85,8 +85,9 @@ Classic, its Remix switch left as it was.
 
 Material tab, under the material's name: **Classic** or **RTX Remix**.
 
-- **RTX Remix** turns the material into a node material with an **RTX Remix
-  Material** node wired to the Output node. Its values come from the
+- **RTX Remix** turns the material into a node material whose output is an
+  **RTX Remix Material** node (Blender's Output node stays in the tree,
+  unwired, holding the node's albedo and opacity). Its values come from the
   material: a Physical material's as they are; a Classic one's colour (times
   its diffuse intensity), specular hardness (as roughness), emit and alpha.
   Each texture slot becomes a Texture node read at the slot's coordinates
@@ -105,7 +106,8 @@ Material tab, under the material's name: **Classic** or **RTX Remix**.
   transparency), the alpha test's cutoff, Thin Walled, Particle, the Remix
   categories, Bake Size.
 - The game draws the node with the Physical surface's shading, in both
-  pipelines; F12 reads it through the same translation to Blender Internal;
+  pipelines; F12 renders it with the same lighting maths as the game (lamps,
+  their shadows, the world and, in the RTX Remix pipeline, the sky light);
   Remix gets every input. Height, anisotropy and thin film are drawn by Remix
   only.
 - To Remix: an input fed by a Texture node holding an image, read at the
@@ -116,8 +118,8 @@ Material tab, under the material's name: **Classic** or **RTX Remix**.
 - The node's Match panel (the node editor's sidebar) and the material's RTX
   Remix Match say, input by input, how each reaches Remix.
 - In the RTX Remix pipeline both sides of a face cast shadows, as in Remix.
-- Stock 2.79 does not know the node: it draws the Output node's own colour,
-  kept at the node's albedo.
+- Stock 2.79 does not know the node: it draws the Output node's own colour
+  and alpha, kept at the node's albedo and opacity.
 
 ## Lights and shadows
 

@@ -620,6 +620,56 @@ def make_remix_build(folder, E):
                         "physical": {"albedo": [0.7, 0.4, 0.2], "metallic": 0.3, "roughness": 0.4}}
 
 
+
+# P9.2 diagnostic: the light's balance between Remix and the fallback
+# (label, albedo, metallic, roughness, emission intensity)
+BALANCE = [
+    ("emit_025", (0.0, 0.0, 0.0), 0.0, 1.0, 0.25),
+    ("emit_100", (0.0, 0.0, 0.0), 0.0, 1.0, 1.0),
+    ("matte", (0.8, 0.8, 0.8), 0.0, 1.0, 0.0),
+    ("smooth", (0.8, 0.8, 0.8), 0.0, 0.1, 0.0),
+    ("metal", (0.8, 0.8, 0.8), 1.0, 0.3, 0.0),
+]
+
+
+def make_light_balance(folder, E):
+    """five spheres in a row, RTX Remix materials, ACES: two that only glow
+    (0.25 and 1: the same light in both, to line up the two tone curves), a
+    matte one, a smooth one, a metal one; lit by one sun under a black sky
+    (p9_lb_sun) or by a plain grey sky alone (p9_lb_sky)"""
+    from bl_operators.bge_remix_material import make_remix_material
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    scene = base("P9LightBalance")
+    rects = {}
+    for i, (label, col, metallic, rough, emit) in enumerate(BALANCE):
+        ma = physical("P9LB_" + label, col, metallic, rough)
+        node = make_remix_material(ma)
+        node.inputs["Emissive Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+        node.inputs["Emissive Intensity"].default_value = emit
+        x = (i - 2.0) * 2.2
+        ob = p3.sphere(scene, "P9LB_" + label, (x, 0.0, 0.0), ma, radius=0.9)
+        ob.game.physics_type = 'NO_COLLISION'
+        rects[label] = layout_rect(x, 0.0, 0.9 * 0.7)
+    sun = p2.lamp(scene, "Sun", 'SUN', (0.0, -10.0, 6.0), (math.radians(45.0), 0.0, 0.0), energy=1.0)
+    sun.data.shadow_method = 'NOSHADOW'
+    w = scene.world
+    w.use_sky_blend = False
+    w.horizon_color = (0.0, 0.0, 0.0)
+    w.zenith_color = (0.0, 0.0, 0.0)
+    w.ambient_color = (0.0, 0.0, 0.0)
+    logic(scene, "P9Study", STUDY_SCRIPT)
+    p2.add_probe(scene)
+    for sc in bpy.data.scenes:
+        sc["bge_remix_pipeline"] = 1
+    scene.update()
+    files = [save_copy(folder, "p9_lb_sun", remix=0, tone=1), save_copy(folder, "p9_lb_sun_remix", remix=1, tone=1)]
+    sun.data.energy = 0.0
+    w.horizon_color = (0.5, 0.5, 0.5)
+    w.zenith_color = (0.5, 0.5, 0.5)
+    files += [save_copy(folder, "p9_lb_sky", remix=0, tone=1), save_copy(folder, "p9_lb_sky_remix", remix=1, tone=1)]
+    E["light_balance"] = {"files": files, "rects": rects, "order": [b[0] for b in BALANCE],
+                          "emission": {b[0]: b[4] for b in BALANCE if b[4] > 0.0}}
+
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:]
     folder = argv[0]
@@ -627,7 +677,8 @@ def main():
     E = {"failed": {}}
     import traceback
     for name, maker in (("spheres", make_spheres), ("pipelines", make_pipelines),
-                        ("remix_spheres", make_remix_spheres), ("remix_build", make_remix_build)):
+                        ("remix_spheres", make_remix_spheres), ("remix_build", make_remix_build),
+                        ("light_balance", make_light_balance)):
         try:
             maker(folder, E)
         except Exception:

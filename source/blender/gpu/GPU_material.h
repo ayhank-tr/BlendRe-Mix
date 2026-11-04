@@ -358,8 +358,11 @@ typedef struct GPURemixLinks {
 	GPUNodeLink *albedo, *opacity, *roughness, *metallic, *normal, *emission, *emission_intensity;
 	bool normal_directx;
 } GPURemixLinks;
-void GPU_shade_remix_node(GPUMaterial *mat, const GPURemixLinks *links, GPUNodeLink **r_color,
-                          GPUNodeLink **r_alpha);
+void GPU_shade_remix_node(GPUMaterial *mat, const GPURemixLinks *links, const struct bNode *node,
+                          GPUNodeLink **r_color, GPUNodeLink **r_alpha);
+/* BGE-Remix P9.2: the material being built is an RTX Remix material (its
+ * RTX Remix Material node is its output; Blender's Output node is left out) */
+bool GPU_material_is_remix(GPUMaterial *mat);
 
 /* Export GLSL shader */
 

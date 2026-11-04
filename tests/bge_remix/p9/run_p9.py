@@ -496,8 +496,12 @@ def node_state(ma):
             if link.to_node == node:
                 s["links"][link.to_socket.name] = [link.from_node.bl_idname, link.from_socket.name,
                                                     getattr(getattr(link.from_node, "texture", None), "name", None)]
-        s["to_output"] = any(l.from_node == node and l.to_node.bl_idname == "ShaderNodeOutput"
-                             for l in ma.node_tree.links)
+        out = next((n for n in ma.node_tree.nodes if n.bl_idname == "ShaderNodeOutput"), None)
+        # P9.2: the node is the output; the Output node, unwired, holds the
+        # albedo for stock 2.79
+        s["output_unwired"] = out is not None and not out.inputs["Color"].is_linked
+        s["output_color"] = list(out.inputs["Color"].default_value)[:3] if out is not None else None
+        s["albedo"] = list(node.inputs["Albedo"].default_value)[:3]
         s["remix_type"] = node.remix_type
         s["blend"] = node.blend
     if bge_remix is not None:
@@ -531,6 +535,15 @@ def mock_materials(lines):
     return mats
 
 
+def srgb(v):
+    """Remix's colour constants are sRGB values (the bridge encodes Blender's
+    linear ones, bridge_scene.cpp srgb3)"""
+    def one(c):
+        c = min(max(c, 0.0), 1.0)
+        return c * 12.92 if c <= 0.0031308 else 1.055 * c ** (1.0 / 2.4) - 0.055
+    return [one(c) for c in v]
+
+
 def near(text, want, tol=0.002):
     try:
         got = [float(x) for x in text.split(",")]
@@ -557,10 +570,10 @@ def sphere_found(mats, label, e, film_nm):
             return m
         if what == 'height' and tex(m, "height_tex", "P9RS_heights") and near(m.get("displace_in"), 0.05):
             return m
-        if what is None and m.get("type") == "opaque" and near(m.get("albedo"), e["albedo"]) and \
+        if what is None and m.get("type") == "opaque" and near(m.get("albedo"), srgb(e["albedo"])) and \
                 near(m.get("roughness"), e["roughness"]) and near(m.get("metallic"), e["metallic"]):
             if e["intensity"] > 0.0:
-                if near(m.get("intensity"), e["intensity"]) and near(m.get("emissive"), e["emission"]):
+                if near(m.get("intensity"), e["intensity"]) and near(m.get("emissive"), srgb(e["emission"])):
                     return m
             else:
                 return m
@@ -576,6 +589,24 @@ def rect_diffs(a, b, rects, labels, blur=False):
         aa, bb = (p8.blurred(a), p8.blurred(b)) if blur else (a, b)
         out[k] = p8.region_diff(aa, bb, rects[k])
     return out
+
+
+def srgb_to_linear(v):
+    c = v / 255.0
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def aces_inverse(y):
+    """the fallback's ACES curve (RAS_Pipeline.cpp, Narkowicz's fit) undone"""
+    aces = lambda x: max(0.0, min(1.0, (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14)))  # noqa: E731
+    lo, hi = 0.0, 64.0
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        if aces(mid) < y:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
 
 
 def p92_tests(args, out, scenes, E, tests, sheets):
@@ -662,8 +693,9 @@ def p92_tests(args, out, scenes, E, tests, sheets):
     st = {k: after.get(v) or {} for k, v in mn.items()}
     d["after"] = {k: {x: v.get(x) for x in ("kind", "links", "remix_type", "blend")} for k, v in st.items()}
     for k, v in st.items():
-        c["%s: a node tree with the RTX Remix Material node wired to the output" % k] = \
-            v.get("kind") == "RTX_REMIX" and bool(v.get("to_output"))
+        c["%s: a node tree, its RTX Remix Material node the output (the Output node holds the albedo)" % k] = \
+            v.get("kind") == "RTX_REMIX" and bool(v.get("output_unwired")) and v.get("output_color") is not None \
+            and all(abs(a - b) < 1e-3 for a, b in zip(v["output_color"], v.get("albedo") or []))
     vals = lambda k: st[k].get("values") or {}  # noqa: E731
     cc = B["classic_colour"]
     c["classic_colour: its colour and hardness copied (albedo, roughness)"] = \
@@ -697,7 +729,7 @@ def p92_tests(args, out, scenes, E, tests, sheets):
     log, env = p8.mock_env(args, out, "p9_rb_after_mock", os.path.join(out, "cache_rb"))
     r = pipe_play(args.ours, out, "p9_rb_after_mock", S("p9_rb_after_remix"), env)
     mats = mock_materials(mock_lines(log))
-    proc = [m for m in mats if near(m.get("albedo"), [0.5, 0.6, 0.4]) or "roughness" in m.get("roughness_tex", "")]
+    proc = [m for m in mats if near(m.get("albedo"), srgb([0.5, 0.6, 0.4]))]
     d["physical_proc in the fake runtime"] = proc[:2]
     c["physical_proc: Remix got a baked roughness image"] = bool(r["ran"]) and \
         any(m.get("roughness_tex", "-") != "-" for m in proc)
@@ -707,7 +739,7 @@ def p92_tests(args, out, scenes, E, tests, sheets):
         means = {k: (None if sp is None else round(float(p8.crop(sp, brects[k]).mean()), 1)) for k in brects}
         d["stock 2.79b: each sphere's mean"] = means
         c["stock 2.79b opens the file and plays it"] = bool(stock.get("frames"))
-        c["stock 2.79b draws each sphere (not black)"] = all(v is not None and v > 20.0 for v in means.values())
+        c["stock 2.79b draws each sphere (not black)"] = all(v is not None and v > 40.0 for v in means.values())
         sheets["remix_build_stock"] = stock.get("screenshot")
     tests["T9.6 Picking RTX Remix"] = {"ok": all(c.values()), "checks": c, "detail": d}
     sheets["remix_build"] = p2.contact_sheet([("before", runs["p9_rb_before"].get("screenshot")),
@@ -747,6 +779,34 @@ def p92_rtx(args, out, scenes, E, tests, sheets, report_lines):
     for label, row in rows.items():
         report_lines.append("  %-16s %s" % (label, "-" if not row else "%s -> %s  diff %.1f  brightness x%s" % (
             row["opengl"], row["remix"], row["mean_diff"], row["brightness_ratio"])))
+    # diagnostic: the light's balance, both sides with a fixed ACES curve
+    # (Remix's own tone curve off: it adapts to each picture)
+    L = E.get("light_balance")
+    if L:
+        bal = {}
+        for case in ("sun", "sky"):
+            a = p8.play(args.ours, out, "lb_%s_opengl" % case, S("p9_lb_%s" % case), shot, frames=p8.REMIX_FRAMES)
+            env = dict(p8.REMIX_ENV, BGE_REMIX_RTX_SET="rtx.tonemap.tonemappingEnabled=False")
+            b = p8.play(args.ours, out, "lb_%s_remix" % case, S("p9_lb_%s_remix" % case), env, frames=p8.REMIX_FRAMES,
+                        debug=True)
+            rows = sphere_compare({"spheres": {"order": L["order"], "rects": L["rects"]}}, a.get("screenshot"),
+                                  b.get("screenshot"))
+            for label, row in rows.items():
+                if row:
+                    row["linear_ratio"] = [round(aces_inverse(srgb_to_linear(rb)) /
+                                                 max(aces_inverse(srgb_to_linear(ra)), 1e-6), 3)
+                                           for ra, rb in zip(row["opengl"], row["remix"])]
+            bal[case] = rows
+            sheets["light_balance_" + case] = p2.contact_sheet(
+                [("fallback, ACES", a.get("screenshot")), ("Remix, ACES alone", b.get("screenshot"))],
+                os.path.join(out, "sheet_p9_light_balance_%s.png" % case))
+        tests["S9.9 Light balance (a diagnostic)"] = {"ok": True, "checks": {}, "detail": bal}
+        report_lines += ["", "Light balance, fallback -> Remix (both ACES alone; ratio: Remix's light over the "
+                         "fallback's, before the curve):"]
+        for case, rows in bal.items():
+            for label, row in rows.items():
+                report_lines.append("  %-4s %-9s %s" % (case, label, "-" if not row else "%s -> %s  ratio %s" % (
+                    row["opengl"], row["remix"], row["linear_ratio"])))
     # diagnostic: debug views 1-60 of the spheres (what Remix receives)
     dv = os.path.join(out, "debug_views_spheres")
     shutil.rmtree(dv, ignore_errors=True)
