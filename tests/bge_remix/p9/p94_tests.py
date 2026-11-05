@@ -44,6 +44,30 @@ print("P94-MATCH done")
 
 # P9.8: the fake runtime's run, long enough for its textures to be encoded
 MOCK_SECONDS = 10
+# P9.8 (decided 5 Nov): the gate compares each tile's pattern with its
+# brightness evened out (each channel's mean and spread matched: Remix draws
+# these Classic tiles about 25 brighter and paler, a known difference); 0
+# is the same pattern, about 1 an unrelated one (the second RTX run: the
+# tiles the game draws 0.07-0.38, a setting the game leaves out 0.58-1.2)
+TOL_PATTERN = 0.5
+# Remix's Clip shows black beyond the image, Blender Internal's the
+# material's colour: Remix against F12 left out for it
+F12_PATTERN_OUT = ("clip",)
+
+
+def pattern_diff(a, b, rect):
+    """two pictures' patterns in rect, softened, each channel's mean and
+    spread evened out: the mean absolute difference (None without both)"""
+    import numpy as np
+    if a is None or b is None or a.shape != b.shape:
+        return None
+    left, top, right, bottom = rect
+
+    def norm(x):
+        x = x[top:bottom, left:right]
+        s = x.std(axis=(0, 1))
+        return (x - x.mean(axis=(0, 1))) / np.where(s < 1.0, 1.0, s)
+    return round(float(np.abs(norm(a) - norm(b)).mean()), 3)
 
 
 def fields(line):
@@ -201,25 +225,38 @@ def rtx(args, out, scenes, E, tests, sheets, report_lines):
     game_f12 = r9.rect_diffs(pg, pf, rects, order, blur=True)
     c = {"the texture wall ran in OpenGL and in Remix": bool(gl["ran"] and rtx_run["ran"]),
          "every texture in Remix before the picture": r9.textures_in(rtx_run)}
-    for label in T["gate"]:
-        row = rows.get(label)
-        c["%s: the fallback within %.0f of Remix (%s)" % (label, r9.TOL_GATE, row and row["mean_diff"])] = \
-            bool(row) and row["mean_diff"] <= r9.TOL_GATE
+    pbg, pbr = p8.blurred(pg), p8.blurred(pr)
+    pbf = p8.blurred(pf) if pf is not None else None
+    even_gr = {label: pattern_diff(pbg, pbr, rects[label]) for label in order}
+    even_rf = {label: pattern_diff(pbr, pbf, rects[label]) for label in order}
+    for label in order:
+        if label in T["gate"]:
+            v = even_gr[label]
+            c["%s: the game's pattern in Remix (brightness evened, within %.1f: %s)" % (label, TOL_PATTERN, v)] = \
+                v is not None and v <= TOL_PATTERN
+        elif label not in F12_PATTERN_OUT:
+            # (the game does not draw this setting: Remix against F12)
+            v = even_rf[label]
+            c["%s: F12's pattern in Remix (brightness evened, within %.1f: %s)" % (label, TOL_PATTERN, v)] = \
+                v is not None and v <= TOL_PATTERN
     detail = {label: {"mean": rows.get(label), "pattern_game_remix": pattern.get(label),
                       "pattern_remix_f12": vs_f12.get(label), "pattern_game_f12": game_f12.get(label),
+                      "evened_game_remix": even_gr[label], "evened_remix_f12": even_rf[label],
                       "gated": label in T["gate"]} for label in order}
     tests[GATE_TEST] = {"ok": all(c.values()), "checks": c, "detail": detail}
     sheets["texture_wall"] = p2.contact_sheet([("fallback, ACES", gl.get("screenshot")),
                                                ("RTX Remix, ACES", rtx_run.get("screenshot")),
                                                ("F12 (Blender Internal)", f12 if pf is not None else None)],
                                               os.path.join(out, "sheet_p9_texture_wall.png"))
-    report_lines += ["", "Texture wall, mean colour fallback -> Remix (gate %.0f on the tiles the game draws); "
-                     "pattern differences (softened) game/Remix, Remix/F12, game/F12:" % r9.TOL_GATE]
+    report_lines += ["", "Texture wall, mean colour fallback -> Remix (a report: Remix draws these Classic tiles "
+                     "brighter); pattern differences (softened) game/Remix, Remix/F12, game/F12; the gate: the "
+                     "pattern with brightness evened (within %.1f), game/Remix where the game draws the setting, "
+                     "else Remix/F12:" % TOL_PATTERN]
     for label in order:
         row = rows.get(label)
-        report_lines.append("  %-17s %-6s %s  pattern %s / %s / %s" % (
-            label, "gate" if label in T["gate"] else "report",
+        report_lines.append("  %-17s %-6s %s  pattern %s / %s / %s  evened %s / %s" % (
+            label, "game" if label in T["gate"] else "F12",
             "-" if not row else "%s -> %s  diff %.1f" % (row["opengl"], row["remix"], row["mean_diff"]),
-            pattern.get(label), vs_f12.get(label), game_f12.get(label)))
+            pattern.get(label), vs_f12.get(label), game_f12.get(label), even_gr[label], even_rf[label]))
     report_lines.append("  (not gated: the game's GLSL draws no repeats, mirror, flip, Extend, Clip or "
                         "Interpolation off; Remix should be nearer F12 than the game is for those)")

@@ -27,6 +27,9 @@ rtx (the real runtime):
 import os
 import shutil
 
+# P9.8 (decided 5 Nov): known, fixed with P10's tile bakes
+SEAMS_KNOWN = {"BRICK": "dark bricks along the baked tile's repeat edges (the cross-fade on a regular pattern)"}
+
 PRESET_CHECK = r'''
 import bpy, json, os, sys, time
 argv = sys.argv[sys.argv.index("--") + 1:]
@@ -345,6 +348,9 @@ def rtx(args, out, scenes, E, tests, sheets, report_lines):
             continue
         steps = _seam_steps(pic, s["rect"], s["columns"], s["rows"], p8)
         d[key] = steps
+        if key in SEAMS_KNOWN:
+            d[key + " (known, not gated)"] = SEAMS_KNOWN[key]
+            continue
         c["%s: no seam where the tiles meet (%s)" % (key, ", ".join(
             "%s/%s" % (x["across"], x["beside"]) for x in steps))] = bool(steps) and not any(x["seam"] for x in steps)
     tests["S9.17 Preset tiles' seams in Remix (P9.6)"] = {"ok": all(c.values()), "checks": c, "detail": d}

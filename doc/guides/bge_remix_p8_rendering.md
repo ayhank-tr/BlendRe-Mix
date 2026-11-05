@@ -426,6 +426,15 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
 - Remix's particles are lit surfaces in the emitter's material: they do
   not glow or blend as the game's do, so smoke and sparks look darker, or
   barely show, in dark scenes.
+- Classic (Blender Internal) materials lit by a sun read brighter and paler
+  in Remix than in the fallback (about 25 levels on the P9.4 texture wall);
+  their patterns match. Flat skin presets read paler in Remix too (its
+  subsurface light). To be looked at with P10's value check.
+- A texture set to Clip shows black beyond the image in Remix, the
+  material's colour in F12.
+- Preset tiles baked for Remix: Brick shows dark bricks along the tile's
+  repeat edges, Rock faint ghosted edges where the tile is cross-faded (P10
+  rebuilds the tile bakes).
 - Remix's bakes use one UV map; meshes without one are reported (on the
   Remix View's Remix layer, once per material).
 - The game starts before its textures are ready: each is encoded for Remix
