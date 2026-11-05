@@ -226,6 +226,11 @@ public:
 	static std::wstring baked_path(const TextureRequest &req);
 	static bool cached(const TextureRequest &req);
 
+	/* BGE-Remix P9.7: for the Remix View's inspection: the file a request
+	 * goes to, or for an image (named by its pixels' hash too) the start of
+	 * that file's name ("<image>_<kind>_"); whether the file is there */
+	static std::wstring file_name_of(const TextureRequest &req, bool *r_exact);
+
 	/* for the tests' statistics */
 	int encoded, reused, failed;
 	double encode_seconds;

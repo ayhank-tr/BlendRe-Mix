@@ -254,6 +254,7 @@ typedef struct View3D {
 #define V3D_GAMEVIEW_DIM        (1 << 2)  /* dim the scene under the holograms */
 #define V3D_GAMEVIEW_LABELS     (1 << 3)  /* names under the avatars */
 #define V3D_GAMEVIEW_INIT       (1 << 4)  /* gameview_layers was set */
+#define V3D_GAMEVIEW_DEBUG      (1 << 5)  /* BGE-Remix P9.7: Debug mode (Remix's picture, no holograms) */
 #define V3D_GAMEVIEW_LAYERS_ALL ((1 << 22) - 1)  /* GV_LAYERS_ALL */
 
 /* the Area.type value of the Game View (not a space type: a 3D View with V3D_GAMEVIEW) */

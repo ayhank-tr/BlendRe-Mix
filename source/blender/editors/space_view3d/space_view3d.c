@@ -488,7 +488,7 @@ static void view3d_main_region_init(wmWindowManager *wm, ARegion *ar)
 	wmKeyMap *keymap;
 
 	/* BGE-Remix P7: the Game View's clicks first (its operators only run in a Game View) */
-	keymap = WM_keymap_find(wm->defaultconf, "Game View", SPACE_VIEW3D, 0);
+	keymap = WM_keymap_find(wm->defaultconf, "Remix View", SPACE_VIEW3D, 0);
 	WM_event_add_keymap_handler(&ar->handlers, keymap);
 
 	/* object ops. */

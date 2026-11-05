@@ -2471,6 +2471,18 @@ void KX_KetsjiEngine::RenderDebugProperties()
 				                          m_canvas->GetHeight(), ms / (tottime * 1000.f));
 			ycoord += const_ysize;
 		}
+#ifdef WITH_REMIX
+		/* BGE-Remix P9.7: the Remix View's statistics line */
+		if (m_remix && m_remix->IsRunning()) {
+			const std::string line = m_remix->StatsLine();
+			m_rasterizer->RenderText2D(RAS_IRasterizer::RAS_TEXT_PADDED, "RTX Remix:", xcoord + const_xindent,
+			                           ycoord, m_canvas->GetWidth(), m_canvas->GetHeight());
+			m_rasterizer->RenderText2D(RAS_IRasterizer::RAS_TEXT_PADDED, line.c_str(),
+			                           xcoord + const_xindent + profile_indent, ycoord, m_canvas->GetWidth(),
+			                           m_canvas->GetHeight());
+			ycoord += const_ysize;
+		}
+#endif
 	}
 	// Add the ymargin for titles below the other section of debug info
 	ycoord += title_y_top_margin;

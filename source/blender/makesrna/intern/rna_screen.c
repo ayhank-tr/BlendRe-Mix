@@ -60,8 +60,9 @@ EnumPropertyItem rna_enum_region_type_items[] = {
 static EnumPropertyItem rna_enum_area_type_items[] = {
 	{SPACE_EMPTY, "EMPTY", ICON_NONE, "Empty", ""},
 	{SPACE_VIEW3D, "VIEW_3D", ICON_VIEW3D, "3D View", "3D viewport"},
-	{AREA_TYPE_GAME_VIEW, "GAME_VIEW", ICON_GAME, "Game View",
-	 "The whole game, layer by layer: what goes into the game, its state and its warnings"},
+	{AREA_TYPE_GAME_VIEW, "GAME_VIEW", ICON_GAME, "Remix View",
+	 "The whole game, layer by layer: what goes into the game, its state and its warnings; "
+	 "and RTX Remix's picture, its debug views and statistics (BGE-Remix P9.7)"},
 	{0, "", ICON_NONE, NULL, NULL},
 	{SPACE_TIME, "TIMELINE", ICON_TIME, "Timeline", "Timeline and playback controls"},
 	{SPACE_IPO, "GRAPH_EDITOR", ICON_IPO, "Graph Editor", "Edit drivers and keyframe interpolation"},

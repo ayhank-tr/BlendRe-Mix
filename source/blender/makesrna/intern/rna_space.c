@@ -566,6 +566,16 @@ static void rna_SpaceView3D_game_view_background_set(PointerRNA *ptr, int value)
 	}
 }
 
+/* BGE-Remix P9.7: Debug mode shows RTX Remix's picture */
+static void rna_SpaceView3D_game_view_mode_update(Main *bmain, Scene *scene, PointerRNA *ptr)
+{
+	View3D *v3d = (View3D *)ptr->data;
+	if (v3d->gameview_flag & V3D_GAMEVIEW_DEBUG) {
+		rna_SpaceView3D_game_view_background_set(ptr, 1);
+	}
+	rna_SpaceView3D_viewport_shade_update(bmain, scene, ptr);
+}
+
 static void rna_SpaceView3D_game_view_update(Main *UNUSED(bmain), Scene *UNUSED(scene), PointerRNA *ptr)
 {
 	ScrArea *sa = rna_area_from_space(ptr);
@@ -2538,18 +2548,25 @@ static void rna_def_space_view3d(BlenderRNA *brna)
 			{1, "REMIX", ICON_SMOOTH, "RTX Remix", "The holograms over RTX Remix's picture of the scene"},
 			{0, NULL, 0, NULL, NULL}
 		};
+		/* BGE-Remix P9.7 */
+		static EnumPropertyItem game_view_mode_items[] = {
+			{0, "CHECK", ICON_ERROR, "Check", "The game, layer by layer: holograms, layers, warnings, targets"},
+			{V3D_GAMEVIEW_DEBUG, "DEBUG", ICON_RESTRICT_RENDER_OFF, "Debug",
+			 "RTX Remix's picture: its debug views, its statistics, what it got for the object you click"},
+			{0, NULL, 0, NULL, NULL}
+		};
 
 		prop = RNA_def_property(srna, "is_game_view", PROP_BOOLEAN, PROP_NONE);
 		RNA_def_property_boolean_sdna(prop, NULL, "gameview_flag", V3D_GAMEVIEW);
 		RNA_def_property_boolean_funcs(prop, NULL, "rna_SpaceView3D_is_game_view_set");
-		RNA_def_property_ui_text(prop, "Game View", "This 3D View is a Game View");
+		RNA_def_property_ui_text(prop, "Remix View", "This 3D View is a Remix View");
 		RNA_def_property_update(prop, NC_SPACE | ND_SPACE_VIEW3D, "rna_SpaceView3D_game_view_update");
 
 		prop = RNA_def_property(srna, "game_view_layers", PROP_ENUM, PROP_NONE);
 		RNA_def_property_enum_sdna(prop, NULL, "gameview_layers");
 		RNA_def_property_enum_items(prop, game_view_layer_items);
 		RNA_def_property_flag(prop, PROP_ENUM_FLAG);
-		RNA_def_property_ui_text(prop, "Game View Layers", "The layers the Game View shows");
+		RNA_def_property_ui_text(prop, "Remix View Layers", "The layers the Remix View shows");
 		RNA_def_property_update(prop, NC_SPACE | ND_SPACE_VIEW3D, "rna_SpaceView3D_game_view_update");
 
 		prop = RNA_def_property(srna, "game_view_background", PROP_ENUM, PROP_NONE);
@@ -2558,6 +2575,12 @@ static void rna_def_space_view3d(BlenderRNA *brna)
 		                            "rna_SpaceView3D_game_view_background_set", NULL);
 		RNA_def_property_ui_text(prop, "Background", "What the holograms are drawn over");
 		RNA_def_property_update(prop, NC_SPACE | ND_SPACE_VIEW3D, "rna_SpaceView3D_viewport_shade_update");
+
+		prop = RNA_def_property(srna, "game_view_mode", PROP_ENUM, PROP_NONE);
+		RNA_def_property_enum_bitflag_sdna(prop, NULL, "gameview_flag");
+		RNA_def_property_enum_items(prop, game_view_mode_items);
+		RNA_def_property_ui_text(prop, "Mode", "Check the game, or debug RTX Remix's picture");
+		RNA_def_property_update(prop, NC_SPACE | ND_SPACE_VIEW3D, "rna_SpaceView3D_game_view_mode_update");
 
 		prop = RNA_def_property(srna, "game_view_dim", PROP_BOOLEAN, PROP_NONE);
 		RNA_def_property_boolean_sdna(prop, NULL, "gameview_flag", V3D_GAMEVIEW_DIM);

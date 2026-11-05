@@ -1101,7 +1101,7 @@ static void gv_draw_summary(GVView *gv)
 		total += m->warnings_per_layer[i];
 	}
 	ED_region_visible_rect(gv->ar, &rect);
-	BLI_snprintf(buf, sizeof(buf), "Game View: %s, %d elements, %d warnings%s%s", m->scene, m->element_count, total,
+	BLI_snprintf(buf, sizeof(buf), "Remix View: %s, %d elements, %d warnings%s%s", m->scene, m->element_count, total,
 	             m->converted ? "" : " (not a game scene: not converted)",
 	             BL_GameViewIsDirty() ? " - out of date" : "");
 	glColor4f(0.0f, 0.0f, 0.0f, 0.85f);
@@ -1231,7 +1231,14 @@ static int gameview_poll(bContext *C)
 static int gameview_select_invoke(bContext *C, wmOperator *UNUSED(op), const wmEvent *event)
 {
 	ARegion *ar = CTX_wm_region(C);
-	const int el = view3d_gameview_pick(C, ar, event->mval);
+	View3D *v3d = CTX_wm_view3d(C);
+	int el;
+	if (v3d && (v3d->gameview_flag & V3D_GAMEVIEW_DEBUG)) {
+		/* BGE-Remix P9.7: Debug mode has no holograms: the click selects the
+		 * object (Blender's own selection), which the Inspect panel shows */
+		return OPERATOR_CANCELLED | OPERATOR_PASS_THROUGH;
+	}
+	el = view3d_gameview_pick(C, ar, event->mval);
 	if (el < 0) {
 		/* nothing here: the click goes on to Blender's own selection */
 		BL_GameViewSetSelected(-1);
@@ -1252,8 +1259,8 @@ static int gameview_select_exec(bContext *C, wmOperator *op)
 
 void VIEW3D_OT_gameview_select(wmOperatorType *ot)
 {
-	ot->name = "Select Game View Element";
-	ot->description = "Select an element of the Game View (by clicking its avatar, or by its index)";
+	ot->name = "Select Remix View Element";
+	ot->description = "Select an element of the Remix View (by clicking its avatar, or by its index)";
 	ot->idname = "VIEW3D_OT_gameview_select";
 	ot->invoke = gameview_select_invoke;
 	ot->exec = gameview_select_exec;
@@ -1298,8 +1305,8 @@ static int gameview_frame_exec(bContext *C, wmOperator *op)
 
 void VIEW3D_OT_gameview_frame(wmOperatorType *ot)
 {
-	ot->name = "Frame Game View Element";
-	ot->description = "Select an element of the Game View and bring it to the middle of the view";
+	ot->name = "Frame Remix View Element";
+	ot->description = "Select an element of the Remix View and bring it to the middle of the view";
 	ot->idname = "VIEW3D_OT_gameview_frame";
 	ot->exec = gameview_frame_exec;
 	ot->poll = gameview_poll;
@@ -1317,8 +1324,8 @@ static int gameview_refresh_exec(bContext *C, wmOperator *UNUSED(op))
 
 void VIEW3D_OT_gameview_refresh(wmOperatorType *ot)
 {
-	ot->name = "Refresh Game View";
-	ot->description = "Build the Game View's model again now (the game's converter, then every layer's checks)";
+	ot->name = "Refresh Remix View";
+	ot->description = "Build the Remix View's model again now (the game's converter, then every layer's checks)";
 	ot->idname = "VIEW3D_OT_gameview_refresh";
 	ot->exec = gameview_refresh_exec;
 	ot->poll = gameview_poll;
@@ -1326,7 +1333,8 @@ void VIEW3D_OT_gameview_refresh(wmOperatorType *ot)
 
 void view3d_gameview_keymap(wmKeyConfig *keyconf)
 {
-	wmKeyMap *keymap = WM_keymap_find(keyconf, "Game View", SPACE_VIEW3D, 0);
+	/* BGE-Remix P9.7: the Remix View (P7's Game View) */
+	wmKeyMap *keymap = WM_keymap_find(keyconf, "Remix View", SPACE_VIEW3D, 0);
 	WM_keymap_add_item(keymap, "VIEW3D_OT_gameview_select", SELECTMOUSE, KM_PRESS, 0, 0);
 	WM_keymap_add_item(keymap, "VIEW3D_OT_gameview_refresh", F5KEY, KM_PRESS, 0, 0);
 }

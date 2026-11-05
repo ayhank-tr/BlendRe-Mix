@@ -142,6 +142,9 @@ public:
 	 * Remix is not running) */
 	bool SetOption(const char *key, const char *value);
 	bool IsRunning() const { return m_running; }
+	/* BGE-Remix P9.7: the Remix View's statistics line, for the game's
+	 * profile display (draws, lights, textures waiting, refused calls) */
+	std::string StatsLine() const;
 
 private:
 	/* What one mesh hands to Remix (Collect), one entry per surface. */
