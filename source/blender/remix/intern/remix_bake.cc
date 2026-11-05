@@ -437,75 +437,83 @@ void pad_on_card(CardBake &card, int channel)
 	glBindImageTexture(1, 0, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
 }
 
-/* P9.6: a preset's tile. Drawn over UV -band..1 at (n + w) pixels a side
- * (w the band's pixels), kept as n: within the band before the far edges
- * each pixel blends with the one a tile back, so the far edges carry on
- * from the near ones and the tile repeats without a seam.
- * BGE-Remix P10.2: keep_contrast (a random preset's tile): the blend of two
- * unrelated patches has less contrast than either (it showed as ghosted
- * edges on Rock), so each blended pixel is moved away from the tile's mean
- * by 1 / sqrt(the weights' squares' sum), which gives the blend the
- * patches' own spread; normal: the normal map's vectors made unit length
- * again after it. */
-void tile_crossfade(CardBake &card, int channel, int n, int w, bool keep_contrast = false, bool normal = false)
+/* BGE-Remix P10.2 (fix round 1): a random preset's tile made seamless. The
+ * bake's vertex shader places each vertex at its UV (gl_Position = uv * 2 -
+ * 1, gpu_codegen.c), so the card always holds UV 0..1: P9.6's band "drawn
+ * past the near edges" (UV -band..0) was never drawn. Its card of n + w
+ * pixels held UV 0..1 squeezed (the tile 12.5 % coarser than the game's
+ * pattern) and the cross-fade blended unrelated parts of it (Brick's dark
+ * edges, Rock's ghosting).
+ * Now the tile is drawn over UV 0..1 at n pixels (the game's scale) and
+ * made seamless by blending in a copy of itself moved half a tile, near
+ * the edges only (w pixels in from each edge): at the edges the moved copy
+ * alone, whose middle is continuous across the edge; inside, the tile as it
+ * is. Across, then up. keep_contrast: the blend of two unrelated patches is
+ * flatter than either, so each blended pixel is moved away from the mean by
+ * 1 / sqrt(the weights' squares' sum); normal: the normal map's vectors made
+ * unit length again. */
+void tile_offset_blend(CardBake &card, int channel, int n, int w, bool keep_contrast, bool normal)
 {
-	if (!card.chan[channel] || w <= 0) {
+	if (!card.chan[channel] || w <= 0 || 2 * w >= n) {
 		return;
 	}
-	const int m = n + w;
 	std::vector<unsigned char> src;
-	read_value(card, channel, src);  /* (card.size is m here) */
-	std::vector<unsigned char> dst((size_t)n * n * 4);
-	/* P10.2: each channel's mean over the tile */
-	double mean[4] = {0.0, 0.0, 0.0, 0.0};
-	if (keep_contrast) {
-		for (int y = 0; y < n; y++) {
-			for (int x = 0; x < n; x++) {
-				const size_t i = ((size_t)(y + w) * m + (x + w)) * 4;
-				for (int c = 0; c < 4; c++) {
-					mean[c] += src[i + c];
-				}
-			}
+	read_value(card, channel, src);  /* (card.size is n) */
+	std::vector<float> cur(src.size()), next(src.size());
+	for (size_t i = 0; i < src.size(); i++) {
+		cur[i] = src[i];
+	}
+	/* the weight of the moved copy at each distance from the edge */
+	std::vector<float> wt((size_t)n, 0.0f);
+	for (int x = 0; x < n; x++) {
+		const float d = (float)std::min(x, n - 1 - x) / (float)w;  /* 0 at the edge pixels */
+		const float t = std::min(std::max(d, 0.0f), 1.0f);
+		wt[x] = 1.0f - t * t * (3.0f - 2.0f * t);
+	}
+	for (int pass = 0; pass < 2; pass++) {
+		double mean[4] = {0.0, 0.0, 0.0, 0.0};
+		for (size_t i = 0; i < cur.size(); i++) {
+			mean[i & 3] += cur[i];
 		}
 		for (int c = 0; c < 4; c++) {
 			mean[c] /= (double)n * (double)n;
 		}
-	}
-	for (int y = 0; y < n; y++) {
-		const float b = (y >= n - w) ? std::min((y - (n - w) + 0.5f) / (float)w, 1.0f) : 0.0f;
-		for (int x = 0; x < n; x++) {
-			const float a = (x >= n - w) ? std::min((x - (n - w) + 0.5f) / (float)w, 1.0f) : 0.0f;
-			const size_t i00 = ((size_t)(y + w) * m + (x + w)) * 4;
-			const size_t i10 = (a > 0.0f) ? ((size_t)(y + w) * m + (x + w - n)) * 4 : i00;
-			const size_t i01 = (b > 0.0f) ? ((size_t)(y + w - n) * m + (x + w)) * 4 : i00;
-			const size_t i11 = (a > 0.0f && b > 0.0f) ? ((size_t)(y + w - n) * m + (x + w - n)) * 4 :
-			                   (a > 0.0f ? i10 : i01);
-			const float w00 = (1.0f - a) * (1.0f - b), w10 = a * (1.0f - b), w01 = (1.0f - a) * b, w11 = a * b;
-			/* P10.2: the contrast the blend lost (1 where nothing is blended) */
-			const float gain = keep_contrast ? 1.0f / std::sqrt(w00 * w00 + w10 * w10 + w01 * w01 + w11 * w11) :
-			                                   1.0f;
-			float out[4];
-			for (int c = 0; c < 4; c++) {
-				float v = w00 * src[i00 + c] + w10 * src[i10 + c] + w01 * src[i01 + c] + w11 * src[i11 + c];
-				if (keep_contrast && c < 3) {
-					v = (float)mean[c] + (v - (float)mean[c]) * gain;
+		for (int y = 0; y < n; y++) {
+			for (int x = 0; x < n; x++) {
+				const int k = pass == 0 ? x : y;
+				const float a = wt[k];
+				const int mx = pass == 0 ? (x + n / 2) % n : x;
+				const int my = pass == 0 ? y : (y + n / 2) % n;
+				const size_t i = ((size_t)y * n + x) * 4, j = ((size_t)my * n + mx) * 4;
+				const float gain = keep_contrast ? 1.0f / std::sqrt(a * a + (1.0f - a) * (1.0f - a)) : 1.0f;
+				float out[4];
+				for (int c = 0; c < 4; c++) {
+					float v = (1.0f - a) * cur[i + c] + a * cur[j + c];
+					if (keep_contrast && c < 3) {
+						v = (float)mean[c] + (v - (float)mean[c]) * gain;
+					}
+					out[c] = v;
 				}
-				out[c] = v;
-			}
-			if (normal && keep_contrast) {
-				float nx = out[0] / 127.5f - 1.0f, ny = out[1] / 127.5f - 1.0f, nz = out[2] / 127.5f - 1.0f;
-				nz = std::max(nz, 0.0f);
-				const float len = std::sqrt(nx * nx + ny * ny + nz * nz);
-				if (len > 1e-4f) {
-					out[0] = (nx / len + 1.0f) * 127.5f;
-					out[1] = (ny / len + 1.0f) * 127.5f;
-					out[2] = (nz / len + 1.0f) * 127.5f;
+				if (normal) {
+					float nx = out[0] / 127.5f - 1.0f, ny = out[1] / 127.5f - 1.0f, nz = out[2] / 127.5f - 1.0f;
+					nz = std::max(nz, 0.0f);
+					const float len = std::sqrt(nx * nx + ny * ny + nz * nz);
+					if (len > 1e-4f) {
+						out[0] = (nx / len + 1.0f) * 127.5f;
+						out[1] = (ny / len + 1.0f) * 127.5f;
+						out[2] = (nz / len + 1.0f) * 127.5f;
+					}
 				}
-			}
-			for (int c = 0; c < 4; c++) {
-				dst[((size_t)y * n + x) * 4 + c] = (unsigned char)std::min(std::max(out[c] + 0.5f, 0.0f), 255.0f);
+				for (int c = 0; c < 4; c++) {
+					next[i + c] = std::min(std::max(out[c], 0.0f), 255.0f);
+				}
 			}
 		}
+		cur.swap(next);
+	}
+	std::vector<unsigned char> dst(src.size());
+	for (size_t i = 0; i < dst.size(); i++) {
+		dst[i] = (unsigned char)(cur[i] + 0.5f);
 	}
 	GLuint t = make_texture(n, "BGE-Remix bake tile");
 	GLint unpack = 0;
@@ -1075,7 +1083,8 @@ const char *slot_suffix(int slot)
 	}
 }
 
-/* P9.6: the band of a tile's edges that is cross-faded (a share of the tile) */
+/* P9.6: the band of a tile's edges that is cross-faded (a share of the
+ * tile; P10.2: blended with the tile moved half a tile) */
 const float TILE_BAND = 0.125f;
 
 /* P9.6: what a preset's tile is drawn on: a square over UV lo..hi, placed
@@ -1210,12 +1219,14 @@ bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const 
 	const bool tile = bake_is_tile(ma);
 	const TileMode tmode = bake_tile_mode(ma);
 	const int tile_size = size_override >= 16 ? size_override : bake_size(ma);
+	/* (P10.2 fix round 1: always UV 0..1, the card n pixels; the band is
+	 * blended inside the tile, tile_offset_blend) */
 	const int band = (tile && tmode != TILE_WHOLE) ? std::max(1, (int)(tile_size * TILE_BAND + 0.5f)) : 0;
 	ReleaseDM tile_dm = {NULL};
 	float unit[4][4];
 	unit_m4(unit);
 	if (tile) {
-		tile_dm.dm = tile_quad(ma, -(float)band / (float)tile_size, 1.0f);
+		tile_dm.dm = tile_quad(ma, 0.0f, 1.0f);
 		dm = tile_dm.dm;
 		slot = 1;
 		obmat = unit;
@@ -1291,6 +1302,7 @@ bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const 
 		/* P10.2: the tile's way of repeating, and its size (a 2K bake is
 		 * not the 1K one) */
 		key = fnv_v((int)tmode, key);
+		key = fnv_v(2, key);  /* (fix round 1: the tile's blend moved inside) */
 		key = fnv_v(tile_size, key);
 		key = key ? key : 1;
 	}
@@ -1342,7 +1354,7 @@ bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const 
 	glGetIntegerv(GL_CURRENT_PROGRAM, &program);
 	GPU_timer_begin(g_timer);
 	CardBake card;
-	card.size = size + band;
+	card.size = size;
 	for (int c = 0; c < BAKE_CHANNELS; c++) {
 		if (!want[c]) {
 			continue;
@@ -1354,13 +1366,12 @@ bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const 
 		}
 		if (tile) {
 			/* (all of the square is drawn: nothing to pad) */
-			tile_crossfade(card, c, size, band, tmode == TILE_KEEP_CONTRAST, c == GPU_BAKE_NORMAL);
+			tile_offset_blend(card, c, size, band, tmode == TILE_KEEP_CONTRAST, c == GPU_BAKE_NORMAL);
 		}
 		else if (card_finish) {
 			pad_on_card(card, c);
 		}
 	}
-	card.size = size;
 
 	if (card_finish) {
 		/* Remix's images, made on the card */

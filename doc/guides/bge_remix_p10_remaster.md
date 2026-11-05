@@ -81,10 +81,19 @@ suggested fix:
   materials given a preset before keep their version 1 group until the
   preset is picked again. Brick's tile is also baked over UV 0..1 only,
   holding whole repeats, with no cross-fade.
-- Rock's tile (and every random preset's): its cross-faded edges lost
-  contrast (the blend of two unrelated patches is flatter than either),
-  which showed as ghosted edges. The blend now keeps the patches' own
-  contrast.
+- Rock's tile (and every random preset's): P9.6 meant to draw a band past
+  the tile's near edges and cross-fade it into the far ones, but a bake
+  places every vertex at its UV, so the band was never drawn: the tile held
+  the pattern squeezed (12.5 % coarser in Remix than in the game) and its
+  edges blended unrelated parts of it, which showed as ghosted edges. Now
+  the tile is drawn at the game's scale over one repeat and made seamless by
+  blending in a copy of itself moved half a tile, near its edges only, the
+  blend keeping the patches' own contrast.
+- Brick's tile holds whole bricks, so its edges lie on mortar joints: the
+  first PC run's seam measure took the joint at the tile's edge for a seam
+  (the tile is periodic: its edge's step is the same as its middle's). The
+  seam tests now compare the step at a tile's edge with the step half a tile
+  in, too.
 - Classic materials read about 25 levels brighter in Remix than in the game
   (the P9.4 texture wall): Remix's albedo colour is only used when there is
   no albedo image, so a Classic material's Diffuse Intensity (0.8 by
@@ -94,6 +103,28 @@ suggested fix:
   Inspect shows its scale). Face images are left as P8 made them (P8's
   Multitexture scenes draw them by fixed-function OpenGL and were matched
   as they are).
+
+## Classic brightness after the fix (the first PC run)
+
+Remix still draws the Classic tiles brighter than the game: about 12 levels
+at Diffuse Intensity 0.8 and 1.0, 21 at 0.5. In scene-linear light (ACES and
+sRGB undone) Remix adds about the same amount at every intensity (+0.036 to
++0.045), and its brightness rises with Diffuse Intensity as the game's does
+(0.224 against 0.214 per unit): the image's scale is right, and the rest is
+a reflection Remix adds whatever the colour, most likely its own dielectric
+specular (Remix's opaque materials always reflect about 4 % at the surface;
+Blender Internal's Specular Intensity has nothing to set in Remix). The next
+run measures a tile without specular (Specular Intensity 0, roughness 1 in
+Remix) beside them to confirm it. Reported, not gated.
+
+## The catalogue's time
+
+A bake compiles its shader each time, about a second or more on the RTX
+3080 with the debug context the tests use: the full catalogue (14 presets,
+about 200 bakes each) took over an hour on the first PC run. The tests now
+build a catalogue of three presets with 9 entries each, and measure a
+bake's time. Building only the presets an image can be (its kind and main
+colour), on first use, is proposed for users.
 
 ## RTX Remix's own texture tools
 

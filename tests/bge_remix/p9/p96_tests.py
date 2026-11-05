@@ -180,8 +180,15 @@ def _ppm_seam(path):
     dy = float(abs(a[1:] - a[:-1]).mean())
     wx = float(abs(a[:, 0] - a[:, -1]).mean())
     wy = float(abs(a[0] - a[-1]).mean())
+    # BGE-Remix P10.2 (fix round 1): and the step half a tile in, the same
+    # place in a regular pattern's repeat: Brick's tile starts on a joint,
+    # so its wrap-around step is a joint's, as at its middle (the first PC
+    # run: wrap 25.7 / 60.3 against steps 2.1 / 5.3, a periodic tile)
+    hx = float(abs(a[:, a.shape[1] // 2] - a[:, a.shape[1] // 2 - 1]).mean())
+    hy = float(abs(a[a.shape[0] // 2] - a[a.shape[0] // 2 - 1]).mean())
     return {"step_x": round(dx, 2), "wrap_x": round(wx, 2), "step_y": round(dy, 2), "wrap_y": round(wy, 2),
-            "seamless": wx <= SEAM_RATIO * dx + SEAM_SLACK and wy <= SEAM_RATIO * dy + SEAM_SLACK}
+            "half_x": round(hx, 2), "half_y": round(hy, 2),
+            "seamless": wx <= SEAM_RATIO * max(dx, hx) + SEAM_SLACK and wy <= SEAM_RATIO * max(dy, hy) + SEAM_SLACK}
 
 
 def normal(args, out, scenes, E, tests, sheets):
@@ -281,7 +288,10 @@ def normal(args, out, scenes, E, tests, sheets):
 
 def _seam_steps(a, rect, cols, rows, p8):
     """per boundary: the mean pixel step across it, and the median of the
-    steps 2 to 8 pixels either side"""
+    steps 2 to 8 pixels either side; BGE-Remix P10.2 (fix round 1): and the
+    step across the line half a tile in (the same place in a regular
+    pattern's repeat: Brick's joints lie on the tile's edges, so a joint's
+    step is no seam)"""
     import numpy as np
     sub = p8.crop(a, rect)
     left, top = rect[0], rect[1]
@@ -289,14 +299,20 @@ def _seam_steps(a, rect, cols, rows, p8):
     gy = abs(sub[1:] - sub[:-1]).mean(axis=(1, 2))
     res = []
     for g, lines, origin in ((gx, cols, left), (gy, rows, top)):
+        tile = abs(lines[1] - lines[0]) if len(lines) > 1 else 0
         for line in lines:
             i = line - origin - 1
             if i < 9 or i > len(g) - 10:
                 continue
             across = float(g[i - 1:i + 2].max())
             beside = float(np.median(np.concatenate([g[i - 8:i - 1], g[i + 2:i + 9]])))
-            res.append({"at": line, "across": round(across, 2), "beside": round(beside, 2),
-                        "seam": across > SEAM_RATIO * beside + SEAM_SLACK})
+            half = 0.0
+            if tile >= 8:
+                j = i - tile // 2 if i - tile // 2 >= 1 else i + tile // 2
+                if 1 <= j <= len(g) - 2:
+                    half = float(g[j - 1:j + 2].max())
+            res.append({"at": line, "across": round(across, 2), "beside": round(beside, 2), "half": round(half, 2),
+                        "seam": across > SEAM_RATIO * max(beside, half) + SEAM_SLACK})
     return res
 
 

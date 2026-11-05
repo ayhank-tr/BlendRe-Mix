@@ -509,9 +509,44 @@ class PresetBaker:
         return baked_rgb(self.bake(settings, size, colour)[SLOT_ALBEDO], size)
 
 
+def _env_int(name, default):
+    try:
+        return int(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
+def catalogue_keys():
+    """the presets with a catalogue: all of them; the tests name a few
+    (BGE_REMIX_REMASTER_PRESETS, comma separated: fix round 1, the full
+    catalogue timed out the PC's run)"""
+    P = presets_module()
+    env = os.environ.get("BGE_REMIX_REMASTER_PRESETS", "")
+    if env:
+        return [k for k in env.split(",") if k in P.PRESETS]
+    return list(P.ORDER)
+
+
+def catalogue_entries():
+    """the entries a preset's catalogue holds: about 200; the tests fewer
+    (BGE_REMIX_REMASTER_ENTRIES)"""
+    return _env_int("BGE_REMIX_REMASTER_ENTRIES", 0)
+
+
 def catalogue_settings(key):
     """about 200 settings per preset: Scale (log steps), Wear, Wetness when
-    it has one, Seed"""
+    it has one, Seed (the tests: BGE_REMIX_REMASTER_ENTRIES of them, spread
+    over the same range)"""
+    full = _catalogue_settings(key)
+    n = catalogue_entries()
+    if n <= 0 or n >= len(full):
+        return full
+    # (the test's entries: every Scale step, the other settings in turn)
+    step = len(full) / float(n)
+    return [full[int(i * step)] for i in range(n)]
+
+
+def _catalogue_settings(key):
     P = presets_module()
     wet = bool(P.PRESETS[key].get("wet"))
     if key in P.REGULAR:
@@ -546,7 +581,9 @@ def catalogue_folder():
 
 def catalogue_path(key):
     P = presets_module()
-    return os.path.join(catalogue_folder(), "catalogue_%d_%d_%s.npz" % (CATALOGUE_VERSION, P.VERSION, key))
+    n = catalogue_entries()
+    return os.path.join(catalogue_folder(), "catalogue_%d_%d_%s%s.npz" % (CATALOGUE_VERSION, P.VERSION, key,
+                                                                          "_n%d" % n if n > 0 else ""))
 
 
 def catalogue_ready(key):
@@ -579,7 +616,7 @@ def catalogue_load(key):
 
 
 def catalogues_missing():
-    return [k for k in presets_module().ORDER if not catalogue_ready(k)]
+    return [k for k in catalogue_keys() if not catalogue_ready(k)]
 
 
 def build_all_catalogues(progress=None):
@@ -618,7 +655,7 @@ def mesh_metres(row):
     return best or 1.0
 
 
-def fit_image(ima, row=None, keys=None, refine=True, candidates=2, iterations=24):
+def fit_image(ima, row=None, keys=None, refine=True, candidates=None, iterations=None):
     """P10.2: the image matched against every preset's catalogue, the best
     refined by the simplex search. Returns {"preset", "settings", "colour",
     "score", "distance", "parts", "perceptual", "tile_metres", "ranking",
@@ -630,7 +667,12 @@ def fit_image(ima, row=None, keys=None, refine=True, candidates=2, iterations=24
         raise RuntimeError("the image has no pixels")
     target = R.features(rgb)
     main = R.main_colours(R.even_out(R.resample(rgb, R.WORK), 1.0))[0][0]
-    keys = list(keys or P.ORDER)
+    keys = list(keys or catalogue_keys())
+    # (the tests: fewer steps, BGE_REMIX_REMASTER_ITERATIONS and _CANDIDATES)
+    if candidates is None:
+        candidates = _env_int("BGE_REMIX_REMASTER_CANDIDATES", 2)
+    if iterations is None:
+        iterations = _env_int("BGE_REMIX_REMASTER_ITERATIONS", 24)
     ranking = []
     for key in keys:
         if not catalogue_ready(key):

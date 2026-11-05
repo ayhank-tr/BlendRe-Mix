@@ -72,15 +72,34 @@ def screenshot(name):
 # ---------------------------------------------------------------------------
 # fit
 
+def write_progress(what):
+    """(fix round 1: the progress written as it goes, so a timeout shows
+    where it stopped)"""
+    result["progress"] = what
+    try:
+        with open(OUT, "w") as f:
+            json.dump(result, f, indent=1, default=str)
+    except (OSError, TypeError, ValueError):
+        pass
+
+
 def s_catalogue():
     t0 = time.time()
     counts = {}
+    times = {}
 
     def progress(key, done, total):
         counts[key] = total
+        times[key] = round(time.time() - t0, 1)
+        if done == 1 or done == total or done % 5 == 0:
+            write_progress({"step": "catalogue", "preset": key, "done": done, "total": total,
+                            "seconds": round(time.time() - t0, 1)})
     missing = T().catalogues_missing()
     T().build_all_catalogues(progress)
-    return {"built": missing, "entries": counts, "seconds": round(time.time() - t0, 1),
+    secs = time.time() - t0
+    n = sum(counts.values())
+    return {"built": missing, "entries": counts, "seconds": round(secs, 1), "times": times,
+            "seconds_per_bake": round(secs / n, 3) if n else None, "keys": T().catalogue_keys(),
             "folder": T().catalogue_folder(), "missing_after": T().catalogues_missing()}
 
 
@@ -99,8 +118,9 @@ def s_fits():
     from bl_operators import bge_remix_presets as P
     tool = T()
     out = {}
-    size = 512
-    for key in P.ORDER:
+    size = 256
+    for key in FIT.get("presets") or tool.catalogue_keys():
+        write_progress({"step": "fits", "preset": key, "done": sorted(out)})
         t0 = time.time()
         try:
             s = {"Scale": FIT.get("scale_brick", 2.0) if key in P.REGULAR else FIT["settings"]["Scale"],
@@ -154,12 +174,14 @@ def s_fit_walls():
     from bl_operators.bge_remix_remaster import store_fit
     tool = T()
     if tool.catalogues_missing():
+        write_progress({"step": "catalogue (apply)", "missing": tool.catalogues_missing()})
         tool.build_all_catalogues()
     out = {}
     for row in tool.last_audit()["images"]:
         ima = bpy.data.images.get(row["image"])
         if ima is None or not row["image"].startswith("P10P_"):
             continue
+        write_progress({"step": "fit walls", "image": ima.name, "done": sorted(out)})
         rm = ima.bge_remix_remaster
         rm.plan = row["plan"]
         if row["plan"] == 'FIT':
