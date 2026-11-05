@@ -216,8 +216,9 @@ void GVBuilder::LogicStates()
 
 /* the owner's elements laid out with its bricks in columns, one per state
  * (P10.11); false when the owner has no state groups (Layout places them as
- * P7 did). Rows as P7's: the main avatars, then the state groups, sensors,
- * controllers, actuators, properties and the rest above them. */
+ * P7 did). Rows as P7's: the main avatars, then sensors, controllers and
+ * actuators, each column topped by its state's group (the arrows between
+ * the groups bow above everything), then properties and the rest. */
 bool GVBuilder::LayoutStates(const std::vector<int> &els, float z0)
 {
 	bool groups = false;
@@ -233,10 +234,10 @@ bool GVBuilder::LayoutStates(const std::vector<int> &els, float z0)
 		const GVElement &e = elements[i];
 		int row = 0;
 		if (e.flag & GV_EL_SMALL) {
-			if (STRPREFIX(e.kind, "state:")) row = 1;
-			else if (STRPREFIX(e.kind, "sensor:")) row = 2;
-			else if (STRPREFIX(e.kind, "controller:")) row = 3;
-			else if (STRPREFIX(e.kind, "actuator:")) row = 4;
+			if (STRPREFIX(e.kind, "sensor:")) row = 1;
+			else if (STRPREFIX(e.kind, "controller:")) row = 2;
+			else if (STRPREFIX(e.kind, "actuator:")) row = 3;
+			else if (STRPREFIX(e.kind, "state:")) row = 4;
 			else if (STRPREFIX(e.kind, "property:")) row = 5;
 			else row = 6;
 		}
