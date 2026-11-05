@@ -183,7 +183,7 @@ def rtx(args, out, scenes, E, tests, sheets, report_lines):
     S = lambda n: os.path.join(scenes, n + ".blend")  # noqa: E731
     shot = {"BGE_REMIX_P2_SHOT_FRAME": "300"}
     gl = p8.play(args.ours, out, "tw_aces_opengl", S("p9_texture_wall"), shot, frames=p8.REMIX_FRAMES)
-    rtx_run = p8.play(args.ours, out, "tw_aces_remix", S("p9_texture_wall_remix"), p8.REMIX_ENV,
+    rtx_run = p8.play(args.ours, out, "tw_aces_remix", S("p9_texture_wall_remix"), r9.TEXTURE_ENV,
                       frames=p8.REMIX_FRAMES, seconds=r9.TEXTURE_SECONDS, debug=True)
     order, rects = T["order"], T["rects"]
     rows = r9.sphere_compare({"spheres": {"order": order, "rects": rects}}, gl.get("screenshot"),

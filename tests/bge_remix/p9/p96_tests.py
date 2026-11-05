@@ -307,7 +307,7 @@ def rtx(args, out, scenes, E, tests, sheets, report_lines):
     order = P["order"]
     shot = {"BGE_REMIX_P2_SHOT_FRAME": "300"}
     gl = p8.play(args.ours, out, "p96_aces_opengl", S("p9_presets_aces"), shot, frames=p8.REMIX_FRAMES)
-    rt = p8.play(args.ours, out, "p96_aces_remix", S("p9_presets_aces_remix"), p8.REMIX_ENV, frames=p8.REMIX_FRAMES,
+    rt = p8.play(args.ours, out, "p96_aces_remix", S("p9_presets_aces_remix"), r9.TEXTURE_ENV, frames=p8.REMIX_FRAMES,
                  seconds=r9.TEXTURE_SECONDS, debug=True)
     labels = ["tile_" + k for k in order] + ["sphere_" + k for k in order]
     rows = r9.sphere_compare({"spheres": {"order": labels, "rects": P["rects"]}}, gl.get("screenshot"),
@@ -333,7 +333,7 @@ def rtx(args, out, scenes, E, tests, sheets, report_lines):
 
     # S9.6b: the seams, in Remix
     c, d = {}, {}
-    sr = p8.play(args.ours, out, "p96_seams_remix", S("p9_presets_seams_aces_remix"), p8.REMIX_ENV,
+    sr = p8.play(args.ours, out, "p96_seams_remix", S("p9_presets_seams_aces_remix"), r9.TEXTURE_ENV,
                  frames=p8.REMIX_FRAMES, seconds=r9.TEXTURE_SECONDS, debug=True)
     sg = p8.play(args.ours, out, "p96_seams_opengl", S("p9_presets_seams_aces"), shot, frames=p8.REMIX_FRAMES)
     c["the seams' squares ran in Remix"] = bool(sr["ran"])

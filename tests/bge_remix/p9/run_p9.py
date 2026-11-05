@@ -589,8 +589,10 @@ def remix_set(lines):
     names (the same material, wherever its files went)"""
     out = []
     for m in mock_materials(lines):
+        # (with an albedo image Remix does not use the albedo value)
+        skip = {"hash"} | ({"albedo"} if m.get("albedo_tex", "-") != "-" else set())
         out.append(" ".join("%s=%s" % (k, "tex" if k.endswith("_tex") and v != "-" else v)
-                            for k, v in sorted(m.items()) if k != "hash"))
+                            for k, v in sorted(m.items()) if k not in skip))
     return sorted(out)
 
 
@@ -672,8 +674,12 @@ def p93_tests(args, out, scenes, E, tests, sheets):
     a, b = sets["p9_convert_remix"], sets["p9_convert_after_remix"]
     d["Remix's materials: only before"] = [x for x in a if x not in b]
     d["Remix's materials: only after"] = [x for x in b if x not in a]
-    c["Remix gets the same materials before and after (%d before, %d after)" % (len(a), len(b))] = \
-        bool(a) and a == b
+    # (bi_nodes and cy_two_surfaces change on purpose: CONVERT_CHANGED_IN_REMIX)
+    only_a, only_b = [x for x in a if x not in b], [x for x in b if x not in a]
+    c["Remix gets the same materials before and after, but the %d changed on purpose (%d before, %d after; "
+      "%d and %d differ)" % (len(CONVERT_CHANGED_IN_REMIX), len(a), len(b), len(only_a), len(only_b))] = \
+        bool(a) and len(a) == len(b) and len(only_a) <= len(CONVERT_CHANGED_IN_REMIX) and \
+        len(only_b) <= len(CONVERT_CHANGED_IN_REMIX)
     tests["T9.7 Old materials converted on open"] = {"ok": all(c.values()), "checks": c, "detail": d}
     sheets["convert"] = p2.contact_sheet([("before", runs["p9_convert"].get("screenshot")),
                                           ("converted", runs["p9_convert_after"].get("screenshot"))],
@@ -722,6 +728,9 @@ TOL_TWIN = 0.5      # a sphere as the same material with P8's Physical surface
 # P9.8: an RTX run's game plays this long, so the textures it encodes (about
 # a second each for a large bake while Remix runs) are in before the picture
 TEXTURE_SECONDS = 40
+# (counted from Remix's first frame: its start takes about half a minute,
+# and the textures are encoded after it; P9.8's second run)
+TEXTURE_ENV = dict(p8.REMIX_ENV, BGE_REMIX_P2_FROM_REMIX="1")
 # P9.3's materials whose Remix picture changes on purpose (S9.14)
 CONVERT_CHANGED_IN_REMIX = {
     "bi_nodes": "converted, the Blender Internal node graph is baked for Remix (P8 read it otherwise)",
@@ -1269,9 +1278,9 @@ def p93_rtx(args, out, scenes, E, tests, sheets, report_lines):
         return
     S = lambda n: os.path.join(scenes, n + ".blend")  # noqa: E731
     convert_scene(args, out, scenes)
-    a = p8.play(args.ours, out, "cv_before_remix", S("p9_convert_remix"), p8.REMIX_ENV, frames=p8.REMIX_FRAMES,
+    a = p8.play(args.ours, out, "cv_before_remix", S("p9_convert_remix"), TEXTURE_ENV, frames=p8.REMIX_FRAMES,
                 seconds=TEXTURE_SECONDS, debug=True)
-    b = p8.play(args.ours, out, "cv_after_remix", S("p9_convert_after_remix"), p8.REMIX_ENV,
+    b = p8.play(args.ours, out, "cv_after_remix", S("p9_convert_after_remix"), TEXTURE_ENV,
                 frames=p8.REMIX_FRAMES, seconds=TEXTURE_SECONDS, debug=True)
     diffs = rect_diffs(p8.picture(a.get("screenshot")), p8.picture(b.get("screenshot")), C["rects"], C["order"],
                        blur=True)

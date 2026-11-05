@@ -15,6 +15,7 @@
 #   BGE_REMIX_P2_OUT          result JSON
 #   BGE_REMIX_P2_FRAMES       frames to run (default 300)
 #   BGE_REMIX_P2_SECONDS      run at least this long (RTX tests: warm-up)
+#   BGE_REMIX_P2_FROM_REMIX   1: those seconds from the first frame Remix drew
 #   BGE_REMIX_P2_SHOT         PNG screenshot of the game window, taken at
 #   BGE_REMIX_P2_SHOT_FRAME   this frame (default 100; with SECONDS: near the end)
 
@@ -45,7 +46,18 @@ frames = len(state["times"])
 env = os.environ
 max_frames = int(env.get("BGE_REMIX_P2_FRAMES", "300"))
 seconds = float(env.get("BGE_REMIX_P2_SECONDS", "0"))
-elapsed = now - state["start"]
+# BGE-Remix P9.8: BGE_REMIX_P2_FROM_REMIX=1 counts the seconds from the first
+# frame RTX Remix drew (its start takes half a minute; the textures it gets
+# are encoded after it), or from the start if Remix has not drawn in 2 minutes
+if env.get("BGE_REMIX_P2_FROM_REMIX") == "1" and "remix_start" not in state:
+    if bge.render.isRemixDrawing():
+        state["remix_start"] = now
+    elif now - state["start"] > 120.0:
+        state["remix_start"] = state["start"]
+if env.get("BGE_REMIX_P2_FROM_REMIX") == "1":
+    elapsed = now - state["remix_start"] if "remix_start" in state else 0.0
+else:
+    elapsed = now - state["start"]
 
 if frames == 60:
     cam = bge.logic.getCurrentScene().active_camera
