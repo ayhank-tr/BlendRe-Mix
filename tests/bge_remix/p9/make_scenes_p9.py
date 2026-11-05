@@ -875,4 +875,5 @@ def main():
     print("BGE-Remix: wrote", os.path.join(folder, "p9_expected.json"))
 
 
-main()
+if __name__ == "__main__":
+    main()
