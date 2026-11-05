@@ -623,7 +623,8 @@ RTX_CURATED = (
         ("bge_rtx_frame_generation", 'BOOL', "Frame Generation", "DLSS Frame Generation", True),
         ("bge_rtx_reflex", 'REFLEX', "Reflex", "NVIDIA Reflex latency reduction", 1),
         ("bge_rtx_resolution_scale", 'FLOAT', "Resolution Scale",
-         "Remix's resolution scale for its upscalers (a share of the picture size)", 0.75, 0.1, 1.0))),
+         "The share of the picture size Remix renders at before upscaling, with DLSS off (with DLSS on, "
+         "the DLSS setting decides it)", 0.75, 0.1, 1.0))),
     ("Quality", (
         ("bge_rtx_min_bounces", 'INT', "Min Bounces", "Light bounces each path always makes", 1, 0, 16),
         ("bge_rtx_max_bounces", 'INT', "Max Bounces", "Most light bounces a path makes", 4, 0, 16),

@@ -997,109 +997,6 @@ def colour_curve_rtx(args, out, S, E, tests, sheets, report_lines):
                 report_lines.append("      %-6s ours  %s" % (row, "  ".join(str(d["fallback"][k]) for k in ks)))
 
 
-# P9.2b: Remix's settings while a game runs. The first settings test found
-# that Remix takes every setting (its answer 0), that our own code keeps
-# bloom and automatic exposure off, and that texture detail (mip bias)
-# changes little; this one checks the two left: anisotropic filtering (we
-# pass Blender's preference, 2x by default) and upscaling at 1920x1080,
-# where Remix should upscale (at 960x540 turning it off changed nothing).
-# Every play keeps the bridge's log and Remix's own
-SET_DETAIL = ("albedo_image", "normal_map", "alpha_cutout")
-
-
-def bridge_log_path():
-    return os.path.join(os.environ.get("TMP") or os.environ.get("TEMP") or ".", "bge-remix.log")
-
-
-def settings_play(args, out, tag, blend, rtx_set=None, conf=None):
-    """one Remix play; its new bridge log lines and Remix's log kept as
-    <tag>_bridge.log and <tag>_remix-dxvk.log"""
-    bl = bridge_log_path()
-    start = os.path.getsize(bl) if os.path.isfile(bl) else 0
-    conf_path = os.path.join(os.path.dirname(blend), "rtx.conf")
-    if conf:
-        with open(conf_path, "w") as f:
-            f.write("".join("%s = %s\n" % kv for kv in conf))
-    env = dict(p8.REMIX_ENV)
-    if rtx_set:
-        env["BGE_REMIX_RTX_SET"] = rtx_set
-    try:
-        r = p8.play(args.ours, out, tag, blend, env, frames=p8.REMIX_FRAMES, debug=True)
-    finally:
-        if conf and os.path.isfile(conf_path):
-            os.remove(conf_path)
-    text = ""
-    if os.path.isfile(bl):
-        with open(bl, "rb") as f:
-            f.seek(start if os.path.getsize(bl) >= start else 0)
-            text = f.read().decode("utf-8", "replace")
-    with open(os.path.join(out, tag + "_bridge.log"), "w", encoding="utf-8") as f:
-        f.write(text)
-    remix_log = os.path.join(os.path.dirname(blend), "rtx-remix", "logs", "remix-dxvk.log")
-    rtext = ""
-    if os.path.isfile(remix_log):
-        shutil.copyfile(remix_log, os.path.join(out, tag + "_remix-dxvk.log"))
-        with open(remix_log, "r", encoding="utf-8", errors="replace") as f:
-            rtext = f.read()
-    return r.get("screenshot"), text, rtext
-
-
-def settings_rtx(args, out, S, E, tests, sheets, report_lines):
-    R = E.get("remix_spheres")
-    if not R:
-        return
-    import re
-    blend = S("p9_rs_nodes_aces_remix")
-    rows, items = [], []
-
-    def detail_of(png, scale):
-        pic = p8.picture(png)
-        if pic is None:
-            return {}
-        return {k: round(float(p8.crop(pic, [v * scale for v in R["rects"][k]]).reshape(-1, 3).mean(axis=1).std()), 1)
-                for k in SET_DETAIL}
-
-    def add(label, png, base, scale, blog, keys):
-        rows.append({"label": label, "vs_unchanged": p8.picture_diff(base, png) if base and base != png else 0.0,
-                     "detail": detail_of(png, scale),
-                     "answers": sorted(set(m for k in keys for m in re.findall(
-                         r"config %s = \S+ -> \d+" % re.escape(k), blog)))})
-        items.append((label, png))
-
-    # (anisotropic filtering 16x and upscaling off while running: no change,
-    # the previous run). 1920x1080: the scene's own resolution scale 0.5,
-    # which the engine sends before Remix starts, against the same from an
-    # rtx.conf (known to work)
-    size = p8.SIZE
-    p8.SIZE = (1920, 1080)
-    try:
-        gl = p8.play(args.ours, out, "set_1080_opengl", S("p9_rs_nodes_aces"), {"BGE_REMIX_P2_SHOT_FRAME": "300"},
-                     frames=p8.REMIX_FRAMES).get("screenshot")
-        rows.append({"label": "1920x1080 fallback", "vs_unchanged": None, "detail": detail_of(gl, 2), "answers": []})
-        base, blog, _ = settings_play(args, out, "set_1080", blend)
-        add("1920x1080 Remix unchanged", base, base, 2, blog, ["rtx.graphicsPreset"])
-        keys = ["rtx.graphicsPreset", "rtx.resolutionScale"]
-        png, blog, _ = settings_play(args, out, "set_1080_scene_res50", S("p9_rs_nodes_aces_remix_res50"))
-        add("1920x1080 the scene's Resolution Scale 0.5 (the engine)", png, base, 2, blog, keys)
-        png, blog, _ = settings_play(args, out, "set_1080_conf_res50", blend,
-                                     conf=[("rtx.graphicsPreset", "4"), ("rtx.resolutionScale", "0.5")])
-        add("1920x1080 resolution scale 0.5 in rtx.conf (for comparison)", png, base, 2, blog, keys)
-        scene_png, conf_png = items[-2][1], items[-1][1]
-        rows.append({"label": "engine against rtx.conf (0: the same)", "vs_unchanged":
-                     p8.picture_diff(conf_png, scene_png), "detail": {}, "answers": []})
-    finally:
-        p8.SIZE = size
-    tests["S9.13 Remix settings while a game runs (P9.2b, a report)"] = {"ok": True, "checks": {}, "detail": rows}
-    sheets["settings"] = p2.contact_sheet(items, os.path.join(out, "sheet_p9_settings.png"))
-    report_lines += ["", "Remix settings while a game runs (difference from Remix unchanged at that size: 0 = no "
-                     "effect; texture detail: higher is sharper):"]
-    for row in rows:
-        report_lines.append("  %-56s vs unchanged %-6s detail %s" % (row["label"], row["vs_unchanged"],
-                                                                     row["detail"]))
-        if row["answers"]:
-            report_lines.append("      Remix answered: %s" % "; ".join(row["answers"]))
-
-
 def run_pipelines_rtx(args, out):
     """the fallback against Remix: the six spheres and the room, with ACES
     (Remix's tone mappers in turn) and with the view transform"""
@@ -1149,7 +1046,6 @@ def run_pipelines_rtx(args, out):
     p92_lines = []
     p92_rtx(args, out, scenes, E, tests, sheets, p92_lines)
     colour_curve_rtx(args, out, S, E, tests, sheets, p92_lines)
-    settings_rtx(args, out, S, E, tests, sheets, p92_lines)
     sheets["room"] = p2.contact_sheet(items, os.path.join(out, "sheet_p9_room.png"))
     res = {"tests": tests, "sheets": sheets, "all_ok": all(t["ok"] for t in tests.values())}
     lines = ["BGE-Remix P9.1-P9.2 (RTX run: your RTX card, the real RTX Remix runtime)", "=" * 70, ""]

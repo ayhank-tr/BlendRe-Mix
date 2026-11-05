@@ -78,7 +78,9 @@ cut the choice down to two:
   mapper. A setting left alone keeps Remix's default. A scene that sets its
   own resolution scale or light-bounce settings puts Remix's graphics
   preset on Custom, so the preset (Auto picks one per graphics card: Medium
-  on an RTX 3080) does not replace them (P9.2b).
+  on an RTX 3080) does not replace them (P9.2b). Resolution Scale counts
+  only with DLSS off: with DLSS on, the DLSS setting decides the size Remix
+  renders at.
 
 P8's files open as follows: Classic with Remix off stays Classic; Classic
 with Remix on (or rendered with the RTX Remix engine) opens in RTX Remix with
@@ -322,8 +324,10 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
   of their colour in Remix than in the fallback: Remix's ACES converts
   colours in a way the fallback's curve does not copy (P9.2). Very dark
   colours also read a little lighter in Remix.
-- Image textures and normal maps look softer in Remix than in the fallback
-  (P9.2; under study).
+- Image textures and normal maps look softer in Remix than in the fallback,
+  less so at larger window sizes, most likely Remix's denoiser (P9.2b found
+  no Remix setting that changes it: texture detail, anisotropic filtering,
+  upscaling, the graphics preset; to be looked at again after P9.3).
 - In Remix a hemi lamp is sky light: it lights the whole scene, and no lamp
   keeps to its own layer.
 - Remix's lights reach everywhere: a lamp's Distance (and Sphere) does not

@@ -232,14 +232,13 @@ typedef struct CuratedOption {
 	char kind;          /* 'b' bool, 'i' int, 'f' float */
 	const char *def;    /* Remix's default (rtx.conf may differ: only sent once set) */
 	bool preset_quality; /* one a graphics preset sets (P9.2b: needs preset Custom) */
-	bool at_start;       /* one Remix reads only when it starts (P9.2b) */
 } CuratedOption;
 
 static const CuratedOption curated[] = {
 	/* upscaling */
-	{"bge_rtx_frame_generation", "rtx.dlfg.enable", 'b', "True", false, true},
+	{"bge_rtx_frame_generation", "rtx.dlfg.enable", 'b', "True"},
 	{"bge_rtx_reflex", "rtx.reflexMode", 'i', "1"},
-	{"bge_rtx_resolution_scale", "rtx.resolutionScale", 'f', "0.75", true, true},
+	{"bge_rtx_resolution_scale", "rtx.resolutionScale", 'f', "0.75", true},
 	/* quality */
 	{"bge_rtx_min_bounces", "rtx.pathMinBounces", 'i', "1", true},
 	{"bge_rtx_max_bounces", "rtx.pathMaxBounces", 'i', "4", true},
@@ -299,41 +298,6 @@ float BRMX_scene_exposure_offset(const Scene *scene)
 {
 	return (scene && BKE_scene_game_rtx_pipeline(scene) &&
 	        BKE_scene_game_tonemap(scene) == BKE_SCENE_GAME_TONEMAP_ACES) ? 0.3f : 0.0f;
-}
-
-/* BGE-Remix P9.2b: the scene's options Remix reads only when it starts
- * (upscaling's resolution scale, frame generation: set while it runs they
- * changed nothing; from an rtx.conf they did, RTX 3080), sent before Remix
- * starts, with preset Custom first when the scene sets its own quality
- * options. BRMX_scene_options_apply sends them all again once it runs. */
-int BRMX_scene_startup_options_apply(const Scene *scene)
-{
-	const BRMX_Bridge *bridge = BRMX_bridge();
-	IDProperty *props = scene ? scene->id.properties : NULL;
-	char value[32];
-	int i, n = 0;
-	bool own_quality = false;
-	if (!bridge || !props) {
-		return 0;
-	}
-	for (i = 0; i < CURATED_COUNT; i++) {
-		if (curated[i].preset_quality && curated_value(props, &curated[i], value, sizeof(value))) {
-			own_quality = true;
-		}
-	}
-	if (own_quality) {
-		bridge->set_config("rtx.graphicsPreset", "4");
-		n++;
-	}
-	for (i = 0; i < CURATED_COUNT; i++) {
-		if (curated[i].at_start && curated_value(props, &curated[i], value, sizeof(value))) {
-			bridge->set_config(curated[i].key, value);
-			printf("BGE-Remix: RTX Remix setting %s = %s (before Remix starts)\n", curated[i].key, value);
-			n++;
-		}
-	}
-	fflush(stdout);
-	return n;
 }
 
 int BRMX_scene_options_apply(const Scene *scene)
