@@ -675,6 +675,8 @@ function(SETUP_BLENDER_SORTED_LIBS)
 	# BGE-Remix
 	if(WITH_REMIX AND WITH_PYTHON)
 		list_insert_after(BLENDER_SORTED_LIBS "bf_python" "bf_remix")
+		# P10.4: xatlas, used by bf_remix's atlas packing
+		list_insert_after(BLENDER_SORTED_LIBS "bf_remix" "extern_xatlas")
 	endif()
 	if(WITH_REMIX)
 		list(APPEND BLENDER_SORTED_LIBS bf_remix_loader)

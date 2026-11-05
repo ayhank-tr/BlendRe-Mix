@@ -122,3 +122,8 @@ endif()
 if(WITH_REMIX AND WIN32)
 	add_subdirectory(directxtex)
 endif()
+
+# BGE-Remix P10.4: packing small images into atlas pages
+if(WITH_REMIX)
+	add_subdirectory(xatlas)
+endif()
