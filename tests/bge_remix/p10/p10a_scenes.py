@@ -45,7 +45,11 @@ IMAGE_SIZE = 512
 DENSITY_WALL = 10.0          # m: the 64 px image's wall (10 x 10 m, UV 0..1)
 DENSITY_BOX = 1.0            # m: the 2048 px image's box (each face UV 0..1)
 TILE_PRESETS = ('BRICK', 'ROCK')
-CLASSIC_TILES = (("ref080", 0.8, False), ("ref050", 0.5, False), ("ref100", 1.0, False), ("face080", 0.8, True))
+# (label, Diffuse Intensity, a face image, no specular); fix round 1: a
+# matte tile (Specular Intensity 0: roughness 1 in Remix), to tell Remix's
+# own reflection from the colour's scale (reported, not gated)
+CLASSIC_TILES = (("ref080", 0.8, False, False), ("ref050", 0.5, False, False), ("ref100", 1.0, False, False),
+                 ("face080", 0.8, True, False), ("matte080", 0.8, False, True))
 
 # a 5 x 6 block font (the sign's letters, drawn as blocks: no outside fonts)
 FONT = {
@@ -326,19 +330,21 @@ def make_classic(folder, E):
     img = bl_image("P10C_image", noise_image(256, seed=21))
     face = bl_image("P10C_face_image", noise_image(256, seed=21) * np.array((1.0, 0.95, 0.9)))
     rects, tiles = {}, {}
-    half = 1.1
-    for i, (label, ref, use_face) in enumerate(CLASSIC_TILES):
+    half = 0.9
+    for i, (label, ref, use_face, matte) in enumerate(CLASSIC_TILES):
         ma = classic("P10C_" + label, None if use_face else img, ref=ref)
         ma.specular_hardness = 20 + 20 * i
-        x = (i - (len(CLASSIC_TILES) - 1) / 2.0) * 2.6
+        if matte:
+            ma.specular_intensity = 0.0
+        x = (i - (len(CLASSIC_TILES) - 1) / 2.0) * 2.1
         ob = plane(scene, "P10C_" + label, half * 2.0, half * 2.0, (x, 0.0, 0.0), ma)
         if use_face:
             ma.use_face_texture = True
             for d in ob.data.uv_textures.active.data:
                 d.image = face
         rects[label] = m9.layout_rect(x, 0.0, half)
-        tiles[label] = {"material": ma.name, "ref": ref, "face": use_face,
-                        "roughness": (2.0 / (ma.specular_hardness + 2.0)) ** 0.25}
+        tiles[label] = {"material": ma.name, "ref": ref, "face": use_face, "matte": matte,
+                        "roughness": 1.0 if matte else (2.0 / (ma.specular_hardness + 2.0)) ** 0.25}
     lights(scene, black_sky=True)
     finish(scene)
     files = [m9.save_copy(folder, "p10a_classic", remix=0, tone=1),
@@ -354,6 +360,12 @@ FIT_SCALE_BRICK = 2.0
 FIT_TINT = (1.1, 1.0, 0.9)   # (the brightest preset, Snow, stays under 1 times its pattern)
 FIT_TOL = {"Scale": 0.25, "Wear": 0.25, "Wetness": 0.3, "colour": 0.04}
 FAMILIES = {'SKIN_LIGHT': "skin", 'SKIN_MEDIUM': "skin", 'SKIN_DARK': "skin"}
+# fix round 1 (the full catalogue, about 3,800 bakes, timed out the PC's
+# run): the tests' catalogue is three presets of 9 entries, the fit's search
+# short; two presets are fitted again
+TEST_CATALOGUE = {"BGE_REMIX_REMASTER_PRESETS": "BRICK,ROCK,CONCRETE", "BGE_REMIX_REMASTER_ENTRIES": "9",
+                  "BGE_REMIX_REMASTER_ITERATIONS": "4", "BGE_REMIX_REMASTER_CANDIDATES": "1"}
+FIT_PRESETS = ['BRICK', 'ROCK']
 
 
 def make_fit(folder, E):
@@ -367,7 +379,8 @@ def make_fit(folder, E):
     finish(scene)
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, "p10a_fit.blend"), check_existing=False, compress=False)
     E["p10a"]["fit"] = {"file": "p10a_fit", "sign": sign.name, "settings": FIT_SETTINGS, "scale_brick": FIT_SCALE_BRICK,
-                        "tint": FIT_TINT, "tolerance": FIT_TOL, "families": FAMILIES}
+                        "tint": FIT_TINT, "tolerance": FIT_TOL, "families": FAMILIES, "presets": FIT_PRESETS,
+                        "catalogue_env": TEST_CATALOGUE}
 
 
 def make_encode(folder, E):
