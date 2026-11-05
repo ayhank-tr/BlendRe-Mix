@@ -548,8 +548,9 @@ void update_live(KX_Scene *scene)
 		return;
 	}
 	if (r.live_generation != m->generation || (int)r.live.size() != m->element_count) {
-		r.live.assign(m->element_count, GVLive());
-		memset(r.live.empty() ? NULL : &r.live[0], 0, sizeof(GVLive) * r.live.size());
+		GVLive zero;
+		memset(&zero, 0, sizeof(zero));
+		r.live.assign(m->element_count, zero);
 		r.live_ids.assign(m->element_count, LiveId());
 		r.live_prev.assign(m->element_count, std::string());
 		for (int i = 0; i < m->element_count; i++) {

@@ -278,10 +278,21 @@ def _play(op, context, resume, suspend_after, shot):
             rvt.session_reset()
         return {'CANCELLED'}
     S["frame"] += res["frames"]
-    if res["outcome"] == 'SUSPEND':
-        _suspended(context, o)
-    else:
-        _ended(context, o)
+    try:
+        if res["outcome"] == 'SUSPEND':
+            _suspended(context, o)
+        else:
+            _ended(context, o)
+    except Exception as ex:
+        # never stuck in a run that is not there: Stop (No) puts the file back
+        import traceback
+        traceback.print_exc()
+        S["state"] = 'SUSPENDED' if res["outcome"] == 'SUSPEND' else ('ASK_KEEP' if S["suspends"] else 'IDLE')
+        if S["state"] == 'IDLE':
+            bpy.ops.view3d.gameview_file_state(o, action='FREE')
+            rvt.session_reset()
+        op.report({'ERROR'}, "Run: %s" % ex)
+        return {'CANCELLED'}
     return {'FINISHED'}
 
 

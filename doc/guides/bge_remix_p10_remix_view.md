@@ -70,9 +70,10 @@ found too.
   state: each brick's colour (P10.10's states), what fired this frame (a
   green ring), each property's value and each body's contacts beside its
   name. The holograms are drawn over the picture (not hidden behind walls).
-- **Suspend**: the Suspend button over the game, or the Pause key. **Stop**:
-  the Stop button, or the game's exit key (Esc). Nothing can be edited
-  while the game plays.
+- **Suspend**: the Suspend button over the game (top left), or the Pause
+  key. **Stop**: the Stop button, or the game's exit key (Esc). Nothing can
+  be edited while the game plays. A game that hides the mouse cursor hides
+  it here too: use the Pause key then.
 - When suspended, the view goes to **Edit mode**, with the game frozen: the
   objects are where the game had them, the properties hold the game's
   values. Edit anything. The header shows "Suspended" with **Continue...**
@@ -121,4 +122,5 @@ Saving while suspended saves the game's frozen places and values.
   same frame; Remix's picture has no depth, so the holograms are always in
   front (in Check and Edit mode they hide behind walls).
 - RTX Remix keeps running between Suspend and Resume (the game ends, Remix
-  does not), so Resume does not wait for Remix to start again.
+  does not), so Resume does not wait for Remix to start again; the scene is
+  sent to Remix again, so its textures take their usual moment.

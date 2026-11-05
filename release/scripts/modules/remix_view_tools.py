@@ -232,6 +232,8 @@ def game_panels(bl_context):
     the custom properties: the game reads them through Python only)"""
     out = []
     for cls in bpy.types.Panel.__subclasses__():
+        if not getattr(cls, "is_registered", True):
+            continue  # (an old copy after the scripts were reloaded)
         if getattr(cls, "bl_space_type", None) != 'PROPERTIES':
             continue
         if getattr(cls, "bl_context", None) != bl_context:
@@ -1047,6 +1049,8 @@ def _rna_values(data):
             v = getattr(v, "name", None) if is_id_pointer(p) else None
             if v is None:
                 continue
+        elif isinstance(v, set):
+            v = tuple(sorted(v))  # an enum of flags
         elif hasattr(v, "__len__") and not isinstance(v, str):
             v = tuple(v)
         out.append((p.identifier, v))

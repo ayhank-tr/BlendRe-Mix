@@ -28,6 +28,7 @@ import shutil
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROBE = os.path.join(HERE, "p10b_probe.py")
 FRAMES = 30
+RTX_FRAMES = 600
 TOL = 0.051        # one tic's step (a frame may hold one tic more or less than counted)
 
 READ_BACK = r'''
@@ -54,7 +55,7 @@ with open(out, "w") as f:
 '''
 
 
-def probe(args, out, tag, blend, part, env, timeout=900):
+def probe(args, out, tag, blend, part, env, timeout=900, frames=FRAMES):
     import run_p2 as p2
     import run_p8 as p8
     res = os.path.join(out, tag + "_p10b.json")
@@ -68,7 +69,7 @@ def probe(args, out, tag, blend, part, env, timeout=900):
     e.update(env)
     e.update({"BGE_REMIX_P10B_OUT": res, "BGE_REMIX_P10B_PART": part, "BGE_REMIX_P10B_DIR": folder,
               "BGE_REMIX_P10B_SAVE": os.path.join(folder, "p10b_edited.blend"),
-              "BGE_REMIX_P10B_FRAMES": str(FRAMES)})
+              "BGE_REMIX_P10B_FRAMES": str(frames)})
     code, text, secs = p2.run([p2.exe(args.ours, "blender"), "--disable-crash-handler"] + p8.WINDOW +
                               [blend, "--python", PROBE], e, os.path.join(out, tag + ".log"), timeout=timeout,
                               cwd=out)
@@ -471,7 +472,8 @@ def rtx(args, out, scenes, E, tests, sheets, report):
     blend = os.path.join(scenes, V["file"] + ".blend")
     env = dict(p8.REMIX_ENV)
     env["BGE_REMIX_P10B_WAIT"] = "20"
-    r = probe(args, out, "p10b_rtx", blend, "rtx", env, timeout=1800)
+    # (Remix starts with the game's first frame, about 32 s, then needs a moment for its textures)
+    r = probe(args, out, "p10b_rtx", blend, "rtx", env, timeout=1800, frames=RTX_FRAMES)
     s = r.get("steps", {})
     run = s.get("s_rtx_run") or {}
     stats = p8.picture(run.get("shot")) if run.get("shot") else None
