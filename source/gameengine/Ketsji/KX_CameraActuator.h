@@ -108,6 +108,8 @@ private :
 
 	/** Methods Inherited from  CValue */
 	CValue* GetReplica();
+	/* BGE-Remix P10.10: for the live brick states (KX_LogicBrickState) */
+	SCA_IObject *GetTarget() const { return m_ob; }
 	virtual void ProcessReplica();
 	
 

@@ -89,6 +89,11 @@ class SCA_LogicManager
 
 	CTR_Map<STR_HashedString,void*>		m_map_gamemeshname_to_blendobj;
 	CTR_Map<CHashedPtr,void*>			m_map_blendobj_to_gameobj;
+
+	/* BGE-Remix P10.10: the logic ticks this manager ran (BeginFrame) and the
+	 * game time one tick stands for (its fixedtime: 1 / tic rate) */
+	int									m_tick;
+	double								m_tickTime;
 public:
 	SCA_LogicManager();
 	virtual ~SCA_LogicManager();
@@ -108,7 +113,15 @@ public:
 		actua->SetActive(true);
 		actua->Activate(m_activeActuators);
 		actua->AddEvent(event);
+		/* BGE-Remix P10.10: for the live brick states (read only by them) */
+		if (event)
+			actua->SetFiredTick(m_tick);
 	}
+
+	/* BGE-Remix P10.10: the logic tick being run (1 for the first; 0 before
+	 * it) and the game time one tick stands for (seconds) */
+	int		GetTick() const { return m_tick; }
+	double	GetTickTime() const { return m_tickTime; }
 
 	void	AddTriggeredController(SCA_IController* controller, SCA_ISensor* sensor);
 	SCA_EventManager*	FindEventManager(int eventmgrtype);

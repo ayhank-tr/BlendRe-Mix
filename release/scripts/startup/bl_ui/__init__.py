@@ -78,6 +78,7 @@ _modules = [
     "space_time",
     "space_userpref",
     "space_view3d_gameview",  # BGE-Remix P7: before space_view3d, its panels come first
+    "space_view3d_gameview_logic",  # BGE-Remix P10.11: the starting states (Edit mode)
     "space_view3d",
     "space_view3d_toolbar",
     ]

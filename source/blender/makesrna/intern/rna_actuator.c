@@ -61,6 +61,7 @@ static EnumPropertyItem actuator_type_items[] = {
 	{ACT_PARENT, "PARENT", 0, "Parent", ""},
 	{ACT_PROPERTY, "PROPERTY", 0, "Property", ""},
 	{ACT_RANDOM, "RANDOM", 0, "Random", ""},
+	{ACT_REMIX, "REMIX", 0, "RTX Remix", ""},  /* BGE-Remix P10.12 */
 	{ACT_SCENE, "SCENE", 0, "Scene", ""},
 	{ACT_SOUND, "SOUND", 0, "Sound", ""},
 	{ACT_STATE, "STATE", 0, "State", ""},
@@ -114,6 +115,8 @@ static StructRNA *rna_Actuator_refine(struct PointerRNA *ptr)
 			return &RNA_SteeringActuator;
 		case ACT_MOUSE:
 			return &RNA_MouseActuator;
+		case ACT_REMIX:  /* BGE-Remix P10.12 */
+			return &RNA_RemixActuator;
 		default:
 			return &RNA_Actuator;
 	}
@@ -464,6 +467,7 @@ EnumPropertyItem *rna_Actuator_type_itemf(bContext *C, PointerRNA *ptr, Property
 	RNA_enum_items_add_value(&item, &totitem, actuator_type_items, ACT_PARENT);
 	RNA_enum_items_add_value(&item, &totitem, actuator_type_items, ACT_PROPERTY);
 	RNA_enum_items_add_value(&item, &totitem, actuator_type_items, ACT_RANDOM);
+	RNA_enum_items_add_value(&item, &totitem, actuator_type_items, ACT_REMIX);  /* BGE-Remix P10.12 */
 	RNA_enum_items_add_value(&item, &totitem, actuator_type_items, ACT_SCENE);
 	RNA_enum_items_add_value(&item, &totitem, actuator_type_items, ACT_STEERING);
 
@@ -2193,6 +2197,28 @@ static void rna_def_mouse_actuator(BlenderRNA *brna)
 	RNA_def_property_update(prop, NC_LOGIC, NULL);
 }
 
+/* BGE-Remix P10.12: the RTX Remix actuator */
+static void rna_def_remix_actuator(BlenderRNA *brna)
+{
+	StructRNA *srna;
+	PropertyRNA *prop;
+
+	srna = RNA_def_struct(brna, "RemixActuator", "Actuator");
+	RNA_def_struct_ui_text(srna, "RTX Remix Actuator",
+	                       "Actuator that changes one of RTX Remix's own settings while the game plays "
+	                       "(as bge.render.remixSetOption); it does nothing in the Classic pipeline");
+	RNA_def_struct_sdna_from(srna, "bRemixActuator", "data");
+
+	prop = RNA_def_property(srna, "setting", PROP_STRING, PROP_NONE);
+	RNA_def_property_ui_text(prop, "Setting", "The RTX Remix setting to change (rtx.*)");
+	RNA_def_property_update(prop, NC_LOGIC, NULL);
+
+	prop = RNA_def_property(srna, "value", PROP_STRING, PROP_NONE);
+	RNA_def_property_ui_text(prop, "Value",
+	                         "Its value as Remix writes it: True or False, a number, or \"a, b\" for a pair");
+	RNA_def_property_update(prop, NC_LOGIC, NULL);
+}
+
 void RNA_def_actuator(BlenderRNA *brna)
 {
 	rna_def_actuator(brna);
@@ -2215,6 +2241,7 @@ void RNA_def_actuator(BlenderRNA *brna)
 	rna_def_armature_actuator(brna);
 	rna_def_steering_actuator(brna);
 	rna_def_mouse_actuator(brna);
+	rna_def_remix_actuator(brna);  /* BGE-Remix P10.12 */
 }
 
 #endif

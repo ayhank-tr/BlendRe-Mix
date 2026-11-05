@@ -67,6 +67,9 @@ public:
 	void ResetStartTime(float curtime);
 	
 	bAction*	GetAction() { return m_action; }
+	/* BGE-Remix P10.10: for the live brick states (KX_LogicBrickState) */
+	/* asked to play, but another action holds its layer */
+	bool		IsWaitingForLayer() const;
 	void		SetAction(bAction* act) { m_action= act; }
 
 	virtual void DecLink();

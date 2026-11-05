@@ -90,6 +90,7 @@ public:
 		KX_ACT_ARMATURE,
 		KX_ACT_STEERING,
 		KX_ACT_MOUSE,
+		KX_ACT_REMIX,  /* BGE-Remix P10.12: the RTX Remix actuator */
 	};
 
 	SCA_IActuator(SCA_IObject* gameobj, KX_ACTUATOR_TYPE type); 

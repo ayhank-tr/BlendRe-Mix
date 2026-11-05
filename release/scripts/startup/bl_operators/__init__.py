@@ -31,6 +31,7 @@ _modules = [
     "bge_remix_material",
     "bge_remix_convert",
     "bge_remix_presets",
+    "bge_remix_logic",  # BGE-Remix P10.11, P10.12
     "clip",
     "console",
     "file",

@@ -70,6 +70,8 @@ public:
 	virtual bool Update();
 	
 	virtual CValue* GetReplica();
+	/* BGE-Remix P10.10: for the live brick states (KX_LogicBrickState) */
+	bool IsMissingParent() const { return m_mode == KX_PARENT_SET && m_ob == NULL; }
 	virtual void ProcessReplica();
 	virtual void Relink(CTR_Map<CTR_HashedPtr, void*> *obj_map);
 	virtual bool UnlinkObject(SCA_IObject* clientobj);

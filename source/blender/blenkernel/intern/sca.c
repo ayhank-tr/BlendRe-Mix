@@ -164,6 +164,13 @@ void init_sensor(bSensor *sens)
 		js->axis = 1;
 		js->hat = 1;
 		break;
+	case SENS_TIMER:
+	{
+		/* BGE-Remix P10.12 */
+		bTimerSensor *ts = sens->data = MEM_callocN(sizeof(bTimerSensor), "timersens");
+		ts->seconds = 1.0f;
+		break;
+	}
 	default:
 		; /* this is very severe... I cannot make any memory for this        */
 		/* logic brick...                                                    */
@@ -507,6 +514,10 @@ void init_actuator(bActuator *act)
 		ma->object_axis[1] = ACT_MOUSE_OBJECT_AXIS_X;
 		ma->limit_y[0] = DEG2RADF(-90.0f);
 		ma->limit_y[1] = DEG2RADF(90.0f);
+		break;
+	case ACT_REMIX:
+		/* BGE-Remix P10.12 */
+		act->data = MEM_callocN(sizeof(bRemixActuator), "remix act");
 		break;
 	default:
 		; /* this is very severe... I cannot make any memory for this        */

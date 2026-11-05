@@ -84,6 +84,7 @@ void SCA_ISensor::ProcessReplica()
 {
 	SCA_ILogicBrick::ProcessReplica();
 	m_linkedcontrollers.clear();
+	m_firedTick = -1;  /* BGE-Remix P10.10: a new copy has not fired */
 }
 
 bool SCA_ISensor::IsPositiveTrigger()
@@ -226,6 +227,9 @@ void SCA_ISensor::UnregisterToManager()
 
 void SCA_ISensor::ActivateControllers(class SCA_LogicManager* logicmgr)
 {
+	/* BGE-Remix P10.10: a positive pulse, for the live brick states */
+	if (m_state)
+		SetFiredTick(logicmgr->GetTick());
 	for (vector<SCA_IController*>::const_iterator c= m_linkedcontrollers.begin();
 	    c!=m_linkedcontrollers.end();++c)
 	{

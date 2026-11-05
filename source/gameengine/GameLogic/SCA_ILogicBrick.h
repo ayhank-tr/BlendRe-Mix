@@ -52,6 +52,13 @@ protected:
 	int					m_Execute_Ueber_Priority;
 
 	bool				m_bActive;
+	/* BGE-Remix P10.10: the logic tick it last fired (a sensor's positive
+	 * pulse, a controller run, an actuator's positive event; -1: never) and
+	 * whether the converter found its object, target or file missing. Only
+	 * read by the live brick states (KX_LogicBrickState): the game never
+	 * looks at them. */
+	int					m_firedTick;
+	bool				m_missing;
 	CValue*				m_eventval;
 	STR_String			m_text;
 	STR_String			m_name;
@@ -91,6 +98,12 @@ public:
 	{
 		m_bActive=active;
 	}
+
+	/* BGE-Remix P10.10: for the live brick states (KX_LogicBrickState) */
+	void				SetFiredTick(int tick) { m_firedTick = tick; }
+	int					GetFiredTick() const { return m_firedTick; }
+	void				SetMissing(bool missing) { m_missing = missing; }
+	bool				IsMissing() const { return m_missing; }
 
 	// insert in a QList at position corresponding to m_Execute_Priority
 	void			    InsertActiveQList(SG_QList& head)

@@ -280,6 +280,7 @@ const char *sensor_id(short type)
 		case SENS_ACTUATOR: return "ACTUATOR";
 		case SENS_DELAY: return "DELAY";
 		case SENS_ARMATURE: return "ARMATURE";
+		case SENS_TIMER: return "TIMER";  /* BGE-Remix P10.12 */
 		default: return NULL;
 	}
 }
@@ -321,6 +322,7 @@ const char *actuator_id(short type)
 		case ACT_STATE: return "STATE";
 		case ACT_STEERING: return "STEERING";
 		case ACT_VISIBILITY: return "VISIBILITY";
+		case ACT_REMIX: return "REMIX";  /* BGE-Remix P10.12 */
 		default: return NULL;
 	}
 }
@@ -873,6 +875,7 @@ void GVBuilder::Build()
 	Physics();
 	Media();
 	Logic();     /* before Data, Python, Messages, Input: they use the bricks */
+	LogicStates();  /* BGE-Remix P10.11 */
 	Data();
 	Python();
 	Animation();
@@ -1584,6 +1587,11 @@ void GVBuilder::Logic()
 			else if (s->type == SENS_MESSAGE && s->data) {
 				info = std::string("subject ") + ((bMessageSensor *)s->data)->subject;
 			}
+			else if (s->type == SENS_TIMER && s->data) {
+				/* BGE-Remix P10.12 */
+				bTimerSensor *ts = (bTimerSensor *)s->data;
+				info = fmt("after %.2f s%s", ts->seconds, (ts->flag & SENS_TIMER_REPEAT) ? ", repeating" : "");
+			}
 			const int el = Add(id ? fmt("sensor:%s", id).c_str() : "sensor:OTHER", s->name, ob, info.c_str());
 			brick[s] = el;
 			m_brickElement[obname + "/" + s->name] = el;
@@ -1698,11 +1706,28 @@ void GVBuilder::Logic()
 					if (pa && pa->type == ACT_PROP_COPY && !pa->ob) missing = "no object to copy from";
 					break;
 				}
+				case ACT_REMIX: {
+					/* BGE-Remix P10.12 */
+					bRemixActuator *ra = (bRemixActuator *)a->data;
+					if (ra) {
+						BLI_strncpy(elements[el].info, fmt("%s = %s", ra->setting, ra->value).c_str(),
+						            sizeof(elements[el].info));
+					}
+					if (ra && !ra->setting[0]) missing = "no setting chosen";
+					break;
+				}
 				default:
 					break;
 			}
 			if (missing) {
 				Warn(el, "LOG_NO_TARGET", GV_WARN_BLACK, missing);
+			}
+			/* BGE-Remix P10.12: Remix's settings mean nothing to the Classic pipeline */
+			if (a->type == ACT_REMIX && !m_remix) {
+				Warn(el, "RMX_ACTUATOR_CLASSIC", GV_WARN_BLACK,
+				     "the scene does not use RTX Remix (Classic pipeline, or Remix off): this actuator does nothing",
+				     true);
+				m_warn[el].back().layer = GV_LAYER_REMIX;
 			}
 			if (m_conv.converted && !m_conv.bricks.count(obname + "/" + a->name)) {
 				Warn(el, "LOG_NOT_MADE", GV_WARN_BLACK, "the converter made nothing for it");
@@ -2096,7 +2121,8 @@ void GVBuilder::Messages()
 			const bool subject = r.subject.empty() || r.subject == s.subject;
 			const bool addressed = s.to.empty() || s.to == name_of(r.ob);
 			if (subject && addressed) {
-				Shape(GV_SHAPE_ARC, GV_LAYER_MESSAGES, s.el, r.el);
+				const int sh = Shape(GV_SHAPE_ARC, GV_LAYER_MESSAGES, s.el, r.el);
+				shapes[sh].p[7] = 1.0f;  /* BGE-Remix P10.11: an arrowhead at the listener */
 				any = true;
 				heard[i] = true;
 			}
@@ -2607,6 +2633,12 @@ void GVBuilder::Time()
 					Warn(el, "TIM_DELAY_ZERO", GV_WARN_BLACK, "waits no time at all");
 				}
 			}
+			else if (s->type == SENS_TIMER && s->data) {
+				/* BGE-Remix P10.12: the Timer sensor */
+				bTimerSensor *ts = (bTimerSensor *)s->data;
+				Add("time:DELAY", s->name, ob,
+				    fmt("after %.2f s%s", ts->seconds, (ts->flag & SENS_TIMER_REPEAT) ? ", repeating" : "").c_str());
+			}
 			else if ((s->pulse & SENS_PULSE_REPEAT) && s->freq > 0) {
 				Add("time:RHYTHM", s->name, ob, fmt("fires every %d tics", s->freq + 1).c_str());
 			}
@@ -2774,6 +2806,10 @@ void GVBuilder::Layout()
 	for (auto &kv : by_owner) {
 		Object *ob = kv.first;
 		const float z0 = Top(ob) + 0.55f;
+		/* BGE-Remix P10.11: an object with logic: its bricks in a column per state */
+		if (LayoutStates(kv.second, z0)) {
+			continue;
+		}
 		std::map<int, std::vector<int> > rows;
 		for (int i : kv.second) {
 			const GVElement &e = elements[i];

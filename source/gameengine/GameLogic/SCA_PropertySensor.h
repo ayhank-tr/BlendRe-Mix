@@ -73,6 +73,8 @@ public:
 
 	virtual ~SCA_PropertySensor();
 	virtual CValue* GetReplica();
+	/* BGE-Remix P10.10: for the live brick states (KX_LogicBrickState) */
+	const STR_String &GetPropertyName() const { return m_checkpropname; }
 	virtual void Init();
 	bool	CheckPropertyCondition();
 

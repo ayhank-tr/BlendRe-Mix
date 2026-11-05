@@ -334,6 +334,30 @@ static const CuratedOption curated[] = {
 };
 #define CURATED_COUNT ((int)(sizeof(curated) / sizeof(curated[0])))
 
+/* BGE-Remix P10.12: the quality settings (P5.1, BRMX_quality_apply), with the
+ * values BGE-Remix starts with */
+static const CuratedOption quality_options[] = {
+	{NULL, "rtx.graphicsPreset", 'i', "5"},
+	{NULL, "rtx.dlssPreset", 'i', "1"},
+	{NULL, "rtx.qualityDLSS", 'i', "4"},
+	{NULL, "rtx.enableRayReconstruction", 'b', "True"},
+	{NULL, "rtx.volumetrics.enable", 'b', "True"},
+};
+#define QUALITY_OPTION_COUNT ((int)(sizeof(quality_options) / sizeof(quality_options[0])))
+
+int BRMX_setting_get(int index, const char **r_key, char *r_kind, const char **r_default)
+{
+	const CuratedOption *o;
+	if (index < 0 || index >= CURATED_COUNT + QUALITY_OPTION_COUNT) {
+		return 0;
+	}
+	o = index < CURATED_COUNT ? &curated[index] : &quality_options[index - CURATED_COUNT];
+	*r_key = o->key;
+	*r_kind = o->kind;
+	*r_default = o->def;
+	return 1;
+}
+
 /* what was sent ("" = nothing yet: Remix has its default or rtx.conf's) */
 static char curated_sent[CURATED_COUNT][32];
 

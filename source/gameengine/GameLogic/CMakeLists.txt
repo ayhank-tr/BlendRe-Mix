@@ -80,6 +80,7 @@ set(SRC
 	SCA_TimeEventManager.cpp
 	SCA_XNORController.cpp
 	SCA_XORController.cpp
+	SCA_TimerSensor.cpp  # BGE-Remix P10.12
 	Joystick/SCA_Joystick.cpp
 	Joystick/SCA_JoystickEvents.cpp
 
@@ -124,6 +125,7 @@ set(SRC
 	SCA_TimeEventManager.h
 	SCA_XNORController.h
 	SCA_XORController.h
+	SCA_TimerSensor.h  # BGE-Remix P10.12
 	Joystick/SCA_Joystick.h
 	Joystick/SCA_JoystickDefines.h
 	Joystick/SCA_JoystickPrivate.h

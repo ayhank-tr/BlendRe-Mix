@@ -91,6 +91,7 @@
 #include "GPU_probes.h"  /* BGE-Remix P8 Part B */
 #include "GPU_volumes.h"
 #include "KX_Sprites.h"  /* BGE-Remix P8 Part C (P8.20) */
+#include "KX_LogicBrickLog.h"  /* BGE-Remix P10.10 */
 extern "C" {
 #include "BKE_scene.h"  /* BGE-Remix P8 Part B: the pipeline */
 #include "BKE_idprop.h"
@@ -867,6 +868,9 @@ bool KX_KetsjiEngine::NextFrame()
 				scene->LogicUpdateFrame(m_frameTime, true);
 				
 				scene->LogicEndFrame();
+				/* BGE-Remix P10.10: the tests' log of the live brick states
+				 * (BGE_REMIX_P10_BRICK_LOG; nothing when unset) */
+				KX_LogicBrickLogTick(scene);
 	
 				// Actuators can affect the scenegraph
 				m_logger->StartLog(tc_scenegraph, m_kxsystem->GetTimeInSeconds(), true);

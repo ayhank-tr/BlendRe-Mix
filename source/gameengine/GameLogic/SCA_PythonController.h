@@ -79,6 +79,10 @@ class SCA_PythonController : public SCA_IController
 	SCA_PythonController(SCA_IObject* gameobj, int mode);
 	virtual ~SCA_PythonController();
 
+	/* BGE-Remix P10.10: for the live brick states (KX_LogicBrickState) */
+	/* no script, or it failed to compile or to import */
+	bool IsBroken() const;
+
 	virtual CValue* GetReplica();
 	virtual void  Trigger(class SCA_LogicManager* logicmgr);
   

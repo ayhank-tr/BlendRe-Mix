@@ -160,6 +160,18 @@ typedef struct bMessageSensor {
 	char body[64];
 } bMessageSensor;
 
+/* BGE-Remix P10.12: the Timer sensor. It fires once, seconds after its state
+ * becomes active; with SENS_TIMER_REPEAT, every seconds. It counts the game's
+ * logic time as a timer property does, and needs no property.
+ * Stock 2.79b knows neither the type nor this struct: it reads the sensor
+ * without its data, and its converter makes nothing for it (it does nothing
+ * there). */
+typedef struct bTimerSensor {
+	float seconds;
+	short flag;
+	short pad;
+} bTimerSensor;
+
 typedef struct bSensor {
 	struct bSensor *next, *prev;
 	/* pulse and freq are the bool toggle and frame count for pulse mode */
@@ -254,6 +266,8 @@ typedef struct bJoystickSensor {
 #define SENS_ACTUATOR  12
 #define SENS_DELAY     13
 #define SENS_ARMATURE  14
+/* BGE-Remix P10.12: far from stock's values (stock 2.79b ignores it) */
+#define SENS_TIMER     30
 /* sensor->flag */
 #define SENS_SHOW		1
 #define SENS_DEL		2
@@ -328,6 +342,8 @@ typedef struct bJoystickSensor {
 
 
 #define SENS_DELAY_REPEAT		1
+/* BGE-Remix P10.12: timersensor->flag */
+#define SENS_TIMER_REPEAT		1
 // should match JOYINDEX_MAX in SCA_JoystickDefines.h */
 #define SENS_JOY_MAXINDEX		8
 

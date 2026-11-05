@@ -49,6 +49,8 @@
 #include "DNA_object_types.h"
 #include "DNA_material_types.h"
 #include "DNA_sensor_types.h"
+#include "BLI_listbase.h"  /* BGE-Remix P10.10 */
+#include <stddef.h>
 #include "DNA_controller_types.h"
 #include "DNA_actuator_types.h" /* for SENS_ALL_KEYS ? this define is
                                  * probably misplaced */
@@ -70,6 +72,7 @@
 #include "KX_NetworkMessageSensor.h"
 #include "SCA_ActuatorSensor.h"
 #include "SCA_DelaySensor.h"
+#include "SCA_TimerSensor.h"  /* BGE-Remix P10.12 */
 
 
 #include "SCA_PropertySensor.h"
@@ -158,6 +161,22 @@ void BL_ConvertSensors(struct Object* blenderobject,
 							delaysensor->delay,
 							delaysensor->duration,
 							(delaysensor->flag & SENS_DELAY_REPEAT) != 0);
+					}
+					break;
+				}
+
+			case SENS_TIMER:
+				{
+					/* BGE-Remix P10.12: the Timer sensor (the Always event
+					 * manager runs it every tick, as the Delay sensor) */
+					SCA_EventManager* eventmgr = logicmgr->FindEventManager(SCA_EventManager::BASIC_EVENTMGR);
+					const bTimerSensor *timersensor = (const bTimerSensor *)sens->data;
+					if (eventmgr && timersensor)
+					{
+						gamesensor = new SCA_TimerSensor(eventmgr,
+							gameobj,
+							timersensor->seconds,
+							(timersensor->flag & SENS_TIMER_REPEAT) != 0);
 					}
 					break;
 				}
@@ -609,6 +628,13 @@ void BL_ConvertSensors(struct Object* blenderobject,
 				gamesensor->SetTap(tap);
 				gamesensor->SetName(sens->name);
 				gamesensor->SetLogicManager(logicmgr);
+				/* BGE-Remix P10.10: an Actuator sensor watching no actuator of
+				 * its object (the live brick state's Red) */
+				if (sens->type == SENS_ACTUATOR && sens->data) {
+					const char *actname = ((bActuatorSensor *)sens->data)->name;
+					gamesensor->SetMissing(BLI_findstring(&blenderobject->actuators, actname,
+					                                      offsetof(bActuator, name)) == NULL);
+				}
 
 				gameobj->AddSensor(gamesensor);
 

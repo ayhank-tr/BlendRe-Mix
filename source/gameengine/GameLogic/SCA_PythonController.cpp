@@ -170,6 +170,22 @@ void SCA_PythonController::SetNamespace(PyObject*	pythondictionary)
 }
 #endif
 
+/* BGE-Remix P10.10: for the live brick states (KX_LogicBrickState) */
+bool SCA_PythonController::IsBroken() const
+{
+	if (m_scriptText.IsEmpty()) {
+		/* no text (Script) or no module name (Module) */
+		return true;
+	}
+#ifdef WITH_PYTHON
+	if (!m_bModified) {
+		/* compiled or imported: did it work? */
+		return (m_mode == SCA_PYEXEC_SCRIPT) ? (m_bytecode == NULL) : (m_function == NULL);
+	}
+#endif
+	return false;
+}
+
 bool SCA_PythonController::IsTriggered(class SCA_ISensor* sensor)
 {
 	if (std::find(m_triggeredSensors.begin(), m_triggeredSensors.end(), sensor) != 

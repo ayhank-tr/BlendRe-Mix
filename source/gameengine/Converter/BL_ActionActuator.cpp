@@ -172,6 +172,12 @@ CValue* BL_ActionActuator::GetReplica()
 	return replica;
 }
 
+/* BGE-Remix P10.10 */
+bool BL_ActionActuator::IsWaitingForLayer() const
+{
+	return (m_flag & ACT_FLAG_ATTEMPT_PLAY) && !(m_flag & ACT_FLAG_ACTIVE);
+}
+
 bool BL_ActionActuator::Update(double curtime, bool frame)
 {
 	bool bNegativeEvent = false;

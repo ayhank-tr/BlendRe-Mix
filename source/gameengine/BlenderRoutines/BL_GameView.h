@@ -159,7 +159,8 @@ enum {
 	GV_SHAPE_PANEL,        /* a: element whose owner is a camera: a rectangle facing the camera, p[0] half width, p[1] half height, p[2] distance */
 };
 
-/* GVShape: p[6] for LINE and ARC: 1 = between the owners' origins, 0 = between the avatars
+/* GVShape: p[6] for LINE and ARC: 1 = between the owners' origins, 0 = between the avatars;
+ * p[7] for LINE and ARC (BGE-Remix P10.11): 1 = an arrowhead at b (messages, state changes)
  * SPHERE: p[0] radius, p[1..3] centre in the owner's axes (scaled) */
 
 typedef struct GVShape {

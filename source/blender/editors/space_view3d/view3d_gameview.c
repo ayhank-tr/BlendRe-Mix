@@ -508,6 +508,41 @@ static void gv_arc_line(const float a[3], const float b[3], bool arc)
 	glEnd();
 }
 
+/* BGE-Remix P10.11: an arrowhead at b of a LINE or ARC (gv_arc_line's path):
+ * messages to their listeners, State actuators to the states they enter */
+static void gv_arrow_head(const float a[3], const float b[3], bool arc)
+{
+	float dir[3], side[3], up[3];
+	const float z[3] = {0.0f, 0.0f, 1.0f}, x[3] = {1.0f, 0.0f, 0.0f};
+	int i;
+	sub_v3_v3v3(dir, b, a);
+	if (arc) {
+		/* the path's direction at its end (the bow's slope there) */
+		const float h = 0.25f * len_v3v3(a, b) + 0.3f;
+		dir[2] -= 4.0f * h;
+	}
+	if (normalize_v3(dir) < 1e-6f) {
+		return;
+	}
+	cross_v3_v3v3(side, dir, z);
+	if (normalize_v3(side) < 1e-6f) {
+		cross_v3_v3v3(side, dir, x);
+		normalize_v3(side);
+	}
+	cross_v3_v3v3(up, side, dir);
+	glBegin(GL_LINES);
+	for (i = 0; i < 4; i++) {
+		const float ang = (float)(M_PI_2 * i);
+		float co[3];
+		madd_v3_v3v3fl(co, b, dir, -0.18f);
+		madd_v3_v3fl(co, side, cosf(ang) * 0.07f);
+		madd_v3_v3fl(co, up, sinf(ang) * 0.07f);
+		glVertex3fv(b);
+		glVertex3fv(co);
+	}
+	glEnd();
+}
+
 /* the owner's axes without its scale */
 static void gv_owner_axes(Object *ob, float r_x[3], float r_y[3], float r_z[3])
 {
@@ -564,6 +599,9 @@ static void gv_draw_shape(const GVView *gv, const GVShape *s, float alpha)
 			}
 			if (oka && okb) {
 				gv_arc_line(a, b, s->type == GV_SHAPE_ARC);
+				if (s->p[7] != 0.0f) {
+					gv_arrow_head(a, b, s->type == GV_SHAPE_ARC);  /* BGE-Remix P10.11 */
+				}
 			}
 			break;
 		}

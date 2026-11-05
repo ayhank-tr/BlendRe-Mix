@@ -105,6 +105,12 @@ int BRMX_scene_options_apply(const struct Scene *scene);
 /* stops added to the scene's exposure in Remix (P9.2: ACES's calibration) */
 float BRMX_scene_exposure_offset(const struct Scene *scene);
 
+/* BGE-Remix P10.12: the settings the RTX Remix actuator lists (the Render
+ * tab's curated ones, P9.1, and the quality ones, P5.1): Remix's key, its
+ * kind ('b' bool, 'i' int, 'f' float) and its default. Returns 0 past the
+ * end. */
+int BRMX_setting_get(int index, const char **r_key, char *r_kind, const char **r_default);
+
 #ifdef __cplusplus
 }
 #endif
