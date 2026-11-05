@@ -448,7 +448,7 @@ class GAMEVIEW_OT_run_continue(Operator):
         if self.choice == 'START_OVER':
             rvt.unpose(scene)
             gv.run_forget()
-        S["base"] = None
+            S["frame"] = 0
         return _play(self, context, self.choice == 'RESUME', self.suspend_after, self.shot)
 
 
