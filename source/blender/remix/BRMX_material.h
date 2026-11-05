@@ -143,6 +143,14 @@ struct MaterialSpec {
 	/* P8.30: a shadeless material: it glows with its colour image (a baked
 	 * one too: apply_bake) */
 	bool shadeless;
+	/* P9.4: the transform every one of the material's direct textures
+	 * shares, applied to the UVs sent for its faces (apply_uv_transform):
+	 * u' = m[0] u + m[1] v + m[2], v' = m[3] u + m[4] v + m[5] */
+	bool uv_transform = false;
+	float uv_matrix[6] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+	/* P9.4: how the textures' settings went (the Match panel's "filtering
+	 * and wrapping"): Remix's wrap and filter, the UVs, a bake */
+	std::string placement;
 };
 
 /* P8.24: every Remix field of the material and how it gets there */
@@ -159,6 +167,23 @@ bool nodes_need_bake(const Material *ma);
  * BRMX_bake.h): those wired to something other than an image texture read
  * by UV; and whether the albedo's bake carries the opacity */
 unsigned remix_node_bake_slots(const Material *ma, bool *r_alpha = NULL);
+
+/* P9.4: a Blender Internal material's image texture slots to bake (bits of
+ * 1 << BakeSlot): those whose settings Remix cannot take as they are
+ * (influence below 1, a blend other than Mix, several slots in one channel,
+ * coordinates other than UV, the Colors panel, Negative, RGB to intensity,
+ * Stencil, Checker or crop, a projection or mapping other than flat XY), and
+ * all of them when the rest disagree on extension, interpolation or
+ * transform, or share a transform while something else is baked (a bake is
+ * drawn in the mesh's own UVs). bake_slots() adds them. */
+unsigned image_slot_bake_slots(const Material *ma);
+
+/* P9.4: an RTX Remix material's inputs fed by images straight whose
+ * settings disagree (extension, interpolation, transform): baked */
+unsigned remix_node_disagreeing_slots(const Material *ma);
+
+/* P9.4: the material's UV transform on n vertices (nothing when it has none) */
+void apply_uv_transform(const MaterialSpec &s, brb_vertex *v, size_t n);
 
 /* P9.2: the texture cache flips an image's green channel first (a DirectX
  * normal map); never passed to the bridge */

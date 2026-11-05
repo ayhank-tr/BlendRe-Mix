@@ -237,8 +237,9 @@ struct MeshRec {
 	 * materials it keeps alive */
 	std::vector<std::pair<int, Image *>> parts;
 	uint64_t bakes;       /* P8.6: bake_signature() of its materials with procedural textures */
+	uint64_t uvs;         /* P9.4: its materials' texture transforms, in its UVs (uv_signature) */
 	MeshRec() : known(false), geometry(false), hash(0), gen(0), double_sided(false), blend(false), particle(false),
-	            edit(false), categories(0), materials(0), bakes(0) {}
+	            edit(false), categories(0), materials(0), bakes(0), uvs(0) {}
 };
 
 struct MaterialRec {
@@ -254,6 +255,14 @@ struct MaterialRec {
 	MaterialRec() : known(false), hash(0), gen(0), sent_gen(0), blend(false), particle(false), waiting(false),
 	                bake(NULL), bake_signature(0) {}
 };
+
+/* P9.4: a material's texture transform, as a mesh's UVs carry it */
+static uint64_t uv_signature(const brmx::MaterialSpec *s, uint64_t h)
+{
+	const bool on = s && s->uv_transform;
+	h = hash_bytes(&on, sizeof(on), h);
+	return on ? hash_bytes(s->uv_matrix, sizeof(s->uv_matrix), h) : h;
+}
 
 /* The key of an object's mesh record: the object's own mesh, or the mesh
  * shared by all that draw it as it is */
@@ -821,6 +830,7 @@ private:
 			 * them); their blending decides the draw's */
 			r.double_sided = r.blend = r.particle = false;
 			r.categories = 0;
+			uint64_t uvs = 1469598103934665603ull;
 			for (size_t p = 0; p < r.parts.size(); p++) {
 				Material *ma = give_current_material(ob, (short)(r.parts[p].first + 1));
 				Image *ima = r.parts[p].second;
@@ -832,6 +842,16 @@ private:
 				r.blend = r.blend || mr.blend;
 				r.particle = r.particle || mr.particle;
 				r.categories |= mr.spec ? mr.spec->categories : 0u;
+				uvs = uv_signature(mr.spec.get(), uvs);
+			}
+			/* P9.4: a texture's scale, offset, repeats or flip changed: the
+			 * UVs again */
+			if (uvs != r.uvs) {
+				const bool had = r.geometry;
+				r.geometry = build_mesh(ob, em, r, key);
+				if (had && !r.geometry) {
+					m_bridge->mesh_destroy(r.hash);
+				}
 			}
 		}
 		r.gen = m_gen;
@@ -984,6 +1004,7 @@ private:
 		r.double_sided = r.blend = r.particle = false;
 		r.categories = 0;
 		r.parts.clear();
+		r.uvs = 1469598103934665603ull;
 		for (std::map<PartKey, std::vector<uint32_t>>::iterator it = indices.begin(); it != indices.end(); ++it) {
 			if (it->second.empty()) {
 				continue;
@@ -1005,6 +1026,11 @@ private:
 			r.particle = r.particle || mr.particle;
 			r.categories |= mr.spec ? mr.spec->categories : 0u;
 			std::vector<brb_vertex> &pv = verts[part];
+			/* P9.4: the material's texture transform, in the UVs sent */
+			if (mr.spec) {
+				brmx::apply_uv_transform(*mr.spec, pv.data(), pv.size());
+			}
+			r.uvs = uv_signature(mr.spec.get(), r.uvs);
 			brb_surface_desc sd;
 			memset(&sd, 0, sizeof(sd));
 			sd.vertices = pv.data();

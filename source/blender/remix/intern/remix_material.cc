@@ -160,6 +160,11 @@ void defaults(MaterialSpec &s)
 	s.shadeless = false;
 	s.marks.clear();
 	s.nodes_baked = false;
+	/* P9.4: Remix's own wrap (repeat) and filter; the UVs as they are */
+	s.uv_transform = false;
+	const float id[6] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+	memcpy(s.uv_matrix, id, sizeof(s.uv_matrix));
+	s.placement.clear();
 }
 
 TextureRequest texture(Image *ima, int kind, int channel = 0, int flags = 0)
@@ -380,10 +385,336 @@ static void shadeless_glow(const Material *ma, MaterialSpec &s, bool face_image)
 	mark(s, "emissive", MATCH_APPROX, "Shadeless: shown as a glow of its image");
 }
 
+/* ------------------------------------------------------------------------- */
+/* P9.4: a texture's settings as Remix takes them: its wrap and filter modes
+ * (per material in Remix) and a transform of the mesh's UVs (per material
+ * here, on the vertices sent) */
+
+/* wrap modes as brb_material_desc.wrap_u/v: Remix's + 1 */
+enum { WRAP_CLAMP = 1, WRAP_REPEAT = 2, WRAP_MIRRORED = 3, WRAP_CLIP = 4 };
+
+struct Sampling {
+	int wrap_u, wrap_v;
+	bool nearest;
+	float m[6]; /* u' = m0 u + m1 v + m2, v' = m3 u + m4 v + m5 */
+	Sampling() : wrap_u(WRAP_REPEAT), wrap_v(WRAP_REPEAT), nearest(false)
+	{
+		const float id[6] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+		memcpy(m, id, sizeof(m));
+	}
+	bool identity() const
+	{
+		return m[0] == 1.0f && m[1] == 0.0f && m[2] == 0.0f && m[3] == 0.0f && m[4] == 1.0f && m[5] == 0.0f;
+	}
+	bool same(const Sampling &o) const
+	{
+		if (wrap_u != o.wrap_u || wrap_v != o.wrap_v || nearest != o.nearest) {
+			return false;
+		}
+		for (int i = 0; i < 6; i++) {
+			if (std::fabs(m[i] - o.m[i]) > 1e-5f) {
+				return false;
+			}
+		}
+		return true;
+	}
+};
+
+static const char *wrap_name(int w)
+{
+	switch (w) {
+		case WRAP_CLAMP: return "clamp";
+		case WRAP_MIRRORED: return "mirrored repeat";
+		case WRAP_CLIP: return "clip";
+	}
+	return "repeat";
+}
+
+/* An image texture's own settings over a mapping already in m (the slot's
+ * or the Mapping node's): its extension and interpolation, its repeat
+ * counts and its axes flipped. False: something only a bake can draw
+ * (Checker, crop, the Colors panel). */
+static bool image_sampling(const Tex *tex, Sampling &r, std::string *r_why)
+{
+	if (tex->extend == TEX_CHECKER) {
+		if (r_why) *r_why = "the Checker extension";
+		return false;
+	}
+	if (tex->cropxmin != 0.0f || tex->cropymin != 0.0f || tex->cropxmax != 1.0f || tex->cropymax != 1.0f) {
+		if (r_why) *r_why = "a crop";
+		return false;
+	}
+	if (tex->bright != 1.0f || tex->contrast != 1.0f || tex->saturation != 1.0f || tex->rfac != 1.0f ||
+	    tex->gfac != 1.0f || tex->bfac != 1.0f || (tex->flag & TEX_COLORBAND))
+	{
+		if (r_why) *r_why = "the Colors panel (brightness, contrast, saturation, RGB, ramp)";
+		return false;
+	}
+	r.nearest = !(tex->imaflag & TEX_INTERPOL);
+	int wu = WRAP_REPEAT, wv = WRAP_REPEAT;
+	float ru = 1.0f, rv = 1.0f;
+	if (tex->extend == TEX_EXTEND) {
+		wu = wv = WRAP_CLAMP;
+	}
+	else if (tex->extend == TEX_CLIP || tex->extend == TEX_CLIPCUBE) {
+		wu = wv = WRAP_CLIP;
+	}
+	else {
+		/* Repeat: its counts, mirrored when asked (each axis) */
+		ru = (float)std::max<short>(tex->xrepeat, 1);
+		rv = (float)std::max<short>(tex->yrepeat, 1);
+		if (tex->flag & TEX_REPEAT_XMIR) {
+			wu = WRAP_MIRRORED;
+		}
+		if (tex->flag & TEX_REPEAT_YMIR) {
+			wv = WRAP_MIRRORED;
+		}
+	}
+	/* Flip X/Y Axis swaps the image's axes before the repeats */
+	float a[6];
+	memcpy(a, r.m, sizeof(a));
+	if (tex->imaflag & TEX_IMAROT) {
+		const float t[6] = {a[3], a[4], a[5], a[0], a[1], a[2]};
+		memcpy(a, t, sizeof(a));
+	}
+	for (int i = 0; i < 3; i++) {
+		a[i] *= ru;
+		a[3 + i] *= rv;
+	}
+	memcpy(r.m, a, sizeof(a));
+	r.wrap_u = wu;
+	r.wrap_v = wv;
+	return true;
+}
+
+/* the material channels a slot feeds, as bake slots */
+static unsigned slot_channels(const MTex *mtex, bool physical)
+{
+	unsigned c = 0;
+	if (mtex->mapto & (MAP_COL | MAP_ALPHA)) {
+		c |= 1u << BAKE_ALBEDO;
+	}
+	if (!physical && (mtex->mapto & MAP_REF)) {
+		c |= 1u << BAKE_ALBEDO;
+	}
+	if (mtex->mapto & MAP_HAR) {
+		c |= 1u << BAKE_ROUGHNESS;
+	}
+	if (mtex->mapto & MAP_EMIT) {
+		c |= 1u << BAKE_EMISSIVE;
+	}
+	if (mtex->mapto & MAP_NORM) {
+		c |= 1u << BAKE_NORMAL;
+	}
+	if (physical && (mtex->mapto & MAP_RAYMIRR)) {
+		c |= 1u << BAKE_METALLIC;
+	}
+	return c;
+}
+
+/* Why an image slot cannot go to Remix as it is ("": it can), and its
+ * sampling when it can */
+static std::string slot_bake_reason(const Material *ma, const MTex *mtex, bool physical, Sampling &r)
+{
+	const Tex *tex = mtex->tex;
+	if (mtex->texco != TEXCO_UV) {
+		return "coordinates other than UV";
+	}
+	if (mtex->mapping != MTEX_FLAT || mtex->projx != PROJ_X || mtex->projy != PROJ_Y) {
+		return "a projection other than flat X, Y";
+	}
+	if (mtex->texflag & (MTEX_NEGATIVE | MTEX_RGBTOINT | MTEX_STENCIL)) {
+		return (mtex->texflag & MTEX_NEGATIVE) ? "Negative" : (mtex->texflag & MTEX_RGBTOINT) ? "RGB to intensity" :
+		                                                                                         "Stencil";
+	}
+	if (mtex->blendtype != MTEX_BLEND) {
+		return "a blend other than Mix";
+	}
+	if (((mtex->mapto & MAP_COL) && mtex->colfac < 1.0f) || ((mtex->mapto & MAP_ALPHA) && mtex->alphafac < 1.0f) ||
+	    ((mtex->mapto & MAP_HAR) && mtex->hardfac < 1.0f) || ((mtex->mapto & MAP_NORM) && mtex->norfac != 1.0f) ||
+	    (physical && (mtex->mapto & MAP_RAYMIRR) && mtex->raymirrfac < 1.0f))
+	{
+		return "an influence other than 1";
+	}
+	if (!physical && (mtex->mapto & MAP_REF)) {
+		return "diffuse intensity";
+	}
+	if ((mtex->mapto & MAP_NORM) && !((tex->imaflag & TEX_NORMALMAP) && mtex->normapspace == MTEX_NSPACE_TANGENT)) {
+		return (tex->imaflag & TEX_NORMALMAP) ? "a normal map not in tangent space" : "a bump map";
+	}
+	/* the slot's scale and offset, as the game's GLSL maps them
+	 * (gpu_material.c: size * uv + ofs + 0.5 - 0.5 * size) */
+	Sampling s;
+	s.m[0] = mtex->size[0];
+	s.m[2] = mtex->ofs[0] + 0.5f - 0.5f * mtex->size[0];
+	s.m[4] = mtex->size[1];
+	s.m[5] = mtex->ofs[1] + 0.5f - 0.5f * mtex->size[1];
+	std::string why;
+	if (!image_sampling(tex, s, &why)) {
+		return why;
+	}
+	r = s;
+	(void)ma;
+	return "";
+}
+
+struct SlotPlan {
+	unsigned bake;             /* bake slots for the image slots */
+	unsigned direct_slots;     /* MTex indices (bits) that go as they are */
+	std::string why[MAX_MTEX]; /* why a slot is baked */
+	Sampling sampling;         /* the one the direct slots share */
+	bool any_direct;
+	SlotPlan() : bake(0), direct_slots(0), any_direct(false) {}
+};
+
+static void plan_image_slots(const Material *ma, bool physical, unsigned other_bakes, SlotPlan &p)
+{
+	unsigned taken = 0;
+	unsigned slot_ch[MAX_MTEX] = {0};
+	Sampling samp[MAX_MTEX];
+	Image *albedo = NULL;
+	for (int i = 0; i < MAX_MTEX; i++) {
+		const MTex *mtex = ma->mtex[i];
+		if (!mtex || !mtex->tex || (ma->septex & (1 << i)) || mtex->tex->type != TEX_IMAGE || !mtex->tex->ima) {
+			continue;
+		}
+		const unsigned ch = slot_channels(mtex, physical);
+		if (!ch) {
+			continue;
+		}
+		slot_ch[i] = ch;
+		std::string why = slot_bake_reason(ma, mtex, physical, samp[i]);
+		/* an alpha slot on the colour's own image: its alpha, as it is */
+		const bool alpha_only = (mtex->mapto & MAP_ALPHA) && !(mtex->mapto & (MAP_COL | MAP_REF));
+		if (why.empty() && alpha_only && mtex->tex->ima != albedo) {
+			why = "alpha from another image than the colour's";
+		}
+		if (why.empty() && !alpha_only && (taken & ch)) {
+			why = "another slot in the same channel";
+		}
+		if (why.empty() && (mtex->mapto & MAP_COL)) {
+			albedo = mtex->tex->ima;
+		}
+		if (!why.empty()) {
+			p.why[i] = why;
+			p.bake |= ch;
+			/* a channel baked takes the slots before it in it too */
+			for (int j = 0; j < i; j++) {
+				if ((p.direct_slots & (1u << j)) && (slot_ch[j] & ch)) {
+					p.direct_slots &= ~(1u << j);
+					p.why[j] = "another slot in the same channel";
+					p.bake |= slot_ch[j];
+				}
+			}
+		}
+		else {
+			p.direct_slots |= 1u << i;
+		}
+		taken |= ch;
+	}
+	/* the direct ones: one sampling for all, else all baked; a transform
+	 * only with nothing else baked (a bake is drawn in the mesh's UVs) */
+	bool first = true, agree = true;
+	for (int i = 0; i < MAX_MTEX; i++) {
+		if (!(p.direct_slots & (1u << i))) {
+			continue;
+		}
+		if (first) {
+			p.sampling = samp[i];
+			first = false;
+		}
+		else if (!p.sampling.same(samp[i])) {
+			agree = false;
+		}
+	}
+	const bool moved = !first && agree && !p.sampling.identity() && ((p.bake | other_bakes) != 0);
+	if (!agree || moved) {
+		for (int i = 0; i < MAX_MTEX; i++) {
+			if (p.direct_slots & (1u << i)) {
+				p.why[i] = agree ? "a transform while something else is baked" :
+				                   "its extension, interpolation or transform differs from another slot's";
+				p.bake |= slot_ch[i];
+			}
+		}
+		p.direct_slots = 0;
+	}
+	p.any_direct = p.direct_slots != 0;
+}
+
+/* the procedural slots' bakes (BRMX_bake.h) */
+static unsigned procedural_bakes(const Material *ma, bool physical)
+{
+	unsigned b = 0;
+	for (int i = 0; i < MAX_MTEX; i++) {
+		const MTex *mtex = ma->mtex[i];
+		if (mtex && mtex->tex && !(ma->septex & (1 << i)) && GPU_texture_is_procedural(mtex->tex)) {
+			b |= slot_channels(mtex, physical);
+		}
+	}
+	return b;
+}
+
+/* the sampling into the material (Remix's wrap and filter, the UVs) */
+static void apply_sampling(const Sampling &smp, MaterialSpec &s)
+{
+	brb_material_desc &d = s.desc;
+	d.wrap_u = smp.wrap_u;
+	d.wrap_v = smp.wrap_v;
+	d.clamp = (smp.wrap_u == WRAP_CLAMP || smp.wrap_u == WRAP_CLIP) ? 1 : 0;
+	d.filter_nearest = smp.nearest ? 1 : 0;
+	s.placement = std::string("Remix's wrap ") + wrap_name(smp.wrap_u) +
+	              (smp.wrap_v != smp.wrap_u ? std::string(" / ") + wrap_name(smp.wrap_v) : std::string()) +
+	              (smp.nearest ? ", no filtering" : ", filtered");
+	if (!smp.identity()) {
+		s.uv_transform = true;
+		memcpy(s.uv_matrix, smp.m, sizeof(s.uv_matrix));
+		s.placement += "; scale, offset, repeats or flip in the mesh's UVs";
+	}
+}
+
+static const char *bake_field(unsigned ch)
+{
+	if (ch & (1u << BAKE_ALBEDO)) return "albedo";
+	if (ch & (1u << BAKE_ROUGHNESS)) return "roughness";
+	if (ch & (1u << BAKE_NORMAL)) return "normal";
+	if (ch & (1u << BAKE_EMISSIVE)) return "emissive";
+	return "metallic";
+}
+
+}  /* namespace */
+
+unsigned image_slot_bake_slots(const Material *ma)
+{
+	if (!ma || (ma->use_nodes && ma->nodetree)) {
+		return 0;
+	}
+	const bool physical = BKE_material_is_physical(ma);
+	SlotPlan p;
+	plan_image_slots(ma, physical, procedural_bakes(ma, physical), p);
+	return p.bake;
+}
+
+void apply_uv_transform(const MaterialSpec &s, brb_vertex *v, size_t n)
+{
+	if (!s.uv_transform) {
+		return;
+	}
+	const float *m = s.uv_matrix;
+	for (size_t i = 0; i < n; i++) {
+		const float u = v[i].uv[0], w = v[i].uv[1];
+		v[i].uv[0] = m[0] * u + m[1] * w + m[2];
+		v[i].uv[1] = m[3] * u + m[4] * w + m[5];
+	}
+}
+
+namespace {
+
 void image_slots(const Material *ma, MaterialSpec &s, bool physical)
 {
 	brb_material_desc &d = s.desc;
 	Image *albedo_image = NULL;
+	SlotPlan plan;
+	plan_image_slots(ma, physical, procedural_bakes(ma, physical), plan);
 	for (int i = 0; i < MAX_MTEX; i++) {
 		const MTex *mtex = ma->mtex[i];
 		if (!mtex || !mtex->tex || (ma->septex & (1 << i))) {
@@ -399,34 +730,25 @@ void image_slots(const Material *ma, MaterialSpec &s, bool physical)
 			}
 			continue;
 		}
-		if (mtex->texco != TEXCO_UV) {
-			note(s, slot + ": not mapped by UV, left out");
-			mark_slot_fields(s, mtex->mapto, MATCH_NONE, slot + ": not mapped by UV");
+		if (!(plan.direct_slots & (1u << i))) {
+			/* P9.4: baked with the channels it feeds (bake_slots) */
+			if (!plan.why[i].empty()) {
+				const unsigned ch = slot_channels(mtex, physical);
+				note(s, slot + ": " + plan.why[i] + ", baked");
+				for (int b = 0; b < BAKE_SLOTS; b++) {
+					if (ch & (1u << b)) {
+						mark(s, bake_field(1u << b), MATCH_APPROX, slot + ": " + plan.why[i] + ", baked into an image");
+					}
+				}
+			}
 			continue;
-		}
-		if (tex->extend == TEX_EXTEND || tex->extend == TEX_CLIP) {
-			d.clamp = 1;
-		}
-		/* P8.22: Interpolation off: Remix samples it without filtering too */
-		if (tex->type == TEX_IMAGE && !(tex->imaflag & TEX_INTERPOL)) {
-			d.filter_nearest = 1;
 		}
 		if ((mtex->mapto & MAP_COL) && !s.textures[TEX_ALBEDO].image) {
 			s.textures[TEX_ALBEDO] = texture(tex->ima, BRB_TEXTURE_COLOR);
 			albedo_image = tex->ima;
 		}
 		if ((mtex->mapto & MAP_NORM) && !s.textures[TEX_NORMAL].image) {
-			if ((tex->imaflag & TEX_NORMALMAP) && mtex->normapspace == MTEX_NSPACE_TANGENT) {
-				s.textures[TEX_NORMAL] = texture(tex->ima, BRB_TEXTURE_NORMAL);
-			}
-			else if (tex->imaflag & TEX_NORMALMAP) {
-				note(s, slot + ": only tangent-space normal maps are read");
-				mark(s, "normal", MATCH_NONE, slot + ": not a tangent-space normal map");
-			}
-			else {
-				note(s, slot + ": bump map (not a normal map), left out");
-				mark(s, "normal", MATCH_NONE, slot + ": a bump map");
-			}
+			s.textures[TEX_NORMAL] = texture(tex->ima, BRB_TEXTURE_NORMAL);
 		}
 		if ((mtex->mapto & MAP_EMIT) && !s.textures[TEX_EMISSIVE].image) {
 			s.textures[TEX_EMISSIVE] = texture(tex->ima, BRB_TEXTURE_COLOR);
@@ -442,15 +764,14 @@ void image_slots(const Material *ma, MaterialSpec &s, bool physical)
 		if (physical && (mtex->mapto & MAP_RAYMIRR) && !s.textures[TEX_METALLIC].image) {
 			s.textures[TEX_METALLIC] = texture(tex->ima, BRB_TEXTURE_SCALAR);
 		}
-		if ((mtex->mapto & MAP_ALPHA) && tex->ima != albedo_image) {
-			note(s, slot + ": alpha from an image other than the colour texture, left out");
-			mark(s, "opacity", MATCH_NONE, slot + ": alpha from another image than the colour's");
-		}
-		else if ((mtex->mapto & MAP_ALPHA) && tex->ima == albedo_image) {
+		if ((mtex->mapto & MAP_ALPHA) && (tex->ima == albedo_image || tex->ima == s.textures[TEX_ALBEDO].image)) {
 			/* the image's alpha is the opacity (a sprite: material alpha 0,
 			 * the texture brings it back), as BGE draws it */
 			d.opacity = 1.0f;
 		}
+	}
+	if (plan.any_direct) {
+		apply_sampling(plan.sampling, s);
 	}
 }
 
@@ -620,17 +941,30 @@ struct Nodes {
 		return l->fromnode;
 	}
 
+	/* P9.4: the image's extension and interpolation as Remix's wrap and
+	 * filter (per material: the first image's, noted when another's differ) */
 	void image_options(const bNode *img)
 	{
 		const NodeTexImage *t = (const NodeTexImage *)img->storage;
-		if (t) {
-			if (t->interpolation == SHD_INTERP_CLOSEST) {
-				s.desc.filter_nearest = 1;
-			}
-			if (t->extension == SHD_IMAGE_EXTENSION_EXTEND || t->extension == SHD_IMAGE_EXTENSION_CLIP) {
-				s.desc.clamp = 1;
-			}
+		if (!t) {
+			return;
 		}
+		const int wrap = t->extension == SHD_IMAGE_EXTENSION_EXTEND ? WRAP_CLAMP :
+		                 t->extension == SHD_IMAGE_EXTENSION_CLIP ? WRAP_CLIP : WRAP_REPEAT;
+		const bool nearest = t->interpolation == SHD_INTERP_CLOSEST;
+		brb_material_desc &d = s.desc;
+		if (d.wrap_u != 0) {
+			if (d.wrap_u != wrap || (d.filter_nearest != 0) != nearest) {
+				note(s, std::string(img->name) + ": its extension or interpolation differs from another image's; "
+				                                  "Remix takes one per material (the first image's)");
+				mark(s, "filtering and wrapping", MATCH_APPROX, std::string(img->name) + ": differs from another image");
+			}
+			return;
+		}
+		d.wrap_u = d.wrap_v = wrap;
+		d.clamp = wrap != WRAP_REPEAT ? 1 : 0;
+		d.filter_nearest = nearest ? 1 : 0;
+		s.placement = std::string("Remix's wrap ") + wrap_name(wrap) + (nearest ? ", no filtering" : ", filtered");
 	}
 
 	/* A colour socket: its value, or an image in a texture slot */
@@ -886,10 +1220,13 @@ static int socket_index(const ListBase *list, const bNodeSocket *sock)
 }
 
 /* An input fed straight by an image: Blender Internal's Texture node holding
- * an image, read at the Geometry node's UV (as the tree builder wires it).
- * r_output: the texture node's output used (0 Value = the image's alpha,
- * 1 Color, 2 Normal). NULL: none, or not so. */
-static Image *remix_direct_image(const bNodeTree *tree, const bNodeLink *link, int *r_output, const Tex **r_tex)
+ * an image, read at the Geometry node's UV (as the tree builder wires it),
+ * P9.4: or through a Mapping node (scale and location; no rotation, no
+ * clipping), whose transform goes in r_sampling with the image's own
+ * settings. r_output: the texture node's output used (0 Value = the
+ * image's alpha, 1 Color, 2 Normal). NULL: none, or not so (a bake). */
+static Image *remix_direct_image(const bNodeTree *tree, const bNodeLink *link, int *r_output, const Tex **r_tex,
+                                 Sampling *r_sampling = NULL)
 {
 	if (!tree || !link || !link->fromnode || link->fromnode->type != SH_NODE_TEXTURE || !link->fromnode->id) {
 		return NULL;
@@ -900,15 +1237,41 @@ static Image *remix_direct_image(const bNodeTree *tree, const bNodeLink *link, i
 		return NULL;
 	}
 	const bNodeSocket *vec = (const bNodeSocket *)tn->inputs.first;
+	Sampling smp;
 	bool uv = false;
-	for (const bNodeLink *l = (const bNodeLink *)tree->links.first; l; l = l->next) {
-		if (l->tosock == vec) {
-			uv = l->fromnode && l->fromnode->type == SH_NODE_GEOMETRY && l->fromsock &&
-			     strcmp(l->fromsock->name, "UV") == 0;
+	for (int hop = 0; hop < 2 && vec; hop++) {
+		const bNodeLink *in = NULL;
+		for (const bNodeLink *l = (const bNodeLink *)tree->links.first; l; l = l->next) {
+			if (l->tosock == vec) {
+				in = l;
+				break;
+			}
+		}
+		if (!in || !in->fromnode) {
 			break;
 		}
+		if (in->fromnode->type == SH_NODE_GEOMETRY && in->fromsock && strcmp(in->fromsock->name, "UV") == 0) {
+			uv = true;
+			break;
+		}
+		if (hop == 0 && in->fromnode->type == SH_NODE_MAPPING && in->fromnode->storage) {
+			/* the Mapping node: size, then location, on the UV (as its GLSL) */
+			const TexMapping *tm = (const TexMapping *)in->fromnode->storage;
+			if (tm->rot[0] != 0.0f || tm->rot[1] != 0.0f || tm->rot[2] != 0.0f ||
+			    (tm->flag & (TEXMAP_CLIP_MIN | TEXMAP_CLIP_MAX)) || tm->type != TEXMAP_TYPE_POINT)
+			{
+				break;
+			}
+			smp.m[0] = tm->size[0];
+			smp.m[2] = tm->loc[0];
+			smp.m[4] = tm->size[1];
+			smp.m[5] = tm->loc[1];
+			vec = (const bNodeSocket *)in->fromnode->inputs.first;
+			continue;
+		}
+		break;
 	}
-	if (!uv) {
+	if (!uv || !image_sampling(tex, smp, NULL)) {
 		return NULL;
 	}
 	if (r_output) {
@@ -917,8 +1280,82 @@ static Image *remix_direct_image(const bNodeTree *tree, const bNodeLink *link, i
 	if (r_tex) {
 		*r_tex = tex;
 	}
+	if (r_sampling) {
+		*r_sampling = smp;
+	}
 	return tex->ima;
 }
+
+/* P9.4: the inputs fed by images straight and their sampling */
+struct NodeImages {
+	const bNodeLink *links[SH_REMIX_IN_COUNT];
+	Sampling sampling[SH_REMIX_IN_COUNT];
+	bool direct[SH_REMIX_IN_COUNT];
+};
+
+static void node_images(const Material *ma, const bNode *node, NodeImages &r)
+{
+	const bNodeTree *tree = ma->nodetree;
+	for (int i = 0; i < SH_REMIX_IN_COUNT; i++) {
+		r.links[i] = BKE_remix_node_link(tree, node, i);
+		r.direct[i] = r.links[i] && remix_direct_image(tree, r.links[i], NULL, NULL, &r.sampling[i]);
+	}
+}
+
+/* P9.4: the bake slot of an input (-1: none) */
+static int input_bake_slot(int input)
+{
+	switch (input) {
+		case SH_REMIX_IN_ALBEDO: case SH_REMIX_IN_OPACITY: return BAKE_ALBEDO;
+		case SH_REMIX_IN_ROUGHNESS: return BAKE_ROUGHNESS;
+		case SH_REMIX_IN_METALLIC: return BAKE_METALLIC;
+		case SH_REMIX_IN_NORMAL: return BAKE_NORMAL;
+		case SH_REMIX_IN_EMISSIVE: return BAKE_EMISSIVE;
+	}
+	return -1;
+}
+
+}  /* namespace */
+
+unsigned remix_node_disagreeing_slots(const Material *ma)
+{
+	const bNode *node = BKE_material_remix_node(ma);
+	if (!node) {
+		return 0;
+	}
+	NodeImages ni;
+	node_images(ma, node, ni);
+	const Sampling *first = NULL;
+	bool agree = true, other_bakes = false;
+	for (int i = 0; i < SH_REMIX_IN_COUNT; i++) {
+		if (ni.links[i] && !ni.direct[i] && (input_bake_slot(i) >= 0 || i == SH_REMIX_IN_EMISSIVE_INTENSITY)) {
+			other_bakes = true;
+		}
+		if (!ni.direct[i] || input_bake_slot(i) < 0) {
+			continue;
+		}
+		if (!first) {
+			first = &ni.sampling[i];
+		}
+		else if (!first->same(ni.sampling[i])) {
+			agree = false;
+		}
+	}
+	/* agreeing, and no transform or nothing else baked (a bake is drawn in
+	 * the mesh's own UVs): sent as they are */
+	if (agree && (!first || first->identity() || !other_bakes)) {
+		return 0;
+	}
+	unsigned slots = 0;
+	for (int i = 0; i < SH_REMIX_IN_COUNT; i++) {
+		if (ni.direct[i] && input_bake_slot(i) >= 0) {
+			slots |= 1u << input_bake_slot(i);
+		}
+	}
+	return slots;
+}
+
+namespace {
 
 unsigned node_bake_slots(const Material *ma, bool *r_alpha)
 {
@@ -943,6 +1380,8 @@ unsigned node_bake_slots(const Material *ma, bool *r_alpha)
 			slots |= 1u << ins[i].slot;
 		}
 	}
+	/* P9.4: images straight whose settings disagree: baked */
+	slots |= remix_node_disagreeing_slots(ma);
 	/* the opacity: the albedo image's alpha (its texture node's Value), or
 	 * baked into the albedo's alpha */
 	const bNodeLink *op = BKE_remix_node_link(tree, node, SH_REMIX_IN_OPACITY);
@@ -958,17 +1397,6 @@ unsigned node_bake_slots(const Material *ma, bool *r_alpha)
 		}
 	}
 	return slots;
-}
-
-/* an image's sampling settings (P8.22, as the texture slots) */
-static void remix_tex_settings(const Tex *tex, brb_material_desc &d)
-{
-	if (tex->extend == TEX_EXTEND || tex->extend == TEX_CLIP) {
-		d.clamp = 1;
-	}
-	if (!(tex->imaflag & TEX_INTERPOL)) {
-		d.filter_nearest = 1;
-	}
 }
 
 bool from_remix_node(const Material *ma, MaterialSpec &s)
@@ -1035,6 +1463,10 @@ bool from_remix_node(const Material *ma, MaterialSpec &s)
 	/* what is wired in: images straight, the rest baked (bake_slots) */
 	bool baked_alpha = false;
 	s.bake_slots = node_bake_slots(ma, &baked_alpha);
+	/* P9.4: the images sent as they are share one sampling (else they were
+	 * baked: node_bake_slots) */
+	Sampling smp;
+	bool have_smp = false, smp_differs = false;
 	struct In {
 		int input;
 		const char *field;
@@ -1070,7 +1502,8 @@ bool from_remix_node(const Material *ma, MaterialSpec &s)
 		const std::string what = std::string("the node's ") + link->tosock->name;
 		int out = -1;
 		const Tex *tex = NULL;
-		Image *ima = remix_direct_image(tree, link, &out, &tex);
+		Sampling one;
+		Image *ima = remix_direct_image(tree, link, &out, &tex, &one);
 		if (in.input == SH_REMIX_IN_OPACITY) {
 			/* the albedo image's alpha (else baked with the albedo) */
 			if (!baked_alpha && (d.alpha_blend || d.alpha_test)) {
@@ -1095,7 +1528,16 @@ bool from_remix_node(const Material *ma, MaterialSpec &s)
 				mark(s, in.field, MATCH_APPROX, what + ": not the texture's Color");
 			}
 			s.textures[in.tex] = texture(ima, in.kind, channel, flags);
-			remix_tex_settings(tex, d);
+			const int bslot = input_bake_slot(in.input);
+			if (bslot < 0 || !(s.bake_slots & (1u << bslot))) {
+				if (!have_smp) {
+					smp = one;
+					have_smp = true;
+				}
+				else if (!smp.same(one)) {
+					smp_differs = true;
+				}
+			}
 			if (in.input == SH_REMIX_IN_ALBEDO) {
 				set3(d.albedo, 1.0f, 1.0f, 1.0f);
 			}
@@ -1111,6 +1553,23 @@ bool from_remix_node(const Material *ma, MaterialSpec &s)
 			note(s, what + ": only an image texture read by UV reaches Remix here; its own value is sent");
 			mark(s, in.field, MATCH_NONE, what + ": not an image texture read by UV");
 		}
+	}
+	if (have_smp) {
+		Sampling use = smp;
+		if (s.bake_slots && !use.identity()) {
+			/* left with a transform beside a bake (an input that is not
+			 * baked: height, transmittance, subsurface): drawn in the mesh's
+			 * own UVs */
+			const Sampling plain;
+			memcpy(use.m, plain.m, sizeof(use.m));
+			note(s, "an image's scale, offset, repeats or flip are not sent beside a baked input");
+			mark(s, "filtering and wrapping", MATCH_APPROX, "a transform beside a bake: the mesh's own UVs");
+		}
+		if (smp_differs) {
+			note(s, "images that cannot be baked differ in extension, interpolation or transform; the first's is used");
+			mark(s, "filtering and wrapping", MATCH_APPROX, "images differ: the first image's settings");
+		}
+		apply_sampling(use, s);
 	}
 	return true;
 }
@@ -1417,8 +1876,17 @@ void apply_remix_block(const Material *ma, MaterialSpec &s)
 		d.filter_nearest = filter == 1 ? 1 : 0;
 	}
 	/* wrapping: 0 automatic, else Remix's wrap mode + 1 */
-	d.wrap_u = std::min(std::max(b.i("wrap_u"), 0), 4);
-	d.wrap_v = std::min(std::max(b.i("wrap_v"), 0), 4);
+	/* (P9.4: automatic keeps what the textures asked for) */
+	const int wu = std::min(std::max(b.i("wrap_u"), 0), 4), wv = std::min(std::max(b.i("wrap_v"), 0), 4);
+	if (wu > 0) {
+		d.wrap_u = wu;
+	}
+	if (wv > 0) {
+		d.wrap_v = wv;
+	}
+	if (filter == 1 || filter == 2 || wu > 0 || wv > 0) {
+		s.placement = "set in the RTX Remix panel";
+	}
 }
 
 }  /* namespace */
@@ -1575,6 +2043,10 @@ void material_match(const Material *ma, const MaterialSpec &s, std::vector<Field
 		}
 		else if (!row.used) {
 			m.note = unused;
+		}
+		else if (std::string(row.field) == "filtering and wrapping" && !s.placement.empty()) {
+			/* P9.4: which way the textures' settings went */
+			m.note = s.placement + " (" + from + ")";
 		}
 		else if (std::string(row.field) == "categories") {
 			m.note = (s.source == MaterialSpec::REMIX_NODE) ? "set on the RTX Remix Material node" :
