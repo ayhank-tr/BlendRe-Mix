@@ -24,6 +24,10 @@ C:\\BGE-Remix\\transfer\\p0-results.zip, as GitHub's runs did.
                              Remix's debug views (also run_p9_study_rtx.bat)
   run_local.bat p9menu       P9.0: Remix's own menu, tried by hand (also
                              run_p9_menu.bat)
+  run_local.bat smoke        the crash check: Blender's window doing what a
+                             person does by hand, with the real RTX Remix
+                             runtime, a crash's stack in the report (also
+                             run_smoke.bat in the smoke folder)
   run_local.bat p10rtx       P10's RTX run: the texture remaster, the Remix
                              View's Run mode and the logic bricks against
                              Remix (also run_p10_rtx.bat in the p10 folder)
@@ -55,7 +59,7 @@ MOCK_SHIM = os.path.join(LOCAL, "mock_shim")
 RESULTS = os.path.join(LOCAL, "results")
 HERE = os.path.dirname(os.path.abspath(__file__))
 PHASES = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10"]
-EXTRA = ["p8rtx", "p8diag", "p9rtx", "p9study", "p9studyrtx", "p9menu", "p10rtx"]  # only when asked for
+EXTRA = ["p8rtx", "p8diag", "p9rtx", "p9study", "p9studyrtx", "p9menu", "p10rtx", "smoke"]  # only when asked for
 
 
 def say(text=""):
@@ -149,6 +153,8 @@ def commands():
                                                                    "--out", os.path.join(RESULTS, "p10")],
         "p10rtx": run("p10", "run_p10.py") + ["--ours", OURS, "--rtx", "--results", RESULTS,
                                               "--out", os.path.join(RESULTS, "p10rtx")],
+        # the crash check: Blender's window doing what a person does, real Remix
+        "smoke": run("smoke", "run_smoke.py") + ["--ours", OURS, "--out", os.path.join(RESULTS, "smoke")],
     }
 
 

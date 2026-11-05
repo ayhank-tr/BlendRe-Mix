@@ -211,7 +211,8 @@ def t_log_neutral(args, out, scenes, E, tests):
     traces = {}
     runs = {}
     for tag, log in (("p10c_trace_log", True), ("p10c_trace_nolog", False)):
-        path = os.path.join(out, tag + ".json")
+        # (its own name: <tag>.json is the play's result file, which would overwrite it)
+        path = os.path.join(out, tag + "_trace.json")
         if os.path.isfile(path):
             os.remove(path)
         runs[tag] = play_logged(args, out, tag, blend, STATES_FRAMES, {"BGE_REMIX_P10C_TRACE": path}, log=log)

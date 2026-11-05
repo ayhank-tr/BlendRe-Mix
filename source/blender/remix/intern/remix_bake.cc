@@ -1210,6 +1210,13 @@ bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const 
 	if (!slots || (!dm && !bake_is_tile(ma))) {
 		return false;
 	}
+	/* BGE-Remix P10 fix: Blender's GLSL drawing sizes its tables by the
+	 * derived mesh's material slots and writes past them when there are none
+	 * (a crash later, elsewhere): such a mesh is never drawn */
+	if (dm && dm->totmat <= 0) {
+		r.error = "its mesh has no material slots set up (an internal error: the bake was skipped)";
+		return false;
+	}
 	/* P9.6: a preset's material: one seamless tile, whatever the mesh (its
 	 * band drawn past the near edges, cross-faded into the far ones).
 	 * BGE-Remix P10.2: a regular preset (Brick) is drawn over UV 0..1 only:

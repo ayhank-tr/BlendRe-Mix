@@ -124,8 +124,19 @@ def holder(scene, name, location):
     return ob
 
 
+def _logic_ctx(ob):
+    """the logic editor's add operators poll for an active, editable object:
+    named here, whichever object the scene has active"""
+    ctx = bpy.context.copy()
+    ctx["object"] = ob
+    ctx["active_object"] = ob
+    if ob.users_scene:
+        ctx["scene"] = ob.users_scene[0]
+    return ctx
+
+
 def sensor(ob, kind, name, **values):
-    bpy.ops.logic.sensor_add(type=kind, object=ob.name)
+    bpy.ops.logic.sensor_add(_logic_ctx(ob), type=kind, object=ob.name)
     s = ob.game.sensors[-1]
     s.name = name
     for k, v in values.items():
@@ -134,7 +145,7 @@ def sensor(ob, kind, name, **values):
 
 
 def controller(ob, kind, name, state=1, **values):
-    bpy.ops.logic.controller_add(type=kind, object=ob.name)
+    bpy.ops.logic.controller_add(_logic_ctx(ob), type=kind, object=ob.name)
     c = ob.game.controllers[-1]
     c.name = name
     c.states = state
@@ -144,7 +155,7 @@ def controller(ob, kind, name, state=1, **values):
 
 
 def actuator(ob, kind, name, **values):
-    bpy.ops.logic.actuator_add(type=kind, object=ob.name)
+    bpy.ops.logic.actuator_add(_logic_ctx(ob), type=kind, object=ob.name)
     a = ob.game.actuators[-1]
     a.name = name
     for k, v in values.items():

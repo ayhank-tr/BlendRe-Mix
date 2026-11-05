@@ -48,8 +48,11 @@ def make_scenes(ours, out):
 
 
 def track_modules():
+    """the tracks' test modules; BGE_REMIX_P10_TRACKS (comma separated, e.g.
+    "p10a,p10c") runs only those (a fix round's reruns)"""
     import importlib
-    return [(t, importlib.import_module(t + "_tests")) for t in TRACKS]
+    only = [t.strip() for t in os.environ.get("BGE_REMIX_P10_TRACKS", "").split(",") if t.strip()]
+    return [(t, importlib.import_module(t + "_tests")) for t in TRACKS if not only or t in only]
 
 
 def summary(title, tests, sheets, report_lines, name):

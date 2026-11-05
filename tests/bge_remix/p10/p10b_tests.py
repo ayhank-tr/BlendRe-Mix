@@ -103,7 +103,8 @@ def _base(r):
 
 MODE_PANELS = {
     "CHECK": {"GAMEVIEW_PT_element", "GAMEVIEW_PT_warnings", "GAMEVIEW_PT_targets", "GAMEVIEW_PT_model"},
-    "DEBUG": {"GAMEVIEW_PT_targets", "GAMEVIEW_PT_inspect", "GAMEVIEW_PT_remix_stats"},
+    "DEBUG": {"GAMEVIEW_PT_targets", "GAMEVIEW_PT_inspect", "GAMEVIEW_PT_remix_stats",
+              "GAMEVIEW_PT_remaster_preview"},  # (P10.5: the remaster preview)
     "EDIT": {"GAMEVIEW_PT_edit_element", "GAMEVIEW_PT_settings_hub"},
     "RUN": {"GAMEVIEW_PT_run"},
 }
