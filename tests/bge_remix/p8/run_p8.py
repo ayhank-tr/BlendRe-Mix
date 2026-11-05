@@ -456,7 +456,12 @@ def picture(path):
         return None
     if not path or not os.path.isfile(path):
         return None
-    return np.asarray(Image.open(path).convert("RGB"), dtype=np.float64)
+    try:
+        return np.asarray(Image.open(path).convert("RGB"), dtype=np.float64)
+    except OSError:
+        # (an empty or broken screenshot: the window was 0 x 0 when it was
+        # taken; the test that needed it fails, the run goes on)
+        return None
 
 
 def crop(a, rect):

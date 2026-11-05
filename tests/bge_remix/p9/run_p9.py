@@ -588,7 +588,12 @@ def remix_set(lines):
     """the fake runtime's materials, without their hashes and texture file
     names (the same material, wherever its files went)"""
     out = []
+    # (each material as Remix last got it: one sent before its textures were
+    # encoded is sent again with them, under the same hash)
+    final = {}
     for m in mock_materials(lines):
+        final[m.get("hash")] = m
+    for m in final.values():
         # (with an albedo image Remix does not use the albedo value)
         skip = {"hash"} | ({"albedo"} if m.get("albedo_tex", "-") != "-" else set())
         out.append(" ".join("%s=%s" % (k, "tex" if k.endswith("_tex") and v != "-" else v)
