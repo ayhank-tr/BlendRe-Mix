@@ -6,7 +6,7 @@ newest such download from C:\\BGE-Remix\\transfer, runs the phases' tests on
 this PC's graphics card, and packs the results as
 C:\\BGE-Remix\\transfer\\p0-results.zip, as GitHub's runs did.
 
-  run_local.bat              every phase (P0 to P9)
+  run_local.bat              every phase (P0 to P10)
   run_local.bat p8           only P8 (any list works: p4 p8)
   run_local.bat p8rtx        P8's RTX run: the real RTX Remix runtime, every
                              benchmark target, the picture sheets (also
@@ -24,6 +24,9 @@ C:\\BGE-Remix\\transfer\\p0-results.zip, as GitHub's runs did.
                              Remix's debug views (also run_p9_study_rtx.bat)
   run_local.bat p9menu       P9.0: Remix's own menu, tried by hand (also
                              run_p9_menu.bat)
+  run_local.bat p10rtx       P10's RTX run: the texture remaster, the Remix
+                             View's Run mode and the logic bricks against
+                             Remix (also run_p10_rtx.bat in the p10 folder)
 
 Needs, once: Python 3 with pillow and numpy (python -m pip install pillow
 numpy), and the official Blender 2.79b unpacked into
@@ -51,8 +54,8 @@ MOCK = os.path.join(LOCAL, "mock")
 MOCK_SHIM = os.path.join(LOCAL, "mock_shim")
 RESULTS = os.path.join(LOCAL, "results")
 HERE = os.path.dirname(os.path.abspath(__file__))
-PHASES = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9"]
-EXTRA = ["p8rtx", "p8diag", "p9rtx", "p9study", "p9studyrtx", "p9menu"]  # only when asked for
+PHASES = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10"]
+EXTRA = ["p8rtx", "p8diag", "p9rtx", "p9study", "p9studyrtx", "p9menu", "p10rtx"]  # only when asked for
 
 
 def say(text=""):
@@ -141,6 +144,11 @@ def commands():
                                              "--out", os.path.join(RESULTS, "p9study")],
         "p9studyrtx": run("p9", "run_p9.py") + ["--ours", OURS, "--rtx", "--out", os.path.join(RESULTS, "p9studyrtx")],
         "p9menu": run("p9", "run_p9.py") + ["--ours", OURS, "--menu", "--out", os.path.join(RESULTS, "p9menu")],
+        # P10: the texture remaster, the Remix View's edit and run, the logic bricks
+        "p10": run("p10", "run_p10.py") + ["--ours", OURS] + off + ["--mock", MOCK, "--normal", "--results", RESULTS,
+                                                                   "--out", os.path.join(RESULTS, "p10")],
+        "p10rtx": run("p10", "run_p10.py") + ["--ours", OURS, "--rtx", "--results", RESULTS,
+                                              "--out", os.path.join(RESULTS, "p10rtx")],
     }
 
 
@@ -150,7 +158,7 @@ def clear_phase(phase):
     if phase == "p0":
         for name in os.listdir(RESULTS):
             path = os.path.join(RESULTS, name)
-            if not re.match(r"^p\d$", name) and name not in ("local.txt", "crashes.txt"):
+            if not re.match(r"^p\d+$", name) and name not in ("local.txt", "crashes.txt"):
                 if os.path.isdir(path):
                     shutil.rmtree(path, ignore_errors=True)
                 else:
