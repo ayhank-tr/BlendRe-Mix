@@ -534,6 +534,12 @@ def catalogue_settings(key):
 
 
 def catalogue_folder():
+    """Blender's user folder (datafiles/bge_remix_remaster); the tests give
+    their own (BGE_REMIX_REMASTER_CATALOGUE)"""
+    env = os.environ.get("BGE_REMIX_REMASTER_CATALOGUE")
+    if env:
+        os.makedirs(env, exist_ok=True)
+        return env
     return bpy.utils.user_resource('DATAFILES', "bge_remix_remaster", create=True)
 
 
@@ -559,7 +565,7 @@ def catalogue_build(key):
             f = R.features(rgb)
             rows.append(R.pack(f))
             vals.append([float(s[n]) for n in names])
-            mains.append(R.main_colours(rgb)[0][0])
+            mains.append(R.main_colours(R.even_out(rgb, 1.0))[0][0])
             yield i + 1, len(settings)
     np.savez(catalogue_path(key), names=np.array(names), settings=np.array(vals), features=np.array(rows),
              mains=np.array(mains))
@@ -696,7 +702,8 @@ def fit_image(ima, row=None, keys=None, refine=True, candidates=2, iterations=24
                 s, d = start, d0
                 rgb_fit = None
             if best is None or d < best["distance"]:
-                bake_main = R.main_colours(rgb_fit)[0][0] if rgb_fit is not None else cat["mains"][i0].tolist()
+                bake_main = R.main_colours(R.even_out(rgb_fit, 1.0))[0][0] if rgb_fit is not None else \
+                    cat["mains"][i0].tolist()
                 default = np.array(P.PRESETS[key]["colour"], dtype=np.float64)
                 colour = np.clip(default * np.array(main) / np.maximum(np.array(bake_main), 1e-4), 0.0, 1.0)
                 fit_f = R.features(rgb_fit) if rgb_fit is not None else R.unpack(cat["features"][i0])
@@ -959,6 +966,8 @@ def preview_clear():
             bpy.data.meshes.remove(me)
     for ma in [m for m in bpy.data.materials if m.get(PREVIEW_KEY) and m.users == 0]:
         bpy.data.materials.remove(ma)
+    for tex in [t for t in bpy.data.textures if t.get(PREVIEW_KEY) and t.users == 0]:
+        bpy.data.textures.remove(tex)
     for ima in [i for i in bpy.data.images if i.get(PREVIEW_KEY) and i.users == 0]:
         bpy.data.images.remove(ima)
 
