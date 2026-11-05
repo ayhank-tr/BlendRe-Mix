@@ -434,6 +434,12 @@ def run_pipelines(args, out):
     c["ACES: Remix's global tone mapper finished with ACES"] = sent["rtx.tonemappingMode"] == ["0"] and \
         sent["rtx.tonemap.finalizeWithACES"] == ["True"]
     c["a curated setting reaches Remix (Max Bounces 8)"] = sent["rtx.pathMaxBounces"] == ["8"]
+    # P9.2b: a scene's own quality option: graphics preset Custom first
+    order = [l for l in lines if l.startswith("Config rtx.graphicsPreset=") or l.startswith("Config rtx.pathMaxBounces=")]
+    d["ACES file: preset and bounces, in order"] = order
+    c["its own quality option: Remix's graphics preset Custom first"] = \
+        "Config rtx.graphicsPreset=4" in order and "Config rtx.pathMaxBounces=8" in order and \
+        order.index("Config rtx.graphicsPreset=4") < len(order) - 1 - order[::-1].index("Config rtx.pathMaxBounces=8")
     lines = runs["p9_pipe_modern_remix"]["lines"]
     c["the view transform: Remix's own tone mapping left alone"] = \
         not config_sets(lines, "rtx.tonemappingMode") and not config_sets(lines, "rtx.tonemap.finalizeWithACES")
@@ -991,18 +997,13 @@ def colour_curve_rtx(args, out, S, E, tests, sheets, report_lines):
                 report_lines.append("      %-6s ours  %s" % (row, "  ".join(str(d["fallback"][k]) for k in ks)))
 
 
-# P9.2b: do Remix's settings take effect while a game runs? The RTX Remix
-# materials played with each suspect set three ways: while the game runs (as
-# the scene's settings are), the same after Remix's graphics preset is set
-# to Custom, and in an rtx.conf Remix reads before it starts. Each picture
-# against the unchanged one (0: the setting did nothing); every play keeps
-# the bridge's log (what Remix answered each setting) and Remix's own
-SET_SUSPECTS = [
-    ("bloom off", "rtx.bloom.enable", "False"),
-    ("texture detail +2 (mip bias -2)", "rtx.nativeMipBias", "-2"),
-    ("upscaling off, full size", "rtx.upscalerType", "0", "rtx.resolutionScale", "1"),
-]
-SET_PRESETS = [("graphics preset Custom", "4"), ("graphics preset Ultra", "0")]
+# P9.2b: Remix's settings while a game runs. The first settings test found
+# that Remix takes every setting (its answer 0), that our own code keeps
+# bloom and automatic exposure off, and that texture detail (mip bias)
+# changes little; this one checks the two left: anisotropic filtering (we
+# pass Blender's preference, 2x by default) and upscaling at 1920x1080,
+# where Remix should upscale (at 960x540 turning it off changed nothing).
+# Every play keeps the bridge's log and Remix's own
 SET_DETAIL = ("albedo_image", "normal_map", "alpha_cutout")
 
 
@@ -1049,58 +1050,59 @@ def settings_rtx(args, out, S, E, tests, sheets, report_lines):
         return
     import re
     blend = S("p9_rs_nodes_aces_remix")
-    gate_gl = os.path.join(out, "rs_aces_opengl.png")
-    pg = p8.picture(gate_gl)
     rows, items = [], []
 
-    def measure(label, png, blog, rlog, keys):
-        pr = p8.picture(png)
-        row = {"label": label, "vs_unchanged": p8.picture_diff(base_png, png) if base_png else None}
-        cmp = sphere_compare({"spheres": {"order": R["order"], "rects": R["rects"]}}, gate_gl, png)
-        gated = [v["mean_diff"] for k, v in cmp.items() if k not in R["gate_out"] and v]
-        row["gate"] = "%d/%d mean %s" % (sum(1 for d in gated if d <= TOL_GATE), len(gated),
-                                         round(sum(gated) / len(gated), 1) if gated else None)
-        row["detail"] = {}
-        for k in SET_DETAIL:
-            if pg is not None and pr is not None and pg.shape == pr.shape:
-                row["detail"][k] = round(float(p8.crop(pr, R["rects"][k]).reshape(-1, 3).mean(axis=1).std()), 1)
-        row["answers"] = sorted(set(m for k in keys for m in re.findall(r"config %s = \S+ -> \d+" % re.escape(k),
-                                                                         blog)))
-        row["remix_says"] = sorted(set(m.strip() for m in re.findall(r"info:\s+(.*(?:[Pp]reset|graphics settings).*)", rlog)))
-        rows.append(row)
+    def detail_of(png, scale):
+        pic = p8.picture(png)
+        if pic is None:
+            return {}
+        return {k: round(float(p8.crop(pic, [v * scale for v in R["rects"][k]]).reshape(-1, 3).mean(axis=1).std()), 1)
+                for k in SET_DETAIL}
+
+    def add(label, png, base, scale, blog, keys):
+        rows.append({"label": label, "vs_unchanged": p8.picture_diff(base, png) if base and base != png else 0.0,
+                     "detail": detail_of(png, scale),
+                     "answers": sorted(set(m for k in keys for m in re.findall(
+                         r"config %s = \S+ -> \d+" % re.escape(k), blog)))})
         items.append((label, png))
 
-    base_png, blog, rlog = settings_play(args, out, "set_unchanged", blend)
-    measure("unchanged", base_png, blog, rlog, ["rtx.graphicsPreset"])
-    for label, value in SET_PRESETS:
-        png, blog, rlog = settings_play(args, out, "set_preset%s" % value, blend, "rtx.graphicsPreset=%s" % value)
-        measure(label + " (while running)", png, blog, rlog, ["rtx.graphicsPreset"])
-    for n, sus in enumerate(SET_SUSPECTS):
-        label, pairs = sus[0], list(zip(sus[1::2], sus[2::2]))
-        keys = [k for k, _ in pairs]
-        rset = ";".join("%s=%s" % kv for kv in pairs)
-        png, blog, rlog = settings_play(args, out, "set%d_run" % n, blend, rset)
-        measure(label + ": while running", png, blog, rlog, keys)
-        png, blog, rlog = settings_play(args, out, "set%d_custom" % n, blend, "rtx.graphicsPreset=4;" + rset)
-        measure(label + ": preset Custom, then it", png, blog, rlog, keys + ["rtx.graphicsPreset"])
-        png, blog, rlog = settings_play(args, out, "set%d_conf" % n, blend, conf=pairs)
-        measure(label + ": in rtx.conf, before start", png, blog, rlog, keys)
+    # 960x540: anisotropic filtering 16x
+    gl960 = os.path.join(out, "rs_aces_opengl.png")
+    base960 = os.path.join(out, "rs_aces_remix.png")
+    rows.append({"label": "960x540 fallback", "vs_unchanged": None, "detail": detail_of(gl960, 1), "answers": []})
+    add("960x540 Remix unchanged", base960, base960, 1, "", [])
+    keys = ["rtx.useAnisotropicFiltering", "rtx.maxAnisotropySamples"]
+    png, blog, _ = settings_play(args, out, "set_aniso16", blend,
+                                 "rtx.useAnisotropicFiltering=True;rtx.maxAnisotropySamples=16")
+    add("960x540 anisotropic filtering 16x", png, base960, 1, blog, keys)
+    # 1920x1080: upscaling
+    size = p8.SIZE
+    p8.SIZE = (1920, 1080)
+    try:
+        gl = p8.play(args.ours, out, "set_1080_opengl", S("p9_rs_nodes_aces"), {"BGE_REMIX_P2_SHOT_FRAME": "300"},
+                     frames=p8.REMIX_FRAMES).get("screenshot")
+        rows.append({"label": "1920x1080 fallback", "vs_unchanged": None, "detail": detail_of(gl, 2), "answers": []})
+        base, blog, _ = settings_play(args, out, "set_1080", blend)
+        add("1920x1080 Remix unchanged", base, base, 2, blog, ["rtx.graphicsPreset"])
+        keys = ["rtx.graphicsPreset", "rtx.upscalerType", "rtx.resolutionScale"]
+        png, blog, _ = settings_play(args, out, "set_1080_custom_off", blend,
+                                     "rtx.graphicsPreset=4;rtx.upscalerType=0;rtx.resolutionScale=1")
+        add("1920x1080 preset Custom, upscaling off (while running)", png, base, 2, blog, keys)
+        png, blog, _ = settings_play(args, out, "set_1080_conf_off", blend,
+                                     conf=[("rtx.graphicsPreset", "4"), ("rtx.upscalerType", "0"),
+                                           ("rtx.resolutionScale", "1")])
+        add("1920x1080 preset Custom, upscaling off (rtx.conf)", png, base, 2, blog, keys)
+    finally:
+        p8.SIZE = size
     tests["S9.13 Remix settings while a game runs (P9.2b, a report)"] = {"ok": True, "checks": {}, "detail": rows}
-    sheets["settings"] = p2.contact_sheet([("fallback, ACES", gate_gl)] + items,
-                                          os.path.join(out, "sheet_p9_settings.png"))
-    fallback_detail = {}
-    if pg is not None:
-        fallback_detail = {k: round(float(p8.crop(pg, R["rects"][k]).reshape(-1, 3).mean(axis=1).std()), 1)
-                           for k in SET_DETAIL}
-    report_lines += ["", "Remix settings while a game runs (difference from the unchanged picture: 0 = no effect; "
-                     "the gate; texture detail, the fallback's: %s):" % fallback_detail]
+    sheets["settings"] = p2.contact_sheet(items, os.path.join(out, "sheet_p9_settings.png"))
+    report_lines += ["", "Remix settings while a game runs (difference from Remix unchanged at that size: 0 = no "
+                     "effect; texture detail: higher is sharper):"]
     for row in rows:
-        report_lines.append("  %-44s vs unchanged %-6s gate %-14s detail %s" % (
-            row["label"], row["vs_unchanged"], row["gate"], row["detail"]))
+        report_lines.append("  %-56s vs unchanged %-6s detail %s" % (row["label"], row["vs_unchanged"],
+                                                                     row["detail"]))
         if row["answers"]:
             report_lines.append("      Remix answered: %s" % "; ".join(row["answers"]))
-        if row["remix_says"]:
-            report_lines.append("      Remix's log: %s" % "; ".join(row["remix_says"]))
 
 
 def run_pipelines_rtx(args, out):

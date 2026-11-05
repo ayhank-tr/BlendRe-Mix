@@ -174,6 +174,14 @@ void BRMX_quality_from_scene(const Scene *scene, BRMX_Quality *r)
 /* what Remix has (its defaults until something was sent) */
 static BRMX_Quality sent = {0, 0, 1, 1};
 
+/* Remix's GraphicsPreset for ours (the panel's Auto, Low, Medium, High,
+ * Ultra; Remix: Ultra 0, High 1, Medium 2, Low 3, Custom 4, Auto 5) */
+static const char *preset_values[5] = {"5", "3", "2", "1", "0"};
+
+/* BGE-Remix P9.2b: Remix's preset Custom is on because the scene sets its own
+ * quality options (BRMX_scene_options_apply) */
+static bool custom_preset_sent = false;
+
 int BRMX_quality_apply(const BRMX_Quality *q)
 {
 	/* Remix's enums (rtx_options.h, rtx_dlss.h): GraphicsPreset Ultra 0, High 1,
@@ -181,7 +189,6 @@ int BRMX_quality_apply(const BRMX_Quality *q)
 	 * Balanced 2, MaxQuality 3, Auto 4, FullResolution 5; DlssPreset Off 0,
 	 * On 1, Custom 2. A graphics preset resets the DLSS level unless the DLSS
 	 * preset is Custom (P4 B4.6). */
-	static const char *presets[5] = {"5", "3", "2", "1", "0"};
 	static const char *profiles[6] = {"4", "0", "1", "2", "3", "5"};
 	const BRMX_Bridge *bridge = BRMX_bridge();
 	int n = 0;
@@ -189,7 +196,9 @@ int BRMX_quality_apply(const BRMX_Quality *q)
 		return 0;
 	}
 	if (q->preset != sent.preset) {
-		bridge->set_config("rtx.graphicsPreset", presets[q->preset]);
+		bridge->set_config("rtx.graphicsPreset", preset_values[q->preset]);
+		/* (a preset replaces a Custom the scene's own options asked for) */
+		custom_preset_sent = false;
 		n++;
 	}
 	if (q->dlss != sent.dlss || (q->preset != sent.preset && q->dlss != 0)) {
@@ -222,19 +231,20 @@ typedef struct CuratedOption {
 	const char *key;    /* Remix's option */
 	char kind;          /* 'b' bool, 'i' int, 'f' float */
 	const char *def;    /* Remix's default (rtx.conf may differ: only sent once set) */
+	bool preset_quality; /* one a graphics preset sets (P9.2b: needs preset Custom) */
 } CuratedOption;
 
 static const CuratedOption curated[] = {
 	/* upscaling */
 	{"bge_rtx_frame_generation", "rtx.dlfg.enable", 'b', "True"},
 	{"bge_rtx_reflex", "rtx.reflexMode", 'i', "1"},
-	{"bge_rtx_resolution_scale", "rtx.resolutionScale", 'f', "0.75"},
+	{"bge_rtx_resolution_scale", "rtx.resolutionScale", 'f', "0.75", true},
 	/* quality */
-	{"bge_rtx_min_bounces", "rtx.pathMinBounces", 'i', "1"},
-	{"bge_rtx_max_bounces", "rtx.pathMaxBounces", 'i', "4"},
-	{"bge_rtx_secondary_bounces", "rtx.enableSecondaryBounces", 'b', "True"},
-	{"bge_rtx_russian_roulette", "rtx.enableRussianRoulette", 'b', "True"},
-	{"bge_rtx_firefly_threshold", "rtx.fireflyFilteringLuminanceThreshold", 'f', "1000"},
+	{"bge_rtx_min_bounces", "rtx.pathMinBounces", 'i', "1", true},
+	{"bge_rtx_max_bounces", "rtx.pathMaxBounces", 'i', "4", true},
+	{"bge_rtx_secondary_bounces", "rtx.enableSecondaryBounces", 'b', "True", true},
+	{"bge_rtx_russian_roulette", "rtx.enableRussianRoulette", 'b', "True", true},
+	{"bge_rtx_firefly_threshold", "rtx.fireflyFilteringLuminanceThreshold", 'f', "1000", true},
 	/* lighting */
 	{"bge_rtx_emissive_intensity", "rtx.emissiveIntensity", 'f', "1"},
 	{"bge_rtx_anticull_lights", "rtx.antiCulling.light.enable", 'b', "False"},
@@ -304,6 +314,37 @@ int BRMX_scene_options_apply(const Scene *scene)
 	                  BKE_scene_game_tonemap(scene) == BKE_SCENE_GAME_TONEMAP_ACES;
 	if (!bridge) {
 		return 0;
+	}
+	/* BGE-Remix P9.2b: a graphics preset other than Custom keeps its own
+	 * quality values (Remix's Auto: Medium on an RTX 3080), so a scene that
+	 * sets its own quality options gets Custom first (Remix then moves the
+	 * preset's values to its user layer and keeps ours); without them again,
+	 * the scene's preset comes back */
+	bool own_quality = false;
+	for (i = 0; i < CURATED_COUNT; i++) {
+		if (curated[i].preset_quality && curated_value(props, &curated[i], value, sizeof(value))) {
+			own_quality = true;
+		}
+	}
+	if (own_quality && !custom_preset_sent) {
+		bridge->set_config("rtx.graphicsPreset", "4");
+		printf("BGE-Remix: RTX Remix graphics preset Custom (the scene sets its own quality options)\n");
+		custom_preset_sent = true;
+		/* everything sent again over the preset's values */
+		for (i = 0; i < CURATED_COUNT; i++) {
+			if (curated[i].preset_quality) {
+				curated_sent[i][0] = '\0';
+			}
+		}
+		n++;
+	}
+	else if (!own_quality && custom_preset_sent) {
+		BRMX_Quality q;
+		BRMX_quality_from_scene(scene, &q);
+		bridge->set_config("rtx.graphicsPreset", preset_values[q.preset]);
+		sent.preset = q.preset;
+		custom_preset_sent = false;
+		n++;
 	}
 	for (i = 0; i < CURATED_COUNT; i++) {
 		const CuratedOption *o = &curated[i];

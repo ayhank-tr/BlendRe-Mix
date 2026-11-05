@@ -75,7 +75,10 @@ cut the choice down to two:
   that matter for games, saved with the scene (`bge_rtx_*`): upscaling and
   frame generation, light bounces, emissive intensity, anti-culling,
   chromatic aberration, particles and, with the view transform, Remix's tone
-  mapper. A setting left alone keeps Remix's default.
+  mapper. A setting left alone keeps Remix's default. A scene that sets its
+  own resolution scale or light-bounce settings puts Remix's graphics
+  preset on Custom, so the preset (Auto picks one per graphics card: Medium
+  on an RTX 3080) does not replace them (P9.2b).
 
 P8's files open as follows: Classic with Remix off stays Classic; Classic
 with Remix on (or rendered with the RTX Remix engine) opens in RTX Remix with
