@@ -57,8 +57,6 @@ DEFAULT_SPEED = 0.05
 # a flipbook frame moves the pattern by this share of the tile (so the
 # frame rate is the speed over it)
 FRAME_STEP = 1.0 / 64.0
-# P9.6's coordinates move by (17.17, 31.31) a Seed: 35.7 a Seed in the plane
-SEED_TRAVEL = math.hypot(17.17, 31.31)
 PAGE_PREFIX = "BGE-Remix page "
 PREVIEW_PREFIX = "BGE-Remix atlas: "
 
@@ -226,6 +224,8 @@ def _preview_image(material):
         img = None
     if img is None:
         img = bpy.data.images.new(name, w, h, alpha=True)
+    # (kept when the file is saved: nothing uses it)
+    img.use_fake_user = True
     img.pixels[:] = [b / 255.0 for b in px]
     img["bge_remix_atlas_of"] = material.name
     img.pack(as_png=True)
@@ -277,8 +277,7 @@ def bake_tile_set(material, size=1024, colours=2, seed=0):
 
 def flipbook_speed(material, speed=None):
     """the flipbook's timing: {"speed" (m/s), "fps", "loop_seconds",
-    "drift" (Seed units over one loop)}"""
-    g = _preset_node(material)
+    "shift" (tiles the pattern moves over one loop: frames / 64)}"""
     key = material.get("bge_remix_preset")
     if speed is None:
         speed = SPEEDS.get(key, DEFAULT_SPEED)
@@ -287,19 +286,14 @@ def flipbook_speed(material, speed=None):
     frames = int(material.get("bge_remix_atlas_frames", 16) or 16)
     fps = int(max(1, min(60, round(speed / (metres * FRAME_STEP)))))
     loop = frames / float(fps)
-    scale = g.inputs["Scale"].default_value if g is not None and g.inputs.get("Scale") is not None else 1.0
-    # the pattern drifts speed x loop metres: its coordinates Scale a metre,
-    # SEED_TRAVEL a Seed
-    drift = speed * loop * scale / SEED_TRAVEL
-    return {"speed": speed, "fps": fps, "loop_seconds": loop, "drift": drift}
+    return {"speed": speed, "fps": fps, "loop_seconds": loop, "shift": frames * FRAME_STEP}
 
 
 def bake_flipbook(material, frames=16, speed=None, size=512):
     """Make an animated preset's Remix textures a looping sprite sheet.
 
     material  a preset material (as for bake_tile_set): P9.6's water, or any
-              preset; its pattern moves through its Seed (the preset's
-              coordinates drift and change with it)
+              preset
     frames    16 (4 x 4, the plan's) or 64 (8 x 8)
     speed     how fast the pattern drifts, m/s (None: the preset's own,
               water 0.15); the frame rate comes from it: a frame moves the
@@ -308,14 +302,15 @@ def bake_flipbook(material, frames=16, speed=None, size=512):
     size      a frame's side in pixels (a power of two, at most 512 for 16
               frames, 256 for 64)
 
-    The frames are baked over one full loop: frame k is the pattern at
-    k / frames of the loop cross-faded into the pattern one loop earlier, so
-    the last frame runs into the first without a jump. Remix plays it by
+    The preset's tile is baked once and moved over one full loop (by
+    frames / 64 of the tile): frame k is the tile moved by k / frames of
+    that, cross-faded into the tile moved a loop earlier, so the last frame
+    runs into the first without a jump. Remix plays it by
     itself, by time, for the whole material (its sprite sheet rows, columns
     and frame rate); the game's OpenGL keeps drawing the preset as it is.
 
     Returns a dict: "kind" ("flipbook"), "frames", "grid", "pitch", "size",
-    "cells" (per frame), "fps", "loop_seconds", "speed", "drift", "baked",
+    "cells" (per frame), "fps", "loop_seconds", "speed", "shift", "baked",
     "files", "preview", "note", "error" (as bake_tile_set). Raises
     ValueError when the material cannot have one.
     """
@@ -328,7 +323,9 @@ def bake_flipbook(material, frames=16, speed=None, size=512):
     material["bge_remix_atlas"] = FLIPBOOK
     material["bge_remix_atlas_size"] = pitch
     material["bge_remix_atlas_fps"] = t["fps"]
-    material["bge_remix_atlas_drift"] = t["drift"]
+    material["bge_remix_atlas_shift"] = t["shift"]
+    if "bge_remix_atlas_drift" in material:
+        del material["bge_remix_atlas_drift"]
     result = flipbook_layout(frames, pitch, t["fps"])
     result.update(t)
     result.update({"material": material.name, "preset": material.get("bge_remix_preset"), "note": "", "error": "",
@@ -350,7 +347,7 @@ def atlas_of(material):
     if kind == FLIPBOOK:
         r = flipbook_layout(int(material.get("bge_remix_atlas_frames", 16)), int(material.get("bge_remix_atlas_size", 512)),
                             int(material.get("bge_remix_atlas_fps", 8)))
-        r["drift"] = material.get("bge_remix_atlas_drift")
+        r["shift"] = material.get("bge_remix_atlas_shift")
         return r
     if kind == PACKED:
         for img in _material_images(material):
@@ -370,7 +367,7 @@ def clear(material):
     """the material's atlas off (its Remix textures as before); a packed
     material's images keep their page until pack_images runs again"""
     for k in ("bge_remix_atlas", "bge_remix_atlas_colours", "bge_remix_atlas_size", "bge_remix_atlas_seed",
-              "bge_remix_atlas_regular", "bge_remix_atlas_frames", "bge_remix_atlas_fps", "bge_remix_atlas_drift"):
+              "bge_remix_atlas_regular", "bge_remix_atlas_frames", "bge_remix_atlas_fps", "bge_remix_atlas_drift", "bge_remix_atlas_shift"):
         if k in material:
             del material[k]
 
@@ -692,6 +689,12 @@ def pack_images(images, page_size=2048, padding=8, max_size=512, folder=None, sc
                 page = None
             if page is None:
                 page = bpy.data.images.new(name, page_size, page_size, alpha=True)
+                if role == 'normal':
+                    # (before the pixels: a colour space change frees them)
+                    page.colorspace_settings.name = 'Non-Color'
+            # fix round 1: a page has no users (only the game reads it): it
+            # was dropped when the file was saved, so the game found no page
+            page.use_fake_user = True
             page.pixels[:] = px.ravel().tolist()
             page["bge_remix_atlas_cells"] = cells
             page["bge_remix_atlas_size"] = [page_size, page_size]

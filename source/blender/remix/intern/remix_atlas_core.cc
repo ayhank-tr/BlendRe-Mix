@@ -543,43 +543,40 @@ bool atlas_compose_tiles(const AtlasLayout &L, int kind, bool regular, const std
 	return true;
 }
 
-bool atlas_compose_flipbook(const AtlasLayout &L, int kind, const std::vector<const BakedImage *> &a,
-                            const std::vector<const BakedImage *> &b, BakedImage &r_out)
+bool atlas_compose_flipbook(const AtlasLayout &L, int kind, const BakedImage &src, float shift_u, float shift_v,
+                            BakedImage &r_out)
 {
-	if (L.kind != ATLAS_FLIPBOOK || (int)a.size() < L.frames || (int)b.size() < L.frames) {
+	const int sw = src.width, sh = src.height;
+	if (L.kind != ATLAS_FLIPBOOK || sw <= 0 || sh <= 0 || src.rgba.size() < (size_t)sw * sh * 4) {
 		return false;
 	}
-	const int sw = a[0] ? a[0]->width : 0, sh = a[0] ? a[0]->height : 0;
-	std::vector<std::vector<float> > A(L.frames), B(L.frames), all;
-	for (int k = 0; k < L.frames; k++) {
-		for (int pass = 0; pass < 2; pass++) {
-			const BakedImage *im = pass ? b[k] : a[k];
-			if (pass && k == 0) {
-				continue; /* frame 0 is A alone */
-			}
-			if (!im || im->width != sw || im->height != sh || sw <= 0 || im->rgba.size() < (size_t)sw * sh * 4) {
-				return false;
-			}
-			decode(kind, im->rgba.data(), (size_t)sw * sh, pass ? B[k] : A[k]);
-			all.push_back(pass ? B[k] : A[k]);
-		}
-	}
+	/* BGE-Remix P10.4 (fix round 1): one bake, moved: frame k (t = k /
+	 * frames) is the seamless tile moved by t x shift, cross-faded (its
+	 * contrast kept) into the tile moved by (t - 1) x shift: frame 0 is the
+	 * tile itself, and after the last frame the second copy has reached it,
+	 * so the loop closes exactly (a flow-map loop). Before, each frame was
+	 * baked twice: 31 bakes, 23 s */
+	std::vector<float> S;
+	decode(kind, src.rgba.data(), (size_t)sw * sh, S);
+	std::vector<std::vector<float> > one(1, S);
 	double mu[4];
-	channel_means(all, mu);
-	all.clear();
+	channel_means(one, mu);
+	one.clear();
 	std::vector<float> out((size_t)L.width * L.height * 4, 0.0f);
 	const int P = L.pitch;
 	for (int k = 0; k < L.frames; k++) {
-		const float phase = (float)k / (float)L.frames;
-		const float w[2] = {1.0f - phase, phase};
+		const float t = (float)k / (float)L.frames;
+		const float w[2] = {1.0f - t, t};
+		const float au = t * shift_u * sw, av = t * shift_v * sh;
+		const float bu = (t - 1.0f) * shift_u * sw, bv = (t - 1.0f) * shift_v * sh;
 		const AtlasCell &cell = L.cells[k];
 		for (int y = 0; y < P; y++) {
 			for (int x = 0; x < P; x++) {
 				float va[4], vb[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 				const float sx = (x + 0.5f) / (float)P * sw, sy = (y + 0.5f) / (float)P * sh;
-				sample_wrap(A[k], sw, sh, sx, sy, va);
+				sample_wrap(S, sw, sh, sx - au, sy - av, va);
 				if (k > 0) {
-					sample_wrap(B[k], sw, sh, sx, sy, vb);
+					sample_wrap(S, sw, sh, sx - bu, sy - bv, vb);
 				}
 				const float *v[2] = {va, vb};
 				blend(kind, true, v, w, k > 0 ? 2 : 1, mu, &out[((size_t)(cell.y + y) * L.width + cell.x + x) * 4]);
