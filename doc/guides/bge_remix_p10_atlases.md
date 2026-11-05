@@ -44,8 +44,10 @@ moves in Remix.
 - **Speed.** The frame rate comes from the preset's speed: each frame moves
   the pattern by 1/64 of the tile. Water moves at 0.15 m/s, which gives 10
   frames a second, so the loop lasts 1.6 s.
-- **The loop.** The frames are baked over one full loop, so the last frame
-  runs into the first without a jump.
+- **The loop.** The preset's tile is baked once. Each frame is that tile
+  moved a little further, blended into a copy moved one loop behind, so the
+  last frame runs into the first without a jump. One bake takes under a
+  second, so the game starts quickly.
 - **Remix 1.6.1 plays it.** Remix shows frame (seconds x frame rate) modulo
   16. It picks the frame by time for the whole material, never per face.
 - **How.** In the *RTX Remix Atlas* panel, press *Make Flipbook*.
@@ -65,7 +67,8 @@ better.
   each other. When that would happen within the camera's range, the tool
   warns you and names the distance.
 - **Where the pages go.** The pages are packed into the .blend, or saved as
-  PNG files in a folder you give.
+  PNG files in a folder you give. They are kept when you save, even though
+  nothing in Blender uses them (only the game reads them).
 - **The Remix View.** It still shows the plain images. Only the game sends
   the pages.
 

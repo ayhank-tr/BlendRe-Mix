@@ -26,7 +26,8 @@
  *                            colours' Seeds keep the pattern in step
  *   bge_remix_atlas_frames   flipbook: 16 (4 x 4) or 64 (8 x 8)
  *   bge_remix_atlas_fps      flipbook: frames per second (from the speed)
- *   bge_remix_atlas_drift    flipbook: how far the Seed moves over one loop
+ *   bge_remix_atlas_shift    flipbook: how far the pattern moves over one loop
+ *                            (tiles; the frames' count / 64)
  * Packed images (their own settings): bge_remix_atlas_page (the page
  * image's name), bge_remix_atlas_cell; a page: bge_remix_atlas_cells
  * (x, y, w, h, repeat per image), bge_remix_atlas_gutter.
@@ -274,23 +275,21 @@ struct ReleaseDM {
 	}
 };
 
-/* the Seed and the Bake Size put back whatever happens */
+/* the Seed put back whatever happens */
 struct Restore {
 	bNodeSocketValueFloat *seed;
 	float seed_value;
-	bNode *node;
-	float size_value;
-	Restore() : seed(NULL), seed_value(0.0f), node(NULL), size_value(0.0f) {}
+	Restore() : seed(NULL), seed_value(0.0f) {}
 	~Restore()
 	{
 		if (seed) {
 			seed->value = seed_value;
 		}
-		if (node) {
-			node->custom3 = size_value;
-		}
 	}
 };
+
+/* the direction a flipbook's pattern moves (P9.6's Seed's, in the plane) */
+const float FLOW_DIR[2] = {0.4810f, 0.8767f};
 
 void trace(const std::string &what)
 {
@@ -418,16 +417,17 @@ bool atlas_bake(Scene *scene, Material *ma, const std::string &name, BakeResult 
 	}
 	std::shared_ptr<AtlasLayout> L(new AtlasLayout());
 	const bool regular = prop_int(&ma->id, "bge_remix_atlas_regular", 0) != 0;
-	const float drift = prop_float(&ma->id, "bge_remix_atlas_drift", 0.05f);
+	const int frames_asked = prop_int(&ma->id, "bge_remix_atlas_frames", 16) == 64 ? 64 : 16;
+	const float shift = std::max(0.0f, std::min(prop_float(&ma->id, "bge_remix_atlas_shift",
+	                                                       (float)frames_asked / 64.0f), 4.0f));
 	if (kind == ATLAS_TILES) {
 		const int colours = prop_int(&ma->id, "bge_remix_atlas_colours", 2) == 3 ? 3 : 2;
 		const int pitch = pow2_floor(std::min(size, colours == 2 ? 1024 : 512));
 		atlas_tiles_layout(colours, pitch, (unsigned)prop_int(&ma->id, "bge_remix_atlas_seed", 0), *L);
 	}
 	else {
-		const int frames = prop_int(&ma->id, "bge_remix_atlas_frames", 16) == 64 ? 64 : 16;
-		const int pitch = pow2_floor(std::min(size, frames == 16 ? 512 : 256));
-		atlas_flipbook_layout(frames, prop_int(&ma->id, "bge_remix_atlas_fps", 8), pitch, *L);
+		const int pitch = pow2_floor(std::min(size, frames_asked == 16 ? 512 : 256));
+		atlas_flipbook_layout(frames_asked, prop_int(&ma->id, "bge_remix_atlas_fps", 8), pitch, *L);
 	}
 	if (L->kind == ATLAS_NONE) {
 		r.error = "its atlas's size is too small";
@@ -436,7 +436,7 @@ bool atlas_bake(Scene *scene, Material *ma, const std::string &name, BakeResult 
 	/* the atlas's content key: the material (its signature holds the node
 	 * values and the bake size) and the atlas's own settings */
 	{
-		static const char version[] = "BGE-Remix atlas 1";
+		static const char version[] = "BGE-Remix atlas 2"; /* (2: a flipbook from one bake) */
 		uint64_t h = fnv(version, sizeof(version), 1469598103934665603ull);
 		h = fnv_v(bake_signature(ma), h);
 		h = fnv_v(L->kind, h);
@@ -446,7 +446,7 @@ bool atlas_bake(Scene *scene, Material *ma, const std::string &name, BakeResult 
 		h = fnv_v(L->pitch, h);
 		h = fnv_v(L->seed, h);
 		h = fnv_v(regular, h);
-		h = fnv_v(drift, h);
+		h = fnv_v(shift, h);
 		h = fnv_v(size, h);
 		L->key = h ? h : 1;
 	}
@@ -495,7 +495,7 @@ bool atlas_bake(Scene *scene, Material *ma, const std::string &name, BakeResult 
 	/* the Seeds of the parts: tiles, one a corner colour (bricks: steps of
 	 * 100/101 of the Scale move the pattern by whole repeats, P9.6's
 	 * coordinates moving 17.17 and 31.31 a Seed; only the noise changes);
-	 * flipbook: frame k at k / frames of the loop, and a loop earlier */
+	 * flipbook (fix round 1): one bake, its frames moved on the CPU */
 	std::vector<float> seeds;
 	const float s0 = seed->value;
 	if (kind == ATLAS_TILES) {
@@ -505,24 +505,12 @@ bool atlas_bake(Scene *scene, Material *ma, const std::string &name, BakeResult 
 		}
 	}
 	else {
-		for (int k = 0; k < L->frames; k++) {
-			seeds.push_back(s0 + 0.37f + drift * (float)k / (float)L->frames);
-		}
-		for (int k = 1; k < L->frames; k++) {
-			seeds.push_back(s0 + 0.37f + drift * ((float)k / (float)L->frames - 1.0f));
-		}
+		seeds.push_back(s0);
 	}
 
 	Restore restore;
 	restore.seed = seed;
 	restore.seed_value = s0;
-	bNode *node = BKE_material_remix_node(ma);
-	if (node) {
-		/* the parts baked at the cell's size */
-		restore.node = node;
-		restore.size_value = node->custom3;
-		node->custom3 = (float)L->pitch;
-	}
 	std::vector<BakeResult> parts(seeds.size());
 	ReleaseDM quad = {small_quad()};
 	double gpu_ms = 0.0;
@@ -531,7 +519,8 @@ bool atlas_bake(Scene *scene, Material *ma, const std::string &name, BakeResult 
 		char part[32];
 		snprintf(part, sizeof(part), "_part%02d", (int)i);
 		trace("baking " + atlas_name + part);
-		if (!bake_material(scene, ma, quad.dm, 1, NULL, name + part, parts[i])) {
+		/* at the cell's size, always drawn (the pixels are needed here) */
+		if (!bake_material(scene, ma, quad.dm, 1, NULL, name + part, parts[i], L->pitch, false)) {
 			r.error = parts[i].error.empty() ? std::string("a part of it could not be baked") : parts[i].error;
 			return false;
 		}
@@ -542,9 +531,6 @@ bool atlas_bake(Scene *scene, Material *ma, const std::string &name, BakeResult 
 		gpu_ms += std::max(parts[i].gpu_ms, 0.0);
 	}
 	seed->value = s0;
-	if (node) {
-		node->custom3 = restore.size_value;
-	}
 
 	/* each image of the bake made into the atlas, with its mipmaps */
 	for (int s = 0; s < BAKE_SLOTS; s++) {
@@ -563,12 +549,8 @@ bool atlas_bake(Scene *scene, Material *ma, const std::string &name, BakeResult 
 			ok = atlas_compose_tiles(*L, slot_kind(s), regular, src, *out);
 		}
 		else {
-			std::vector<const BakedImage *> a, b;
-			for (int k = 0; k < L->frames; k++) {
-				a.push_back(parts[k].images[s].get());
-				b.push_back(k ? parts[L->frames + k - 1].images[s].get() : NULL);
-			}
-			ok = atlas_compose_flipbook(*L, slot_kind(s), a, b, *out);
+			ok = atlas_compose_flipbook(*L, slot_kind(s), *parts[0].images[s], shift * FLOW_DIR[0],
+			                            shift * FLOW_DIR[1], *out);
 		}
 		if (!ok) {
 			r.error = "its parts did not fit together (sizes)";

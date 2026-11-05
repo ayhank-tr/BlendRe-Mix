@@ -26,8 +26,8 @@
  *             agree with its neighbours': a corner's colour is a hash of the
  *             grid corner. A face can be given a tile by hand (its
  *             "bge_remix_cell" face layer: tile + 1).
- *   flipbook  an animated preset baked as a looping run of frames into a
- *             sprite sheet (16 frames, 4 x 4); Remix plays it by itself (the
+ *   flipbook  an animated preset baked once and moved into a looping run
+ *             of frames in a sprite sheet (16 frames, 4 x 4); Remix plays it by itself (the
  *             material's sprite sheet rows, columns and frames per second:
  *             it picks the frame by time, for the whole material).
  *   packed    small images packed into shared pages (by Python with xatlas,
@@ -119,11 +119,12 @@ void atlas_flipbook_layout(int frames, int fps, int pitch, AtlasLayout &r);
 bool atlas_compose_tiles(const AtlasLayout &L, int kind, bool regular, const std::vector<const BakedImage *> &src,
                          BakedImage &r_out);
 
-/* flipbook: frame k of `frames` from A = the pattern at k / frames of the
- * loop and B = a loop earlier, cross-faded by k / frames keeping the
- * contrast (frame 0 is A alone: the last frame runs into the first) */
-bool atlas_compose_flipbook(const AtlasLayout &L, int kind, const std::vector<const BakedImage *> &a,
-                            const std::vector<const BakedImage *> &b, BakedImage &r_out);
+/* flipbook: frame k of `frames` (t = k / frames) from one seamless tile:
+ * the tile moved by t x shift (in tiles: u, v) cross-faded, its contrast
+ * kept, into the tile moved by (t - 1) x shift (frame 0 is the tile itself,
+ * so the last frame runs into the first) */
+bool atlas_compose_flipbook(const AtlasLayout &L, int kind, const BakedImage &src, float shift_u, float shift_v,
+                            BakedImage &r_out);
 
 /* the atlas's mipmaps from its top level (rows from the bottom), every
  * level one after the other into r_levels; r_count levels (to 1 x 1) */
@@ -157,8 +158,8 @@ bool atlas_split(const AtlasLayout &L, std::vector<brb_vertex> &v, std::vector<u
  * ATLAS_PACKED, or ATLAS_NONE */
 int atlas_kind(const Material *ma);
 
-/* tiles and flipbooks: the preset baked several times (its Seed moved) and
- * made into the atlas's images (r.images, each with its mipmaps), as
+/* tiles and flipbooks: the preset baked (tiles: once a corner colour, its
+ * Seed moved; flipbook: once, then moved) and made into the atlas's images (r.images, each with its mipmaps), as
  * bake_material does for the plain tile. Main thread, OpenGL current.
  * False: r.error says why (the caller then bakes the plain tile). */
 bool atlas_bake(Scene *scene, Material *ma, const std::string &name, BakeResult &r,
