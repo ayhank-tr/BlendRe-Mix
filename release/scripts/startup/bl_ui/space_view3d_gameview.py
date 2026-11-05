@@ -25,6 +25,9 @@
 # view: holograms, layers, warnings, targets. Debug mode shows RTX Remix's
 # picture without the holograms: Remix's debug views, a statistics line and
 # what Remix got for the active object (clicks select, as in a 3D View).
+# P10.6: Edit and Run join them (space_view3d_gameview_modes.py): Edit edits
+# the game through its avatars, Run plays it in the view. Each mode shows
+# only its own tools.
 
 import bpy
 from bpy.types import Menu, Operator, Panel
@@ -135,7 +138,7 @@ def is_game_view(context):
 
 
 def view_mode(context):
-    """'CHECK' or 'DEBUG' (P9.7)"""
+    """'CHECK', 'DEBUG' (P9.7), 'EDIT' or 'RUN' (P10.6)"""
     return context.space_data.game_view_mode
 
 
@@ -402,15 +405,23 @@ def register_settings():
         description="How opaque the debug view is over the picture (rtx.debugView.overlayOpacity)")
 
 
+# BGE-Remix P10.6: the four modes (the identifiers are game_view_mode's)
+MODES = (
+    ('CHECK', "Check", "The holograms, layers, warnings and targets"),
+    ('DEBUG', "Debug", "RTX Remix's picture, its debug views, statistics and inspection"),
+    ('EDIT', "Edit", "Edit the game through its avatars: settings, wiring, adding and removing; the settings hub"),
+    ('RUN', "Run", "Play the game here, the whole scene or a mock-up, with its live state over it"),
+)
+
+
 class GAMEVIEW_OT_mode(Operator):
     """Check: the holograms, layers, warnings and targets. Debug: RTX Remix's picture with its debug views, """ \
-        """statistics and what Remix got for the active object"""
+        """statistics and what Remix got for the active object. Edit: edit the game through its avatars. """ \
+        """Run: play it here"""
     bl_idname = "gameview.mode"
     bl_label = "Remix View Mode"
 
-    mode = EnumProperty(name="Mode", items=(
-        ('CHECK', "Check", "The holograms, layers, warnings and targets"),
-        ('DEBUG', "Debug", "RTX Remix's picture, its debug views, statistics and inspection")))
+    mode = EnumProperty(name="Mode", items=MODES)
 
     @classmethod
     def poll(cls, context):
@@ -570,13 +581,20 @@ def draw_game_view_header(self, context):
     sub.menu("GAMEVIEW_MT_select")
     sub.menu("INFO_MT_add", text="Add")
 
-    # P9.7: the mode
+    # P9.7: the mode (P10.6: four)
     mode = view.game_view_mode
     row = layout.row(align=True)
     # (2.79's layout.operator has no depress: the mode shown by its icon)
-    for key, text in (('CHECK', "Check"), ('DEBUG', "Debug")):
+    for key, text, _desc in MODES:
         row.operator("gameview.mode", text=text,
                      icon='RADIOBUT_ON' if mode == key else 'RADIOBUT_OFF').mode = key
+    # P10.9: a suspended game shows in every mode
+    from . import space_view3d_gameview_modes as modes
+    modes.draw_session_strip(layout, context)
+    if mode == 'EDIT':
+        modes.draw_edit_header(layout, context)
+    elif mode == 'RUN':
+        modes.draw_run_header(layout, context)
     if mode == 'DEBUG':
         wm = context.window_manager
         row = layout.row(align=True)

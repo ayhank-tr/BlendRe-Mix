@@ -204,6 +204,14 @@ public:
 	EndDraw(
 	);
 
+	/* BGE-Remix P10.9: called before each swap (the Remix View's holograms
+	 * over the game in Run mode) */
+	void SetPreSwapHook(void (*hook)(void *user), void *user)
+	{
+		m_preswap = hook;
+		m_preswap_user = user;
+	}
+
 private:
 	/** Blender area the game engine is running within */
 	struct wmWindowManager *m_wm;
@@ -212,6 +220,8 @@ private:
 	RAS_Rect 	m_area_rect;
 	int			m_area_left;
 	int			m_area_top;
+	void (*m_preswap)(void *user);  /* BGE-Remix P10.9 */
+	void *m_preswap_user;
 
 
 #ifdef WITH_CXX_GUARDEDALLOC

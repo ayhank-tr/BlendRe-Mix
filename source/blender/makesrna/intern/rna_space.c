@@ -2548,11 +2548,15 @@ static void rna_def_space_view3d(BlenderRNA *brna)
 			{1, "REMIX", ICON_SMOOTH, "RTX Remix", "The holograms over RTX Remix's picture of the scene"},
 			{0, NULL, 0, NULL, NULL}
 		};
-		/* BGE-Remix P9.7 */
+		/* BGE-Remix P9.7 (P10.6: Edit and Run) */
 		static EnumPropertyItem game_view_mode_items[] = {
 			{0, "CHECK", ICON_ERROR, "Check", "The game, layer by layer: holograms, layers, warnings, targets"},
 			{V3D_GAMEVIEW_DEBUG, "DEBUG", ICON_RESTRICT_RENDER_OFF, "Debug",
 			 "RTX Remix's picture: its debug views, its statistics, what it got for the object you click"},
+			{V3D_GAMEVIEW_EDIT, "EDIT", ICON_EDIT, "Edit",
+			 "Edit the game through its avatars: settings, wiring, adding and removing; every setting in one list"},
+			{V3D_GAMEVIEW_RUN, "RUN", ICON_PLAY, "Run",
+			 "Play the game here, the whole scene or a mock-up of chosen objects, with its live state over it"},
 			{0, NULL, 0, NULL, NULL}
 		};
 
@@ -2579,7 +2583,7 @@ static void rna_def_space_view3d(BlenderRNA *brna)
 		prop = RNA_def_property(srna, "game_view_mode", PROP_ENUM, PROP_NONE);
 		RNA_def_property_enum_bitflag_sdna(prop, NULL, "gameview_flag");
 		RNA_def_property_enum_items(prop, game_view_mode_items);
-		RNA_def_property_ui_text(prop, "Mode", "Check the game, or debug RTX Remix's picture");
+		RNA_def_property_ui_text(prop, "Mode", "Check the game, debug RTX Remix's picture, edit the game or run it");
 		RNA_def_property_update(prop, NC_SPACE | ND_SPACE_VIEW3D, "rna_SpaceView3D_game_view_mode_update");
 
 		prop = RNA_def_property(srna, "game_view_dim", PROP_BOOLEAN, PROP_NONE);
