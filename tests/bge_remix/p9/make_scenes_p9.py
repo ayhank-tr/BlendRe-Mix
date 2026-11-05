@@ -547,7 +547,11 @@ def make_remix_spheres(folder, E):
                          "intensity": extra.get("emission_strength", 0.0), "ior": extra.get("ior")}
     E["remix_spheres"] = {"files": files, "rects": rects, "order": [s[0] for s in REMIX_SPHERES],
                           "spheres": expect, "thin_film_nm": THIN_FILM_NM, "size": [WIDTH, HEIGHT],
-                          "gate_out": ["glass", "thin_film"]}
+                          # out of the gate: Remix draws them its own way (glass refracts,
+                          # thin film shimmers); emissive: Remix's ACES treats bright
+                          # colours with a colour transform no fallback curve matched
+                          # (P9.2's colour test: the best simple rule still 7.7 off)
+                          "gate_out": ["glass", "thin_film", "emissive"]}
 
 
 def make_remix_build(folder, E):

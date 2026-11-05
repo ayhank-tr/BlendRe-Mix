@@ -849,36 +849,6 @@ def p92_rtx(args, out, scenes, E, tests, sheets, report_lines):
                 report_lines.append("  %-4s %-10s %s -> %s  diff %s%s" % (
                     case, label, row["fallback"], row.get("remix_fixed", "-"), row.get("fixed_diff", "-"),
                     "  (our ACES %s)" % row["our_aces"] if "our_aces" in row else ""))
-    # diagnostic: Remix's bloom off (the glow it spreads from bright areas,
-    # on by default): the RTX Remix materials again, how sharp each is and
-    # how far from the fallback (textures all loaded first made no
-    # difference: P9.2's calibration run)
-    env = dict(p8.REMIX_ENV, BGE_REMIX_RTX_SET="rtx.bloom.enable=False")
-    wt = p8.play(args.ours, out, "rs_aces_remix_nobloom", S("p9_rs_nodes_aces_remix"), env,
-                 frames=p8.REMIX_FRAMES, debug=True)
-    pg, pr, pw = (p8.picture(r.get("screenshot")) for r in (gl, rtx, wt))
-    tex = {}
-    for label in R["order"]:
-        rect = R["rects"][label]
-        if pg is None or pr is None or pw is None or not (pg.shape == pr.shape == pw.shape):
-            tex[label] = None
-            continue
-        g, r_, w_ = (p8.crop(p, rect).reshape(-1, 3) for p in (pg, pr, pw))
-        tex[label] = {"detail": [round(float(x.mean(axis=1).std()), 1) for x in (g, r_, w_)],
-                      "diff": [round(float(abs(r_.mean(axis=0) - g.mean(axis=0)).mean()), 1),
-                               round(float(abs(w_.mean(axis=0) - g.mean(axis=0)).mean()), 1)]}
-    tests["S9.10 Remix's bloom off (a diagnostic)"] = {
-        "ok": True, "checks": {"ran": bool(wt["ran"])}, "detail": tex}
-    sheets["remix_nobloom"] = p2.contact_sheet(
-        [("fallback, ACES", gl.get("screenshot")), ("Remix", rtx.get("screenshot")),
-         ("Remix, bloom off", wt.get("screenshot"))],
-        os.path.join(out, "sheet_p9_remix_nobloom.png"))
-    report_lines += ["", "Remix's bloom off: detail (spread of brightness inside the sphere: fallback, Remix, "
-                     "Remix with bloom off) and the difference from the fallback (Remix, Remix with bloom off; "
-                     "the gate is %.0f):" % TOL_GATE]
-    for label, row in tex.items():
-        report_lines.append("  %-16s %s" % (label, "-" if not row else "detail %s  diff %s" % (
-            row["detail"], row["diff"])))
     # diagnostic: debug views 1-60 of the spheres (what Remix receives)
     dv = os.path.join(out, "debug_views_spheres")
     shutil.rmtree(dv, ignore_errors=True)
@@ -947,8 +917,7 @@ def colour_curve_rtx(args, out, S, E, tests, sheets, report_lines):
         return
     shot = {"BGE_REMIX_P2_SHOT_FRAME": "300"}
     gl = p8.play(args.ours, out, "cc_opengl", S("p9_cc"), shot, frames=p8.REMIX_FRAMES).get("screenshot")
-    runs = [("as set (global + ACES, exposure +0.3)", "cc_remix", None),
-            ("bloom off", "cc_remix_nobloom", "rtx.bloom.enable=False")]
+    runs = [("as set (global + ACES, exposure +0.3)", "cc_remix", None)]
     pg = p8.picture(gl)
     detail, items = {}, [("fallback, ACES", gl)]
     for label, tag, rtx_set in runs:

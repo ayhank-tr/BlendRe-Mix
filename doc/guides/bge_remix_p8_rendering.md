@@ -315,6 +315,12 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
   Remix are the reference.
 - The world's mist is not shown in Remix (see Sky, mist, reflections,
   volumes).
+- With ACES, bright saturated colours (a strong orange glow, say) keep more
+  of their colour in Remix than in the fallback: Remix's ACES converts
+  colours in a way the fallback's curve does not copy (P9.2). Very dark
+  colours also read a little lighter in Remix.
+- Image textures and normal maps look softer in Remix than in the fallback
+  (P9.2; under study).
 - In Remix a hemi lamp is sky light: it lights the whole scene, and no lamp
   keeps to its own layer.
 - Remix's lights reach everywhere: a lamp's Distance (and Sphere) does not
