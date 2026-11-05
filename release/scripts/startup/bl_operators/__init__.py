@@ -30,6 +30,7 @@ _modules = [
     "bge_remix",
     "bge_remix_material",
     "bge_remix_convert",
+    "bge_remix_presets",
     "clip",
     "console",
     "file",

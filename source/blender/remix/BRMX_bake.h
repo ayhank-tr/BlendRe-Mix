@@ -55,7 +55,8 @@ struct BakedImage {
 	BakedImage() : width(0), height(0), key(0), cached(false) {}
 };
 
-enum BakeSlot { BAKE_ALBEDO = 0, BAKE_ROUGHNESS, BAKE_EMISSIVE, BAKE_NORMAL, BAKE_METALLIC, BAKE_SLOTS };
+/* (P9.6: BAKE_HEIGHT, the RTX Remix node's height) */
+enum BakeSlot { BAKE_ALBEDO = 0, BAKE_ROUGHNESS, BAKE_EMISSIVE, BAKE_NORMAL, BAKE_METALLIC, BAKE_HEIGHT, BAKE_SLOTS };
 
 struct BakeResult {
 	std::shared_ptr<const BakedImage> images[BAKE_SLOTS];
@@ -75,6 +76,11 @@ unsigned bake_slots(const Material *ma);
 /* A hash of everything a bake reads from the material and its textures,
  * to bake again when it changes. */
 uint64_t bake_signature(const Material *ma);
+
+/* BGE-Remix P9.6: a preset material (the material's "bge_remix_tile"): its
+ * bake is one seamless tile over UV 0..1, its edges cross-faded, repeated
+ * over the mesh (the same for every mesh) */
+bool bake_is_tile(const Material *ma);
 
 /* The size of a material's baked images: the RTX Remix panel's Bake Size
  * (the material's "bge_remix_bake_size"), else 1024; BGE_REMIX_BAKE_SIZE

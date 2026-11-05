@@ -1877,9 +1877,10 @@ const char *BRMX_material_match_json(Material *ma)
 	brmx::translate_material(ma, spec);
 	/* what a bake would bring (it runs per mesh, when the material is used) */
 	const unsigned baked = brmx::bake_slots(ma);
-	static const char *bake_fields[brmx::BAKE_SLOTS] = {"albedo", "roughness", "emissive", "normal", "metallic"};
+	static const char *bake_fields[brmx::BAKE_SLOTS] = {"albedo", "roughness", "emissive", "normal", "metallic",
+	                                                    "height"};
 	static const int bake_tex[brmx::BAKE_SLOTS] = {brmx::TEX_ALBEDO, brmx::TEX_ROUGHNESS, brmx::TEX_EMISSIVE,
-	                                              brmx::TEX_NORMAL, brmx::TEX_METALLIC};
+	                                              brmx::TEX_NORMAL, brmx::TEX_METALLIC, brmx::TEX_HEIGHT};
 	const bool nodes = spec.source == brmx::MaterialSpec::NODES;
 	const bool remix = spec.source == brmx::MaterialSpec::REMIX_NODE;  /* P9.2 */
 	char size[64];

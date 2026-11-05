@@ -173,7 +173,7 @@ int set_material(int matnr, void *attribs)
 /* --------------------------------------------------------------------- */
 /* P8.7: on the graphics card */
 
-#define BAKE_CHANNELS 6 /* GPUBakeChannel */
+#define BAKE_CHANNELS 7 /* GPUBakeChannel (P9.6: with the height) */
 
 /* the seams padded: each empty pixel next to drawn ones takes their mean
  * (integer, as dilate() below), one ring per pass */
@@ -211,7 +211,8 @@ const char *PACK_SRC =
         "layout(rgba8, binding = 3) readonly uniform image2D v_emit;\n"
         "layout(rgba8, binding = 4) readonly uniform image2D v_normal;\n"
         "layout(rgba8, binding = 5) readonly uniform image2D v_metallic;\n"
-        "layout(rgba8, binding = 6) writeonly uniform image2D result;\n"
+        "layout(rgba8, binding = 6) readonly uniform image2D v_height;\n"
+        "layout(rgba8, binding = 7) writeonly uniform image2D result;\n"
         "uniform int size;\n"
         "uniform int mode;\n"
         "uniform int physical;\n"
@@ -254,8 +255,11 @@ const char *PACK_SRC =
         "		vec4 n = imageLoad(v_normal, p);\n"
         "		o.rgb = (n.a != 0.0) ? n.rgb : vec3(128.0, 128.0, 255.0) / 255.0;\n"
         "	}\n"
-        "	else {\n"
+        "	else if (mode == 4) {\n"
         "		o.rgb = vec3(imageLoad(v_metallic, p).r);\n"
+        "	}\n"
+        "	else {\n"
+        "		o.rgb = vec3(imageLoad(v_height, p).r);\n"
         "	}\n"
         "	imageStore(result, p, vec4(byte_of(o.r), byte_of(o.g), byte_of(o.b), byte_of(o.a)));\n"
         "}\n";
@@ -433,6 +437,46 @@ void pad_on_card(CardBake &card, int channel)
 	glBindImageTexture(1, 0, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
 }
 
+/* P9.6: a preset's tile. Drawn over UV -band..1 at (n + w) pixels a side
+ * (w the band's pixels), kept as n: within the band before the far edges
+ * each pixel blends with the one a tile back, so the far edges carry on
+ * from the near ones and the tile repeats without a seam */
+void tile_crossfade(CardBake &card, int channel, int n, int w)
+{
+	if (!card.chan[channel] || w <= 0) {
+		return;
+	}
+	const int m = n + w;
+	std::vector<unsigned char> src;
+	read_value(card, channel, src);  /* (card.size is m here) */
+	std::vector<unsigned char> dst((size_t)n * n * 4);
+	for (int y = 0; y < n; y++) {
+		const float b = (y >= n - w) ? std::min((y - (n - w) + 0.5f) / (float)w, 1.0f) : 0.0f;
+		for (int x = 0; x < n; x++) {
+			const float a = (x >= n - w) ? std::min((x - (n - w) + 0.5f) / (float)w, 1.0f) : 0.0f;
+			const size_t i00 = ((size_t)(y + w) * m + (x + w)) * 4;
+			const size_t i10 = (a > 0.0f) ? ((size_t)(y + w) * m + (x + w - n)) * 4 : i00;
+			const size_t i01 = (b > 0.0f) ? ((size_t)(y + w - n) * m + (x + w)) * 4 : i00;
+			const size_t i11 = (a > 0.0f && b > 0.0f) ? ((size_t)(y + w - n) * m + (x + w - n)) * 4 :
+			                   (a > 0.0f ? i10 : i01);
+			for (int c = 0; c < 4; c++) {
+				const float v = (1.0f - a) * (1.0f - b) * src[i00 + c] + a * (1.0f - b) * src[i10 + c] +
+				                (1.0f - a) * b * src[i01 + c] + a * b * src[i11 + c];
+				dst[((size_t)y * n + x) * 4 + c] = (unsigned char)std::min(std::max(v + 0.5f, 0.0f), 255.0f);
+			}
+		}
+	}
+	GLuint t = make_texture(n, "BGE-Remix bake tile");
+	GLint unpack = 0;
+	glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &unpack);
+	glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+	glTextureSubImage2D(t, 0, 0, 0, n, n, GL_RGBA, GL_UNSIGNED_BYTE, dst.data());
+	glBindBuffer(GL_PIXEL_UNPACK_BUFFER, (GLuint)unpack);
+	glDeleteTextures(1, &card.chan[channel]);
+	card.chan[channel] = t;
+}
+
 struct PackParams {
 	bool physical, spec_zero, alpha_textured;
 	bool nodes; /* P8.24: a node tree's bake: the emission channel is the colour (sRGB) */
@@ -461,9 +505,9 @@ std::shared_ptr<BakedImage> pack_on_card(const CardBake &card, int slot, const P
 			glBindImageTexture((GLuint)c, card.chan[c], 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA8);
 		}
 	}
-	glBindImageTexture(6, out, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
+	glBindImageTexture(7, out, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
 	GPU_compute_dispatch_2d(size, size, 8);
-	for (int c = 0; c <= 6; c++) {
+	for (int c = 0; c <= 7; c++) {
 		glBindImageTexture((GLuint)c, 0, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA8);
 	}
 	std::shared_ptr<BakedImage> img = make_image(name, size);
@@ -875,6 +919,15 @@ int bake_size(const Material *ma)
 	return (n >= 16 && n <= 8192) ? n : 1024;
 }
 
+bool bake_is_tile(const Material *ma)
+{
+	if (!ma || !ma->id.properties || !BKE_material_is_remix(ma)) {
+		return false;
+	}
+	const IDProperty *p = IDP_GetPropertyFromGroup(ma->id.properties, "bge_remix_tile");
+	return p && p->type == IDP_INT && IDP_Int(p) != 0;
+}
+
 DerivedMesh *bake_mesh_from(Mesh *me)
 {
 	if (!me || !me->totvert) {
@@ -919,9 +972,76 @@ const char *slot_suffix(int slot)
 		case BAKE_ROUGHNESS: return "_roughness";
 		case BAKE_EMISSIVE: return "_emissive";
 		case BAKE_NORMAL: return "_normal";
+		case BAKE_HEIGHT: return "_height";
 		default: return "_metallic";
 	}
 }
+
+/* P9.6: the band of a tile's edges that is cross-faded (a share of the tile) */
+const float TILE_BAND = 0.125f;
+
+/* P9.6: what a preset's tile is drawn on: a square over UV lo..hi, placed
+ * at its UVs times the tile's size in metres (the material's
+ * "bge_remix_tile_metres", else 1: the bumps' slopes, so its normal map, are
+ * true for that size), z 0, facing +z, the material in its first slot */
+DerivedMesh *tile_quad(Material *ma, float lo, float hi)
+{
+	float metres = 1.0f;
+	if (ma->id.properties) {
+		const IDProperty *p = IDP_GetPropertyFromGroup(ma->id.properties, "bge_remix_tile_metres");
+		if (p && p->type == IDP_FLOAT && IDP_Float(p) > 1e-3f) {
+			metres = IDP_Float(p);
+		}
+		else if (p && p->type == IDP_DOUBLE && IDP_Double(p) > 1e-3) {
+			metres = (float)IDP_Double(p);
+		}
+	}
+	DerivedMesh *dm = CDDM_new(4, 4, 0, 4, 1);
+	MVert *mv = dm->getVertArray(dm);
+	MEdge *med = dm->getEdgeArray(dm);
+	MLoop *ml = dm->getLoopArray(dm);
+	MPoly *mp = dm->getPolyArray(dm);
+	const float uv[4][2] = {{lo, lo}, {hi, lo}, {hi, hi}, {lo, hi}};
+	for (int i = 0; i < 4; i++) {
+		mv[i].co[0] = uv[i][0] * metres;
+		mv[i].co[1] = uv[i][1] * metres;
+		mv[i].co[2] = 0.0f;
+		mv[i].no[0] = mv[i].no[1] = 0;
+		mv[i].no[2] = 32767;
+		med[i].v1 = (unsigned int)i;
+		med[i].v2 = (unsigned int)((i + 1) % 4);
+		ml[i].v = (unsigned int)i;
+		ml[i].e = (unsigned int)i;
+	}
+	mp[0].loopstart = 0;
+	mp[0].totloop = 4;
+	mp[0].mat_nr = 0;
+	MLoopUV *luv = (MLoopUV *)CustomData_add_layer(&dm->loopData, CD_MLOOPUV, CD_CALLOC, NULL, 4);
+	for (int i = 0; i < 4; i++) {
+		copy_v2_v2(luv[i].uv, uv[i]);
+	}
+	CDDM_recalc_tessellation(dm);
+	float (*orco)[3] = (float (*)[3])MEM_mallocN(sizeof(float[3]) * 4, "bake tile orco");
+	for (int i = 0; i < 4; i++) {
+		copy_v3_v3(orco[i], mv[i].co);
+	}
+	DM_add_vert_layer(dm, CD_ORCO, CD_ASSIGN, orco);
+	/* the material slots, as bake_mesh_from sets them */
+	dm->totmat = 2;
+	dm->mat = (Material **)MEM_calloc_arrayN(dm->totmat, sizeof(*dm->mat), "bake tile DerivedMesh.mat");
+	dm->mat[0] = ma;
+	return dm;
+}
+
+struct ReleaseDM {
+	DerivedMesh *dm;
+	~ReleaseDM()
+	{
+		if (dm) {
+			dm->release(dm);
+		}
+	}
+};
 
 /* P8.7: everything a bake depends on: the material and its textures (the
  * signature), the mesh (its shape, polygons, UV maps), where it stands, the
@@ -982,6 +1102,20 @@ bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const 
 	if (!slots || !dm) {
 		return false;
 	}
+	/* P9.6: a preset's material: one seamless tile, whatever the mesh (its
+	 * band drawn past the near edges, cross-faded into the far ones) */
+	const bool tile = bake_is_tile(ma);
+	const int tile_size = bake_size(ma);
+	const int band = tile ? std::max(1, (int)(tile_size * TILE_BAND + 0.5f)) : 0;
+	ReleaseDM tile_dm = {NULL};
+	float unit[4][4];
+	unit_m4(unit);
+	if (tile) {
+		tile_dm.dm = tile_quad(ma, -(float)band / (float)tile_size, 1.0f);
+		dm = tile_dm.dm;
+		slot = 1;
+		obmat = unit;
+	}
 	/* P8.24: a node tree is baked as a physical material, its emission in colour */
 	const bool nodes = is_node_bake(ma);
 	/* P9.2: an RTX Remix node's inputs, as physical values, emission in colour */
@@ -999,7 +1133,7 @@ bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const 
 		                  "the mesh has no UV map, so its procedural textures cannot be baked";
 		return false;
 	}
-	const int size = bake_size(ma);
+	const int size = tile_size;
 	trace("material", name);
 
 	bool alpha_textured = false;
@@ -1087,6 +1221,7 @@ bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const 
 	want[GPU_BAKE_EMIT] = (slots & (1u << BAKE_EMISSIVE)) != 0;
 	want[GPU_BAKE_NORMAL] = (slots & (1u << BAKE_NORMAL)) != 0;
 	want[GPU_BAKE_METALLIC] = (slots & (1u << BAKE_METALLIC)) != 0;
+	want[GPU_BAKE_HEIGHT] = (slots & (1u << BAKE_HEIGHT)) != 0;
 
 	const bool card_finish = compute_ready();
 	if (!g_timer) {
@@ -1096,7 +1231,7 @@ bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const 
 	glGetIntegerv(GL_CURRENT_PROGRAM, &program);
 	GPU_timer_begin(g_timer);
 	CardBake card;
-	card.size = size;
+	card.size = size + band;
 	for (int c = 0; c < BAKE_CHANNELS; c++) {
 		if (!want[c]) {
 			continue;
@@ -1106,10 +1241,15 @@ bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const 
 			glUseProgram((GLuint)program);
 			return false;
 		}
-		if (card_finish) {
+		if (tile) {
+			/* (all of the square is drawn: nothing to pad) */
+			tile_crossfade(card, c, size, band);
+		}
+		else if (card_finish) {
 			pad_on_card(card, c);
 		}
 	}
+	card.size = size;
 
 	if (card_finish) {
 		/* Remix's images, made on the card */
@@ -1208,6 +1348,15 @@ bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const 
 			}
 			r.images[BAKE_NORMAL] = img;
 		}
+		if (slots & (1u << BAKE_HEIGHT)) {
+			read_value(card, GPU_BAKE_HEIGHT, value);
+			dilate(value, size, size);
+			std::shared_ptr<BakedImage> img = make_image(name + "_height", size);
+			for (size_t i = 0; i < (size_t)size * size; i++) {
+				img->rgba[i * 4 + 0] = img->rgba[i * 4 + 1] = img->rgba[i * 4 + 2] = value[i * 4];
+			}
+			r.images[BAKE_HEIGHT] = img;
+		}
 		for (int s = 0; s < BAKE_SLOTS; s++) {
 			if (r.images[s]) {
 				const_cast<BakedImage *>(r.images[s].get())->key = key;
@@ -1227,7 +1376,8 @@ void apply_bake(const BakeResult &r, MaterialSpec &s)
 {
 	brb_material_desc &d = s.desc;
 	/* P8.24: the slots the Remix block set keep its values */
-	static const int tex_of[BAKE_SLOTS] = {TEX_ALBEDO, TEX_ROUGHNESS, TEX_EMISSIVE, TEX_NORMAL, TEX_METALLIC};
+	static const int tex_of[BAKE_SLOTS] = {TEX_ALBEDO, TEX_ROUGHNESS, TEX_EMISSIVE, TEX_NORMAL, TEX_METALLIC,
+	                                       TEX_HEIGHT};
 	s.nodes_baked = s.source == MaterialSpec::NODES;
 	for (int slot = 0; slot < BAKE_SLOTS; slot++) {
 		if (!r.images[slot] || (s.locked & (1u << tex_of[slot]))) {
@@ -1265,6 +1415,9 @@ void apply_bake(const BakeResult &r, MaterialSpec &s)
 				break;
 			case BAKE_METALLIC:
 				s.textures[TEX_METALLIC] = t;
+				break;
+			case BAKE_HEIGHT:
+				s.textures[TEX_HEIGHT] = t;
 				break;
 		}
 	}
