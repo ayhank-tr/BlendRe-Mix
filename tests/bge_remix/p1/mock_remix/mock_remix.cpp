@@ -289,7 +289,10 @@ remixapi_ErrorCode REMIXAPI_CALL m_CreateMaterial(const remixapi_MaterialInfo *i
 	    " emissive_tex=" + tex_path(info->emissiveTexture) + " filter=" + std::to_string(info->filterMode) +
 	    " wrap=" + std::to_string(info->wrapModeU) +
 	    /* P8.24 (interface 10) */
-	    " wrap_v=" + std::to_string(info->wrapModeV) + " tangent_tex=" + tex_path(info->tangentTexture);
+	    " wrap_v=" + std::to_string(info->wrapModeV) + " tangent_tex=" + tex_path(info->tangentTexture) +
+	    /* BGE-Remix P10.4: a sprite sheet (rows, columns, frames per second) */
+	    " sprite=" + std::to_string((int)info->spriteSheetRow) + "," + std::to_string((int)info->spriteSheetCol) + "," +
+	    std::to_string((int)info->spriteSheetFps);
 	char extra[1024] = "";
 	if (o) {
 		snprintf(extra, sizeof(extra),

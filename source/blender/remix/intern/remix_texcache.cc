@@ -45,6 +45,7 @@
 #include <cstring>
 #include <vector>
 
+#include "BRMX_atlas.h"
 #include "BRMX_bake.h"
 #include "BRMX_material.h"
 
@@ -284,6 +285,14 @@ TextureCache::State TextureCache::request(const TextureRequest &req, std::wstrin
 		}
 		rgba8 = req.baked->rgba.data();
 		name = req.baked->name;
+		/* P10.4: an atlas's image with its own mipmaps */
+		if (req.baked->levels > 1 &&
+		    req.baked->rgba.size() < atlas_levels_size(w, h, req.baked->levels))
+		{
+			e.state = FAILED;
+			failed++;
+			return FAILED;
+		}
 	}
 	else {
 		ibuf = BKE_image_acquire_ibuf(req.image, NULL, &lock);
@@ -398,6 +407,13 @@ TextureCache::State TextureCache::request(const TextureRequest &req, std::wstrin
 			e.path = dir + L"\\" + safe_name(name.c_str()) + L"_" + kind_tag(req) + size + L"_" + hex + L".dds";
 		}
 	}
+	/* P10.4: a packed page: its own mipmaps (each level within its cells),
+	 * in a file of its own */
+	std::vector<unsigned char> atlas_levels;
+	int levels = (req.baked && req.baked->levels > 1) ? req.baked->levels : 1;
+	if (req.atlas && !req.baked && rgba8 && e.path.size() > 4) {
+		e.path = e.path.substr(0, e.path.size() - 4) + L"_a.dds";
+	}
 	r_path = e.path;
 	if (exists(e.path)) {
 		if (ibuf) {
@@ -408,8 +424,13 @@ TextureCache::State TextureCache::request(const TextureRequest &req, std::wstrin
 		return READY;
 	}
 	make_dirs(dir);
+	if (req.atlas && !req.baked && rgba8) {
+		atlas_mips(*req.atlas, req.kind, rgba8, w, h, atlas_levels, levels);
+		rgba8 = atlas_levels.data();
+	}
 	brb_texture_desc d;
 	memset(&d, 0, sizeof(d));
+	d.levels = levels;
 	d.path = e.path.c_str();
 	d.kind = req.kind;
 	d.width = w;

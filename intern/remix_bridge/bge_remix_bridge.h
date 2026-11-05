@@ -57,8 +57,9 @@ extern "C" {
  * 9: P8 Part B (a dome light's own sky picture).
  * 10: P8.24 (every field of Remix's materials; DDS rows from the bottom,
  *     texture coordinates no longer flipped).
- * 11: P8.30 (particle systems' newer fields; instanced draws). */
-#define BRB_ABI_VERSION 11
+ * 11: P8.30 (particle systems' newer fields; instanced draws).
+ * 12: P10.4 (a material's sprite sheet; textures with their own mipmaps). */
+#define BRB_ABI_VERSION 12
 
 typedef enum brb_status {
 	BRB_STATUS_NOT_LOADED = 0,           /* nothing tried yet */
@@ -204,6 +205,11 @@ typedef struct brb_material_desc {
 	float subsurface_distance;   /* volumetric: the transmittance colour's measurement distance */
 	float subsurface_anisotropy; /* -1..1 */
 	float subsurface_radius_scale; /* 0 = 1 */
+	/* interface 12 (P10.4): a sprite sheet (a flipbook): Remix shows frame
+	 * (seconds x sprite_fps) mod (rows x cols), at column frame % cols and
+	 * row frame / cols from the texture's first row, the UVs wrapping inside
+	 * it; sprite_fps 0: none */
+	int sprite_rows, sprite_cols, sprite_fps;
 } brb_material_desc;
 
 /* interface 4 (P4): bone weights of a skinned surface, bones_per_vertex
@@ -462,6 +468,11 @@ typedef struct brb_texture_desc {
 	const float *rgbaf;          /* float RGBA, linear */
 	int channel;                 /* SCALAR: the channel to keep, 0 = R .. 3 = A */
 	int flags;                   /* BRB_TEXTURE_* */
+	/* interface 12 (P10.4): > 1: the pixels hold this many mip levels one
+	 * after the other (each half the size of the one before, at least 1,
+	 * to 1 x 1), written as they are instead of the encoder's own (an
+	 * atlas's: filtered within its cells) */
+	int levels;
 } brb_texture_desc;
 
 typedef struct brb_texture_result {

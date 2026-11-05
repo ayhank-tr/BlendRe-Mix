@@ -518,6 +518,14 @@ BRB_API int brb_material_create(const brb_material_desc *d)
 		info.wrapModeV = (uint8_t)std::min(d->wrap_v - 1, 3);
 	}
 	info.tangentTexture = tex(d->tangent_texture);
+	/* interface 12 (P10.4): a flipbook, played by Remix (by time, for the
+	 * whole material; 1.6.1's surface interaction: frame = seconds x fps
+	 * mod rows x cols) */
+	if (d->sprite_fps > 0 && d->sprite_rows > 0 && d->sprite_cols > 0) {
+		info.spriteSheetRow = (uint8_t)std::min(d->sprite_rows, 255);
+		info.spriteSheetCol = (uint8_t)std::min(d->sprite_cols, 255);
+		info.spriteSheetFps = (uint8_t)std::min(d->sprite_fps, 255);
+	}
 
 	remixapi_MaterialHandle h = nullptr;
 	remixapi_ErrorCode r = guarded("CreateMaterial", [&] { return g_remix.CreateMaterial(&info, &h); });

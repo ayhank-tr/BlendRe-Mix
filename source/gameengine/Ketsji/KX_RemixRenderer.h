@@ -76,6 +76,7 @@ struct Object;
 namespace brmx {
 struct MaterialSpec;
 class TextureCache;
+struct AtlasLayout; /* BGE-Remix P10.4 */
 }
 
 class KX_RemixRenderer
@@ -218,6 +219,9 @@ private:
 		float obmat[16];           /* where the mesh was when baked */
 		uint64_t bake_signature;   /* to bake again when the textures change */
 		double bake_checked;
+		/* BGE-Remix P10.4: a tile set, flipbook or packed page: the surfaces
+		 * using it are split along their UV grid (tiles, packed) */
+		std::shared_ptr<brmx::AtlasLayout> atlas;
 		MaterialEntry() : hash(0), scene(NULL), blend(false), particle(false), waiting(false), pm(NULL), mesh(NULL),
 		                  bake_signature(0), bake_checked(0.0) {}
 	};

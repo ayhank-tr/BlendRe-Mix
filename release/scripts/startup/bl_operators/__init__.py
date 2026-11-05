@@ -32,6 +32,7 @@ _modules = [
     "bge_remix_convert",
     "bge_remix_presets",
     "bge_remix_remaster",
+    "bge_remix_atlas",  # BGE-Remix P10.4
     "clip",
     "console",
     "file",
