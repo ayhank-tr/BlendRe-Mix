@@ -419,10 +419,14 @@ def _t_pack(args, out, S, P, tests, sheets, p8, p2, r9):
     c["all %d materials packed (%d)" % (n, len(R["materials"]))] = len(R["materials"]) == n and not R["skipped"]
     c["onto %d page(s)" % len(R["pages"])] = 1 <= len(R["pages"]) <= 2
     c["every page's gaps carry its images on, no two overlapping"] = all(x["ok"] for x in R["checks"].values())
-    bd = R.get("bleed_distance")
-    c["the far camera (%.0f m) nearer than where a page bleeds (%s m)" % (R["far_distance"], bd and round(bd, 1))] = \
-        bd is not None and bd > R["far_distance"]
-    c["the warning would come further out (%.0f m)" % R["very_far"]] = bd is not None and bd < R["very_far"]
+    FR = I.get("far_packed") or {}
+    bd = FR.get("bleed_distance")
+    d["far pack"] = {k: FR.get(k) for k in ("bleed_distance", "warnings", "clip_end")}
+    c["near (orthographic, sharp): no bleed warning"] = not R["warnings"]
+    c["the far view (%.0f m) nearer than where a page bleeds (%s m)" % (
+        FR.get("far_distance", 0), bd and round(bd, 1))] = bd is not None and bd > FR.get("far_distance", 0)
+    c["far: the bleed warned about, the camera seeing past it (to %s m)" % FR.get("clip_end")] = \
+        bd is not None and bd < FR.get("clip_end", 0) and bool(FR.get("warnings"))
     runs = {}
     for name in ("p10a4_images_near", "p10a4_packed_near"):
         runs[name] = mock_run(args, out, name + "_mock", S(name + "_remix"), p8, r9)

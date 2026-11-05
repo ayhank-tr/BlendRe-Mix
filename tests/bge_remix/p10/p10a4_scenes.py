@@ -51,8 +51,7 @@ WATER_FRAMES = 16
 IMAGES = 20
 PICK_FACE, PICK_TILE, PICK_OTHER = 5, 7, 12
 PACK_PAGE, PACK_PADDING = 1024, 16
-FAR_DISTANCE = 30.0               # the far camera (metres)
-VERY_FAR = 400.0                  # a distance where the pages would bleed (the warning)
+FAR_DISTANCE = 30.0               # the far camera (metres; it sees to 1000 m)
 
 SHOTS_SCRIPT = r'''
 # BGE-Remix P10.4: pictures over time (the flipbook): from AFTER seconds
@@ -284,17 +283,16 @@ def make_images(folder, E, files):
                 r = atlas.pack_images(imgs, PACK_PAGE, PACK_PADDING, max_size=128, scene=scene)
                 pages = [bpy.data.images[n] for n in r["pages"]]
                 r["checks"] = {p.name: atlas.check_page(p) for p in pages}
-                # where the gap would be used up (the tool's warning): the
-                # far camera, and a much farther one
+                # where the gap is used up (the tool warns when its camera
+                # sees that far: the far camera, to 1000 m, does; the near,
+                # orthographic one at 80 pixels a metre does not)
                 dens = [atlas._texel_density(bpy.data.objects["P10A4_sq%02d" % k], 0,
                                              bpy.data.images["P10A4_img%02d" % k]) for k in range(IMAGES)]
-                cam = scene.camera
-                cam.data.type = 'PERSP'
-                r["bleed_distance"] = min(atlas._bleed_distance(scene, d, PACK_PADDING) for d in dens if d)
-                if not far:
-                    cam.data.type = 'ORTHO'
+                d = [atlas._bleed_distance(scene, x, PACK_PADDING) for x in dens if x]
+                d = [x for x in d if x is not None]
+                r["bleed_distance"] = min(d) if d else None
                 r["far_distance"] = FAR_DISTANCE
-                r["very_far"] = VERY_FAR
+                r["clip_end"] = scene.camera.data.clip_end
                 out[tag + "_packed"] = r
             finish(scene)
             name = "p10a4_%s_%s" % ("packed" if packed else "images", tag)
