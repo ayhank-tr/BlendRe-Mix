@@ -129,6 +129,133 @@ class TextureButtonsPanel:
         return tex and (tex.type != 'NONE' or tex.use_nodes) and (context.scene.render.engine in cls.COMPAT_ENGINES)
 
 
+# ---------------------------------------------------------------------------
+# BGE-Remix P9.5: an RTX Remix material's textures are its texture nodes, each
+# labelled with the RTX Remix Material input it feeds
+
+REMIX_TEXTURE_NODES = {"ShaderNodeTexture", "ShaderNodeTexImage"}
+
+
+def remix_material(context):
+    """the context's material when it is an RTX Remix material (and the tab
+    shows the material's textures), else None"""
+    ma = context.material
+    space = context.space_data
+    if ma is None or getattr(space, "texture_context", 'MATERIAL') != 'MATERIAL':
+        return None
+    if getattr(space, "use_pin_id", False) and space.pin_id is not None:
+        return None
+    try:
+        from bl_operators.bge_remix_material import is_remix
+    except ImportError:
+        return None
+    return ma if is_remix(ma) else None
+
+
+def remix_inputs_fed(node, depth=0, seen=None):
+    """the RTX Remix Material inputs a node feeds, through anything in
+    between (Invert, Mapping, Mix, Math, groups)"""
+    seen = set() if seen is None else seen
+    if depth > 8 or node.name in seen:
+        return []
+    seen.add(node.name)
+    found = []
+    for out in node.outputs:
+        for link in out.links:
+            to = link.to_node
+            if to.bl_idname == "ShaderNodeRemixMaterial":
+                if link.to_socket.name not in found:
+                    found.append(link.to_socket.name)
+            else:
+                for name in remix_inputs_fed(to, depth + 1, seen):
+                    if name not in found:
+                        found.append(name)
+    return found
+
+
+def remix_texture_entries(ma):
+    """[(texture node, label)] of an RTX Remix material, in the order of the
+    inputs they feed (unwired ones last)"""
+    nt = ma.node_tree
+    if nt is None:
+        return []
+    order = {}
+    remix = next((n for n in nt.nodes if n.bl_idname == "ShaderNodeRemixMaterial"), None)
+    if remix is not None:
+        order = {sock.name: i for i, sock in enumerate(remix.inputs)}
+    entries = []
+    for n in nt.nodes:
+        if n.bl_idname in REMIX_TEXTURE_NODES:
+            fed = remix_inputs_fed(n)
+            label = ", ".join(fed) if fed else "not wired"
+            key = min((order.get(f, 99) for f in fed), default=100)
+            entries.append((key, n.name, n, label))
+    entries.sort(key=lambda e: (e[0], e[1]))
+    return [(n, label) for _k, _name, n, label in entries]
+
+
+def remix_mapping_node(node):
+    """the Mapping node in front of a texture node's Vector input, if any"""
+    vec = node.inputs.get("Vector")
+    if vec is None or not vec.is_linked:
+        return None
+    src = vec.links[0].from_node
+    return src if src.bl_idname == "ShaderNodeMapping" else None
+
+
+def remix_strength(node):
+    """(data, property, label) for a texture node's strength: the factor of
+    the Mix it goes into, else its texture's brightness"""
+    for out in node.outputs:
+        for link in out.links:
+            to = link.to_node
+            if to.bl_idname == "ShaderNodeMixRGB" and link.to_socket != to.inputs[0]:
+                return to.inputs[0], "default_value", "Strength (Mix)"
+    tex = getattr(node, "texture", None)
+    if tex is not None:
+        return tex, "intensity", "Strength (brightness)"
+    return None, None, None
+
+
+class TEXTURE_OT_bge_remix_texture_node(bpy.types.Operator):
+    """Show this texture node's settings in the Texture tab"""
+    bl_idname = "texture.bge_remix_texture_node"
+    bl_label = "RTX Remix Texture"
+    bl_options = {'INTERNAL', 'UNDO'}
+
+    node = bpy.props.StringProperty()
+
+    @classmethod
+    def poll(cls, context):
+        return context.material is not None and context.material.node_tree is not None
+
+    def execute(self, context):
+        nt = context.material.node_tree
+        node = nt.nodes.get(self.node)
+        if node is None:
+            return {'CANCELLED'}
+        nt.nodes.active = node
+        return {'FINISHED'}
+
+
+def draw_remix_textures(layout, ma, active):
+    """the list: one row per texture node, the active one pressed"""
+    entries = remix_texture_entries(ma)
+    box = layout.box()
+    if not entries:
+        box.label(text="No texture nodes in this RTX Remix material")
+        return entries
+    col = box.column(align=True)
+    for node, label in entries:
+        tex = getattr(node, "texture", None) or getattr(node, "image", None)
+        text = "%s: %s" % (label, tex.name if tex is not None else node.name)
+        op = col.operator("texture.bge_remix_texture_node", text=text, icon='TEXTURE',
+                          emboss=(node != active))
+        op.node = node.name
+    return entries
+
+
+
 class TEXTURE_PT_context_texture(TextureButtonsPanel, Panel):
     bl_label = ""
     bl_options = {'HIDE_HEADER'}
@@ -195,7 +322,17 @@ class TEXTURE_PT_context_texture(TextureButtonsPanel, Panel):
                         split.prop(tex, "type", text="")
             return
 
-        tex_collection = (pin_id is None) and (node is None) and (not isinstance(idblock, Brush))
+        # BGE-Remix P9.5: an RTX Remix material: its texture nodes, not slots
+        remix_ma = remix_material(context)
+        if remix_ma is not None:
+            draw_remix_textures(layout, remix_ma, node)
+            # (the selected node's texture below; an Image Texture node's
+            # settings are all in the RTX Remix Input panel)
+            if node is None or node.bl_idname != "ShaderNodeTexture":
+                return
+
+        tex_collection = (pin_id is None) and (node is None) and (not isinstance(idblock, Brush)) and \
+            remix_ma is None
 
         if tex_collection:
             row = layout.row()
@@ -232,6 +369,52 @@ class TEXTURE_PT_context_texture(TextureButtonsPanel, Panel):
                     layout.label(text="The game and RTX Remix do not draw this texture type (F12 only)", icon='ERROR')
                 elif is_game(context) and tex.type == 'ENVIRONMENT_MAP':
                     mark(layout, "OpenGL and F12; Remix traces reflections itself")
+
+
+class TEXTURE_PT_remix_input(TextureButtonsPanel, Panel):
+    """BGE-Remix P9.5: the selected texture node of an RTX Remix material:
+    the input it feeds, its image, mapping, extension, interpolation and
+    strength (changing them changes the node and its texture)"""
+    bl_label = "RTX Remix Input"
+    COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_GAME'}
+
+    @classmethod
+    def poll(cls, context):
+        node = getattr(context, "texture_node", None)
+        return (node is not None and node.bl_idname in REMIX_TEXTURE_NODES and
+                context.scene.render.engine in cls.COMPAT_ENGINES and remix_material(context) is not None)
+
+    def draw(self, context):
+        layout = self.layout
+        node = context.texture_node
+        fed = remix_inputs_fed(node)
+        layout.label(text="Feeds: " + (", ".join(fed) if fed else "nothing (not wired to the RTX Remix node)"))
+        tex = getattr(node, "texture", None)
+        if node.bl_idname == "ShaderNodeTexImage":
+            layout.template_ID(node, "image", open="image.open")
+            row = layout.row()
+            row.prop(node, "extension", text="Extension")
+            row.prop(node, "interpolation", text="")
+        elif tex is not None:
+            if tex.type == 'IMAGE':
+                layout.template_ID(tex, "image", open="image.open")
+                row = layout.row()
+                row.prop(tex, "extension", text="Extension")
+                row.prop(tex, "use_interpolation", text="Interpolation")
+            else:
+                layout.label(text="A procedural texture: RTX Remix gets it baked")
+        mapping = remix_mapping_node(node)
+        if mapping is not None:
+            col = layout.column()
+            col.label(text="Mapping:")
+            row = col.row()
+            row.column().prop(mapping, "translation", text="Offset")
+            row.column().prop(mapping, "scale", text="Size")
+        else:
+            layout.label(text="Mapping: none (the texture's coordinates as they are)")
+        data, prop, label = remix_strength(node)
+        if data is not None:
+            layout.prop(data, prop, text=label)
 
 
 class TEXTURE_PT_preview(TextureButtonsPanel, Panel):
@@ -1271,7 +1454,9 @@ classes = (
     TEXTURE_MT_specials,
     TEXTURE_MT_envmap_specials,
     TEXTURE_UL_texslots,
+    TEXTURE_OT_bge_remix_texture_node,
     TEXTURE_PT_context_texture,
+    TEXTURE_PT_remix_input,
     TEXTURE_PT_preview,
     TEXTURE_PT_colors,
     TEXTURE_PT_clouds,
