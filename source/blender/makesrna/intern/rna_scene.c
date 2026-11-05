@@ -1980,7 +1980,27 @@ static int rna_GameSettings_render_pipeline_get(PointerRNA *ptr)
 
 static void rna_GameSettings_render_pipeline_set(PointerRNA *ptr, int value)
 {
-	BKE_scene_game_pipeline_set((Scene *)ptr->id.data, value);
+	Scene *scene = (Scene *)ptr->id.data;
+	/* BGE-Remix P9.1: a scene moved to RTX Remix by hand gets ACES on both
+	 * sides (Remix and its fallback), unless a tone mapping was chosen; one
+	 * moved to Classic keeps the one it has. Either way the tone mapping is
+	 * now set, which tells loading that the scene is no P8 file (a Classic
+	 * scene with Remix's switch left on stays Classic) */
+	if (BKE_scene_game_pipeline(scene) != value && !BKE_scene_game_tonemap_is_set(scene)) {
+		BKE_scene_game_tonemap_set(scene, value == BKE_SCENE_GAME_PIPELINE_RTX_REMIX ?
+		                           BKE_SCENE_GAME_TONEMAP_ACES : BKE_scene_game_tonemap(scene));
+	}
+	BKE_scene_game_pipeline_set(scene, value);
+}
+
+static int rna_GameSettings_remix_tone_mapping_get(PointerRNA *ptr)
+{
+	return BKE_scene_game_tonemap((Scene *)ptr->id.data);
+}
+
+static void rna_GameSettings_remix_tone_mapping_set(PointerRNA *ptr, int value)
+{
+	BKE_scene_game_tonemap_set((Scene *)ptr->id.data, value);
 }
 
 static int rna_GameSettings_physx_mode(PointerRNA *ptr)
@@ -4776,12 +4796,23 @@ static void rna_def_scene_game_data(BlenderRNA *brna)
 	RNA_def_property_ui_text(prop, "AA Samples", "The number of AA Samples to use for MSAA");
 
 	/* BGE-Remix P8 Part B */
+	/* BGE-Remix P9.1: Classic and RTX Remix (P8's Modern is RTX Remix's
+	 * OpenGL fallback) */
 	static EnumPropertyItem render_pipeline_items[] = {
 		{0, "CLASSIC", 0, "Classic",
-		 "8-bit colour, as Blender 2.79 drew the game (files from before open with it)"},
-		{1, "MODERN", 0, "Modern",
-		 "Half-float colour; the scene's exposure, view transform, look and gamma (Color Management) "
-		 "are applied at the end"},
+		 "8-bit colour, as Blender 2.79 drew the game; no RTX Remix"},
+		{1, "RTX_REMIX", 0, "RTX Remix",
+		 "Path traced by RTX Remix; drawn in OpenGL (half-float colour, camera effects, the sky's light) "
+		 "when Remix cannot draw or is switched off"},
+		{0, NULL, 0, NULL, NULL}
+	};
+	static EnumPropertyItem remix_tone_mapping_items[] = {
+		{0, "VIEW_TRANSFORM", 0, "View Transform",
+		 "The scene's Color Management view transform in the OpenGL fallback, Remix's own tone mapper in "
+		 "Remix (as P8's Modern scenes had it)"},
+		{1, "ACES", 0, "ACES",
+		 "ACES in both: Remix's global tone mapper finished with ACES, the same ACES curve in the "
+		 "OpenGL fallback"},
 		{0, NULL, 0, NULL, NULL}
 	};
 	prop = RNA_def_property(srna, "render_pipeline", PROP_ENUM, PROP_NONE);
@@ -4789,7 +4820,15 @@ static void rna_def_scene_game_data(BlenderRNA *brna)
 	RNA_def_property_enum_funcs(prop, "rna_GameSettings_render_pipeline_get",
 	                            "rna_GameSettings_render_pipeline_set", NULL);
 	RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
-	RNA_def_property_ui_text(prop, "Pipeline", "How the game draws its colours");
+	RNA_def_property_ui_text(prop, "Pipeline", "How the game draws");
+	RNA_def_property_update(prop, NC_SCENE, NULL);
+
+	prop = RNA_def_property(srna, "remix_tone_mapping", PROP_ENUM, PROP_NONE);
+	RNA_def_property_enum_items(prop, remix_tone_mapping_items);
+	RNA_def_property_enum_funcs(prop, "rna_GameSettings_remix_tone_mapping_get",
+	                            "rna_GameSettings_remix_tone_mapping_set", NULL);
+	RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
+	RNA_def_property_ui_text(prop, "Tone Mapping", "How RTX Remix and its OpenGL fallback map light to the screen");
 	RNA_def_property_update(prop, NC_SCENE, NULL);
 
 	/* BGE-Remix P8 Part C (P8.23): screen effects of the Modern pipeline */

@@ -4193,8 +4193,8 @@ void view3d_main_region_draw(const bContext *C, ARegion *ar)
 		}
 	}
 	
-	/* BGE-Remix P7: the Game View's holograms */
-	if (v3d->gameview_flag & V3D_GAMEVIEW) {
+	/* BGE-Remix P7: the Remix View's holograms (P9.7: none in Debug mode) */
+	if ((v3d->gameview_flag & V3D_GAMEVIEW) && !(v3d->gameview_flag & V3D_GAMEVIEW_DEBUG)) {
 		view3d_gameview_draw(C, scene, ar, v3d);
 	}
 

@@ -87,6 +87,8 @@ extern "C" {
 	#include "BKE_material.h"
 	#include "BKE_customdata.h"
 	#include "BKE_object.h"
+	#include "BKE_scene.h"  /* BGE-Remix P9.1: the pipeline */
+	#include "BKE_material_physical.h"  /* BGE-Remix P9.2 */
 	#include "BKE_text.h"
 
 	#include "BLI_fileops.h"
@@ -109,6 +111,7 @@ extern "C" {
 #  include "BRMX_bake.h"
 #  include "BRMX_loader.h"
 #  include "BRMX_material.h"
+#  include "BRMX_session.h"  /* BGE-Remix P9.7: hash collisions */
 #endif
 
 /* the scene's ID property holding the PhysX choice (P6, DNA_scene_types.h) */
@@ -713,7 +716,7 @@ int GVBuilder::Add(const char *kind, const char *name, Object *owner, const char
 	m_warn.push_back(std::vector<GVWarning>());
 	const int idx = e.id;
 	if (!k) {
-		Warn(idx, "UNASSIGNED", GV_WARN_NOTE, "no layer of the Game View claims this kind of element");
+		Warn(idx, "UNASSIGNED", GV_WARN_NOTE, "no layer of the Remix View claims this kind of element");
 	}
 	return idx;
 }
@@ -813,7 +816,9 @@ void GVBuilder::Build()
 	IDProperty *props = m_scene->id.properties;
 	const int physx = idprop_int(props, BGE_PHYSX_IDPROP, 0);
 	m_physx = m_scene->gm.physicsEngine == WOPHY_NONE ? -1 : (physx == 1 || physx == 2 ? physx : 0);
-	m_remix = idprop_int(props, "bge_remix", 0) != 0 || STREQ(m_scene->r.engine, "RTX_REMIX");
+	/* BGE-Remix P9.1: only the RTX Remix pipeline uses Remix */
+	m_remix = BKE_scene_game_rtx_pipeline(m_scene) &&
+	          (idprop_int(props, "bge_remix", 0) != 0 || STREQ(m_scene->r.engine, "RTX_REMIX"));
 
 	IDProperty *t = props ? IDP_GetPropertyFromGroup(props, "_gameview_targets") : NULL;
 	if (t && t->type == IDP_GROUP) {
@@ -1211,7 +1216,9 @@ void GVBuilder::Rendering()
 				if (!ma) {
 					continue;
 				}
-				const int el = Add("material", ma->id.name + 2, ob, ma->use_nodes ? "node material" : "Blender Internal");
+				const int el = Add("material", ma->id.name + 2, ob,
+				                   BKE_material_is_remix(ma) ? "RTX Remix material" :  /* BGE-Remix P9.2 */
+				                   ma->use_nodes ? "node material" : "Blender Internal");
 				/* P8: a material whose GLSL shader could not be built */
 				if (m_conv.glsl_fallback.count(ma->id.name + 2)) {
 					Warn(el, "REN_GLSL_FALLBACK", GV_WARN_NOTE,
@@ -2412,6 +2419,35 @@ void GVBuilder::Remix()
 		Warn(el, "RMX_NO_RUNTIME", GV_WARN_RED,
 		     "the RTX Remix runtime is not installed (Preferences > System > RTX Remix)", true);
 	}
+#ifdef WITH_REMIX
+	/* BGE-Remix P9.7: what Remix itself met, seen in the Remix View's Check
+	 * mode: hash collisions (two things given one hash; the later one got a
+	 * salted hash, which a Remix mod made for it may not find again) and the
+	 * calls the running runtime refused */
+	{
+		const char *last = NULL;
+		const int collisions = BRMX_hash_collisions(&last);
+		if (collisions > 0) {
+			Warn(el, "RMX_HASH_COLLISION", GV_WARN_BLACK,
+			     fmt("%d hash collision%s in what was sent to Remix (the last: %s): give the objects, meshes or "
+			         "materials different names, or a Remix mod made for them may not find them",
+			         collisions, collisions == 1 ? "" : "s", last && last[0] ? last : "?").c_str(), true);
+		}
+		if (runtime) {
+			const BRMX_Bridge *b = BRMX_bridge();
+			if (b && b->get_status() == BRB_STATUS_RUNNING) {
+				brb_frame_stats st;
+				memset(&st, 0, sizeof(st));
+				b->get_stats(&st);
+				if (st.errors > 0) {
+					Warn(el, "RMX_RUNTIME_ERRORS", GV_WARN_BLACK,
+					     fmt("RTX Remix refused %d call%s (the last error code: %d); see the log for which",
+					         st.errors, st.errors == 1 ? "" : "s", st.last_error).c_str(), true);
+				}
+			}
+		}
+	}
+#endif
 	int lamps = 0;
 	for (Object *ob : m_objects) {
 		if (!game_type(ob->type) || !InGame(ob)) continue;
@@ -2457,16 +2493,22 @@ void GVBuilder::Remix()
 				     "not in Remix: a volume of its own (Remix uses the camera's fog while the camera is inside)", true);
 			if (ma->group)
 				Warn(mel, "RMX_NOT_LIGHT_GROUP", GV_WARN_NOTE, "not in Remix: its Light Group (light linking)", true);
-			for (const std::string &note : spec.notes) {
-				const bool uv = note.find("not mapped by UV") != std::string::npos;
-				Warn(mel, uv ? "RMX_NO_UV" : "RMX_NOTE", uv ? GV_WARN_BLACK : GV_WARN_NOTE, note.c_str(), true);
-			}
-			/* P8.6: procedural textures are baked on the mesh's UV map */
+			/* P8.6: procedural textures (P9.4: and image slots Remix cannot
+			 * take as they are) are baked on the mesh's UV map */
 			const Mesh *mesh = (const Mesh *)ob->data;
-			if (spec.bake_slots && mesh && !CustomData_has_layer(&mesh->ldata, CD_MLOOPUV)) {
+			const bool bake_no_uv = spec.bake_slots && mesh && !CustomData_has_layer(&mesh->ldata, CD_MLOOPUV);
+			for (const std::string &note : spec.notes) {
+				/* (a slot's "..., baked" note: the warning below says it, once) */
+				if (bake_no_uv && note.size() >= 7 && note.compare(note.size() - 7, 7, ", baked") == 0) {
+					continue;
+				}
+				Warn(mel, "RMX_NOTE", GV_WARN_NOTE, note.c_str(), true);
+			}
+			if (bake_no_uv) {
 				Warn(mel, "RMX_BAKE_NO_UV", GV_WARN_BLACK,
-				     "uses procedural textures, which Remix gets baked on the mesh's UV map, and the mesh has none: "
-				     "add a UV map (Remix shows the material's plain colour until then)", true);
+				     "has textures Remix gets baked on the mesh's UV map (procedural ones, or images it cannot take "
+				     "as they are), and the mesh has none: add a UV map (Remix shows the material's plain colour "
+				     "until then)", true);
 			}
 		}
 #endif

@@ -217,6 +217,13 @@ int multitex_nodes(struct Tex *tex, float texvec[3], float dxt[3], float dyt[3],
                    const short thread, short which_output, struct ShadeInput *shi, struct MTex *mtex,
                    struct ImagePool *pool);
 float RE_lamp_get_data(struct ShadeInput *shi, struct Object *lamp_obj, float col[4], float lv[3], float *dist, float shadow[4]);
+/* BGE-Remix P9.2: the RTX Remix Material node's light in F12, as the game
+ * shades the physical material (gpu_shader_material.glsl shade_pbr_light,
+ * shade_pbr_ambient and, in the RTX Remix pipeline, shade_skylight): every
+ * lamp's GGX highlight and Lambert diffuse with Blender Internal's falloff,
+ * spot and shadows, and the world's light */
+void RE_shade_physical(struct ShadeInput *shi, const float base[3], float metallic, float roughness, float specular,
+                       float transmission, float subsurface, float r_diff[3], float r_spec[3]);
 void RE_instance_get_particle_info(struct ObjectInstanceRen *obi, float *index, float *age, float *lifetime, float co[3], float *size, float vel[3], float angvel[3]);
 
 float RE_fresnel_dielectric(float incoming[3], float normal[3], float eta);

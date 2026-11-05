@@ -51,14 +51,151 @@ the finished P8 differs from its plan.
 
 ## Pipelines
 
-Render > Shading > Pipeline (`scene.game_settings.render_pipeline`):
+Render > Shading > Pipeline (`scene.game_settings.render_pipeline`). P9.1
+cut the choice down to two:
 
-- **Classic**: 8-bit colour, drawn as Blender 2.79 drew the game. Files from
+- **Classic** (`'CLASSIC'`): 8-bit colour, drawn as Blender 2.79 drew the
+  game. Classic never uses RTX Remix, whatever its switch says. Files from
   before P8 open with it.
-- **Modern**: half-float colour; the scene's exposure, view transform, look
-  and gamma (Color Management) are applied at the end. Modern adds the
-  camera effects, order-independent transparency, tessellated displacement
-  and volumetric fog with light shafts.
+- **RTX Remix** (`'RTX_REMIX'`, P8's Modern): Remix draws the game when the
+  RTX Remix panel's switch is On and Remix can draw; otherwise its OpenGL
+  fallback does. The fallback is P8's Modern drawing (half-float colour, the
+  camera effects, order-independent transparency, tessellated displacement,
+  volumetric fog with light shafts) made to look like Remix: the world's sky
+  lights the scene as Remix's dome does (in place of Environment Lighting),
+  and a sun always casts shadows.
+- **Tone Mapping** (RTX Remix panel, `scene.game_settings.remix_tone_mapping`):
+  View Transform (the scene's Color Management in the fallback, Remix's own
+  tone mapper in Remix, as P8's Modern scenes had it) or ACES (Remix's
+  global tone mapper finished with ACES at an exposure 0.3 higher, measured
+  to match the fallback's ACES). Remix's tone curve still adapts to each
+  picture: the two match closely, not exactly.
+  A scene moved to RTX Remix by hand gets ACES.
+- **RTX Remix Settings** (a closed panel under RTX Remix): the Remix options
+  that matter for games, saved with the scene (`bge_rtx_*`): upscaling and
+  frame generation, light bounces, emissive intensity, anti-culling,
+  chromatic aberration, particles and, with the view transform, Remix's tone
+  mapper. A setting left alone keeps Remix's default. A scene that sets its
+  own resolution scale or light-bounce settings puts Remix's graphics
+  preset on Custom, so the preset (Auto picks one per graphics card: Medium
+  on an RTX 3080) does not replace them (P9.2b). Resolution Scale counts
+  only with DLSS off: with DLSS on, the DLSS setting decides the size Remix
+  renders at.
+
+P8's files open as follows: Classic with Remix off stays Classic; Classic
+with Remix on (or rendered with the RTX Remix engine) opens in RTX Remix with
+Remix on; Modern with Remix on or off opens in RTX Remix with the switch as
+it was. All keep the view transform. A scene put in Classic by hand stays
+Classic, its Remix switch left as it was.
+
+## RTX Remix materials (P9.2)
+
+Material tab, under the material's name: **Classic** or **RTX Remix**.
+
+- **RTX Remix** turns the material into a node material whose output is an
+  **RTX Remix Material** node (Blender's Output node stays in the tree,
+  unwired, holding the node's albedo and opacity). Its values come from the
+  material: a Physical material's as they are; a Classic one's colour (times
+  its diffuse intensity), specular hardness (as roughness), emit and alpha.
+  Each texture slot becomes a Texture node read at the slot's coordinates
+  (UV through a Geometry node; a Mapping node when the slot moves or scales
+  them), wired by what the slot affects. Normal, roughness and metallic
+  images are set to Non-Color, as the slots read them.
+- **Classic** switches the nodes off and keeps the tree: RTX Remix brings it
+  back as it was. A P8 Physical material shows neither; RTX Remix takes its
+  values (P9.3 converts them when a file opens).
+- The node's inputs are every field of a Remix material: Albedo, Opacity,
+  Roughness, Metallic, Normal (a tangent-space normal map; DirectX green is an
+  option), Emissive Color and Intensity, Height with Displace In and Out,
+  Anisotropy, Thin Film (nanometres), IOR, Transmittance and its distance,
+  Thin Wall Thickness, Subsurface with its colour and radius. On the node:
+  Type (Opaque or Translucent: Remix's glass), Blend (the material's game
+  transparency), the alpha test's cutoff, Thin Walled, Particle, the Remix
+  categories, Bake Size.
+- The game draws the node with the Physical surface's shading, in both
+  pipelines; F12 renders it with the same lighting maths as the game (lamps,
+  their shadows, the world and, in the RTX Remix pipeline, the sky light);
+  Remix gets every input. Height is displaced by Remix and, with no normal
+  wired, bumps the surface in the game (P9.6); F12 does not draw it.
+  Anisotropy and thin film are drawn by Remix only. Displace In and Out go
+  to Remix only with something wired into Height.
+- To Remix: an input fed by a Texture node holding an image, read at the
+  Geometry node's UV, goes as that image (its Value output: the image's
+  alpha); anything else wired into Albedo, Opacity, Roughness, Metallic,
+  Normal or the emission is baked into that channel; other inputs send their
+  own value.
+- The node's Match panel (the node editor's sidebar) and the material's RTX
+  Remix Match say, input by input, how each reaches Remix.
+- In the RTX Remix pipeline both sides of a face cast shadows, as in Remix.
+- Stock 2.79 does not know the node: it draws the Output node's own colour
+  and alpha, kept at the node's albedo and opacity.
+
+## Old materials (P9.3)
+
+When a file opens in Blender, the materials of its game scenes that are not
+Classic become RTX Remix materials:
+
+- a Physical material (P8), as picking RTX Remix does;
+- a Cycles node material, read as RTX Remix already read it: Principled,
+  Diffuse, Glossy, Glass, Emission and Subsurface Scattering map straight,
+  an image wired straight in becomes a Texture node, a see-through Mix keeps
+  its opacity, a Mix of a surface and a glow keeps both, any other Mix the
+  stronger surface;
+- a Blender Internal node material: its graph stays and feeds the node, and
+  its Output node stays wired, so stock 2.79 draws the graph; Remix gets the
+  graph baked, its Material nodes as their surface colour (Remix lights
+  it);
+- a material whose RTX Remix block (P8) is in use: the block's values and
+  images set the node's inputs. The block still applies in Remix; its panel
+  (RTX Remix Fields) shows only on materials whose block is in use.
+
+Classic materials stay as they are. Each original is kept as a fake-user
+material `<name>.p8` until the file has been saved twice. The text block
+"BGE-Remix conversion" lists what was converted and anything approximated;
+the console and the status bar say it too. The player plays old files
+unchanged. Blender run from a script (in the background) converts only with
+`BGE_REMIX_CONVERT=1`; `BGE_REMIX_CONVERT=0` turns conversion off.
+
+A material in a file that is also rendered with Cycles loses its Cycles
+nodes in the conversion (the `.p8` copy keeps them).
+
+## Texture settings in Remix (P9.4)
+
+Remix takes one wrap and one filter per material. When all of a material's
+image textures agree, their settings go to Remix as they are: Repeat,
+Extend (clamp), Clip and Mirror become Remix's wrap, and Interpolation off
+turns filtering off. A slot's scale and offset, the image's repeat counts and
+Flip X/Y are applied to the mesh's UVs; an RTX Remix material does the same
+through a Mapping node (no rotation) before its Texture node. Anything Remix
+cannot take as it is is baked into an image, channel by channel: influence
+below 1, blends other than Mix, several slots in one channel, coordinates
+other than UV, the Colors panel, Negative, Checker, bump maps, and textures
+whose settings differ. The game itself draws only a slot's scale and offset,
+so repeats, mirror, flip, Extend and Clip show in Remix and F12, not in the
+fallback. The Match panel's "filtering and wrapping" row says which way the
+textures went, and each baked field says why.
+
+## The Texture tab (P9.5)
+
+For an RTX Remix material the tab lists the material's texture nodes, each
+named after the input of the RTX Remix Material node it feeds ("Albedo",
+"Roughness"). Pick one to see its texture as usual; the RTX Remix Input panel
+shows its image, extension, interpolation, the Mapping node in front (offset,
+size) and its strength, and changing them changes the node. Classic
+materials keep their texture slots as in 2.79.
+
+## Preset materials (P9.6)
+
+The RTX Remix Material panel's Preset menu gives a material a ready-made
+surface: Rock, Gravel, Tarmac, Grass, Brick, Tree bark, Water, Skin (light,
+medium or dark), Dirt road / mud, Sand, Snow or Concrete. A material that is
+not RTX Remix yet becomes one. The preset is one group node with a few
+inputs: Scale (repeats per UV unit, one UV unit taken as 1 m), Colour, Wear
+(weathering, chips, dust), Wetness (Tarmac and Dirt road: darker and glossy
+where water would gather) and Seed (shifts the pattern). The game draws the
+preset live; Remix gets it as one seamless tile with colour, roughness,
+height and bumps, baked once per material however many meshes use it.
+Water stands still, in the game and in Remix.
 
 ## Lights and shadows
 
@@ -147,6 +284,20 @@ field. A Classic scene leaves Remix's bloom on and its auto exposure off.
   only" mark. Hidden options keep their values, and Python still reaches
   them.
 
+## The Remix View (P9.7)
+
+The Remix View (P7's Game View) has two modes. Check shows the game layer by
+layer: holograms, warnings and targets. Debug shows RTX Remix's own picture:
+the menu next to the mode buttons picks one of Remix's debug views, and the
+gear beside it sets how values show (display type, value and EV ranges,
+false colour, an overlay over the picture). The figures after it are draws,
+lights, textures waiting and frame time; one turns red past your targets,
+and a click shows every counter. Click an object to see, in the Inspect
+panel, what Remix got for it: its mesh, how many objects share it, each
+material input and where it came from, each texture's cache file. A game
+started from Blender keeps the debug view picked. Hash collisions and calls
+Remix refused show as warnings on the Remix layer, in Check mode.
+
 ## The editors on OpenGL 4.5
 
 Blender and the player run in an OpenGL 4.5 compatibility context (since
@@ -224,7 +375,12 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
 
 ## Python additions
 
-- `bge.render.getRenderPipeline()`: `'CLASSIC'` or `'MODERN'`.
+- `bge.render.getRenderPipeline()`: `'CLASSIC'` or `'RTX_REMIX'` (P9.1; was
+  `'MODERN'`).
+- `bge.render.isRemixDrawing()` (P9.1): True when RTX Remix drew the active
+  scene (the last frame), False when OpenGL did.
+- `bge.render.remixSetOption(name, value)` (P9.0): change one of Remix's own
+  settings (`rtx.*`) while it runs; True if Remix took it.
 - `bge.render.setSpeedFeature(name, on)` and `bge.render.getSpeedFeature(name)`.
 - `mistHeight` on the game scene's `world`.
 - `gpu.draw_stats(reset=True)` in Blender: what the drawing sent since the
@@ -247,6 +403,14 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
   Remix are the reference.
 - The world's mist is not shown in Remix (see Sky, mist, reflections,
   volumes).
+- With ACES, bright saturated colours (a strong orange glow, say) keep more
+  of their colour in Remix than in the fallback: Remix's ACES converts
+  colours in a way the fallback's curve does not copy (P9.2). Very dark
+  colours also read a little lighter in Remix.
+- Image textures and normal maps look softer in Remix than in the fallback,
+  less so at larger window sizes, most likely Remix's denoiser (P9.2b found
+  no Remix setting that changes it: texture detail, anisotropic filtering,
+  upscaling, the graphics preset; to be looked at again after P9.3).
 - In Remix a hemi lamp is sky light: it lights the whole scene, and no lamp
   keeps to its own layer.
 - Remix's lights reach everywhere: a lamp's Distance (and Sphere) does not
@@ -262,7 +426,21 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
 - Remix's particles are lit surfaces in the emitter's material: they do
   not glow or blend as the game's do, so smoke and sparks look darker, or
   barely show, in dark scenes.
-- Remix's bakes use one UV map; meshes without one are reported.
+- Classic (Blender Internal) materials lit by a sun read brighter and paler
+  in Remix than in the fallback (about 25 levels on the P9.4 texture wall);
+  their patterns match. Flat skin presets read paler in Remix too (its
+  subsurface light). To be looked at with P10's value check.
+- A texture set to Clip shows black beyond the image in Remix, the
+  material's colour in F12.
+- Preset tiles baked for Remix: Brick shows dark bricks along the tile's
+  repeat edges, Rock faint ghosted edges where the tile is cross-faded (P10
+  rebuilds the tile bakes).
+- Remix's bakes use one UV map; meshes without one are reported (on the
+  Remix View's Remix layer, once per material).
+- The game starts before its textures are ready: each is encoded for Remix
+  in turn (with Remix running, about a second for a large baked one on an
+  RTX 3080), and a material shows its plain colour until its textures are
+  in. A second start finds them in the cache.
 - Remix has no orthographic camera: an orthographic camera reaches it as a
   distant, narrow perspective camera framing the same view (within about
   1 % of the size across the view's depth), so orthographic 3D scenes are

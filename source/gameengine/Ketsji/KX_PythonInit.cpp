@@ -1076,6 +1076,39 @@ static PyObject *gPyRemixHighlight(PyObject *, PyObject *args)
 	Py_RETURN_NONE;
 }
 
+/* BGE-Remix P9.0: remixSetOption(name, value): one of RTX Remix's own
+ * settings (rtx.*) changed while it runs; the value as Remix writes it in
+ * its option list (bools True/False, numbers, "a, b" for pairs); returns
+ * whether Remix took it (False when Remix is not drawing) */
+static PyObject *gPyRemixSetOption(PyObject *, PyObject *args)
+{
+	const char *name, *value_s = NULL;
+	PyObject *value;
+	if (!PyArg_ParseTuple(args, "sO:remixSetOption", &name, &value))
+		return NULL;
+	PyObject *str = NULL;
+	if (PyBool_Check(value)) {
+		value_s = (value == Py_True) ? "True" : "False";
+	}
+	else {
+		str = PyObject_Str(value);
+		if (!str)
+			return NULL;
+		value_s = _PyUnicode_AsString(str);
+	}
+	bool ok = false;
+#ifdef WITH_REMIX
+	KX_KetsjiEngine *engine = KX_GetActiveEngine();
+	KX_RemixRenderer *remix = engine ? engine->GetRemix() : NULL;
+	if (remix && value_s)
+		ok = remix->SetOption(name, value_s);
+#else
+	(void)name;
+#endif
+	Py_XDECREF(str);
+	return PyBool_FromLong(ok);
+}
+
 static PyObject *gPySetEyeSeparation(PyObject *, PyObject *args)
 {
 	float sep;
@@ -1092,14 +1125,26 @@ static PyObject *gPySetEyeSeparation(PyObject *, PyObject *args)
 	Py_RETURN_NONE;
 }
 
-/* BGE-Remix P8 Part B (P8.12): the active scene's pipeline ("CLASSIC" or
- * "MODERN"; it is set in the scene's Render settings) */
+/* BGE-Remix P8 Part B (P8.12): the active scene's pipeline; P9.1: "CLASSIC"
+ * or "RTX_REMIX" (set in the scene's Render settings) */
 static PyObject *gPyGetRenderPipeline(PyObject *)
 {
 	KX_Scene *scene = KX_GetActiveScene();
 	Scene *blscene = scene ? scene->GetBlenderScene() : NULL;
-	const bool modern = blscene && BKE_scene_game_pipeline(blscene) == BKE_SCENE_GAME_PIPELINE_MODERN;
-	return PyUnicode_FromString(modern ? "MODERN" : "CLASSIC");
+	return PyUnicode_FromString(blscene && BKE_scene_game_rtx_pipeline(blscene) ? "RTX_REMIX" : "CLASSIC");
+}
+
+/* BGE-Remix P9.1: whether RTX Remix drew the active scene (the last frame);
+ * False: OpenGL did (Classic, Remix off or not available, a 2D screen) */
+static PyObject *gPyIsRemixDrawing(PyObject *)
+{
+	bool drawing = false;
+#ifdef WITH_REMIX
+	KX_KetsjiEngine *engine = KX_GetActiveEngine();
+	KX_Scene *scene = KX_GetActiveScene();
+	drawing = engine && scene && engine->GetRemixScene() == scene;
+#endif
+	return PyBool_FromLong(drawing);
 }
 
 /* BGE-Remix P8 Part B: the speed features ("instancing", "gpu_culling",
@@ -1748,13 +1793,17 @@ static struct PyMethodDef rasterizer_methods[] = {
 	 "remixPick(x, y, exact=False): the object RTX Remix drew at that window pixel, or None"},
 	{"remixHighlight",(PyCFunction) gPyRemixHighlight, METH_VARARGS,
 	 "remixHighlight(objects=None, color=(1.0, 0.6, 0.1)): outline objects in RTX Remix's picture"},
+	{"isRemixDrawing",(PyCFunction) gPyIsRemixDrawing, METH_NOARGS,
+	 "isRemixDrawing(): True when RTX Remix drew the active scene (the last frame), False when OpenGL did"},
+	{"remixSetOption",(PyCFunction) gPyRemixSetOption, METH_VARARGS,
+	 "remixSetOption(name, value): change one of RTX Remix's own settings while it runs; True if Remix took it"},
 	{"setBackgroundColor",(PyCFunction)gPySetBackgroundColor,METH_O,"set Background Color (rgb)"},
 	{"enableMotionBlur",(PyCFunction)gPyEnableMotionBlur,METH_VARARGS,"enable motion blur"},
 	{"disableMotionBlur",(PyCFunction)gPyDisableMotionBlur,METH_NOARGS,"disable motion blur"},
 
 	{"setEyeSeparation", (PyCFunction) gPySetEyeSeparation, METH_VARARGS, "set the eye separation for stereo mode"},
 	{"getEyeSeparation", (PyCFunction) gPyGetEyeSeparation, METH_NOARGS, "get the eye separation for stereo mode"},
-	{"getRenderPipeline", (PyCFunction) gPyGetRenderPipeline, METH_NOARGS, "get the active scene's pipeline: 'CLASSIC' or 'MODERN'"},
+	{"getRenderPipeline", (PyCFunction) gPyGetRenderPipeline, METH_NOARGS, "get the active scene's pipeline: 'CLASSIC' or 'RTX_REMIX'"},
 	{"setSpeedFeature", (PyCFunction) gPySetSpeedFeature, METH_VARARGS, "switch a speed feature on or off: setSpeedFeature(name, on)"},
 	{"getSpeedFeature", (PyCFunction) gPyGetSpeedFeature, METH_VARARGS, "whether a speed feature is on: getSpeedFeature(name)"},
 	{"setFocalLength", (PyCFunction) gPySetFocalLength, METH_VARARGS, "set the focal length for stereo mode"},

@@ -121,6 +121,72 @@ def material_match(material):
     return json.loads(_bge_remix.material_match(material.as_pointer()))
 
 
+def view_stats():
+    """the 3D views' counters (BRMX_view_stats_json) as a dict; None without
+    the built-in module"""
+    if _bge_remix is None:
+        return None
+    try:
+        return json.loads(_bge_remix.view_stats())
+    except ValueError:
+        return None
+
+
+def debug_option(key, value):
+    """BGE-Remix P9.7: one of the Remix View's debug options (rtx.debugView.*,
+    rtx.hashCollisionDetection.enable), sent to Remix when it runs and kept
+    for a game started from Blender; bools as True/False"""
+    if _bge_remix is None:
+        return False
+    if isinstance(value, bool):
+        text = "True" if value else "False"
+    elif isinstance(value, float):
+        text = "%g" % value
+    else:
+        text = str(value)
+    _bge_remix.debug_option(key, text)
+    return True
+
+
+def _cache_state(texture):
+    """a texture's cache file and state: READY (its file is there), MISSING;
+    an image's file is named by its pixels' hash too, so the newest file of
+    its name is taken"""
+    path, exact = texture.get("file", ""), texture.get("exact", False)
+    if not path:
+        return "", "MISSING"
+    if exact:
+        return path, "READY" if os.path.isfile(path) else "MISSING"
+    folder, start = os.path.split(path.replace("\\", os.sep))
+    try:
+        names = [n for n in os.listdir(folder) if n.startswith(start) and n.lower().endswith(".dds")]
+    except OSError:
+        names = []
+    if not names:
+        return path + "*.dds", "MISSING"
+    names.sort(key=lambda n: os.path.getmtime(os.path.join(folder, n)), reverse=True)
+    return os.path.join(folder, names[0]), "READY"
+
+
+def inspect(obj, scene=None):
+    """BGE-Remix P9.7: what RTX Remix gets for an object: {"object", "mesh",
+    "triangles", "instances", "cache_folder", "materials": [{"slot", "name",
+    "values", "textures": [{"field", "image", "baked", "file", "state"}],
+    "match": material_match's}]}; a texture's state is WAITING while the
+    3D views still encode textures and its file is not there yet. None
+    without the built-in module."""
+    if _bge_remix is None or obj is None:
+        return None
+    r = json.loads(_bge_remix.inspect(obj.as_pointer(), scene.as_pointer() if scene is not None else 0))
+    waiting = (view_stats() or {}).get("textures_waiting", 0)
+    for mat in r.get("materials", []):
+        for tex in mat.get("textures", []):
+            tex["file"], tex["state"] = _cache_state(tex)
+            if tex["state"] == "MISSING" and waiting:
+                tex["state"] = "WAITING"
+    return r
+
+
 def bmp_stats(path, step=97):
     """Mean and standard deviation of a 24-bit BMP's bytes (a quick "is there a
     picture" check, no image library needed). None if unreadable."""

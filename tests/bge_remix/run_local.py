@@ -6,7 +6,7 @@ newest such download from C:\\BGE-Remix\\transfer, runs the phases' tests on
 this PC's graphics card, and packs the results as
 C:\\BGE-Remix\\transfer\\p0-results.zip, as GitHub's runs did.
 
-  run_local.bat              every phase (P0 to P8)
+  run_local.bat              every phase (P0 to P9)
   run_local.bat p8           only P8 (any list works: p4 p8)
   run_local.bat p8rtx        P8's RTX run: the real RTX Remix runtime, every
                              benchmark target, the picture sheets (also
@@ -14,19 +14,16 @@ C:\\BGE-Remix\\transfer\\p0-results.zip, as GitHub's runs did.
   run_local.bat p8diag       P8.30's diagnostic RTX run: Remix's pictures
                              with one setting changed at a time (also
                              run_p8_diag.bat in the p8 folder)
-  run_local.bat rally        P9.0: Rally Cross driven for 15 seconds in stock
-                             2.79b, our build and RTX Remix, with each
-                             suspect switched off in turn (also
-                             run_rally.bat in the p9 folder)
-  run_local.bat rallybig     P9.0: Rally Cross with RTX Remix at 2560 x 1440
-                             and for a minute, standalone and inside Blender
-                             (also run_rally_big.bat in the p9 folder)
-  run_local.bat rallydiag    P9.0: Rally Cross's glitch diagnostics: the
-                             sun's shadow off, the water hidden, Remix's
-                             pictures of each (also run_rally_diag.bat)
-  run_local.bat rallydiag2   P9.0: Rally Cross's glitch diagnostics 2: our
-                             P8 techniques off in turn, objects hidden
-                             (also run_rally_diag2.bat)
+  run_local.bat p9rtx        P9.1's RTX run: the fallback against Remix (six
+                             spheres, the room; ACES and the view transform;
+                             also run_p9_rtx.bat in the p9 folder)
+  run_local.bat p9study      P9.0's study: Remix settings from Python, the
+                             dry conversion of every test file (run the
+                             phases first: it reads their scenes)
+  run_local.bat p9studyrtx   P9.0's RTX study: six spheres against Remix,
+                             Remix's debug views (also run_p9_study_rtx.bat)
+  run_local.bat p9menu       P9.0: Remix's own menu, tried by hand (also
+                             run_p9_menu.bat)
 
 Needs, once: Python 3 with pillow and numpy (python -m pip install pillow
 numpy), and the official Blender 2.79b unpacked into
@@ -54,8 +51,8 @@ MOCK = os.path.join(LOCAL, "mock")
 MOCK_SHIM = os.path.join(LOCAL, "mock_shim")
 RESULTS = os.path.join(LOCAL, "results")
 HERE = os.path.dirname(os.path.abspath(__file__))
-PHASES = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"]
-EXTRA = ["p8rtx", "p8diag", "rally", "rallybig", "rallydiag", "rallydiag2"]  # only when asked for
+PHASES = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9"]
+EXTRA = ["p8rtx", "p8diag", "p9rtx", "p9study", "p9studyrtx", "p9menu"]  # only when asked for
 
 
 def say(text=""):
@@ -135,17 +132,15 @@ def commands():
                   "--out", os.path.join(RESULTS, "p8rtx")],
         "p8diag": run("p8", "run_p8.py") + ["--ours", OURS, "--diag", "--before", os.path.join(ROOT, "results"),
                                             "--out", os.path.join(RESULTS, "p8diag")],
-        # P9.0: Rally Cross (the game stays on this PC: C:\BGE-Remix\rallycross
-        # or the Downloads folder it came in)
-        "rally": run("p9", "run_rally.py") + ["--ours", OURS] + off + ["--out", os.path.join(RESULTS, "rally")],
-        # P9.0: Rally Cross with Remix at 2560 x 1440 and for a minute, standalone
-        # and inside Blender
-        "rallybig": run("p9", "run_rally.py") + ["--ours", OURS, "--big", "--out", os.path.join(RESULTS, "rallybig")],
-        # P9.0: the glitch diagnostics (stock, ours and Remix with one suspect off)
-        "rallydiag": run("p9", "run_rally.py") + ["--ours", OURS] + off + ["--diag", "--out",
-                                                                            os.path.join(RESULTS, "rallydiag")],
-        "rallydiag2": run("p9", "run_rally.py") + ["--ours", OURS] + off + ["--diag2", "--out",
-                                                                             os.path.join(RESULTS, "rallydiag2")],
+        # P9.1: Classic and RTX Remix
+        "p9": run("p9", "run_p9.py") + ["--ours", OURS] + off + ["--mock", MOCK, "--pipelines",
+                                                                 "--out", os.path.join(RESULTS, "p9")],
+        "p9rtx": run("p9", "run_p9.py") + ["--ours", OURS, "--pipelines-rtx", "--out", os.path.join(RESULTS, "p9rtx")],
+        # P9.0: the study (the dry conversion reads the phases' scenes in RESULTS)
+        "p9study": run("p9", "run_p9.py") + ["--ours", OURS, "--mock", MOCK, "--study", "--results", RESULTS,
+                                             "--out", os.path.join(RESULTS, "p9study")],
+        "p9studyrtx": run("p9", "run_p9.py") + ["--ours", OURS, "--rtx", "--out", os.path.join(RESULTS, "p9studyrtx")],
+        "p9menu": run("p9", "run_p9.py") + ["--ours", OURS, "--menu", "--out", os.path.join(RESULTS, "p9menu")],
     }
 
 

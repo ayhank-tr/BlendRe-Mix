@@ -894,7 +894,7 @@ def remix_expect(ob):
     phys = bool(la.get("bge_physical", 0)) and la.type in ('POINT', 'SPOT')
     e = {"name": ob.name}
     if la.type == 'SUN':
-        e.update(type="distant", angle=float(la.get("bge_sun_angle", 0.53)), k=math.pi * E * s)
+        e.update(type="distant", angle=float(la.get("bge_sun_angle", 0.53)), k=E * s)  # P9.2: no pi
     elif la.type == 'AREA':
         sx, sy = la.size, (la.size_y if la.shape == 'RECTANGLE' else la.size)
         e.update(type="rect", size=[sx, sy], k=math.pi * E * s * D / (sx * sy))
@@ -1839,6 +1839,12 @@ def make_remix_keep(folder, E):
     scenes[2]["bge_remix"] = 0
     E["remix_keep"] = {"switch_at": 40, "scenes": ["KeepA", "KeepB", "KeepC"]}
     save(scenes[2], os.path.join(folder, "remix_keep.blend"))
+    # P9.1: only the RTX Remix pipeline uses Remix, so KeepB (no setting of
+    # its own, keeping Remix) is in it; KeepA moves to it when opened
+    if not STOCK:
+        scenes[1]["bge_remix_pipeline"] = 1
+        bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, "remix_keep.blend"), check_existing=False,
+                                    compress=False)
 
 
 def make_game_overlays(folder, E):
@@ -2181,8 +2187,11 @@ def make_crowd_scene(folder, E, name, rocks, walkers, keyed_every):
     save(scene, os.path.join(folder, name + ".blend"), physical=False, modern=True)
     files = [name]
     if name == "crowd_small":
-        sun.data.use_shadow = False
+        # P9.1: a sun in the RTX Remix pipeline always casts, so the
+        # characters themselves cast nothing here (their material)
+        body_ma.use_cast_buffer_shadows = False
         files.append(copy_save(folder, "crowd_small_noshadow"))
+        body_ma.use_cast_buffer_shadows = True
     # the walkers' band, with their shadows (screen rectangles)
     rows = (walkers + cols - 1) // cols
     rects = {"walkers": screen_rect(scene, (-10.0, -0.3, 0.0), (10.0, rows * 1.1, 1.8), shrink=1.0),

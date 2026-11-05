@@ -92,14 +92,18 @@ int lamp_light(const LampInput &lamp, const float pos[3], const float axis_x[3],
 	float scale = 1.0f;
 
 	if (lamp.type == LA_SUN) {
-		/* Remix's distant light "radiance" is the irradiance it gives (as
-		 * Remix converts D3D9 sun lights): pi * E. Dividing by the sun's
-		 * solid angle burnt the sunlit floor out (RTX 3080, P2 room). */
+		/* Remix's distant light "radiance" is the irradiance it gives.
+		 * BGE-Remix P9.2: E itself, not pi * E: with Remix's tone curve off
+		 * (P9's light balance, RTX 3080) pi * E lit a matte surface over
+		 * twice as bright as the fallback (Blender Internal: albedo * E *
+		 * cos), while emission and the sky matched; Remix's adaptive tone
+		 * curve had hidden it since P2. Dividing by the sun's solid angle
+		 * burnt the sunlit floor out (P2 room). */
 		d.type = BRB_LIGHT_DISTANT;
 		/* BGE-Remix P8.9: the sun's size (0.53 degrees, the real sun's,
 		 * unless the lamp says otherwise) */
 		d.angular_diameter_deg = lamp.sun_angle > 0.0f ? lamp.sun_angle : SUN_ANGULAR_DIAMETER_DEG;
-		scale = (float)(PI * energy);
+		scale = energy;
 	}
 	else if (lamp.type == LA_AREA && lamp.have_lamp) {
 		d.type = BRB_LIGHT_RECT;

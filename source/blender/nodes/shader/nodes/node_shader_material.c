@@ -302,6 +302,20 @@ static int gpu_shader_material(GPUMaterial *mat, bNode *node, bNodeExecData *UNU
 				shi.alpha = gpu_get_input_link(mat, &in[MAT_IN_ALPHA]);
 		}
 
+		if (GPU_material_bake_channel(mat) >= 0) {
+			/* BGE-Remix P9.8: baked for Remix (an RTX Remix node fed by this
+			 * graph): the surface's colour, Remix lights it; its lit shading
+			 * baked in left the lamps' shadows on it */
+			GPU_shadeinput_bake_surface(&shi, &out[MAT_OUT_COLOR].link, &out[MAT_OUT_ALPHA].link);
+			out[MAT_OUT_NORMAL].link = shi.vn;
+			if (node->type == SH_NODE_MATERIAL_EXT) {
+				out[MAT_OUT_DIFFUSE].link = out[MAT_OUT_COLOR].link;
+				GPU_link(mat, "set_rgb_zero", &out[MAT_OUT_SPEC].link);
+				GPU_link(mat, "set_rgb_one", &out[MAT_OUT_AO].link);
+			}
+			return true;
+		}
+
 		GPU_shaderesult_set(&shi, &shr); /* clears shr */
 		
 		/* write to outputs */

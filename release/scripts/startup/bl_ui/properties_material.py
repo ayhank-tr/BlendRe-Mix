@@ -52,6 +52,24 @@ def is_physical(mat):
     return bool(mat) and getattr(mat, "bge_physical", 'CLASSIC') == 'PHYSICAL'
 
 
+def is_remix(mat):
+    # BGE-Remix P9.2: an RTX Remix material (its nodes hold an RTX Remix
+    # Material node)
+    try:
+        from bl_operators.bge_remix_material import is_remix as _is_remix
+    except ImportError:
+        return False
+    return _is_remix(mat)
+
+
+def material_kind(mat):
+    try:
+        from bl_operators.bge_remix_material import kind
+    except ImportError:
+        return 'CLASSIC'
+    return kind(mat)
+
+
 def simple_material(mat):
     if (mat is not None) and (not mat.use_nodes):
         return True
@@ -165,7 +183,8 @@ class MATERIAL_PT_context_material(MaterialButtonsPanel, Panel):
         if ob:
             split.template_ID(ob, "active_material", new="material.new")
             row = split.row()
-            if mat:
+            # BGE-Remix P9.2: an RTX Remix material's nodes are always on
+            if mat and not is_remix(mat):
                 row.prop(mat, "use_nodes", icon='NODETREE', text="")
 
             if slot:
@@ -178,6 +197,15 @@ class MATERIAL_PT_context_material(MaterialButtonsPanel, Panel):
 
         if mat:
             layout.row().prop(mat, "type", expand=True)
+            # BGE-Remix P9.2: the material's kind, Classic or RTX Remix
+            kind = material_kind(mat)
+            row = layout.row(align=True)
+            row.operator("material.bge_remix_classic", text="Classic", depress=(kind == 'CLASSIC'))
+            row.operator("material.bge_remix_make", text="RTX Remix", depress=(kind == 'RTX_REMIX'))
+            if kind == 'PHYSICAL':
+                layout.label("A Physical material (P8): RTX Remix takes its values", icon='INFO')
+            if kind == 'RTX_REMIX':
+                return
             if mat.use_nodes:
                 row = layout.row()
                 row.label(text="", icon='NODETREE')
@@ -1244,6 +1272,36 @@ class MATERIAL_PT_physical_subsurface(MaterialButtonsPanel, Panel):
         sub.prop(mat, "bge_subsurface_radius")
 
 
+class MATERIAL_PT_remix_node(MaterialButtonsPanel, Panel):
+    """BGE-Remix P9.2: an RTX Remix material's node and what feeds it"""
+    bl_label = "RTX Remix Material"
+    COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_GAME'}
+
+    @classmethod
+    def poll(cls, context):
+        return (context.material is not None and context.scene.render.engine in cls.COMPAT_ENGINES and
+                is_remix(context.material))
+
+    def draw(self, context):
+        from bl_operators.bge_remix_material import remix_node
+        layout = self.layout
+        mat = context.material
+        node = remix_node(mat)
+        ntree = mat.node_tree
+        # P9.6: a preset (a group of procedural textures feeding the node)
+        from bl_operators.bge_remix_presets import PRESETS
+        p = PRESETS.get(mat.get("bge_remix_preset", ""))
+        layout.menu("MATERIAL_MT_bge_remix_presets", text="Preset: " + (p["label"] if p else "None"))
+        # the node's options, then each input and what feeds it
+        col = layout.column()
+        col.prop(node, "remix_type")
+        col.prop(node, "blend")
+        if node.blend == 'ALPHA_TEST':
+            col.prop(node, "alpha_cutoff")
+        for sock in node.inputs:
+            layout.template_node_view(ntree, node, sock)
+
+
 class MATERIAL_PT_game_remix(MaterialButtonsPanel, Panel):
     """BGE-Remix: RTX Remix's own options for this material. Its surface
     values are the material's (P8.7: the physical material; Classic
@@ -1273,8 +1331,10 @@ class MATERIAL_PT_game_remix(MaterialButtonsPanel, Panel):
 
     @classmethod
     def poll(cls, context):
-        # BGE-Remix P8.24: every material, node materials too
-        return context.material is not None and context.scene.render.engine in cls.COMPAT_ENGINES
+        # BGE-Remix P8.24: every material, node materials too (P9.2: but RTX
+        # Remix materials, whose node has these options)
+        return (context.material is not None and context.scene.render.engine in cls.COMPAT_ENGINES and
+                not is_remix(context.material))
 
     def draw(self, context):
         layout = self.layout
@@ -1452,14 +1512,25 @@ class RemixMaterialPanel:
 
     @classmethod
     def poll(cls, context):
-        # every material, node materials too
-        return context.material is not None and context.scene.render.engine in cls.COMPAT_ENGINES
+        # every material, node materials too (P9.2: but RTX Remix materials:
+        # their fields are the node's inputs)
+        return (context.material is not None and context.scene.render.engine in cls.COMPAT_ENGINES and
+                not is_remix(context.material))
 
 
 class MATERIAL_PT_remix_fields(RemixMaterialPanel, Panel):
     """BGE-Remix P8.24: every field of Remix's material, each with a value
     and an image and the image's settings"""
     bl_label = "RTX Remix Fields"
+
+    @classmethod
+    def poll(cls, context):
+        # BGE-Remix P9.3: only where the block is in use (a material that used
+        # it was converted to RTX Remix, its node's inputs set from it; the
+        # block still applies in Remix and stays here to see and to turn off)
+        ma = context.material
+        return (ma is not None and context.scene.render.engine in cls.COMPAT_ENGINES and
+                bool(ma.get("bge_remix")) and ma.bge_remix.use)
 
     def draw_header(self, context):
         self.layout.prop(context.material.bge_remix, "use", text="")
@@ -1557,33 +1628,65 @@ class MATERIAL_PT_remix_options(RemixMaterialPanel, Panel):
         col.prop(block, "wrap_v")
 
 
+def draw_remix_match(layout, mat):
+    """BGE-Remix P8.24: how a material reaches Remix, field by field (P9.2:
+    also on the RTX Remix Material node, in the node editor)"""
+    try:
+        import bge_remix
+        match = bge_remix.material_match(mat)
+    except Exception:
+        match = None
+    if not match:
+        layout.label("Needs a build with RTX Remix", icon='INFO')
+        return
+    icons = ('FILE_TICK', 'ERROR', 'CANCEL')
+    words = ("Exactly", "Approximately", "Not at all")
+    col = layout.column(align=True)
+    for f in match["fields"]:
+        row = col.row()
+        split = row.split(percentage=0.35)
+        split.label(f["field"].replace("_", " ").capitalize(), icon=icons[f["level"]])
+        split.label(words[f["level"]] + (": " + f["note"] if f["note"] else ""))
+    if match["notes"]:
+        layout.label("From the translator:")
+        box = layout.box().column(align=True)
+        for note in match["notes"]:
+            box.label(note)
+
+
+class NODE_PT_remix_match(Panel):
+    """BGE-Remix P9.2: the RTX Remix Material node's Match, in the node
+    editor's sidebar"""
+    bl_space_type = 'NODE_EDITOR'
+    bl_region_type = 'UI'
+    bl_label = "RTX Remix Match"
+
+    @classmethod
+    def poll(cls, context):
+        node = context.active_node
+        return (node is not None and node.bl_idname == "ShaderNodeRemixMaterial" and
+                getattr(context.space_data, "id", None) is not None)
+
+    def draw(self, context):
+        mat = context.space_data.id
+        if not isinstance(mat, bpy.types.Material):
+            self.layout.label("Only in a material's node tree", icon='INFO')
+            return
+        draw_remix_match(self.layout, mat)
+
+
 class MATERIAL_PT_remix_match(RemixMaterialPanel, Panel):
     """BGE-Remix P8.24: how the material reaches Remix, field by field"""
     bl_label = "RTX Remix Match"
 
+    @classmethod
+    def poll(cls, context):
+        # every material, RTX Remix ones too
+        return context.material is not None and context.scene.render.engine in cls.COMPAT_ENGINES
+
     def draw(self, context):
         layout = self.layout
-        try:
-            import bge_remix
-            match = bge_remix.material_match(context.material)
-        except Exception:
-            match = None
-        if not match:
-            layout.label("Needs a build with RTX Remix", icon='INFO')
-            return
-        icons = ('FILE_TICK', 'ERROR', 'CANCEL')
-        words = ("Exactly", "Approximately", "Not at all")
-        col = layout.column(align=True)
-        for f in match["fields"]:
-            row = col.row()
-            split = row.split(percentage=0.35)
-            split.label(f["field"].replace("_", " ").capitalize(), icon=icons[f["level"]])
-            split.label(words[f["level"]] + (": " + f["note"] if f["note"] else ""))
-        if match["notes"]:
-            layout.label("From the translator:")
-            box = layout.box().column(align=True)
-            for note in match["notes"]:
-                box.label(note)
+        draw_remix_match(layout, context.material)
 
 
 class MATERIAL_PT_custom_props(MaterialButtonsPanel, PropertyPanel, Panel):
@@ -1618,10 +1721,12 @@ classes = (
     MATERIAL_PT_options,
     MATERIAL_PT_shadow,
     MATERIAL_PT_transp_game,
+    MATERIAL_PT_remix_node,
     MATERIAL_PT_game_remix,
     MATERIAL_PT_remix_fields,
     MATERIAL_PT_remix_options,
     MATERIAL_PT_remix_match,
+    NODE_PT_remix_match,
     MATERIAL_PT_volume_density,
     MATERIAL_PT_volume_shading,
     MATERIAL_PT_volume_lighting,

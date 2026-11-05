@@ -1001,6 +1001,18 @@ static void init_render_nodetree(bNodeTree *ntree, Material *basemat, int r_mode
 			else if (node->type == NODE_GROUP)
 				init_render_nodetree((bNodeTree *)node->id, basemat, r_mode, amb);
 		}
+		else if (node->type == SH_NODE_REMIX_MATERIAL) {
+			/* BGE-Remix P9.2: the RTX Remix Material node shades with its
+			 * own material's settings (BKE_material_physical_render_begin) */
+			basemat->mode_l |= basemat->mode & ~(MA_MODE_PIPELINE | MA_SHLESS);
+			basemat->mode2_l |= basemat->mode2 & ~MA_MODE2_PIPELINE;
+			if (!(basemat->mode & MA_SHLESS))
+				basemat->mode_l &= ~MA_SHLESS;
+			/* a normal map wired in: the mesh's tangents */
+			bNodeSocket *nor = BLI_findlink(&node->inputs, SH_REMIX_IN_NORMAL);
+			if (nor && nor->link)
+				basemat->mode_l |= MA_NORMAP_TANG;
+		}
 		else if (node->typeinfo->type == SH_NODE_NORMAL_MAP) {
 			basemat->mode2_l |= MA_TANGENT_CONCRETE;
 			NodeShaderNormalMap *nm = node->storage;

@@ -4962,3 +4962,53 @@ void mtex_probe_refl(vec3 co, vec3 vn, mat4 viewinv, float planar, out float val
 	}
 	value = 1.0;
 }
+
+/* BGE-Remix P9.1: RTX Remix's OpenGL fallback lit by the world's sky as
+ * Remix's dome lights the scene: the sky over the normal's half (horizon to
+ * zenith) on the diffuse colour */
+void shade_skylight(vec4 col_in, vec3 diffcol, float refl, vec3 vn, vec3 horicol, vec3 zencol, mat4 viewinv,
+                    out vec4 col_out)
+{
+	vec3 N = (viewinv * vec4(-normalize(vn), 0.0)).xyz;
+	vec3 sky = mix(horicol, zencol, clamp(0.5 + 0.5 * N.z, 0.0, 1.0));
+	col_out = col_in;
+	col_out.rgb += refl * diffcol * sky;
+}
+
+/* BGE-Remix P9.6: the RTX Remix Material node's height as a bump (its normal
+ * not wired): the surface gradient of the height, depth metres deep, from
+ * its screen-space derivatives (Mikkelsen's bump mapping); vn as the
+ * shading inputs hold it (the true normal negated), co the view position */
+void remix_height_bump(vec3 vn, vec3 co, float height, float depth, out vec3 outnormal)
+{
+	vec3 N = -normalize(vn);
+	vec3 dpdx = dFdx(co);
+	vec3 dpdy = dFdy(co);
+	float h = height * depth;
+	float dhdx = dFdx(h);
+	float dhdy = dFdy(h);
+	vec3 r1 = cross(dpdy, N);
+	vec3 r2 = cross(N, dpdx);
+	float det = dot(dpdx, r1);
+	vec3 grad = sign(det) * (dhdx * r1 + dhdy * r2);
+	vec3 nb = abs(det) * N - grad;
+	outnormal = (dot(nb, nb) > 0.0) ? -normalize(nb) : vn;
+}
+
+/* BGE-Remix P9.2: the RTX Remix Material node's normal map (tangent space, as
+ * a texture slot's: green up, or down for DirectX maps) */
+void remix_normal_map(vec4 tangent, vec3 vn, vec4 color, float directx, out vec3 outnormal)
+{
+	float g = (directx != 0.0) ? 1.0 - color.g : color.g;
+	vec3 t = 2.0 * (vec3(-color.r, g, color.b) - vec3(-0.5, 0.5, 0.5));
+	mtex_nspace_tangent(tangent, vn, t, outnormal);
+}
+
+/* and its emitted colour for a bake: colour times intensity times scale, sRGB */
+void bake_out_emission(vec4 col, float strength, float scale, float srgb, vec3 uv, out vec4 result)
+{
+	vec4 c = vec4(max(col.rgb * strength * scale, vec3(0.0)), 1.0);
+	if (srgb != 0.0)
+		linearrgb_to_srgb(c, c);
+	result = vec4(clamp(c.rgb, 0.0, 1.0), 1.0);
+}

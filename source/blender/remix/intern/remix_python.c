@@ -38,6 +38,7 @@
 
 #include "BRMX_loader.h"
 #include "BRMX_remix.h"
+#include "BRMX_session.h"
 #include "BRMX_view.h"
 
 /* ------------------------------------------------------------------------- */
@@ -377,6 +378,43 @@ static PyObject *brmx_material_match(PyObject *UNUSED_self, PyObject *args)
 	return PyUnicode_FromString(BRMX_material_match_json((struct Material *)(uintptr_t)ptr));
 }
 
+PyDoc_STRVAR(brmx_inspect_doc,
+".. function:: inspect(object_pointer, scene_pointer)\n"
+"\n"
+"   BGE-Remix P9.7: what RTX Remix gets for the object (its as_pointer(); the\n"
+"   scene's for its instance count, or 0): mesh, instances, each material's\n"
+"   values, textures and their cache files, and its Match rows (JSON text).\n"
+"\n"
+"   :rtype: str\n");
+static PyObject *brmx_inspect(PyObject *UNUSED_self, PyObject *args)
+{
+	unsigned long long ob = 0, scene = 0;
+	if (!PyArg_ParseTuple(args, "K|K:inspect", &ob, &scene) || !ob) {
+		if (!PyErr_Occurred()) {
+			PyErr_SetString(PyExc_ValueError, "inspect: an object's as_pointer() is needed");
+		}
+		return NULL;
+	}
+	return PyUnicode_FromString(BRMX_object_inspect_json((struct Object *)(uintptr_t)ob,
+	                                                     (struct Scene *)(uintptr_t)scene));
+}
+
+PyDoc_STRVAR(brmx_debug_option_doc,
+".. function:: debug_option(key, value)\n"
+"\n"
+"   BGE-Remix P9.7: one of the Remix View's debug options (rtx.debugView.*,\n"
+"   rtx.hashCollisionDetection.enable): sent now when Remix runs, and kept\n"
+"   for a game started from Blender.\n");
+static PyObject *brmx_debug_option(PyObject *UNUSED_self, PyObject *args)
+{
+	const char *key, *value;
+	if (!PyArg_ParseTuple(args, "ss:debug_option", &key, &value)) {
+		return NULL;
+	}
+	BRMX_debug_option_set(key, value);
+	Py_RETURN_NONE;
+}
+
 static PyMethodDef brmx_methods[] = {
 	{"bridge_info", (PyCFunction)brmx_bridge_info, METH_NOARGS, brmx_bridge_info_doc},
 	{"status", (PyCFunction)brmx_status, METH_NOARGS, brmx_status_doc},
@@ -393,6 +431,8 @@ static PyMethodDef brmx_methods[] = {
 	{"render_frame", (PyCFunction)brmx_render_frame, METH_VARARGS, brmx_render_frame_doc},
 	{"view_stats", (PyCFunction)brmx_view_stats, METH_NOARGS, brmx_view_stats_doc},
 	{"material_match", (PyCFunction)brmx_material_match, METH_VARARGS, brmx_material_match_doc},
+	{"inspect", (PyCFunction)brmx_inspect, METH_VARARGS, brmx_inspect_doc},
+	{"debug_option", (PyCFunction)brmx_debug_option, METH_VARARGS, brmx_debug_option_doc},
 	{NULL, NULL, 0, NULL}
 };
 

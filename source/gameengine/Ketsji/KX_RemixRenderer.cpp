@@ -330,14 +330,18 @@ KX_RemixRenderer::Settings KX_RemixRenderer::GetSettings(KX_Scene *scene, int ov
 	Settings s = {0, 0, DEFAULT_LIGHT_SCALE, DEFAULT_EXPOSURE, 0};
 	Scene *bscene = scene ? scene->GetBlenderScene() : NULL;
 	IDProperty *props = bscene ? bscene->id.properties : NULL;
+	/* P9.1: only the RTX Remix pipeline uses Remix (Classic never does,
+	 * whatever its switch or the command line say) */
+	const bool rtx = bscene && BKE_scene_game_rtx_pipeline(bscene);
 	/* P5: a scene rendered with the RTX Remix engine plays with Remix too */
-	s.enabled = idprop_int(props, "bge_remix", 0) != 0 || (bscene && strcmp(bscene->r.engine, "RTX_REMIX") == 0);
+	s.enabled = rtx && (idprop_int(props, "bge_remix", 0) != 0 || strcmp(bscene->r.engine, "RTX_REMIX") == 0);
 	s.window_mode = idprop_int(props, "bge_remix_fast", 0) != 0;
-	s.explicit_off = !s.enabled && idprop_int(props, "bge_remix", -1) == 0;
+	/* (a Classic scene the game switches to does not keep Remix either) */
+	s.explicit_off = !rtx || (!s.enabled && idprop_int(props, "bge_remix", -1) == 0);
 	s.light_scale = idprop_float(props, "bge_remix_light_scale", DEFAULT_LIGHT_SCALE);
 	s.exposure = idprop_float(props, "bge_remix_exposure", DEFAULT_EXPOSURE);
 	if (override_enabled >= 0) {
-		s.enabled = override_enabled != 0;
+		s.enabled = rtx && override_enabled != 0;
 	}
 	if (override_fast >= 0) {
 		s.window_mode = override_fast != 0;
@@ -358,6 +362,8 @@ KX_RemixRenderer::Settings KX_RemixRenderer::GetSettings(KX_Scene *scene, int ov
 	if (!(s.exposure >= -10.0f && s.exposure <= 10.0f)) {
 		s.exposure = DEFAULT_EXPOSURE;
 	}
+	/* P9.2: ACES's calibration, in the same exposure */
+	s.exposure += BRMX_scene_exposure_offset(bscene);
 	return s;
 }
 
@@ -601,6 +607,11 @@ bool KX_RemixRenderer::Start(KX_Scene *scene, int width, int height, const Setti
 		BRMX_Quality quality;
 		BRMX_quality_from_scene(scene->GetBlenderScene(), &quality);
 		BRMX_quality_apply(&quality);
+		/* P9.1: the Render tab's curated settings and the tone mapping */
+		BRMX_scene_options_apply(scene->GetBlenderScene());
+		/* P9.7: the debug view chosen in the Remix View (a game started
+		 * from Blender; a standalone game's process has none) */
+		BRMX_debug_options_apply();
 	}
 	{
 		/* P8.22: Blender's anisotropic filtering (User Preferences) */
@@ -908,9 +919,12 @@ const KX_RemixRenderer::MaterialEntry &KX_RemixRenderer::EnsureMaterial(KX_Scene
 {
 	const std::string name = pm ? pm->GetMaterialName().ReadPtr() : "__default__";
 	Material *ma = pm ? pm->GetBlenderMaterial() : NULL;
-	/* P8.6: procedural textures are baked on each mesh's UV map */
+	/* P8.6: procedural textures are baked on each mesh's UV map; P9.8: a
+	 * preset's tile is the same on every mesh (its own square): one entry
+	 * and one bake for all of them */
 	const bool baked = mesh && brmx::bake_slots(ma) != 0;
-	const std::pair<const void *, const void *> key(pm, baked ? (const void *)mesh : NULL);
+	const bool per_mesh = baked && !brmx::bake_is_tile(ma);
+	const std::pair<const void *, const void *> key(pm, per_mesh ? (const void *)mesh : NULL);
 	std::map<std::pair<const void *, const void *>, MaterialEntry>::iterator it = m_materials.find(key);
 	if (it != m_materials.end()) {
 		if (it->second.name == name) {
@@ -934,8 +948,8 @@ const KX_RemixRenderer::MaterialEntry &KX_RemixRenderer::EnsureMaterial(KX_Scene
 		/* P8.4: Face Textures make one polymaterial per face image */
 		brmx::apply_face_image(ma, pm->GetBlenderImage(), *e.spec);
 	}
-	e.spec->desc.hash = baked ? UniqueHash("material", name + "@" + mesh->GetName().ReadPtr(), &m_materials[key])
-	                          : UniqueHash("material", name, pm);
+	e.spec->desc.hash = per_mesh ? UniqueHash("material", name + "@" + mesh->GetName().ReadPtr(), &m_materials[key])
+	                             : UniqueHash("material", name, pm);
 	for (size_t i = 0; i < e.spec->notes.size(); i++) {
 		printf("BGE-Remix: material \"%s\": %s\n", name.c_str(), e.spec->notes[i].c_str());
 		m_material_notes++;
@@ -971,7 +985,8 @@ void KX_RemixRenderer::Bake(MaterialEntry &e)
 	DerivedMesh *dm = brmx::bake_mesh_from(me);
 	float obmat[4][4];
 	memcpy(obmat, e.obmat, sizeof(obmat));
-	const std::string name = e.name + "_" + e.mesh->GetName().ReadPtr();
+	/* (a tile's files are named by its material alone: one for every mesh) */
+	const std::string name = brmx::bake_is_tile(ma) ? e.name : e.name + "_" + e.mesh->GetName().ReadPtr();
 	const bool ok = dm && brmx::bake_material(e.scene->GetBlenderScene(), ma, dm, e.pm->GetMaterialIndex() + 1, obmat,
 	                                         name, r);
 	Trace("bake: releasing the mesh");
@@ -1361,6 +1376,11 @@ void KX_RemixRenderer::Collect(KX_Scene *scene, RAS_MeshObject *mesh, void *clie
 		g.blend = g.blend || me.blend;
 		g.particle = g.particle || me.particle;
 		g.categories |= me.spec ? me.spec->categories : 0u;
+		/* P9.4: the material's texture transform, in the UVs sent */
+		if (me.spec && me.spec->uv_transform && !v.empty()) {
+			brmx::apply_uv_transform(*me.spec, &v[0], v.size());
+			g.content = hash_bytes(me.spec->uv_matrix, sizeof(me.spec->uv_matrix), g.content);
+		}
 		if (mode & RAS_IPolyMaterial::BILLBOARD_SCREENALIGNED) {
 			g.billboard = 1;
 		}
@@ -1505,6 +1525,11 @@ void KX_RemixRenderer::CollectDerived(KX_Scene *scene, RAS_MeshObject *mesh, Der
 		g.blend = g.blend || me.blend;
 		g.particle = g.particle || me.particle;
 		g.categories |= me.spec ? me.spec->categories : 0u;
+		/* P9.4: the material's texture transform, in the UVs sent */
+		if (me.spec && me.spec->uv_transform && !v.empty()) {
+			brmx::apply_uv_transform(*me.spec, &v[0], v.size());
+			g.content = hash_bytes(me.spec->uv_matrix, sizeof(me.spec->uv_matrix), g.content);
+		}
 		g.verts.push_back(v);
 		g.indices.push_back(idx);
 	}
@@ -2540,6 +2565,18 @@ void KX_RemixRenderer::SetHighlight(const std::vector<KX_GameObject *> &objects,
 	}
 }
 
+bool KX_RemixRenderer::SetOption(const char *key, const char *value)
+{
+	if (!m_running || !m_bridge || !key || !key[0] || !value) {
+		return false;
+	}
+	m_bridge->set_config(key, value);
+	char line[512];
+	snprintf(line, sizeof(line), "option %s = %s", key, value);
+	Trace(line);
+	return true;
+}
+
 void KX_RemixRenderer::SendLight(KX_Scene *scene, const void *key, const brb_light_desc &desc)
 {
 	LightEntry &e = m_lights[key];
@@ -3367,6 +3404,22 @@ void KX_RemixRenderer::WriteStats()
 	        m_pick_frames_count ? (double)m_pick_frames_total / m_pick_frames_count : -1.0);
 	fprintf(f, "}\n");
 	fclose(f);
+}
+
+/* BGE-Remix P9.7 */
+std::string KX_RemixRenderer::StatsLine() const
+{
+	char buf[160];
+	int errors = 0;
+	if (m_bridge && m_running) {
+		brb_frame_stats st;
+		memset(&st, 0, sizeof(st));
+		m_bridge->get_stats(&st);
+		errors = st.errors;
+	}
+	snprintf(buf, sizeof(buf), "%d draws, %d lights, %d textures waiting%s", m_last_draws, m_last_lights,
+	         m_cache ? m_cache->waiting() : 0, errors ? ", calls refused" : "");
+	return std::string(buf);
 }
 
 #endif  /* WITH_REMIX */

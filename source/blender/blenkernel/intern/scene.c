@@ -2316,6 +2316,47 @@ void BKE_scene_game_pipeline_set(Scene *scene, int pipeline)
 	IDP_Int(prop) = pipeline;
 }
 
+/* BGE-Remix P9.1: RTX Remix's tone mapping (a hidden ID property, as the
+ * pipeline); absent: the view transform, as P8's Modern scenes had it */
+#define GAME_TONEMAP_PROP "bge_remix_tonemap"
+
+int BKE_scene_game_tonemap(const Scene *scene)
+{
+	IDProperty *group = scene ? scene->id.properties : NULL;
+	IDProperty *prop = group ? IDP_GetPropertyFromGroup(group, GAME_TONEMAP_PROP) : NULL;
+	if (prop && prop->type == IDP_INT && IDP_Int(prop) == BKE_SCENE_GAME_TONEMAP_ACES) {
+		return BKE_SCENE_GAME_TONEMAP_ACES;
+	}
+	return BKE_SCENE_GAME_TONEMAP_VIEW;
+}
+
+bool BKE_scene_game_tonemap_is_set(const Scene *scene)
+{
+	IDProperty *group = scene ? scene->id.properties : NULL;
+	return group && IDP_GetPropertyFromGroup(group, GAME_TONEMAP_PROP) != NULL;
+}
+
+void BKE_scene_game_tonemap_set(Scene *scene, int tonemap)
+{
+	IDProperty *group = IDP_GetProperties(&scene->id, true);
+	IDProperty *prop = IDP_GetPropertyFromGroup(group, GAME_TONEMAP_PROP);
+	if (prop && prop->type != IDP_INT) {
+		IDP_FreeFromGroup(group, prop);
+		prop = NULL;
+	}
+	if (!prop) {
+		IDPropertyTemplate val = {0};
+		prop = IDP_New(IDP_INT, &val, GAME_TONEMAP_PROP);
+		IDP_AddToGroup(group, prop);
+	}
+	IDP_Int(prop) = tonemap;
+}
+
+bool BKE_scene_game_rtx_pipeline(const Scene *scene)
+{
+	return BKE_scene_game_pipeline(scene) == BKE_SCENE_GAME_PIPELINE_RTX_REMIX;
+}
+
 float BKE_scene_game_fx(const Scene *scene, const char *name, float def)
 {
 	char key[MAX_IDPROP_NAME];

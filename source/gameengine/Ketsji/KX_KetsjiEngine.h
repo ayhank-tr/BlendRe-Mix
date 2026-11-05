@@ -276,6 +276,8 @@ public:
 	void			RemixRemoveScene(KX_Scene *scene);
 	/* NULL until a game has used Remix (bge.render.remixPick...) */
 	class KX_RemixRenderer *GetRemix() { return m_remix; }
+	/* P9.1: the scene RTX Remix drew in the last frame (NULL: none) */
+	class KX_Scene *GetRemixScene() { return m_remixScene; }
 
 	///returns true if an update happened to indicate -> Render
 	bool			NextFrame();

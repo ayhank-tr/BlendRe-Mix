@@ -66,6 +66,21 @@ void BRMX_owner_release(void *owner);
 int BRMX_owner_kind(void);
 void *BRMX_owner(void);
 
+/* BGE-Remix P9.7: hash collisions met while sending to Remix (two things
+ * wanting one hash: the later one is salted, so both still show), for the
+ * Remix View's warnings: note one (what: "mesh Cube"); the count since
+ * start and the last one's name. */
+void BRMX_hash_collision_note(const char *what);
+int BRMX_hash_collisions(const char **r_last);
+
+/* BGE-Remix P9.7: the Remix View's debug options (rtx.debugView.*,
+ * rtx.hashCollisionDetection.enable): one set (sent now when Remix runs, and
+ * kept); all kept ones sent again (a game started from Blender calls it, so
+ * its picture shows the debug view chosen in the Remix View; a standalone
+ * game's process has none). Returns how many were sent. */
+void BRMX_debug_option_set(const char *key, const char *value);
+int BRMX_debug_options_apply(void);
+
 /* P5.1 quality settings: custom properties of the scene (Render panel),
  * with the values of the panel's menus. */
 typedef struct BRMX_Quality {
@@ -81,6 +96,14 @@ void BRMX_quality_from_scene(const struct Scene *scene, BRMX_Quality *r_quality)
  * sent until they were changed, so an rtx.conf keeps working. Returns the
  * number of settings sent. */
 int BRMX_quality_apply(const BRMX_Quality *quality);
+
+/* BGE-Remix P9.1: the Render tab's curated RTX Remix settings (scene ID
+ * properties bge_rtx_*) and the RTX Remix pipeline's tone mapping, sent
+ * when they differ from what Remix has (a setting the scene no longer sets
+ * goes back to Remix's default). Returns the number sent. */
+int BRMX_scene_options_apply(const struct Scene *scene);
+/* stops added to the scene's exposure in Remix (P9.2: ACES's calibration) */
+float BRMX_scene_exposure_offset(const struct Scene *scene);
 
 #ifdef __cplusplus
 }

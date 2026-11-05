@@ -93,6 +93,8 @@ struct MockMesh {
 	std::vector<MockSurface> surfaces;
 };
 std::map<uintptr_t, MockMesh> g_meshes;
+/* P9.4: each material handle's hash (CreateMesh names its surfaces' materials) */
+std::map<uintptr_t, unsigned long long> g_material_hashes;
 struct MockDraw {
 	uint32_t pick_id;
 	float lo[3], hi[3]; /* world bounds */
@@ -333,6 +335,7 @@ remixapi_ErrorCode REMIXAPI_CALL m_CreateMaterial(const remixapi_MaterialInfo *i
 		mlog("CreateMaterial hash=%llx", (unsigned long long)info->hash);
 	}
 	*out = handle<remixapi_MaterialHandle>();
+	g_material_hashes[(uintptr_t)*out] = (unsigned long long)info->hash;
 	return REMIXAPI_ERROR_CODE_SUCCESS;
 }
 
@@ -349,7 +352,10 @@ remixapi_ErrorCode REMIXAPI_CALL m_CreateMesh(const remixapi_MeshInfo *info, rem
 	}
 	unsigned long long verts = 0, indices = 0;
 	float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
+	/* P9.4: the texture coordinates' range (a material's UV transform) */
+	float tlo[2] = {1e30f, 1e30f}, thi[2] = {-1e30f, -1e30f};
 	int no_material = 0;
+	std::string surface_materials;
 	/* winding against the vertex normals: Remix wants clockwise front faces */
 	int cw = 0, ccw = 0;
 	for (uint32_t s = 0; s < info->surfaces_count; s++) {
@@ -376,10 +382,20 @@ remixapi_ErrorCode REMIXAPI_CALL m_CreateMesh(const remixapi_MeshInfo *info, rem
 		verts += t.vertices_count;
 		indices += t.indices_count;
 		no_material += t.material ? 0 : 1;
+		{
+			auto hm = g_material_hashes.find((uintptr_t)t.material);
+			char buf[24];
+			snprintf(buf, sizeof(buf), "%llx", hm != g_material_hashes.end() ? hm->second : 0ULL);
+			surface_materials += (s ? "," : "") + std::string(buf);
+		}
 		for (uint64_t i = 0; i < t.vertices_count; i++) {
 			for (int k = 0; k < 3; k++) {
 				lo[k] = std::min(lo[k], t.vertices_values[i].position[k]);
 				hi[k] = std::max(hi[k], t.vertices_values[i].position[k]);
+			}
+			for (int k = 0; k < 2; k++) {
+				tlo[k] = std::min(tlo[k], t.vertices_values[i].texcoord[k]);
+				thi[k] = std::max(thi[k], t.vertices_values[i].texcoord[k]);
 			}
 		}
 	}
@@ -438,10 +454,12 @@ remixapi_ErrorCode REMIXAPI_CALL m_CreateMesh(const remixapi_MeshInfo *info, rem
 	}
 	mlog("CreateMesh hash=%llx surfaces=%u verts=%llu indices=%llu no_material=%d winding=%s "
 	     "bbox=%.4f,%.4f,%.4f,%.4f,%.4f,%.4f skinned=%d bpv=%u referenced=%d max_bone=%u bad_weights=%d "
-	     "weight_overflow=%.5f",
+	     "weight_overflow=%.5f uvbox=%.4f,%.4f,%.4f,%.4f materials=%s",
 	     (unsigned long long)info->hash, info->surfaces_count, verts, indices, no_material,
 	     (cw && !ccw) ? "cw" : (ccw && !cw) ? "ccw" : "mixed",
-	     lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], skinned, bpv, referenced, max_bone, bad_weights, wmax_err);
+	     lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], skinned, bpv, referenced, max_bone, bad_weights, wmax_err,
+	     verts ? tlo[0] : 0.0f, verts ? tlo[1] : 0.0f, verts ? thi[0] : 0.0f, verts ? thi[1] : 0.0f,
+	     surface_materials.empty() ? "-" : surface_materials.c_str());
 	*out = handle<remixapi_MeshHandle>();
 	g_meshes[(uintptr_t)*out] = std::move(mesh);
 	return REMIXAPI_ERROR_CODE_SUCCESS;

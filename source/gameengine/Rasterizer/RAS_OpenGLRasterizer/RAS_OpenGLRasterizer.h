@@ -126,6 +126,7 @@ class RAS_OpenGLRasterizer : public RAS_IRasterizer
 
 protected:
 	int m_drawingmode;
+	bool m_shadowTwoSided; /* BGE-Remix P9.2 */
 	TexCoGen m_texco[RAS_MAX_TEXCO];
 	TexCoGen m_attrib[RAS_MAX_ATTRIB];
 	int m_attrib_layer[RAS_MAX_ATTRIB];
@@ -257,6 +258,7 @@ public:
 	virtual int GetDrawingMode();
 
 	virtual void SetCullFace(bool enable);
+	virtual void SetShadowTwoSided(bool enable);
 	virtual void SetLines(bool enable);
 
 	virtual MT_Matrix4x4 GetFrustumMatrix(

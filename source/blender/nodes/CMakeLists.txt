@@ -140,6 +140,7 @@ set(SRC
 	shader/nodes/node_shader_lamp.c
 	shader/nodes/node_shader_mapping.c
 	shader/nodes/node_shader_material.c
+	shader/nodes/node_shader_remix_material.c
 	shader/nodes/node_shader_math.c
 	shader/nodes/node_shader_mixRgb.c
 	shader/nodes/node_shader_normal.c
