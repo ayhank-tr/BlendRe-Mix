@@ -1369,6 +1369,11 @@ void KX_RemixRenderer::Collect(KX_Scene *scene, RAS_MeshObject *mesh, void *clie
 		g.blend = g.blend || me.blend;
 		g.particle = g.particle || me.particle;
 		g.categories |= me.spec ? me.spec->categories : 0u;
+		/* P9.4: the material's texture transform, in the UVs sent */
+		if (me.spec && me.spec->uv_transform && !v.empty()) {
+			brmx::apply_uv_transform(*me.spec, &v[0], v.size());
+			g.content = hash_bytes(me.spec->uv_matrix, sizeof(me.spec->uv_matrix), g.content);
+		}
 		if (mode & RAS_IPolyMaterial::BILLBOARD_SCREENALIGNED) {
 			g.billboard = 1;
 		}
@@ -1513,6 +1518,11 @@ void KX_RemixRenderer::CollectDerived(KX_Scene *scene, RAS_MeshObject *mesh, Der
 		g.blend = g.blend || me.blend;
 		g.particle = g.particle || me.particle;
 		g.categories |= me.spec ? me.spec->categories : 0u;
+		/* P9.4: the material's texture transform, in the UVs sent */
+		if (me.spec && me.spec->uv_transform && !v.empty()) {
+			brmx::apply_uv_transform(*me.spec, &v[0], v.size());
+			g.content = hash_bytes(me.spec->uv_matrix, sizeof(me.spec->uv_matrix), g.content);
+		}
 		g.verts.push_back(v);
 		g.indices.push_back(idx);
 	}

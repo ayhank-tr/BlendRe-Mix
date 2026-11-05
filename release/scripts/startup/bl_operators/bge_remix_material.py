@@ -132,7 +132,9 @@ def _image_node(nt, slot, geometry, location):
         mapping = nt.nodes.new("ShaderNodeMapping")
         mapping.location = (location[0] - 380, location[1])
         mapping.scale = scale
-        mapping.translation = offset
+        # the game's slot mapping (size * uv + ofs + 0.5 - 0.5 * size, about
+        # the image's centre) as the Mapping node's (size * uv + location)
+        mapping.translation = tuple(o + 0.5 - 0.5 * s for o, s in zip(offset[:2], scale[:2])) + (offset[2],)
         nt.links.new(out, mapping.inputs["Vector"])
         out = mapping.outputs["Vector"]
     nt.links.new(out, tex.inputs["Vector"])

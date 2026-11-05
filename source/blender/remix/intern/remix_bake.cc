@@ -741,6 +741,8 @@ unsigned bake_slots(const Material *ma)
 			slots |= 1u << BAKE_NORMAL;
 		}
 	}
+	/* P9.4: image slots whose settings Remix cannot take as they are */
+	slots |= image_slot_bake_slots(ma);
 	return slots;
 }
 
