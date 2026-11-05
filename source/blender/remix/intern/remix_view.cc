@@ -2092,7 +2092,12 @@ const char *BRMX_object_inspect_json(Object *ob, Scene *scene)
 			json += std::string(", \"baked\": ") + (req.baked ? "true" : "false") + ", \"file\": ";
 			json_string(json, utf8_of(file));
 			json += std::string(", \"exact\": ") + (exact ? "true" : "false") + ", \"cached\": " +
-			        ((exact && brmx::TextureCache::cached(req)) ? "true" : "false") + "}";
+			        ((exact && brmx::TextureCache::cached(req)) ? "true" : "false");
+			/* BGE-Remix P10.3: a colour image's scale (a Classic material's
+			 * Diffuse Intensity) */
+			char scale[32];
+			snprintf(scale, sizeof(scale), ", \"scale\": %.4f}", req.scale);
+			json += scale;
 		}
 		json += "], \"match\": ";
 		if (ma) {

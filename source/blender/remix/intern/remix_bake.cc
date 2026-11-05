@@ -440,8 +440,14 @@ void pad_on_card(CardBake &card, int channel)
 /* P9.6: a preset's tile. Drawn over UV -band..1 at (n + w) pixels a side
  * (w the band's pixels), kept as n: within the band before the far edges
  * each pixel blends with the one a tile back, so the far edges carry on
- * from the near ones and the tile repeats without a seam */
-void tile_crossfade(CardBake &card, int channel, int n, int w)
+ * from the near ones and the tile repeats without a seam.
+ * BGE-Remix P10.2: keep_contrast (a random preset's tile): the blend of two
+ * unrelated patches has less contrast than either (it showed as ghosted
+ * edges on Rock), so each blended pixel is moved away from the tile's mean
+ * by 1 / sqrt(the weights' squares' sum), which gives the blend the
+ * patches' own spread; normal: the normal map's vectors made unit length
+ * again after it. */
+void tile_crossfade(CardBake &card, int channel, int n, int w, bool keep_contrast = false, bool normal = false)
 {
 	if (!card.chan[channel] || w <= 0) {
 		return;
@@ -450,6 +456,21 @@ void tile_crossfade(CardBake &card, int channel, int n, int w)
 	std::vector<unsigned char> src;
 	read_value(card, channel, src);  /* (card.size is m here) */
 	std::vector<unsigned char> dst((size_t)n * n * 4);
+	/* P10.2: each channel's mean over the tile */
+	double mean[4] = {0.0, 0.0, 0.0, 0.0};
+	if (keep_contrast) {
+		for (int y = 0; y < n; y++) {
+			for (int x = 0; x < n; x++) {
+				const size_t i = ((size_t)(y + w) * m + (x + w)) * 4;
+				for (int c = 0; c < 4; c++) {
+					mean[c] += src[i + c];
+				}
+			}
+		}
+		for (int c = 0; c < 4; c++) {
+			mean[c] /= (double)n * (double)n;
+		}
+	}
 	for (int y = 0; y < n; y++) {
 		const float b = (y >= n - w) ? std::min((y - (n - w) + 0.5f) / (float)w, 1.0f) : 0.0f;
 		for (int x = 0; x < n; x++) {
@@ -459,10 +480,30 @@ void tile_crossfade(CardBake &card, int channel, int n, int w)
 			const size_t i01 = (b > 0.0f) ? ((size_t)(y + w - n) * m + (x + w)) * 4 : i00;
 			const size_t i11 = (a > 0.0f && b > 0.0f) ? ((size_t)(y + w - n) * m + (x + w - n)) * 4 :
 			                   (a > 0.0f ? i10 : i01);
+			const float w00 = (1.0f - a) * (1.0f - b), w10 = a * (1.0f - b), w01 = (1.0f - a) * b, w11 = a * b;
+			/* P10.2: the contrast the blend lost (1 where nothing is blended) */
+			const float gain = keep_contrast ? 1.0f / std::sqrt(w00 * w00 + w10 * w10 + w01 * w01 + w11 * w11) :
+			                                   1.0f;
+			float out[4];
 			for (int c = 0; c < 4; c++) {
-				const float v = (1.0f - a) * (1.0f - b) * src[i00 + c] + a * (1.0f - b) * src[i10 + c] +
-				                (1.0f - a) * b * src[i01 + c] + a * b * src[i11 + c];
-				dst[((size_t)y * n + x) * 4 + c] = (unsigned char)std::min(std::max(v + 0.5f, 0.0f), 255.0f);
+				float v = w00 * src[i00 + c] + w10 * src[i10 + c] + w01 * src[i01 + c] + w11 * src[i11 + c];
+				if (keep_contrast && c < 3) {
+					v = (float)mean[c] + (v - (float)mean[c]) * gain;
+				}
+				out[c] = v;
+			}
+			if (normal && keep_contrast) {
+				float nx = out[0] / 127.5f - 1.0f, ny = out[1] / 127.5f - 1.0f, nz = out[2] / 127.5f - 1.0f;
+				nz = std::max(nz, 0.0f);
+				const float len = std::sqrt(nx * nx + ny * ny + nz * nz);
+				if (len > 1e-4f) {
+					out[0] = (nx / len + 1.0f) * 127.5f;
+					out[1] = (ny / len + 1.0f) * 127.5f;
+					out[2] = (nz / len + 1.0f) * 127.5f;
+				}
+			}
+			for (int c = 0; c < 4; c++) {
+				dst[((size_t)y * n + x) * 4 + c] = (unsigned char)std::min(std::max(out[c] + 0.5f, 0.0f), 255.0f);
 			}
 		}
 	}
@@ -930,6 +971,61 @@ bool bake_is_tile(const Material *ma)
 	return p && p->type == IDP_INT && IDP_Int(p) != 0;
 }
 
+/* BGE-Remix P10.2: the Scale input of the material's preset group node
+ * (unwired), false when there is none */
+static bool preset_scale(const Material *ma, float *r_scale)
+{
+	if (!ma->nodetree) {
+		return false;
+	}
+	for (const bNode *n = (const bNode *)ma->nodetree->nodes.first; n; n = n->next) {
+		if (n->type != NODE_GROUP || !n->id || !n->id->properties ||
+		    !IDP_GetPropertyFromGroup(n->id->properties, "bge_remix_preset"))
+		{
+			continue;
+		}
+		for (const bNodeSocket *sock = (const bNodeSocket *)n->inputs.first; sock; sock = sock->next) {
+			if (STREQ(sock->name, "Scale") && sock->type == SOCK_FLOAT && sock->default_value && !sock->link) {
+				*r_scale = ((const bNodeSocketValueFloat *)sock->default_value)->value;
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+TileMode bake_tile_mode(const Material *ma)
+{
+	if (!bake_is_tile(ma)) {
+		return TILE_NONE;
+	}
+	/* the preset's kind: "bge_remix_tile_mode" (P10.2's presets set it),
+	 * else from the preset's name (P9.6's files: Brick is the regular one) */
+	int mode = 0;
+	const IDProperty *p = IDP_GetPropertyFromGroup(ma->id.properties, "bge_remix_tile_mode");
+	if (p && p->type == IDP_INT) {
+		mode = IDP_Int(p);
+	}
+	else {
+		const IDProperty *k = IDP_GetPropertyFromGroup(ma->id.properties, "bge_remix_preset");
+		mode = (k && k->type == IDP_STRING && STREQ(IDP_String(k), "BRICK")) ? TILE_WHOLE : TILE_KEEP_CONTRAST;
+	}
+	if (mode == TILE_WHOLE) {
+		/* whole repeats in the tile only when the pattern's repeat fits it:
+		 * Brick's Scale a whole number of halves (two courses, whole bricks
+		 * across); otherwise the cross-fade, which hides the break */
+		float scale = 1.0f;
+		if (preset_scale(ma, &scale) && std::fabs(scale * 2.0f - std::floor(scale * 2.0f + 0.5f)) > 1e-3f) {
+			return TILE_KEEP_CONTRAST;
+		}
+		return TILE_WHOLE;
+	}
+	if (mode == TILE_CROSSFADE) {
+		return TILE_CROSSFADE;
+	}
+	return TILE_KEEP_CONTRAST;
+}
+
 DerivedMesh *bake_mesh_from(Mesh *me)
 {
 	if (!me || !me->totvert) {
@@ -1096,19 +1192,25 @@ uint64_t bake_key(uint64_t signature, const Material *ma, DerivedMesh *dm, int s
 }  /* namespace */
 
 bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const float obmat[4][4],
-                   const std::string &name, BakeResult &r)
+                   const std::string &name, BakeResult &r, int size_override, bool use_cache,
+                   unsigned only_slots)
 {
 	r = BakeResult();
 	r.signature = bake_signature(ma);
-	const unsigned slots = bake_slots(ma);
-	if (!slots || !dm) {
+	const unsigned slots = bake_slots(ma) & only_slots;
+	if (!slots || (!dm && !bake_is_tile(ma))) {
 		return false;
 	}
 	/* P9.6: a preset's material: one seamless tile, whatever the mesh (its
-	 * band drawn past the near edges, cross-faded into the far ones) */
+	 * band drawn past the near edges, cross-faded into the far ones).
+	 * BGE-Remix P10.2: a regular preset (Brick) is drawn over UV 0..1 only:
+	 * the tile holds whole repeats of its pattern, so it needs no cross-fade
+	 * (which darkened its bricks' edges); a random one (Rock) keeps its
+	 * cross-fade with the patches' contrast kept */
 	const bool tile = bake_is_tile(ma);
-	const int tile_size = bake_size(ma);
-	const int band = tile ? std::max(1, (int)(tile_size * TILE_BAND + 0.5f)) : 0;
+	const TileMode tmode = bake_tile_mode(ma);
+	const int tile_size = size_override >= 16 ? size_override : bake_size(ma);
+	const int band = (tile && tmode != TILE_WHOLE) ? std::max(1, (int)(tile_size * TILE_BAND + 0.5f)) : 0;
 	ReleaseDM tile_dm = {NULL};
 	float unit[4][4];
 	unit_m4(unit);
@@ -1184,8 +1286,15 @@ bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const 
 	}
 
 	/* P8.7: the same content baked before: its files are in the cache */
-	const uint64_t key = bake_key(r.signature, ma, dm, slot, obmat);
-	{
+	uint64_t key = bake_key(r.signature, ma, dm, slot, obmat);
+	if (tile) {
+		/* P10.2: the tile's way of repeating, and its size (a 2K bake is
+		 * not the 1K one) */
+		key = fnv_v((int)tmode, key);
+		key = fnv_v(tile_size, key);
+		key = key ? key : 1;
+	}
+	if (use_cache) {
 		bool all = true;
 		std::shared_ptr<const BakedImage> found[BAKE_SLOTS];
 		for (int s = 0; s < BAKE_SLOTS && all; s++) {
@@ -1245,7 +1354,7 @@ bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const 
 		}
 		if (tile) {
 			/* (all of the square is drawn: nothing to pad) */
-			tile_crossfade(card, c, size, band);
+			tile_crossfade(card, c, size, band, tmode == TILE_KEEP_CONTRAST, c == GPU_BAKE_NORMAL);
 		}
 		else if (card_finish) {
 			pad_on_card(card, c);

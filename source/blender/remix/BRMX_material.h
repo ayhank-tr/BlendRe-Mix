@@ -114,7 +114,12 @@ struct TextureRequest {
 	int channel;  /* scalar maps: 0 = R .. 3 = A */
 	int flags;    /* BRB_TEXTURE_INVERT, BRB_TEXTURE_LINEAR */
 	int max_size; /* P8.24: the largest width or height (0: as the image is) */
-	TextureRequest() : image(NULL), kind(0), channel(0), flags(0), max_size(0) {}
+	/* BGE-Remix P10.3: a colour image's colours times this (in linear
+	 * light) before encoding: a Classic material's Diffuse Intensity, which
+	 * the game multiplies its colour image by and Remix's albedo image does
+	 * not take (Remix's albedo colour is only used without an image) */
+	float scale;
+	TextureRequest() : image(NULL), kind(0), channel(0), flags(0), max_size(0), scale(1.0f) {}
 	bool wanted() const { return image != NULL || baked; }
 };
 

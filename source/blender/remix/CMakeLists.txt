@@ -66,8 +66,10 @@ if(WITH_PYTHON)
 
 	set(SRC
 		intern/remix_python.c
+		intern/remix_remaster.cc
 		intern/remix_view.cc
 
+		BRMX_remaster.h
 		BRMX_remix.h
 		BRMX_view.h
 	)

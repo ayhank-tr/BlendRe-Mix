@@ -27,8 +27,11 @@ rtx (the real runtime):
 import os
 import shutil
 
-# P9.8 (decided 5 Nov): known, fixed with P10's tile bakes
-SEAMS_KNOWN = {"BRICK": "dark bricks along the baked tile's repeat edges (the cross-fade on a regular pattern)"}
+# P9.8 (decided 5 Nov): known, fixed with P10's tile bakes; BGE-Remix P10.2:
+# fixed (Brick's tile holds whole repeats, no cross-fade; its black brick
+# at each tile corner, the Math node's Modulo of 0 in the game's GLSL, gone):
+# Brick is gated again
+SEAMS_KNOWN = {}
 
 PRESET_CHECK = r'''
 import bpy, json, os, sys, time
