@@ -35,6 +35,7 @@
 #include "DNA_ID.h"
 #include "DNA_scene_types.h"
 
+#include "BLI_string.h"
 #include "BLI_utildefines.h"
 
 #include "BKE_idprop.h"
@@ -124,6 +125,78 @@ int BRMX_owner_kind(void)
 void *BRMX_owner(void)
 {
 	return owner.owner;
+}
+
+/* ------------------------------------------------------------------------- */
+/* BGE-Remix P9.7: hash collisions (the Remix View's warnings) */
+
+static int hash_collisions = 0;
+static char hash_collision_last[128] = "";
+
+void BRMX_hash_collision_note(const char *what)
+{
+	hash_collisions++;
+	if (what) {
+		BLI_strncpy(hash_collision_last, what, sizeof(hash_collision_last));
+	}
+}
+
+int BRMX_hash_collisions(const char **r_last)
+{
+	if (r_last) {
+		*r_last = hash_collision_last;
+	}
+	return hash_collisions;
+}
+
+/* ------------------------------------------------------------------------- */
+/* BGE-Remix P9.7: the Remix View's debug options, kept for a game started
+ * from Blender */
+
+#define DEBUG_OPTIONS 16
+static struct {
+	char key[64];
+	char value[32];
+} debug_options[DEBUG_OPTIONS];
+static int debug_option_count = 0;
+
+static void debug_option_send(int i)
+{
+	const BRMX_Bridge *bridge = BRMX_bridge();
+	if (bridge && bridge->get_status() == BRB_STATUS_RUNNING) {
+		bridge->set_config(debug_options[i].key, debug_options[i].value);
+	}
+}
+
+void BRMX_debug_option_set(const char *key, const char *value)
+{
+	int i;
+	if (!key || !value || strncmp(key, "rtx.", 4) != 0) {
+		return;
+	}
+	for (i = 0; i < debug_option_count; i++) {
+		if (strcmp(debug_options[i].key, key) == 0) {
+			break;
+		}
+	}
+	if (i == debug_option_count) {
+		if (debug_option_count == DEBUG_OPTIONS) {
+			return;
+		}
+		debug_option_count++;
+		BLI_strncpy(debug_options[i].key, key, sizeof(debug_options[i].key));
+	}
+	BLI_strncpy(debug_options[i].value, value, sizeof(debug_options[i].value));
+	debug_option_send(i);
+}
+
+int BRMX_debug_options_apply(void)
+{
+	int i;
+	for (i = 0; i < debug_option_count; i++) {
+		debug_option_send(i);
+	}
+	return debug_option_count;
 }
 
 /* ------------------------------------------------------------------------- */

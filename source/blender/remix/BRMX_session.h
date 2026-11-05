@@ -66,6 +66,21 @@ void BRMX_owner_release(void *owner);
 int BRMX_owner_kind(void);
 void *BRMX_owner(void);
 
+/* BGE-Remix P9.7: hash collisions met while sending to Remix (two things
+ * wanting one hash: the later one is salted, so both still show), for the
+ * Remix View's warnings: note one (what: "mesh Cube"); the count since
+ * start and the last one's name. */
+void BRMX_hash_collision_note(const char *what);
+int BRMX_hash_collisions(const char **r_last);
+
+/* BGE-Remix P9.7: the Remix View's debug options (rtx.debugView.*,
+ * rtx.hashCollisionDetection.enable): one set (sent now when Remix runs, and
+ * kept); all kept ones sent again (a game started from Blender calls it, so
+ * its picture shows the debug view chosen in the Remix View; a standalone
+ * game's process has none). Returns how many were sent. */
+void BRMX_debug_option_set(const char *key, const char *value);
+int BRMX_debug_options_apply(void);
+
 /* P5.1 quality settings: custom properties of the scene (Render panel),
  * with the values of the panel's menus. */
 typedef struct BRMX_Quality {

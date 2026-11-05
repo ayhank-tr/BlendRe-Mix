@@ -36,7 +36,7 @@ KM_HIERARCHY = [
     ('User Interface', 'EMPTY', 'WINDOW', []),
 
     ('3D View', 'VIEW_3D', 'WINDOW', [  # view 3d navigation and generic stuff (select, transform)
-        ('Game View', 'VIEW_3D', 'WINDOW', []),  # BGE-Remix P7
+        ('Remix View', 'VIEW_3D', 'WINDOW', []),  # BGE-Remix P7 (P9.7: was Game View)
         ('Object Mode', 'EMPTY', 'WINDOW', []),
         ('Mesh', 'EMPTY', 'WINDOW', []),
         ('Curve', 'EMPTY', 'WINDOW', []),

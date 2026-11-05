@@ -87,6 +87,17 @@ const char *BRMX_view_stats_json(void);
 struct Material;
 const char *BRMX_material_match_json(struct Material *ma);
 
+/* BGE-Remix P9.7: what Remix gets for an object, for the Remix View's
+ * Inspect panel and the tests (JSON: {"object", "mesh", "triangles",
+ * "instances" (objects of the scene sharing its data), "cache_folder",
+ * "materials": [{"slot", "name", "values": {...}, "textures": [{"field",
+ * "image", "baked", "file" (a bake's file, or an image's file name up to
+ * its pixels' hash), "exact", "cached"}], "match": material_match's}]}).
+ * Main thread. */
+struct Object;
+struct Scene;
+const char *BRMX_object_inspect_json(struct Object *ob, struct Scene *scene);
+
 #ifdef __cplusplus
 }
 #endif

@@ -111,6 +111,7 @@ extern "C" {
 #  include "BRMX_bake.h"
 #  include "BRMX_loader.h"
 #  include "BRMX_material.h"
+#  include "BRMX_session.h"  /* BGE-Remix P9.7: hash collisions */
 #endif
 
 /* the scene's ID property holding the PhysX choice (P6, DNA_scene_types.h) */
@@ -715,7 +716,7 @@ int GVBuilder::Add(const char *kind, const char *name, Object *owner, const char
 	m_warn.push_back(std::vector<GVWarning>());
 	const int idx = e.id;
 	if (!k) {
-		Warn(idx, "UNASSIGNED", GV_WARN_NOTE, "no layer of the Game View claims this kind of element");
+		Warn(idx, "UNASSIGNED", GV_WARN_NOTE, "no layer of the Remix View claims this kind of element");
 	}
 	return idx;
 }
@@ -2418,6 +2419,35 @@ void GVBuilder::Remix()
 		Warn(el, "RMX_NO_RUNTIME", GV_WARN_RED,
 		     "the RTX Remix runtime is not installed (Preferences > System > RTX Remix)", true);
 	}
+#ifdef WITH_REMIX
+	/* BGE-Remix P9.7: what Remix itself met, seen in the Remix View's Check
+	 * mode: hash collisions (two things given one hash; the later one got a
+	 * salted hash, which a Remix mod made for it may not find again) and the
+	 * calls the running runtime refused */
+	{
+		const char *last = NULL;
+		const int collisions = BRMX_hash_collisions(&last);
+		if (collisions > 0) {
+			Warn(el, "RMX_HASH_COLLISION", GV_WARN_BLACK,
+			     fmt("%d hash collision%s in what was sent to Remix (the last: %s): give the objects, meshes or "
+			         "materials different names, or a Remix mod made for them may not find them",
+			         collisions, collisions == 1 ? "" : "s", last && last[0] ? last : "?").c_str(), true);
+		}
+		if (runtime) {
+			const BRMX_Bridge *b = BRMX_bridge();
+			if (b && b->get_status() == BRB_STATUS_RUNNING) {
+				brb_frame_stats st;
+				memset(&st, 0, sizeof(st));
+				b->get_stats(&st);
+				if (st.errors > 0) {
+					Warn(el, "RMX_RUNTIME_ERRORS", GV_WARN_BLACK,
+					     fmt("RTX Remix refused %d call%s (the last error code: %d); see the log for which",
+					         st.errors, st.errors == 1 ? "" : "s", st.last_error).c_str(), true);
+				}
+			}
+		}
+	}
+#endif
 	int lamps = 0;
 	for (Object *ob : m_objects) {
 		if (!game_type(ob->type) || !InGame(ob)) continue;

@@ -195,6 +195,20 @@ std::wstring TextureCache::baked_path(const TextureRequest &req)
 	return folder() + L"\\" + safe_name(req.baked->name.c_str()) + L"_" + kind_tag(req) + L"_kb" + hex + L".dds";
 }
 
+std::wstring TextureCache::file_name_of(const TextureRequest &req, bool *r_exact)
+{
+	if (r_exact) {
+		*r_exact = req.baked != NULL;
+	}
+	if (req.baked) {
+		return baked_path(req);
+	}
+	if (!req.image) {
+		return std::wstring();
+	}
+	return folder() + L"\\" + safe_name(req.image->id.name + 2) + L"_" + kind_tag(req) + L"_";
+}
+
 bool TextureCache::cached(const TextureRequest &req)
 {
 	return req.baked && req.baked->key && exists(baked_path(req));

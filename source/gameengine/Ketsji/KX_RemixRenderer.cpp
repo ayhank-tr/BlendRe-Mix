@@ -609,6 +609,9 @@ bool KX_RemixRenderer::Start(KX_Scene *scene, int width, int height, const Setti
 		BRMX_quality_apply(&quality);
 		/* P9.1: the Render tab's curated settings and the tone mapping */
 		BRMX_scene_options_apply(scene->GetBlenderScene());
+		/* P9.7: the debug view chosen in the Remix View (a game started
+		 * from Blender; a standalone game's process has none) */
+		BRMX_debug_options_apply();
 	}
 	{
 		/* P8.22: Blender's anisotropic filtering (User Preferences) */
@@ -3387,6 +3390,22 @@ void KX_RemixRenderer::WriteStats()
 	        m_pick_frames_count ? (double)m_pick_frames_total / m_pick_frames_count : -1.0);
 	fprintf(f, "}\n");
 	fclose(f);
+}
+
+/* BGE-Remix P9.7 */
+std::string KX_RemixRenderer::StatsLine() const
+{
+	char buf[160];
+	int errors = 0;
+	if (m_bridge && m_running) {
+		brb_frame_stats st;
+		memset(&st, 0, sizeof(st));
+		m_bridge->get_stats(&st);
+		errors = st.errors;
+	}
+	snprintf(buf, sizeof(buf), "%d draws, %d lights, %d textures waiting%s", m_last_draws, m_last_lights,
+	         m_cache ? m_cache->waiting() : 0, errors ? ", calls refused" : "");
+	return std::string(buf);
 }
 
 #endif  /* WITH_REMIX */

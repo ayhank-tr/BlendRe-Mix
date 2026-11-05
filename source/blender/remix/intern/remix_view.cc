@@ -218,6 +218,12 @@ struct Stats {
 	int render_view_inverse = 0; /* P8.23: 1 when the last F12 undid the view transform */
 	double render_seconds = 0.0; /* the last F12, from sync to result */
 	double first_frame_ms = 0.0; /* the last full sync's time */
+	/* BGE-Remix P9.7: the Remix View's statistics line */
+	double frame_ms = 0.0;       /* between the last two frames (smoothed) */
+	double last_frame_time = 0.0;
+	int textures_waiting = 0;    /* the last frame: textures still being encoded */
+	int hash_collisions = 0;     /* names that gave a hash another object had (salted) */
+	std::string last_collision;  /* the last one's name */
 	std::string last_note;
 };
 Stats g_stats;
@@ -652,13 +658,24 @@ private:
 	{
 		/* stable across runs (from names), unique within the scene */
 		const std::string base = m_prefix + ":" + kind + ":" + name;
-		uint64_t h = fnv1a(base);
+		/* BGE-Remix P9.7: BGE_REMIX_FORCE_HASH_COLLISION=1 (the tests) gives
+		 * every name the same first hash */
+		static const bool force = env_is("BGE_REMIX_FORCE_HASH_COLLISION", "1");
+		uint64_t h = force ? 0x5039372e636f6cull : fnv1a(base);
 		for (int salt = 1;; salt++) {
 			if (h == 0) {
 				h = 1;
 			}
 			std::map<uint64_t, const void *>::iterator it = m_hashes.find(h);
 			if (it == m_hashes.end() || it->second == key) {
+				if (salt > 1 && it == m_hashes.end()) {
+					/* another object's hash: this one got a salted one, which a
+					 * Remix mod made for it may not find again (counted once,
+					 * when the salted hash is first given) */
+					g_stats.hash_collisions++;
+					g_stats.last_collision = kind + " " + name;
+					BRMX_hash_collision_note(g_stats.last_collision.c_str());
+				}
 				m_hashes[h] = key;
 				return h;
 			}
@@ -1155,6 +1172,8 @@ bool ensure_running(int width, int height, bool gl_current, std::string &r_messa
 	printf("BGE-Remix: RTX Remix started for the 3D view and F12 (%s mode, %dx%d).\n",
 	       mode == BRB_MODE_DIRECT ? "direct" : "copy", width, height);
 	fflush(stdout);
+	/* P9.7: the Remix View's debug options chosen before Remix ran */
+	BRMX_debug_options_apply();
 	return true;
 }
 
@@ -1396,6 +1415,16 @@ int BRMX_view_draw(RenderEngine *engine, Main *bmain, Scene *scene, ARegion *ar,
 	g_stats.view_frames++;
 	g_stats.width = width;
 	g_stats.height = height;
+	/* P9.7: the statistics line (a gap of a second or more is the view
+	 * waiting for a change, not a frame) */
+	if (g_stats.last_frame_time > 0.0 && now > g_stats.last_frame_time) {
+		const double ms = (now - g_stats.last_frame_time) * 1000.0;
+		if (ms < 1000.0) {
+			g_stats.frame_ms = (g_stats.frame_ms > 0.0) ? g_stats.frame_ms * 0.8 + ms * 0.2 : ms;
+		}
+	}
+	g_stats.last_frame_time = now;
+	g_stats.textures_waiting = waiting;
 
 	const int got = BRMX_present_draw(ar->winrct.xmin, ar->winrct.ymin, width, height);
 	if (got == 2) {
@@ -1870,11 +1899,9 @@ static void json_string(std::string &out, const std::string &text)
 	out += '"';
 }
 
-const char *BRMX_material_match_json(Material *ma)
+/* the material's match, as JSON appended to json (spec: its translation) */
+static void material_match_into(std::string &json, Material *ma, brmx::MaterialSpec &spec)
 {
-	static std::string json;
-	brmx::MaterialSpec spec;
-	brmx::translate_material(ma, spec);
 	/* what a bake would bring (it runs per mesh, when the material is used) */
 	const unsigned baked = brmx::bake_slots(ma);
 	static const char *bake_fields[brmx::BAKE_SLOTS] = {"albedo", "roughness", "emissive", "normal", "metallic"};
@@ -1898,7 +1925,7 @@ const char *BRMX_material_match_json(Material *ma)
 	}
 	std::vector<brmx::FieldMatch> rows;
 	brmx::material_match(ma, spec, rows);
-	json = "{\"fields\": [";
+	json += "{\"fields\": [";
 	for (size_t i = 0; i < rows.size(); i++) {
 		json += i ? ", {\"field\": " : "{\"field\": ";
 		json_string(json, rows[i].field);
@@ -1916,6 +1943,133 @@ const char *BRMX_material_match_json(Material *ma)
 	json += std::string("], \"baked\": ") + (baked ? "true" : "false") + ", \"categories\": " +
 	        std::to_string(spec.categories) + ", \"source\": " + std::to_string((int)spec.source) +
 	        ", \"bake_slots\": " + std::to_string(baked) + "}";
+}
+
+const char *BRMX_material_match_json(Material *ma)
+{
+	static std::string json;
+	brmx::MaterialSpec spec;
+	brmx::translate_material(ma, spec);
+	json.clear();
+	material_match_into(json, ma, spec);
+	return json.c_str();
+}
+
+static std::string utf8_of(const std::wstring &w)
+{
+	if (w.empty()) {
+		return std::string();
+	}
+	const int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), NULL, 0, NULL, NULL);
+	std::string out(n > 0 ? n : 0, '\0');
+	if (n > 0) {
+		WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &out[0], n, NULL, NULL);
+	}
+	return out;
+}
+
+static void json_floats(std::string &out, const float *v, int n)
+{
+	char buf[32];
+	out += '[';
+	for (int i = 0; i < n; i++) {
+		snprintf(buf, sizeof(buf), i ? ", %.4g" : "%.4g", v[i]);
+		out += buf;
+	}
+	out += ']';
+}
+
+/* BGE-Remix P9.7: what Remix gets for an object (the Remix View's Inspect
+ * panel): its mesh, how many objects share it, and per material slot the
+ * translation's values, its Match rows (as material_match) and each
+ * texture's cache file. */
+const char *BRMX_object_inspect_json(Object *ob, Scene *scene)
+{
+	static std::string json;
+	json = "{\"object\": ";
+	json_string(json, ob ? ob->id.name + 2 : "");
+	if (!ob) {
+		json += "}";
+		return json.c_str();
+	}
+	json += ", \"type\": " + std::to_string((int)ob->type);
+	const Mesh *me = (ob->type == OB_MESH) ? (const Mesh *)ob->data : NULL;
+	int triangles = 0;
+	if (me) {
+		for (int i = 0; i < me->totpoly; i++) {
+			triangles += std::max(me->mpoly[i].totloop - 2, 0);
+		}
+	}
+	int instances = 0;
+	if (scene && ob->data) {
+		Scene *sce_iter;
+		Base *base;
+		for (SETLOOPER(scene, sce_iter, base)) {
+			if (base->object && base->object->data == ob->data) {
+				instances++;
+			}
+		}
+	}
+	json += ", \"mesh\": ";
+	json_string(json, me ? me->id.name + 2 : "");
+	json += ", \"triangles\": " + std::to_string(triangles) + ", \"instances\": " + std::to_string(instances);
+	json += ", \"cache_folder\": ";
+	json_string(json, utf8_of(brmx::TextureCache::folder()));
+	json += ", \"materials\": [";
+	const int n = std::max<int>(ob->totcol, 1);
+	for (int i = 1; i <= n; i++) {
+		Material *ma = give_current_material(ob, (short)i);
+		brmx::MaterialSpec spec;
+		brmx::translate_material(ma, spec);
+		const brb_material_desc &d = spec.desc;
+		json += i > 1 ? ", {\"slot\": " : "{\"slot\": ";
+		json += std::to_string(i) + ", \"name\": ";
+		json_string(json, ma ? ma->id.name + 2 : "");
+		json += ", \"values\": {\"type\": " + std::to_string(d.type) + ", \"albedo\": ";
+		json_floats(json, d.albedo, 3);
+		json += ", \"opacity\": ";
+		json_floats(json, &d.opacity, 1);
+		json += ", \"roughness\": ";
+		json_floats(json, &d.roughness, 1);
+		json += ", \"metallic\": ";
+		json_floats(json, &d.metallic, 1);
+		json += ", \"emissive\": ";
+		json_floats(json, d.emissive, 3);
+		json += ", \"emissive_intensity\": ";
+		json_floats(json, &d.emissive_intensity, 1);
+		json += ", \"ior\": ";
+		json_floats(json, &d.ior, 1);
+		json += ", \"alpha_blend\": " + std::to_string(d.alpha_blend) +
+		        ", \"alpha_test\": " + std::to_string(d.alpha_test) + "}";
+		json += ", \"textures\": [";
+		bool first = true;
+		for (int t = 0; t < brmx::TEX_COUNT; t++) {
+			const brmx::TextureRequest &req = spec.textures[t];
+			if (!req.wanted()) {
+				continue;
+			}
+			bool exact = false;
+			const std::wstring file = brmx::TextureCache::file_name_of(req, &exact);
+			json += first ? "{\"field\": " : ", {\"field\": ";
+			first = false;
+			json_string(json, brmx::texture_slot_name(t));
+			json += ", \"image\": ";
+			json_string(json, req.image ? req.image->id.name + 2 : "");
+			json += std::string(", \"baked\": ") + (req.baked ? "true" : "false") + ", \"file\": ";
+			json_string(json, utf8_of(file));
+			json += std::string(", \"exact\": ") + (exact ? "true" : "false") + ", \"cached\": " +
+			        ((exact && brmx::TextureCache::cached(req)) ? "true" : "false") + "}";
+		}
+		json += "], \"match\": ";
+		if (ma) {
+			material_match_into(json, ma, spec);
+		}
+		else {
+			json += "null";
+		}
+		json += "}";
+	}
+	json += "]}";
 	return json.c_str();
 }
 
@@ -1931,15 +2085,20 @@ const char *BRMX_view_stats_json(void)
 	         "\"last_draws\": %d, \"highlighted\": %d, \"gl_differences\": %d, \"resized_frames\": %d, "
 	         "\"width\": %d, \"height\": %d, \"render_syncs\": %d, \"render_frames\": %d, \"render_reads\": %d, "
 	         "\"render_width\": %d, \"render_height\": %d, \"render_seconds\": %.3f, \"full_sync_ms\": %.2f, "
-	         "\"owner\": %d, \"main_reloads\": %d, \"bakes\": %d, \"render_view_inverse\": %d, ",
+	         "\"owner\": %d, \"main_reloads\": %d, \"bakes\": %d, \"render_view_inverse\": %d, "
+	         "\"frame_ms\": %.2f, \"textures_waiting\": %d, \"hash_collisions\": %d, ",
 	         g_stats.view_updates, g_stats.view_draws, g_stats.view_frames, g_stats.view_fallbacks,
 	         g_stats.view_full_syncs, g_stats.meshes_sent, g_stats.materials_sent, g_stats.lights_sent,
 	         g_stats.meshes_removed, g_stats.last_meshes, g_stats.last_materials, g_stats.last_lights,
 	         g_stats.last_draws, g_stats.highlighted, g_stats.gl_differences, g_stats.resized_frames, g_stats.width,
 	         g_stats.height, g_stats.render_syncs, g_stats.render_frames, g_stats.render_reads, g_stats.render_width,
 	         g_stats.render_height, g_stats.render_seconds, g_stats.first_frame_ms, BRMX_owner_kind(),
-	         g_stats.main_reloads, g_stats.bakes, g_stats.render_view_inverse);
+	         g_stats.main_reloads, g_stats.bakes, g_stats.render_view_inverse, g_stats.frame_ms,
+	         g_stats.textures_waiting, g_stats.hash_collisions);
 	json = buf;
+	json += "\"last_collision\": ";
+	json_string(json, g_stats.last_collision);
+	json += ", ";
 	std::string note;
 	for (char c : g_stats.last_note) {
 		if (c == '"' || c == '\\') {

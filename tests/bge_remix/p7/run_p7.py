@@ -1,6 +1,6 @@
 """BGE-Remix P7 tests: the Game View (see and check).
 
-T7.0  the editor: Game View is in the editor-type menu; it opens, moves
+T7.0  the editor: Remix View (P9.7: was Game View) is in the editor-type menu; it opens, moves
       around and closes; a file saved with a Game View opens in stock 2.79
 T7.1  coverage: every kind the engine knows has a layer; in gv_clean every
       element appears and nothing is Unassigned
@@ -237,7 +237,7 @@ def reference_check(out, tag, shots, kind):
 def t70(r, stock):
     s = r["steps"]
     c = {
-        "Game View is in the editor-type menu": bool(s.get("menu", {}).get("game_view_in_menu")),
+        "Remix View is in the editor-type menu": bool(s.get("menu", {}).get("game_view_in_menu")),
         "it opens and builds its model": s.get("opened", {}).get("area_type") == "GAME_VIEW" and
         bool(s.get("opened", {}).get("built")),
         "it moves around": bool(s.get("moved", {}).get("moved")),

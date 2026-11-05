@@ -801,7 +801,7 @@ static PyMethodDef gv_methods[] = {
 };
 
 static struct PyModuleDef gv_module = {
-	PyModuleDef_HEAD_INIT, "_bge_gameview", "BGE-Remix Game View model (P7)", -1, gv_methods,
+	PyModuleDef_HEAD_INIT, "_bge_gameview", "BGE-Remix Remix View model (P7; P9.7: was the Game View)", -1, gv_methods,
 	NULL, NULL, NULL, NULL
 };
 
