@@ -162,8 +162,16 @@ static int gameview_play_exec(bContext *C, wmOperator *op)
 	}
 
 	/* redraw to hide any menus and pop-ups: Blender's own loop waits until
-	 * the game ends */
-	WM_redraw_windows(C);
+	 * the game ends. BGE-Remix P10.9 fix: a Python context override (a script
+	 * passing its own "area") would make every area's drawing see that area,
+	 * and a Properties header then finds no Properties data and crashes: the
+	 * override is set aside for the redraw */
+	{
+		void *py_dict = CTX_py_dict_get(C);
+		CTX_py_dict_set(C, NULL);
+		WM_redraw_windows(C);
+		CTX_py_dict_set(C, py_dict);
+	}
 
 	BLI_callback_exec(bmain, &startscene->id, BLI_CB_EVT_GAME_PRE);
 	gv_run_commandline_options(&startscene->gm);
