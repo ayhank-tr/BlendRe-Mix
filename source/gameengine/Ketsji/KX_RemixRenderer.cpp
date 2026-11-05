@@ -919,9 +919,12 @@ const KX_RemixRenderer::MaterialEntry &KX_RemixRenderer::EnsureMaterial(KX_Scene
 {
 	const std::string name = pm ? pm->GetMaterialName().ReadPtr() : "__default__";
 	Material *ma = pm ? pm->GetBlenderMaterial() : NULL;
-	/* P8.6: procedural textures are baked on each mesh's UV map */
+	/* P8.6: procedural textures are baked on each mesh's UV map; P9.8: a
+	 * preset's tile is the same on every mesh (its own square): one entry
+	 * and one bake for all of them */
 	const bool baked = mesh && brmx::bake_slots(ma) != 0;
-	const std::pair<const void *, const void *> key(pm, baked ? (const void *)mesh : NULL);
+	const bool per_mesh = baked && !brmx::bake_is_tile(ma);
+	const std::pair<const void *, const void *> key(pm, per_mesh ? (const void *)mesh : NULL);
 	std::map<std::pair<const void *, const void *>, MaterialEntry>::iterator it = m_materials.find(key);
 	if (it != m_materials.end()) {
 		if (it->second.name == name) {
@@ -945,8 +948,8 @@ const KX_RemixRenderer::MaterialEntry &KX_RemixRenderer::EnsureMaterial(KX_Scene
 		/* P8.4: Face Textures make one polymaterial per face image */
 		brmx::apply_face_image(ma, pm->GetBlenderImage(), *e.spec);
 	}
-	e.spec->desc.hash = baked ? UniqueHash("material", name + "@" + mesh->GetName().ReadPtr(), &m_materials[key])
-	                          : UniqueHash("material", name, pm);
+	e.spec->desc.hash = per_mesh ? UniqueHash("material", name + "@" + mesh->GetName().ReadPtr(), &m_materials[key])
+	                             : UniqueHash("material", name, pm);
 	for (size_t i = 0; i < e.spec->notes.size(); i++) {
 		printf("BGE-Remix: material \"%s\": %s\n", name.c_str(), e.spec->notes[i].c_str());
 		m_material_notes++;
@@ -982,7 +985,8 @@ void KX_RemixRenderer::Bake(MaterialEntry &e)
 	DerivedMesh *dm = brmx::bake_mesh_from(me);
 	float obmat[4][4];
 	memcpy(obmat, e.obmat, sizeof(obmat));
-	const std::string name = e.name + "_" + e.mesh->GetName().ReadPtr();
+	/* (a tile's files are named by its material alone: one for every mesh) */
+	const std::string name = brmx::bake_is_tile(ma) ? e.name : e.name + "_" + e.mesh->GetName().ReadPtr();
 	const bool ok = dm && brmx::bake_material(e.scene->GetBlenderScene(), ma, dm, e.pm->GetMaterialIndex() + 1, obmat,
 	                                         name, r);
 	Trace("bake: releasing the mesh");

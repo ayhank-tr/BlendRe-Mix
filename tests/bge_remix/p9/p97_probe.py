@@ -70,11 +70,45 @@ def redraw():
         a.tag_redraw()
 
 
+def _crop(path, x, y, w, h):
+    """the PNG at path cut down to the window rectangle x, y (from the
+    bottom left), w x h"""
+    img = bpy.data.images.load(path)
+    try:
+        W, H = img.size
+        x, y = max(0, x), max(0, y)
+        w, h = min(w, W - x), min(h, H - y)
+        px = img.pixels[:]
+        out = []
+        for row in range(y, y + h):
+            start = (row * W + x) * 4
+            out.extend(px[start:start + w * 4])
+    finally:
+        bpy.data.images.remove(img)
+    part = bpy.data.images.new("p97_crop", w, h, alpha=True)
+    try:
+        part.pixels = out
+        part.filepath_raw = path
+        part.file_format = 'PNG'
+        part.save()
+    finally:
+        bpy.data.images.remove(part)
+
+
 def screenshot(name):
+    """the main area's picture: the whole window taken, then cut to the area.
+    (P9.8: screen.screenshot with an area in the override redraws every
+    window with that area as the context's: the Properties editor's header
+    then found no Properties space and Blender crashed)"""
     path = os.path.join(DIR, name + ".png")
     try:
-        bpy.ops.screen.screenshot(override(), filepath=path, full=False)
-        return path if os.path.isfile(path) else None
+        win = window()
+        bpy.ops.screen.screenshot({"window": win, "screen": win.screen}, filepath=path, full=True)
+        if not os.path.isfile(path):
+            return None
+        a = main_area()
+        _crop(path, a.x, a.y, a.width, a.height)
+        return path
     except Exception as ex:
         result["errors"].append("screenshot %s: %r" % (name, ex))
         return None
@@ -228,10 +262,18 @@ def queue_views():
 # ---------------------------------------------------------------------------
 
 def step(name, fn):
+    print("P97 step", name, flush=True)
     try:
         result["steps"][name] = fn()
     except Exception:
         result["errors"].append("%s: %s" % (name, traceback.format_exc()))
+    # (written after each step: a run that stops shows how far it got)
+    result["last_step"] = name
+    try:
+        with open(OUT, "w") as f:
+            json.dump(result, f, indent=1)
+    except (OSError, TypeError, ValueError):
+        pass
 
 
 class P97Probe(bpy.types.Operator):

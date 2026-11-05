@@ -551,8 +551,9 @@ def make_remix_spheres(folder, E):
                           # out of the gate: Remix draws them its own way (glass refracts,
                           # thin film shimmers); emissive: Remix's ACES treats bright
                           # colours with a colour transform no fallback curve matched
-                          # (P9.2's colour test: the best simple rule still 7.7 off)
-                          "gate_out": ["glass", "thin_film", "emissive"]}
+                          # (P9.2's colour test: the best simple rule still 7.7 off);
+                          # height: Remix displaces the surface, the game bumps it
+                          "gate_out": ["glass", "thin_film", "emissive", "height"]}
 
 
 def make_remix_build(folder, E):

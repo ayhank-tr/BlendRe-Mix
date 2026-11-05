@@ -1460,8 +1460,13 @@ bool from_remix_node(const Material *ma, MaterialSpec &s)
 		d.thin_film = 1;
 		d.thin_film_thickness = film;
 	}
-	d.displace_in = BKE_remix_node_value(node, SH_REMIX_IN_DISPLACE_IN);
-	d.displace_out = BKE_remix_node_value(node, SH_REMIX_IN_DISPLACE_OUT);
+	/* P9.8: the depths only with a height wired in (a node left at its
+	 * default Displace In displaces nothing; sent, it made the same material
+	 * differ from its P8 original in Remix's eyes) */
+	if (BKE_remix_node_link(tree, node, SH_REMIX_IN_HEIGHT)) {
+		d.displace_in = BKE_remix_node_value(node, SH_REMIX_IN_DISPLACE_IN);
+		d.displace_out = BKE_remix_node_value(node, SH_REMIX_IN_DISPLACE_OUT);
+	}
 	s.categories |= (unsigned)(node->custom1 >> SH_NODE_REMIX_CATEGORY_SHIFT) & 0x7ffu;
 	if (node->custom1 & SH_NODE_REMIX_PARTICLE) {
 		s.particle = true;
@@ -2073,8 +2078,12 @@ void material_match(const Material *ma, const MaterialSpec &s, std::vector<Field
 			const TextureRequest &t = s.textures[row.tex];
 			if (t.baked) {
 				m.level = MATCH_APPROX;
-				m.note = (s.source == MaterialSpec::REMIX_NODE) ? "what is wired into the node, baked into an image" :
-				         s.nodes_baked ? "the node tree, baked into an image" : "procedural textures, baked into an image";
+				/* P9.8: an image slot's own reason (P9.4) is kept */
+				if (m.note.find(", baked into an image") == std::string::npos) {
+					m.note = (s.source == MaterialSpec::REMIX_NODE) ? "what is wired into the node, baked into an image" :
+					         s.nodes_baked ? "the node tree, baked into an image" :
+					                         "procedural textures, baked into an image";
+				}
 			}
 			else if (t.image) {
 				m.note += std::string(" (image ") + (t.image->id.name + 2) + ")";

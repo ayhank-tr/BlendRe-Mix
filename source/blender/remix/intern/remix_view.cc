@@ -1940,10 +1940,17 @@ static void material_match_into(std::string &json, Material *ma, brmx::MaterialS
 	snprintf(size, sizeof(size), " (%d px)", brmx::bake_size(ma));
 	for (int i = 0; i < brmx::BAKE_SLOTS; i++) {
 		if ((baked & (1u << i)) && !(spec.locked & (1u << bake_tex[i]))) {
+			/* P9.8: an image slot's own reason (P9.4: "texture slot X: a
+			 * blend other than Mix, baked into an image") is kept */
+			std::map<std::string, std::pair<int, std::string>>::const_iterator had = spec.marks.find(bake_fields[i]);
+			const bool own = had != spec.marks.end() && had->second.second.find(", baked into an image") !=
+			                                                 std::string::npos;
 			spec.marks[bake_fields[i]] = std::make_pair(
 			    (int)brmx::MATCH_APPROX,
-			    std::string(remix ? "what is wired into the node, baked into an image" :
-			                nodes ? "the node tree, baked into an image" : "procedural textures, baked into an image") +
+			    (own ? had->second.second :
+			           std::string(remix ? "what is wired into the node, baked into an image" :
+			                       nodes ? "the node tree, baked into an image" :
+			                               "procedural textures, baked into an image")) +
 			        size);
 		}
 	}

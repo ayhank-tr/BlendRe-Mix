@@ -61,7 +61,9 @@ FAULTS = [
 
 # gv_remix's warnings (what RTX Remix leaves out or cannot keep)
 REMIX_EXPECTED = [
-    ("RMX_NO_UV", "Sign", "BLACK", "a texture not mapped by UV"),
+    # (P9.4: an image not read by UV is baked for Remix, on the mesh's UV
+    # map; the sign's cube has none)
+    ("RMX_BAKE_NO_UV", "Sign", "BLACK", "a texture baked for Remix on a mesh with no UV map"),
     ("RMX_FILTER2D", "Brain", "NOTE", "a 2D filter"),
     ("RMX_DEFORM", "Arm", "NOTE", "a mesh deformed by an armature"),
 ]

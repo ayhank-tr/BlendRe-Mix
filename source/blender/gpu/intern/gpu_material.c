@@ -3475,6 +3475,15 @@ static void gpu_shade_physical(GPUShadeInput *shi, GPUShadeResult *shr)
 	}
 }
 
+void GPU_shadeinput_bake_surface(GPUShadeInput *shi, GPUNodeLink **r_color, GPUNodeLink **r_alpha)
+{
+	if (shi->mat->mode & MA_VERTEXCOLP)
+		shi->rgb = shi->vcol;
+	do_material_tex(shi);
+	GPU_link(shi->gpumat, "shade_mul_value", shi->refl, shi->rgb, r_color);
+	*r_alpha = shi->alpha;
+}
+
 void GPU_shaderesult_set(GPUShadeInput *shi, GPUShadeResult *shr)
 {
 	GPUMaterial *mat = shi->gpumat;

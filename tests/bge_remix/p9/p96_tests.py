@@ -227,9 +227,10 @@ def normal(args, out, scenes, E, tests, sheets):
         shutil.rmtree(folder, ignore_errors=True)
     os.makedirs(dump)
     log, env = p8.mock_env(args, out, "p9_presets_mock", cache, dump=dump)
-    run = r9.pipe_play(args.ours, out, "p9_presets_mock", S("p9_presets_remix"), env)
+    run = r9.pipe_play(args.ours, out, "p9_presets_mock", S("p9_presets_remix"), env, seconds=20)
     st = run.get("stats") or {}
     c["Remix drew the presets (the fake runtime)"] = bool(run["ran"]) and st.get("running") is True
+    c["every texture encoded before the game ended"] = r9.textures_in(run)
     mats = r9.mock_materials(r9.mock_lines(log))
     d["the fake runtime's materials"] = len(mats)
     textured = [m for m in mats if m.get("albedo_tex", "-") != "-"]
@@ -242,8 +243,12 @@ def normal(args, out, scenes, E, tests, sheets):
         c["%s: Remix got its baked albedo" % key] = m is not None
         if m is None:
             continue
-        c["%s: and roughness, normal map" % key] = m.get("roughness_tex", "-") != "-" and \
-            m.get("normal_tex", "-") != "-"
+        if m.get("type") == "translucent":
+            # (Remix's translucent materials take no roughness image)
+            c["%s: and its normal map (translucent)" % key] = m.get("normal_tex", "-") != "-"
+        else:
+            c["%s: and roughness, normal map" % key] = m.get("roughness_tex", "-") != "-" and \
+                m.get("normal_tex", "-") != "-"
         if T[key]["displace"] >= RELIEF_DEPTH:
             c["%s: a height map, %.3f m deep" % (key, T[key]["displace"])] = \
                 m.get("height_tex", "-") != "-" and r9.near(m.get("displace_in"), T[key]["displace"], 1e-4)
@@ -303,11 +308,12 @@ def rtx(args, out, scenes, E, tests, sheets, report_lines):
     shot = {"BGE_REMIX_P2_SHOT_FRAME": "300"}
     gl = p8.play(args.ours, out, "p96_aces_opengl", S("p9_presets_aces"), shot, frames=p8.REMIX_FRAMES)
     rt = p8.play(args.ours, out, "p96_aces_remix", S("p9_presets_aces_remix"), p8.REMIX_ENV, frames=p8.REMIX_FRAMES,
-                 debug=True)
+                 seconds=r9.TEXTURE_SECONDS, debug=True)
     labels = ["tile_" + k for k in order] + ["sphere_" + k for k in order]
     rows = r9.sphere_compare({"spheres": {"order": labels, "rects": P["rects"]}}, gl.get("screenshot"),
                              rt.get("screenshot"))
-    c = {"the presets ran in OpenGL and in Remix": bool(gl["ran"] and rt["ran"])}
+    c = {"the presets ran in OpenGL and in Remix": bool(gl["ran"] and rt["ran"]),
+         "every texture in Remix before the picture": r9.textures_in(rt)}
     for k in order:
         if k in P["gate_out"]:
             continue
@@ -328,9 +334,10 @@ def rtx(args, out, scenes, E, tests, sheets, report_lines):
     # S9.6b: the seams, in Remix
     c, d = {}, {}
     sr = p8.play(args.ours, out, "p96_seams_remix", S("p9_presets_seams_aces_remix"), p8.REMIX_ENV,
-                 frames=p8.REMIX_FRAMES, debug=True)
+                 frames=p8.REMIX_FRAMES, seconds=r9.TEXTURE_SECONDS, debug=True)
     sg = p8.play(args.ours, out, "p96_seams_opengl", S("p9_presets_seams_aces"), shot, frames=p8.REMIX_FRAMES)
     c["the seams' squares ran in Remix"] = bool(sr["ran"])
+    c["every texture in Remix before the picture"] = r9.textures_in(sr)
     pic = p8.picture(sr.get("screenshot"))
     for key, s in P["seams"].items():
         if pic is None:

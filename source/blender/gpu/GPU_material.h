@@ -352,6 +352,9 @@ typedef struct GPUShadeResult {
 
 void GPU_shadeinput_set(GPUMaterial *mat, struct Material *ma, GPUShadeInput *shi);
 void GPU_shaderesult_set(GPUShadeInput *shi, GPUShadeResult *shr);
+/* BGE-Remix P9.8: a Material node in a bake for Remix: its surface colour
+ * (textured, times its diffuse intensity) and alpha, not its lit shading */
+void GPU_shadeinput_bake_surface(GPUShadeInput *shi, GPUNodeLink **r_color, GPUNodeLink **r_alpha);
 
 /* BGE-Remix P9.2: the RTX Remix Material node's inputs (links, never NULL
  * but normal: NULL when nothing is wired to it) shaded as the physical

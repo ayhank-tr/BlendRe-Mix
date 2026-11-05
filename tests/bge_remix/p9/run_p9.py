@@ -294,15 +294,16 @@ print("P9-OPEN done")
 '''
 
 
-def pipe_play(build, out, tag, blend, env=None, frames=170):
+def pipe_play(build, out, tag, blend, env=None, frames=170, seconds=0):
     """the player, the room's own answers (getRenderPipeline,
-    isRemixDrawing at frames 30, 90 and 150)"""
+    isRemixDrawing at frames 30, 90 and 150); seconds: at least that long
+    (its textures encoded before the screenshot, near the end)"""
     res = os.path.join(out, tag + "_pipe.json")
     if os.path.isfile(res):
         os.remove(res)
     e = {"BGE_REMIX_P9_PIPE_OUT": res}
     e.update(env or {})
-    r = p8.play(build, out, tag, blend, e, frames=frames)
+    r = p8.play(build, out, tag, blend, e, frames=frames, seconds=seconds)
     r["pipe"] = (p2.read_json(res) or {}).get("samples", {})
     return r
 
@@ -620,14 +621,15 @@ def p93_tests(args, out, scenes, E, tests, sheets):
     c["the report names every converted material, not the Classic one"] = \
         all(C["materials"][k] + ": converted from" in report for k in converted) and \
         C["materials"]["classic"] + ":" not in report
-    names = sorted(C["materials"][k] + ".p8" for k in converted)
+    # (every material read as an old kind: the scene's backdrop too)
+    names = sorted(n + ".p8" for n, kind in before.items() if kind)
     on_open = [n for n, _ in R.get("copies_on_open") or []]
     c["a .p8 copy of each converted material"] = on_open == names
     c["the copies kept by the first save"] = [n for n, _ in R.get("copies_after_first_save") or []] == names
     c["and gone at the second"] = R.get("copies_after_second_save") == []
     c["opened again: nothing more converts, the copies there"] = \
         all(v == "RTX_REMIX" for k, v in (R.get("reopened_kinds") or {}).items()
-            if k != C["materials"]["classic"]) and [n for n, _ in R.get("reopened_copies") or []] == names
+            if before.get(k)) and [n for n, _ in R.get("reopened_copies") or []] == names
     fp = {k: (after.get(C["materials"][k]) or {}).get("fields_panel") for k in ("physical_block", "classic_block",
                                                                               "classic", "physical")}
     d["RTX Remix Fields panel"] = fp
@@ -702,7 +704,7 @@ def p93_sweep(args, out, tests):
             d[label] = r
             continue
         # (the game's own drawing: Remix off)
-        off = ("-g", "remix", "0")
+        off = ("-g", "remix", "=", "0")
         a = p8.play(args.ours, out, "sweep_before_%03d" % len(d), path, extra=off)
         b = p8.play(args.ours, out, "sweep_after_%03d" % len(d), r["converted"], extra=off)
         md = p8.picture_diff(a.get("screenshot"), b.get("screenshot"))
@@ -717,9 +719,27 @@ def p93_sweep(args, out, tests):
 # P9.2: the RTX Remix Material node
 
 TOL_TWIN = 0.5      # a sphere as the same material with P8's Physical surface
+# P9.8: an RTX run's game plays this long, so the textures it encodes (about
+# a second each for a large bake while Remix runs) are in before the picture
+TEXTURE_SECONDS = 40
+# P9.3's materials whose Remix picture changes on purpose (S9.14)
+CONVERT_CHANGED_IN_REMIX = {
+    "bi_nodes": "converted, the Blender Internal node graph is baked for Remix (P8 read it otherwise)",
+    "cy_two_surfaces": "P8 mixed the two surfaces for Remix; the conversion keeps the stronger one (the plan's rule)",
+}
+
+
+def textures_in(r):
+    """the run's textures were all encoded (none waiting at its end, none
+    failed): its picture shows them"""
+    st = r.get("stats") or {}
+    return st.get("textures_waiting") == 0 and st.get("textures_failed") == 0
 TOL_F12_NODE = 6.0  # F12 against the game (P8's)
 TOL_GATE = 10.0     # the fallback against Remix (P8's), every sphere but glass and thin film
-F12_OUT = ("glass", "alpha_cutout")  # raytraced glass, soft-edged cut-out in F12
+F12_OUT = ("glass", "alpha_cutout", "height")  # raytraced glass, soft-edged cut-out in F12; F12 draws no height
+# P9.8: since P9.6 the game bumps the surface by the node's height (Remix
+# displaces it): the P8 Physical twin has no height to compare with
+TWIN_OUT = ("height",)
 
 MATCH_CHECK = r'''
 import bpy, json, os, sys
@@ -881,6 +901,8 @@ def p92_tests(args, out, scenes, E, tests, sheets):
     diffs = rect_diffs(p8.shot_of(twin), p8.shot_of(node), rects, order)
     d["against the Physical twins"] = diffs
     for k in order:
+        if k in TWIN_OUT:
+            continue
         c["%s: as its Physical twin (within %.1f: %s)" % (k, TOL_TWIN, diffs[k])] = diffs[k] is not None and \
             diffs[k] <= TOL_TWIN
     dark = pipe_play(args.ours, out, "p9_rs_nodes_dark", S("p9_rs_nodes_dark"))
@@ -1248,13 +1270,17 @@ def p93_rtx(args, out, scenes, E, tests, sheets, report_lines):
     S = lambda n: os.path.join(scenes, n + ".blend")  # noqa: E731
     convert_scene(args, out, scenes)
     a = p8.play(args.ours, out, "cv_before_remix", S("p9_convert_remix"), p8.REMIX_ENV, frames=p8.REMIX_FRAMES,
-                debug=True)
+                seconds=TEXTURE_SECONDS, debug=True)
     b = p8.play(args.ours, out, "cv_after_remix", S("p9_convert_after_remix"), p8.REMIX_ENV,
-                frames=p8.REMIX_FRAMES, debug=True)
+                frames=p8.REMIX_FRAMES, seconds=TEXTURE_SECONDS, debug=True)
     diffs = rect_diffs(p8.picture(a.get("screenshot")), p8.picture(b.get("screenshot")), C["rects"], C["order"],
                        blur=True)
     c = {"p9_convert ran in Remix before and after": bool(a["ran"] and b["ran"])}
+    for r, when in ((a, "before"), (b, "after")):
+        c["%s: every texture in Remix before the picture" % when] = textures_in(r)
     for k in C["order"]:
+        if k in CONVERT_CHANGED_IN_REMIX:
+            continue
         c["%s: Remix shows it as before (within %.0f: %s)" % (k, TOL_GATE, diffs[k])] = \
             diffs[k] is not None and diffs[k] <= TOL_GATE
     tests["S9.14 Converted materials in Remix (P9.3)"] = {"ok": all(c.values()), "checks": c, "detail": diffs}
@@ -1263,7 +1289,8 @@ def p93_rtx(args, out, scenes, E, tests, sheets, report_lines):
                                              os.path.join(out, "sheet_p9_convert_rtx.png"))
     report_lines += ["", "Converted materials in Remix, before against after (gate %.0f):" % TOL_GATE]
     for k in C["order"]:
-        report_lines.append("  %-16s %s" % (k, diffs[k]))
+        report_lines.append("  %-16s %s%s" % (k, diffs[k], "  (not gated: %s)" % CONVERT_CHANGED_IN_REMIX[k]
+                                              if k in CONVERT_CHANGED_IN_REMIX else ""))
 
 def run_pipelines_rtx(args, out):
     """the fallback against Remix: the six spheres and the room, with ACES

@@ -3,7 +3,8 @@ from make_scenes_p9.py).
 
 p9_remix_view.blend  the study's six spheres with RTX Remix on, saved with
                      the Default screen's 3D View made a Remix View (Check
-                     mode, every layer) looking through the camera
+                     mode, every layer) looking through the camera (made a
+                     perspective one, framing them as the study's does)
 
 make(folder, E) records E["remix_view"]: the file, the spheres' objects and
 their screen rectangles (as E["spheres"]).
@@ -32,6 +33,14 @@ def make(folder, E):
     m9.make_spheres(folder, spheres)  # the study's spheres (the same files again)
     S = spheres["spheres"]
     bpy.ops.wm.open_mainfile(filepath=os.path.join(folder, "p9_study_spheres_remix.blend"))
+    # P9.8: a perspective camera framing the spheres as the study's
+    # orthographic one does (the 3D view's RTX Remix needs a perspective view:
+    # through an orthographic camera it fell back to OpenGL)
+    cam = bpy.context.scene.camera.data
+    distance = 20.0
+    cam.type = 'PERSP'
+    cam.sensor_fit = 'HORIZONTAL'
+    cam.lens = cam.sensor_width * distance / m9.ORTHO
     made = []
     areas = remix_view_areas()
     areas.sort(key=lambda sa: sa[0] != "Default")   # the Default screen's first

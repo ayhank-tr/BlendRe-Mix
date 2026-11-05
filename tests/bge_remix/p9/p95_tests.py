@@ -123,8 +123,9 @@ for text, op in buttons:
         # read back from the material itself
         n2 = bpy.data.materials[remix_name].node_tree.nodes[node.name]
         t2 = n2.texture
-        st["after"] = {"extension": t2.extension if t2 else None,
-                       "use_interpolation": t2.use_interpolation if t2 else None}
+        # (an image texture's settings; a procedural has none)
+        st["after"] = {"extension": getattr(t2, "extension", None),
+                       "use_interpolation": getattr(t2, "use_interpolation", None)}
         m2 = pt.remix_mapping_node(n2)
         if m2 is not None:
             st["after"]["scale"] = list(m2.scale)

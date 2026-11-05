@@ -573,8 +573,10 @@ def draw_game_view_header(self, context):
     # P9.7: the mode
     mode = view.game_view_mode
     row = layout.row(align=True)
+    # (2.79's layout.operator has no depress: the mode shown by its icon)
     for key, text in (('CHECK', "Check"), ('DEBUG', "Debug")):
-        row.operator("gameview.mode", text=text, depress=(mode == key)).mode = key
+        row.operator("gameview.mode", text=text,
+                     icon='RADIOBUT_ON' if mode == key else 'RADIOBUT_OFF').mode = key
     if mode == 'DEBUG':
         wm = context.window_manager
         row = layout.row(align=True)

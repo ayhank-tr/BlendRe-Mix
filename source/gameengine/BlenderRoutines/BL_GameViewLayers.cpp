@@ -2493,16 +2493,22 @@ void GVBuilder::Remix()
 				     "not in Remix: a volume of its own (Remix uses the camera's fog while the camera is inside)", true);
 			if (ma->group)
 				Warn(mel, "RMX_NOT_LIGHT_GROUP", GV_WARN_NOTE, "not in Remix: its Light Group (light linking)", true);
-			for (const std::string &note : spec.notes) {
-				const bool uv = note.find("not mapped by UV") != std::string::npos;
-				Warn(mel, uv ? "RMX_NO_UV" : "RMX_NOTE", uv ? GV_WARN_BLACK : GV_WARN_NOTE, note.c_str(), true);
-			}
-			/* P8.6: procedural textures are baked on the mesh's UV map */
+			/* P8.6: procedural textures (P9.4: and image slots Remix cannot
+			 * take as they are) are baked on the mesh's UV map */
 			const Mesh *mesh = (const Mesh *)ob->data;
-			if (spec.bake_slots && mesh && !CustomData_has_layer(&mesh->ldata, CD_MLOOPUV)) {
+			const bool bake_no_uv = spec.bake_slots && mesh && !CustomData_has_layer(&mesh->ldata, CD_MLOOPUV);
+			for (const std::string &note : spec.notes) {
+				/* (a slot's "..., baked" note: the warning below says it, once) */
+				if (bake_no_uv && note.size() >= 7 && note.compare(note.size() - 7, 7, ", baked") == 0) {
+					continue;
+				}
+				Warn(mel, "RMX_NOTE", GV_WARN_NOTE, note.c_str(), true);
+			}
+			if (bake_no_uv) {
 				Warn(mel, "RMX_BAKE_NO_UV", GV_WARN_BLACK,
-				     "uses procedural textures, which Remix gets baked on the mesh's UV map, and the mesh has none: "
-				     "add a UV map (Remix shows the material's plain colour until then)", true);
+				     "has textures Remix gets baked on the mesh's UV map (procedural ones, or images it cannot take "
+				     "as they are), and the mesh has none: add a UV map (Remix shows the material's plain colour "
+				     "until then)", true);
 			}
 		}
 #endif

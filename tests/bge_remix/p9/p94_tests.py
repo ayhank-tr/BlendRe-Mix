@@ -42,6 +42,9 @@ with open(target, "w") as f:
 print("P94-MATCH done")
 '''
 
+# P9.8: the fake runtime's run, long enough for its textures to be encoded
+MOCK_SECONDS = 10
+
 
 def fields(line):
     """'CreateMaterial hash=1f wrap=1 ...' -> {'hash': '1f', 'wrap': '1', ...} (strings)"""
@@ -108,9 +111,10 @@ def normal(args, out, scenes, E, tests, sheets):
     S = lambda n: os.path.join(scenes, n + ".blend")  # noqa: E731
     c, d = {}, {}
     log, env = p8.mock_env(args, out, "p9_texture_wall_mock", os.path.join(out, "cache_tw"))
-    r = r9.pipe_play(args.ours, out, "p9_texture_wall_mock", S("p9_texture_wall_remix"), env)
+    r = r9.pipe_play(args.ours, out, "p9_texture_wall_mock", S("p9_texture_wall_remix"), env, seconds=MOCK_SECONDS)
     c["Remix drew the texture wall (the fake runtime)"] = bool(r["ran"]) and \
         (r.get("stats") or {}).get("running") is True
+    c["every texture encoded before the game ended"] = r9.textures_in(r)
     mats, meshes = runtime_view(r9.mock_lines(log))
     d["the fake runtime's materials"] = len(mats)
     image = T["image"]
@@ -180,7 +184,7 @@ def rtx(args, out, scenes, E, tests, sheets, report_lines):
     shot = {"BGE_REMIX_P2_SHOT_FRAME": "300"}
     gl = p8.play(args.ours, out, "tw_aces_opengl", S("p9_texture_wall"), shot, frames=p8.REMIX_FRAMES)
     rtx_run = p8.play(args.ours, out, "tw_aces_remix", S("p9_texture_wall_remix"), p8.REMIX_ENV,
-                      frames=p8.REMIX_FRAMES, debug=True)
+                      frames=p8.REMIX_FRAMES, seconds=r9.TEXTURE_SECONDS, debug=True)
     order, rects = T["order"], T["rects"]
     rows = r9.sphere_compare({"spheres": {"order": order, "rects": rects}}, gl.get("screenshot"),
                              rtx_run.get("screenshot"))
@@ -195,7 +199,8 @@ def rtx(args, out, scenes, E, tests, sheets, report_lines):
     pf = p8.picture(f12) if os.path.isfile(f12) else None
     vs_f12 = r9.rect_diffs(pr, pf, rects, order, blur=True)
     game_f12 = r9.rect_diffs(pg, pf, rects, order, blur=True)
-    c = {"the texture wall ran in OpenGL and in Remix": bool(gl["ran"] and rtx_run["ran"])}
+    c = {"the texture wall ran in OpenGL and in Remix": bool(gl["ran"] and rtx_run["ran"]),
+         "every texture in Remix before the picture": r9.textures_in(rtx_run)}
     for label in T["gate"]:
         row = rows.get(label)
         c["%s: the fallback within %.0f of Remix (%s)" % (label, r9.TOL_GATE, row and row["mean_diff"])] = \

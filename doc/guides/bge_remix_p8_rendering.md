@@ -115,8 +115,10 @@ Material tab, under the material's name: **Classic** or **RTX Remix**.
 - The game draws the node with the Physical surface's shading, in both
   pipelines; F12 renders it with the same lighting maths as the game (lamps,
   their shadows, the world and, in the RTX Remix pipeline, the sky light);
-  Remix gets every input. Height, anisotropy and thin film are drawn by Remix
-  only.
+  Remix gets every input. Height is displaced by Remix and, with no normal
+  wired, bumps the surface in the game (P9.6); F12 does not draw it.
+  Anisotropy and thin film are drawn by Remix only. Displace In and Out go
+  to Remix only with something wired into Height.
 - To Remix: an input fed by a Texture node holding an image, read at the
   Geometry node's UV, goes as that image (its Value output: the image's
   alpha); anything else wired into Albedo, Opacity, Roughness, Metallic,
@@ -140,7 +142,9 @@ Classic become RTX Remix materials:
   its opacity, a Mix of a surface and a glow keeps both, any other Mix the
   stronger surface;
 - a Blender Internal node material: its graph stays and feeds the node, and
-  its Output node stays wired, so stock 2.79 draws the graph;
+  its Output node stays wired, so stock 2.79 draws the graph; Remix gets the
+  graph baked, its Material nodes as their surface colour (Remix lights
+  it);
 - a material whose RTX Remix block (P8) is in use: the block's values and
   images set the node's inputs. The block still applies in Remix; its panel
   (RTX Remix Fields) shows only on materials whose block is in use.
@@ -190,7 +194,8 @@ inputs: Scale (repeats per UV unit, one UV unit taken as 1 m), Colour, Wear
 (weathering, chips, dust), Wetness (Tarmac and Dirt road: darker and glossy
 where water would gather) and Seed (shifts the pattern). The game draws the
 preset live; Remix gets it as one seamless tile with colour, roughness,
-height and bumps. Water stands still, in the game and in Remix.
+height and bumps, baked once per material however many meshes use it.
+Water stands still, in the game and in Remix.
 
 ## Lights and shadows
 
@@ -421,7 +426,12 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
 - Remix's particles are lit surfaces in the emitter's material: they do
   not glow or blend as the game's do, so smoke and sparks look darker, or
   barely show, in dark scenes.
-- Remix's bakes use one UV map; meshes without one are reported.
+- Remix's bakes use one UV map; meshes without one are reported (on the
+  Remix View's Remix layer, once per material).
+- The game starts before its textures are ready: each is encoded for Remix
+  in turn (with Remix running, about a second for a large baked one on an
+  RTX 3080), and a material shows its plain colour until its textures are
+  in. A second start finds them in the cache.
 - Remix has no orthographic camera: an orthographic camera reaches it as a
   distant, narrow perspective camera framing the same view (within about
   1 % of the size across the view's depth), so orthographic 3D scenes are
