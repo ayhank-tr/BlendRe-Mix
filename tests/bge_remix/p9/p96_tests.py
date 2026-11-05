@@ -185,7 +185,7 @@ def normal(args, out, scenes, E, tests, sheets):
     S = lambda n: os.path.join(scenes, n + ".blend")  # noqa: E731
     P = E.get("presets")
     if not P:
-        for name in ("T9.6a Preset materials build", "T9.6b Preset materials reach Remix (fake runtime)"):
+        for name in ("T9.11 Preset materials build (P9.6)", "T9.12 Preset materials reach Remix (P9.6, fake runtime)"):
             tests[name] = {"ok": False, "checks": {"the P9.6 scenes were made": False}, "detail": E.get("failed")}
         return
     T, order = P["table"], P["order"]
@@ -217,7 +217,7 @@ def normal(args, out, scenes, E, tests, sheets):
             c["%s (scene): %s" % (key, what)] = ok
         c["%s: the table's values in range" % key] = _table_ranges(T[key])
         c["%s: procedural textures inside" % key] = bool(fresh.get("textures")) or key == 'BRICK'
-    tests["T9.6a Preset materials build"] = {"ok": all(c.values()), "checks": c, "detail": d}
+    tests["T9.11 Preset materials build (P9.6)"] = {"ok": all(c.values()), "checks": c, "detail": d}
 
     # T9.6b: the fake runtime gets them baked
     c, d = {}, {}
@@ -263,7 +263,7 @@ def normal(args, out, scenes, E, tests, sheets):
         if s is not None:
             c["%s repeats without a seam (wrap %s / %s against steps %s / %s)" % (
                 f, s["wrap_x"], s["wrap_y"], s["step_x"], s["step_y"])] = s["seamless"]
-    tests["T9.6b Preset materials reach Remix (fake runtime)"] = {"ok": all(c.values()), "checks": c, "detail": d}
+    tests["T9.12 Preset materials reach Remix (P9.6, fake runtime)"] = {"ok": all(c.values()), "checks": c, "detail": d}
     sheets["presets"] = p2.contact_sheet([("presets (game)", run.get("screenshot"))],
                                          os.path.join(out, "sheet_p96_presets.png"))
 
@@ -296,7 +296,7 @@ def rtx(args, out, scenes, E, tests, sheets, report_lines):
     S = lambda n: os.path.join(scenes, n + ".blend")  # noqa: E731
     P = E.get("presets")
     if not P:
-        for name in ("S9.6a Preset tiles against Remix (the gate)", "S9.6b Preset tiles' seams in Remix"):
+        for name in ("S9.16 Preset tiles against Remix (P9.6, the gate)", "S9.17 Preset tiles' seams in Remix (P9.6)"):
             tests[name] = {"ok": False, "checks": {"made": False}, "detail": E.get("failed")}
         return
     order = P["order"]
@@ -314,7 +314,7 @@ def rtx(args, out, scenes, E, tests, sheets, report_lines):
         row = rows.get("tile_" + k)
         c["%s: the tile in the game within %.0f of Remix (%s)" % (k, r9.TOL_GATE, row and row["mean_diff"])] = \
             bool(row) and row["mean_diff"] <= r9.TOL_GATE
-    tests["S9.6a Preset tiles against Remix (the gate)"] = {"ok": all(c.values()), "checks": c, "detail": rows}
+    tests["S9.16 Preset tiles against Remix (P9.6, the gate)"] = {"ok": all(c.values()), "checks": c, "detail": rows}
     sheets["presets_rtx"] = p2.contact_sheet([("presets, game (ACES)", gl.get("screenshot")),
                                               ("presets, RTX Remix (ACES)", rt.get("screenshot"))],
                                              os.path.join(out, "sheet_p96_presets_rtx.png"))
@@ -340,7 +340,7 @@ def rtx(args, out, scenes, E, tests, sheets, report_lines):
         d[key] = steps
         c["%s: no seam where the tiles meet (%s)" % (key, ", ".join(
             "%s/%s" % (x["across"], x["beside"]) for x in steps))] = bool(steps) and not any(x["seam"] for x in steps)
-    tests["S9.6b Preset tiles' seams in Remix"] = {"ok": all(c.values()), "checks": c, "detail": d}
+    tests["S9.17 Preset tiles' seams in Remix (P9.6)"] = {"ok": all(c.values()), "checks": c, "detail": d}
     sheets["presets_seams"] = p2.contact_sheet([("seams, game", sg.get("screenshot")),
                                                 ("seams, RTX Remix", sr.get("screenshot"))],
                                                os.path.join(out, "sheet_p96_seams.png"))

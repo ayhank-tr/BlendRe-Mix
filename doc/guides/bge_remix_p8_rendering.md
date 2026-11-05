@@ -155,6 +155,43 @@ unchanged. Blender run from a script (in the background) converts only with
 A material in a file that is also rendered with Cycles loses its Cycles
 nodes in the conversion (the `.p8` copy keeps them).
 
+## Texture settings in Remix (P9.4)
+
+Remix takes one wrap and one filter per material. When all of a material's
+image textures agree, their settings go to Remix as they are: Repeat,
+Extend (clamp), Clip and Mirror become Remix's wrap, and Interpolation off
+turns filtering off. A slot's scale and offset, the image's repeat counts and
+Flip X/Y are applied to the mesh's UVs; an RTX Remix material does the same
+through a Mapping node (no rotation) before its Texture node. Anything Remix
+cannot take as it is is baked into an image, channel by channel: influence
+below 1, blends other than Mix, several slots in one channel, coordinates
+other than UV, the Colors panel, Negative, Checker, bump maps, and textures
+whose settings differ. The game itself draws only a slot's scale and offset,
+so repeats, mirror, flip, Extend and Clip show in Remix and F12, not in the
+fallback. The Match panel's "filtering and wrapping" row says which way the
+textures went, and each baked field says why.
+
+## The Texture tab (P9.5)
+
+For an RTX Remix material the tab lists the material's texture nodes, each
+named after the input of the RTX Remix Material node it feeds ("Albedo",
+"Roughness"). Pick one to see its texture as usual; the RTX Remix Input panel
+shows its image, extension, interpolation, the Mapping node in front (offset,
+size) and its strength, and changing them changes the node. Classic
+materials keep their texture slots as in 2.79.
+
+## Preset materials (P9.6)
+
+The RTX Remix Material panel's Preset menu gives a material a ready-made
+surface: Rock, Gravel, Tarmac, Grass, Brick, Tree bark, Water, Skin (light,
+medium or dark), Dirt road / mud, Sand, Snow or Concrete. A material that is
+not RTX Remix yet becomes one. The preset is one group node with a few
+inputs: Scale (repeats per UV unit, one UV unit taken as 1 m), Colour, Wear
+(weathering, chips, dust), Wetness (Tarmac and Dirt road: darker and glossy
+where water would gather) and Seed (shifts the pattern). The game draws the
+preset live; Remix gets it as one seamless tile with colour, roughness,
+height and bumps. Water stands still, in the game and in Remix.
+
 ## Lights and shadows
 
 - One light model for all lamp types, area lamps included. Point and spot
@@ -241,6 +278,20 @@ field. A Classic scene leaves Remix's bloom on and its auto exposure off.
   work in only some renderers carry an "OpenGL only", "Remix only" or "F12
   only" mark. Hidden options keep their values, and Python still reaches
   them.
+
+## The Remix View (P9.7)
+
+The Remix View (P7's Game View) has two modes. Check shows the game layer by
+layer: holograms, warnings and targets. Debug shows RTX Remix's own picture:
+the menu next to the mode buttons picks one of Remix's debug views, and the
+gear beside it sets how values show (display type, value and EV ranges,
+false colour, an overlay over the picture). The figures after it are draws,
+lights, textures waiting and frame time; one turns red past your targets,
+and a click shows every counter. Click an object to see, in the Inspect
+panel, what Remix got for it: its mesh, how many objects share it, each
+material input and where it came from, each texture's cache file. A game
+started from Blender keeps the debug view picked. Hash collisions and calls
+Remix refused show as warnings on the Remix layer, in Check mode.
 
 ## The editors on OpenGL 4.5
 

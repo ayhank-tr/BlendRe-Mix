@@ -63,9 +63,9 @@ def normal(args, out, scenes, E, tests, sheets):
     import run_p2 as p2
     import run_p8 as p8
     import run_p9 as r9
-    names = ["P9.7 Remix View: the rename", "P9.7 Remix View: Check and Debug", "P9.7 Remix View: a debug view",
-             "P9.7 Remix View: inspecting a sphere", "P9.7 Remix View: the statistics line",
-             "P9.7 Remix View: a hash collision"]
+    names = ["T9.13 Remix View: the rename (P9.7)", "T9.14 Remix View: Check and Debug (P9.7)", "T9.15 Remix View: a debug view (P9.7)",
+             "T9.16 Remix View: inspecting a sphere (P9.7)", "T9.17 Remix View: the statistics line (P9.7)",
+             "T9.18 Remix View: a hash collision (P9.7)"]
     V = E.get("remix_view")
     if not V:
         for n in names:
@@ -191,7 +191,7 @@ def normal(args, out, scenes, E, tests, sheets):
 def rtx(args, out, scenes, E, tests, sheets, report_lines):
     import run_p8 as p8
     import run_p9 as r9
-    name = "P9.7 Remix View: each listed debug view draws"
+    name = "S9.18 Remix View: each listed debug view draws (P9.7)"
     V = E.get("remix_view")
     if not V:
         _fail(tests, name, "the P9.7 scene was made", E.get("failed"))

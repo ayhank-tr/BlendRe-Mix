@@ -461,10 +461,17 @@ def run_pipelines(args, out):
     p92_tests(args, out, scenes, E, tests, sheets)
     # P9.3
     p93_tests(args, out, scenes, E, tests, sheets)
+    # P9.4-P9.7
+    import p94_tests
+    import p95_tests
+    import p96_tests
+    import p97_tests
+    for mod in (p94_tests, p95_tests, p96_tests, p97_tests):
+        mod.normal(args, out, scenes, E, tests, sheets)
 
     res = {"tests": tests, "sheets": sheets, "all_ok": all(t["ok"] for t in tests.values())}
-    lines = ["BGE-Remix P9.1-P9.3: Classic and RTX Remix, the RTX Remix Material node, old materials "
-             "(normal run)", "=" * 70, ""]
+    lines = ["BGE-Remix P9: Classic and RTX Remix, the RTX Remix Material node, old materials, textures, presets, "
+             "the Remix View (normal run)", "=" * 70, ""]
     for name, t in tests.items():
         lines.append("%-44s %s" % (name, p2.mark(t["ok"])))
         for check, ok in t["checks"].items():
@@ -1308,9 +1315,14 @@ def run_pipelines_rtx(args, out):
     p92_rtx(args, out, scenes, E, tests, sheets, p92_lines)
     colour_curve_rtx(args, out, S, E, tests, sheets, p92_lines)
     p93_rtx(args, out, scenes, E, tests, sheets, p92_lines)
+    import p94_tests
+    import p96_tests
+    import p97_tests
+    for mod in (p94_tests, p96_tests, p97_tests):
+        mod.rtx(args, out, scenes, E, tests, sheets, p92_lines)
     sheets["room"] = p2.contact_sheet(items, os.path.join(out, "sheet_p9_room.png"))
     res = {"tests": tests, "sheets": sheets, "all_ok": all(t["ok"] for t in tests.values())}
-    lines = ["BGE-Remix P9.1-P9.3 (RTX run: your RTX card, the real RTX Remix runtime)", "=" * 70, ""]
+    lines = ["BGE-Remix P9 (RTX run: your RTX card, the real RTX Remix runtime)", "=" * 70, ""]
     for name, t in tests.items():
         lines.append("%-62s %s" % (name, p2.mark(t["ok"])))
         for check, ok in t["checks"].items():

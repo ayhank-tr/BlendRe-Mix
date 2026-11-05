@@ -44,6 +44,7 @@ import sys
 import bpy
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)  # P9.4-P9.7's scene modules
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "p2"))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "p3"))
 import make_scenes_p2 as p2  # noqa: E402  (probe, lamps, materials)
@@ -856,6 +857,12 @@ def make_convert(folder, E):
                     "kinds": {c[0]: c[1] for c in CONVERT}}
 
 def main():
+    # P9.4-P9.7's scenes (their own modules)
+    global p94_scenes, p95_scenes, p96_scenes, p97_scenes
+    import p94_scenes
+    import p95_scenes
+    import p96_scenes
+    import p97_scenes
     argv = sys.argv[sys.argv.index("--") + 1:]
     folder = argv[0]
     os.makedirs(folder, exist_ok=True)
@@ -864,7 +871,9 @@ def main():
     for name, maker in (("spheres", make_spheres), ("pipelines", make_pipelines),
                         ("remix_spheres", make_remix_spheres), ("remix_build", make_remix_build),
                         ("light_balance", make_light_balance), ("colour_curve", make_colour_curve),
-                        ("convert", make_convert)):
+                        ("convert", make_convert), ("texture_wall", p94_scenes.make),
+                        ("texture_tab", p95_scenes.make), ("presets", p96_scenes.make),
+                        ("remix_view", p97_scenes.make)):
         try:
             maker(folder, E)
         except Exception:

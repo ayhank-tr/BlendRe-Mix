@@ -13,8 +13,8 @@ reported against F12 (Blender Internal draws them all), not gated.
 
 import os
 
-WAY_TEST = "T9.4 Texture settings to Remix"
-GATE_TEST = "S9.4 The texture wall against Remix (the gate)"
+WAY_TEST = "T9.9 Texture settings to Remix (P9.4)"
+GATE_TEST = "S9.15 The texture wall against Remix (P9.4, the gate)"
 TOL_UV = 0.002      # the UVs' range, as the fake runtime logs it (4 decimals)
 TOL_ROUGH = 0.002   # a tile's roughness (its specular hardness), to find its material
 
