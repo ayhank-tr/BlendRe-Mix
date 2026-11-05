@@ -132,6 +132,12 @@ private:
 	void Media();
 	void Data();
 	void Logic();
+	/* BGE-Remix P10.11: each object's bricks grouped by state ("state:GROUP"
+	 * elements), its starting states marked, State actuators as arrows
+	 * between the groups (BL_GameViewLogic.cpp) */
+	void LogicStates();
+	std::map<int, int> m_elementState;            /* brick or group element -> its state (0-29; -1 none) */
+	bool LayoutStates(const std::vector<int> &els, float z0);
 	void Python();
 	void LibLoads(const std::string &src, const char *script, Object *ob, struct ID *id);
 	void Animation();

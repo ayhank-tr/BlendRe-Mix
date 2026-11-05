@@ -1463,6 +1463,9 @@ static void write_sensors(WriteData *wd, ListBase *lb)
 			case SENS_JOYSTICK:
 				writestruct(wd, DATA, bJoystickSensor, 1, sens->data);
 				break;
+			case SENS_TIMER:  /* BGE-Remix P10.12 */
+				writestruct(wd, DATA, bTimerSensor, 1, sens->data);
+				break;
 			default:
 				; /* error: don't know how to write this file */
 		}
@@ -1562,6 +1565,9 @@ static void write_actuators(WriteData *wd, ListBase *lb)
 				break;
 			case ACT_MOUSE:
 				writestruct(wd, DATA, bMouseActuator, 1, act->data);
+				break;
+			case ACT_REMIX:  /* BGE-Remix P10.12 */
+				writestruct(wd, DATA, bRemixActuator, 1, act->data);
 				break;
 			default:
 				; /* error: don't know how to write this file */

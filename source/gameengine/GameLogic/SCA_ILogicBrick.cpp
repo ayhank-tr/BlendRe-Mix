@@ -43,6 +43,8 @@ SCA_ILogicBrick::SCA_ILogicBrick(SCA_IObject* gameobj)
 	m_Execute_Priority(0),
 	m_Execute_Ueber_Priority(0),
 	m_bActive(false),
+	m_firedTick(-1),  /* BGE-Remix P10.10 */
+	m_missing(false),
 	m_eventval(0)
 {
 	m_text = "KX_LogicBrick";

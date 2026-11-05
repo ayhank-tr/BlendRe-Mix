@@ -57,6 +57,9 @@ public:
 	virtual bool IsPositiveTrigger();
 	virtual void Init();
 
+	/* BGE-Remix P10.10: counting its delay (the live brick state's Yellow) */
+	bool IsWaiting() const { return !m_lastResult && m_frameCount <= m_delay; }
+
 
 	/* --------------------------------------------------------------------- */
 	/* Python interface ---------------------------------------------------- */

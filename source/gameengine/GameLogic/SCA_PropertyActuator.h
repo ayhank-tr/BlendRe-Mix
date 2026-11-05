@@ -81,6 +81,9 @@ public:
 	virtual bool 
 	Update();
 
+	/* BGE-Remix P10.10: for the live brick states (KX_LogicBrickState) */
+	bool IsMissingSource() const { return m_type == KX_ACT_PROP_COPY && m_sourceObj == NULL; }
+
 	/* --------------------------------------------------------------------- */
 	/* Python interface ---------------------------------------------------- */
 	/* --------------------------------------------------------------------- */

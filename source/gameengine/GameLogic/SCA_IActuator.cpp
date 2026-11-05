@@ -87,6 +87,7 @@ void SCA_IActuator::ProcessReplica()
 	SCA_ILogicBrick::ProcessReplica();
 	RemoveAllEvents();
 	m_linkedcontrollers.clear();
+	m_firedTick = -1;  /* BGE-Remix P10.10: a new copy has not fired */
 }
 
 

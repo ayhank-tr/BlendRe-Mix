@@ -57,6 +57,9 @@ class KX_TrackToActuator : public SCA_IActuator
 	KX_TrackToActuator(SCA_IObject* gameobj, SCA_IObject *ob, int time,
 	                   bool threedee,int trackflag,int upflag);
 	virtual ~KX_TrackToActuator();
+	/* BGE-Remix P10.10: for the live brick states (KX_LogicBrickState) */
+	SCA_IObject *GetTarget() const { return m_object; }
+
 	virtual CValue* GetReplica() {
 		KX_TrackToActuator* replica = new KX_TrackToActuator(*this);
 		replica->ProcessReplica();

@@ -60,6 +60,7 @@ static EnumPropertyItem sensor_type_items[] = {
 	{SENS_RADAR, "RADAR", 0, "Radar", ""},
 	{SENS_RANDOM, "RANDOM", 0, "Random", ""},
 	{SENS_RAY, "RAY", 0, "Ray", ""},
+	{SENS_TIMER, "TIMER", 0, "Timer", ""},  /* BGE-Remix P10.12 */
 	{0, NULL, 0, NULL, NULL}
 };
 
@@ -101,6 +102,8 @@ static StructRNA *rna_Sensor_refine(struct PointerRNA *ptr)
 			return &RNA_ActuatorSensor;
 		case SENS_DELAY:
 			return &RNA_DelaySensor;
+		case SENS_TIMER:  /* BGE-Remix P10.12 */
+			return &RNA_TimerSensor;
 		default:
 			return &RNA_Sensor;
 	}
@@ -170,6 +173,7 @@ EnumPropertyItem *rna_Sensor_type_itemf(bContext *C, PointerRNA *ptr, PropertyRN
 	RNA_enum_items_add_value(&item, &totitem, sensor_type_items, SENS_RADAR);
 	RNA_enum_items_add_value(&item, &totitem, sensor_type_items, SENS_RANDOM);
 	RNA_enum_items_add_value(&item, &totitem, sensor_type_items, SENS_RAY);
+	RNA_enum_items_add_value(&item, &totitem, sensor_type_items, SENS_TIMER);  /* BGE-Remix P10.12 */
 	RNA_enum_items_add_value(&item, &totitem, sensor_type_items, SENS_TOUCH);
 	
 	RNA_enum_item_end(&item, &totitem);
@@ -628,6 +632,32 @@ static void rna_def_delay_sensor(BlenderRNA *brna)
 	RNA_def_property_update(prop, NC_LOGIC, NULL);
 }
 
+/* BGE-Remix P10.12: the Timer sensor */
+static void rna_def_timer_sensor(BlenderRNA *brna)
+{
+	StructRNA *srna;
+	PropertyRNA *prop;
+
+	srna = RNA_def_struct(brna, "TimerSensor", "Sensor");
+	RNA_def_struct_ui_text(srna, "Timer Sensor",
+	                       "Sensor that fires a number of seconds after its state becomes active, once or repeating "
+	                       "(no timer property needed)");
+	RNA_def_struct_sdna_from(srna, "bTimerSensor", "data");
+
+	prop = RNA_def_property(srna, "seconds", PROP_FLOAT, PROP_NONE);
+	RNA_def_property_range(prop, 0.0f, 100000.0f);
+	RNA_def_property_ui_range(prop, 0.0f, 3600.0f, 10, 3);
+	RNA_def_property_ui_text(prop, "Seconds",
+	                         "Seconds of game time after its state becomes active before it fires (with Repeat: "
+	                         "between firings)");
+	RNA_def_property_update(prop, NC_LOGIC, NULL);
+
+	prop = RNA_def_property(srna, "use_repeat", PROP_BOOLEAN, PROP_NONE);
+	RNA_def_property_boolean_sdna(prop, NULL, "flag", SENS_TIMER_REPEAT);
+	RNA_def_property_ui_text(prop, "Repeat", "Fire again every Seconds, not only once");
+	RNA_def_property_update(prop, NC_LOGIC, NULL);
+}
+
 static void rna_def_collision_sensor(BlenderRNA *brna)
 {
 	StructRNA *srna;
@@ -928,6 +958,7 @@ void RNA_def_sensor(BlenderRNA *brna)
 	rna_def_armature_sensor(brna);
 	rna_def_actuator_sensor(brna);
 	rna_def_delay_sensor(brna);
+	rna_def_timer_sensor(brna);  /* BGE-Remix P10.12 */
 	rna_def_collision_sensor(brna);
 	rna_def_radar_sensor(brna);
 	rna_def_random_sensor(brna);

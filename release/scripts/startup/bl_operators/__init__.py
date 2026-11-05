@@ -33,6 +33,7 @@ _modules = [
     "bge_remix_presets",
     "bge_remix_remaster",
     "bge_remix_atlas",  # BGE-Remix P10.4
+    "bge_remix_logic",  # BGE-Remix P10.11, P10.12
     "clip",
     "console",
     "file",

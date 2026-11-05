@@ -69,6 +69,7 @@
 #include "KX_SCA_DynamicActuator.h"
 #include "KX_SteeringActuator.h"
 #include "KX_MouseActuator.h"
+#include "KX_RemixActuator.h"  /* BGE-Remix P10.12 */
 
 #include "KX_Scene.h"
 #include "KX_KetsjiEngine.h"
@@ -93,6 +94,8 @@
 #include "DNA_scene_types.h"
 #include "DNA_actuator_types.h"
 #include "DNA_packedFile_types.h"
+#include "DNA_text_types.h"
+#include "BLI_fileops.h"
 #include "BL_ActionActuator.h"
 #include "BL_ShapeActionActuator.h"
 #include "BL_ArmatureActuator.h"
@@ -109,6 +112,96 @@
 BLI_INLINE float KX_flt_trunc(const float x)
 {
 	return ( x < 0.0001f && x > -0.0001f ) ? 0.0f : x;
+}
+
+/* BGE-Remix P10.10: a file the game would look for, as the player looks for
+ * it (relative to the game's file, then with "//" in front) */
+static bool game_file_exists(const char *name, const char *maggiename)
+{
+	char path[FILE_MAX];
+	if (!name || !name[0]) {
+		return false;
+	}
+	BLI_strncpy(path, name, sizeof(path));
+	BLI_path_abs(path, maggiename);
+	if (BLI_exists(path)) {
+		return true;
+	}
+	BLI_snprintf(path, sizeof(path), "//%s", name);
+	BLI_path_abs(path, maggiename);
+	return BLI_exists(path) != 0;
+}
+
+/* BGE-Remix P10.10: the actuator's object, target or file is missing (the
+ * live brick state's Red: KX_LogicBrickState). Only marks the brick: the
+ * actuator is made and behaves as before. */
+static bool actuator_missing(const bActuator *bact, const char *maggiename)
+{
+	if (!bact->data) {
+		return false;
+	}
+	switch (bact->type) {
+		case ACT_EDIT_OBJECT:
+		{
+			const bEditObjectActuator *ea = (const bEditObjectActuator *)bact->data;
+			return ((ea->type == ACT_EDOB_ADD_OBJECT || ea->type == ACT_EDOB_TRACK_TO) && !ea->ob) ||
+			       (ea->type == ACT_EDOB_REPLACE_MESH && !ea->me);
+		}
+		case ACT_CAMERA:
+			return ((const bCameraActuator *)bact->data)->ob == NULL;
+		case ACT_PARENT:
+		{
+			const bParentActuator *pa = (const bParentActuator *)bact->data;
+			return pa->type == ACT_PARENT_SET && !pa->ob;
+		}
+		case ACT_PROPERTY:
+		{
+			const bPropertyActuator *pa = (const bPropertyActuator *)bact->data;
+			return pa->type == ACT_PROP_COPY && !pa->ob;
+		}
+		case ACT_ACTION:
+		case ACT_SHAPEACTION:
+			return ((const bActionActuator *)bact->data)->act == NULL;
+		case ACT_STEERING:
+		{
+			const bSteeringActuator *sa = (const bSteeringActuator *)bact->data;
+			return !sa->target || (sa->type == ACT_STEERING_PATHFOLLOWING && !sa->navmesh);
+		}
+		case ACT_SOUND:
+		{
+			const bSoundActuator *sa = (const bSoundActuator *)bact->data;
+			if (!sa->sound) {
+				return true;
+			}
+			if (sa->sound->packedfile) {
+				return false;
+			}
+			char path[FILE_MAX];
+			BLI_strncpy(path, sa->sound->name, sizeof(path));
+			BLI_path_abs(path, sa->sound->id.lib ? sa->sound->id.lib->filepath : maggiename);
+			return !BLI_exists(path);
+		}
+		case ACT_GAME:
+		{
+			const bGameActuator *ga = (const bGameActuator *)bact->data;
+			return (ga->type == ACT_GAME_LOAD || ga->type == ACT_GAME_START) &&
+			       !game_file_exists(ga->filename, maggiename);
+		}
+		case ACT_SCENE:
+		{
+			const bSceneActuator *sa = (const bSceneActuator *)bact->data;
+			return ((sa->type == ACT_SCENE_SET || sa->type == ACT_SCENE_ADD_FRONT || sa->type == ACT_SCENE_ADD_BACK) &&
+			        !sa->scene) ||
+			       (sa->type == ACT_SCENE_CAMERA && !sa->camera);
+		}
+		case ACT_2DFILTER:
+		{
+			const bTwoDFilterActuator *fa = (const bTwoDFilterActuator *)bact->data;
+			return fa->type == ACT_2DFILTER_CUSTOMFILTER && !fa->text;
+		}
+		default:
+			return false;
+	}
 }
 
 void BL_ConvertActuators(const char* maggiename,
@@ -1115,12 +1208,21 @@ void BL_ConvertActuators(const char* maggiename,
 				}
 				break;
 			}
+		case ACT_REMIX:
+			{
+				/* BGE-Remix P10.12: the RTX Remix actuator */
+				const bRemixActuator *ra = (const bRemixActuator *)bact->data;
+				baseact = new KX_RemixActuator(gameobj, ketsjiEngine, ra ? ra->setting : "", ra ? ra->value : "");
+				break;
+			}
 		default:
 			; /* generate some error */
 		}
 		
 		if (baseact && !(bact->flag & ACT_DEACTIVATE))
 		{
+			/* BGE-Remix P10.10: its object, target or file missing */
+			baseact->SetMissing(actuator_missing(bact, maggiename));
 			baseact->SetExecutePriority(executePriority++);
 			uniquename += "#ACT#";
 			uniqueint++;

@@ -5577,6 +5577,14 @@ static void direct_link_object(FileData *fd, Object *ob)
 		sens->data = newdataadr(fd, sens->data);
 		sens->links = newdataadr(fd, sens->links);
 		test_pointer_array(fd, (void **)&sens->links);
+		/* BGE-Remix P10.12: a Timer sensor saved by stock 2.79b lost its data
+		 * (stock does not know the struct): its defaults again, keeping
+		 * its pulse settings */
+		if (sens->type == SENS_TIMER && sens->data == NULL) {
+			const short pulse = sens->pulse;
+			init_sensor(sens);
+			sens->pulse = pulse;
+		}
 	}
 
 	direct_link_constraints(fd, &ob->constraints);
@@ -5600,6 +5608,11 @@ static void direct_link_object(FileData *fd, Object *ob)
 	link_glob_list(fd, &ob->actuators);
 	for (act = ob->actuators.first; act; act = act->next) {
 		act->data = newdataadr(fd, act->data);
+		/* BGE-Remix P10.12: an RTX Remix actuator saved by stock 2.79b lost
+		 * its data (stock does not know the struct): empty again */
+		if (act->type == ACT_REMIX && act->data == NULL) {
+			init_actuator(act);
+		}
 	}
 
 	link_list(fd, &ob->hooks);

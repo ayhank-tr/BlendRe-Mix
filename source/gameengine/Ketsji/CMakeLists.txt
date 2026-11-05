@@ -112,6 +112,8 @@ set(SRC
 	KX_RayCast.cpp
 	KX_LogicBrickState.cpp
 	KX_RemixRenderer.cpp
+	KX_RemixActuator.cpp  # BGE-Remix P10.12
+	KX_LogicBrickLog.cpp  # BGE-Remix P10.10
 	KX_Sprites.cpp
 	KX_RayEventManager.cpp
 	KX_RaySensor.cpp
@@ -194,6 +196,8 @@ set(SRC
 	KX_RayCast.h
 	KX_LogicBrickState.h
 	KX_RemixRenderer.h
+	KX_RemixActuator.h  # BGE-Remix P10.12
+	KX_LogicBrickLog.h  # BGE-Remix P10.10
 	KX_Sprites.h
 	KX_RayEventManager.h
 	KX_RaySensor.h

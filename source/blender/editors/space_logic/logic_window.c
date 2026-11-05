@@ -70,6 +70,9 @@
 
 #include "logic_intern.h"
 
+#include "WM_api.h"  /* BGE-Remix P10.11: WM_operatortype_find */
+#include "WM_types.h"
+
 #define B_REDR		1
 
 #define B_ADD_SENS		2703
@@ -363,6 +366,8 @@ static const char *sensor_name(int type)
 		return N_("Message");
 	case SENS_JOYSTICK:
 		return N_("Joystick");
+	case SENS_TIMER:  /* BGE-Remix P10.12 */
+		return N_("Timer");
 	}
 	return N_("Unknown");
 }
@@ -437,6 +442,8 @@ static const char *actuator_name(int type)
 		return N_("Steering");
 	case ACT_MOUSE:
 		return N_("Mouse");
+	case ACT_REMIX:  /* BGE-Remix P10.12 */
+		return N_("RTX Remix");
 	}
 	return N_("Unknown");
 }
@@ -985,6 +992,39 @@ static void draw_sensor_delay(uiLayout *layout, PointerRNA *ptr)
 	uiItemR(row, ptr, "use_repeat", 0, NULL, ICON_NONE);
 }
 
+/* BGE-Remix P10.11: a small button beside a text field that lists what the
+ * game already uses (a Python operator, bl_operators/bge_remix_logic.py),
+ * for the brick at ptr; the field itself stays, for typing */
+static void draw_pick_button(uiLayout *row, const char *opname, PointerRNA *ptr, bool sensor)
+{
+	Object *ob = (Object *)ptr->id.data;
+	PointerRNA op_ptr;
+	if (!ob || !WM_operatortype_find(opname, true)) {
+		return;
+	}
+	op_ptr = uiItemFullO(row, opname, "", ICON_COLLAPSEMENU, NULL, WM_OP_INVOKE_DEFAULT, UI_ITEM_O_RETURN_PROPS);
+	RNA_string_set(&op_ptr, "object", ob->id.name + 2);
+	RNA_string_set(&op_ptr, "brick", sensor ? ((bSensor *)ptr->data)->name : ((bActuator *)ptr->data)->name);
+	RNA_string_set(&op_ptr, "kind", sensor ? "SENSOR" : "ACTUATOR");
+}
+
+/* BGE-Remix P10.11: a message's subject, typed or picked from the subjects
+ * the game already uses */
+static void draw_subject(uiLayout *layout, PointerRNA *ptr, bool sensor)
+{
+	uiLayout *row = uiLayoutRow(layout, true);
+	uiItemR(row, ptr, "subject", 0, NULL, ICON_NONE);
+	draw_pick_button(row, "LOGIC_OT_bge_remix_subject", ptr, sensor);
+}
+
+/* BGE-Remix P10.12: the Timer sensor */
+static void draw_sensor_timer(uiLayout *layout, PointerRNA *ptr)
+{
+	uiLayout *row = uiLayoutRow(layout, false);
+	uiItemR(row, ptr, "seconds", 0, NULL, ICON_NONE);
+	uiItemR(row, ptr, "use_repeat", 0, NULL, ICON_NONE);
+}
+
 static void draw_sensor_joystick(uiLayout *layout, PointerRNA *ptr)
 {
 	uiLayout *col, *row;
@@ -1057,7 +1097,7 @@ static void draw_sensor_keyboard(uiLayout *layout, PointerRNA *ptr)
 
 static void draw_sensor_message(uiLayout *layout, PointerRNA *ptr)
 {
-	uiItemR(layout, ptr, "subject", 0, NULL, ICON_NONE);
+	draw_subject(layout, ptr, true);  /* BGE-Remix P10.11 */
 }
 
 static void draw_sensor_mouse(uiLayout *layout, PointerRNA *ptr, bContext *C)
@@ -1220,6 +1260,9 @@ static void draw_brick_sensor(uiLayout *layout, PointerRNA *ptr, bContext *C)
 			break;
 		case SENS_RAY:
 			draw_sensor_ray(box, ptr, C);
+			break;
+		case SENS_TIMER:  /* BGE-Remix P10.12 */
+			draw_sensor_timer(box, ptr);
 			break;
 	}
 }
@@ -1712,7 +1755,7 @@ static void draw_actuator_message(uiLayout *layout, PointerRNA *ptr, bContext *C
 	RNA_pointer_create((ID *)ob, &RNA_GameObjectSettings, ob, &settings_ptr);
 
 	uiItemPointerR(layout, ptr, "to_property", &main_ptr, "objects", NULL, ICON_OBJECT_DATA);
-	uiItemR(layout, ptr, "subject", 0, NULL, ICON_NONE);
+	draw_subject(layout, ptr, false);  /* BGE-Remix P10.11 */
 
 	row = uiLayoutRow(layout, true);
 	uiItemR(row, ptr, "body_type", 0, NULL, ICON_NONE);
@@ -1721,6 +1764,16 @@ static void draw_actuator_message(uiLayout *layout, PointerRNA *ptr, bContext *C
 		uiItemR(row, ptr, "body_message", 0, "", ICON_NONE);
 	else // mode == ACT_MESG_PROP
 		uiItemPointerR(row, ptr, "body_property", &settings_ptr, "properties", "", ICON_NONE);
+}
+
+/* BGE-Remix P10.12: the RTX Remix actuator: a setting from Remix's list (or
+ * typed) and its value */
+static void draw_actuator_remix(uiLayout *layout, PointerRNA *ptr)
+{
+	uiLayout *row = uiLayoutRow(layout, true);
+	uiItemR(row, ptr, "setting", 0, NULL, ICON_NONE);
+	draw_pick_button(row, "LOGIC_OT_bge_remix_setting", ptr, false);
+	uiItemR(layout, ptr, "value", 0, NULL, ICON_NONE);
 }
 
 static void draw_actuator_motion(uiLayout *layout, PointerRNA *ptr)
@@ -2249,6 +2302,9 @@ static void draw_brick_actuator(uiLayout *layout, PointerRNA *ptr, bContext *C)
 			break;
 		case ACT_MOUSE:
 			draw_actuator_mouse(box, ptr);
+			break;
+		case ACT_REMIX:  /* BGE-Remix P10.12 */
+			draw_actuator_remix(box, ptr);
 			break;
 	}
 }

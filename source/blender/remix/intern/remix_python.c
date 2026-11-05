@@ -610,6 +610,28 @@ static PyObject *brmx_atlas_pack(PyObject *UNUSED_self, PyObject *args)
 	return out;
 }
 
+PyDoc_STRVAR(brmx_settings_doc,
+".. function:: settings()\n"
+"\n"
+"   BGE-Remix P10.12: the RTX Remix settings the RTX Remix actuator lists\n"
+"   (the Render tab's curated ones and the quality ones), as (key, kind,\n"
+"   default) with kind 'BOOL', 'INT' or 'FLOAT'.\n");
+static PyObject *brmx_settings(PyObject *UNUSED_self)
+{
+	PyObject *list = PyList_New(0);
+	const char *key, *def;
+	char kind;
+	int i;
+	for (i = 0; BRMX_setting_get(i, &key, &kind, &def); i++) {
+		PyObject *item = Py_BuildValue("(sss)", key, kind == 'b' ? "BOOL" : (kind == 'i' ? "INT" : "FLOAT"), def);
+		if (item) {
+			PyList_Append(list, item);
+			Py_DECREF(item);
+		}
+	}
+	return list;
+}
+
 static PyMethodDef brmx_methods[] = {
 	{"bridge_info", (PyCFunction)brmx_bridge_info, METH_NOARGS, brmx_bridge_info_doc},
 	{"status", (PyCFunction)brmx_status, METH_NOARGS, brmx_status_doc},
@@ -636,6 +658,7 @@ static PyMethodDef brmx_methods[] = {
 	{"atlas_bake", (PyCFunction)brmx_atlas_bake, METH_VARARGS, brmx_atlas_bake_doc},
 	{"atlas_preview", (PyCFunction)brmx_atlas_preview, METH_NOARGS, brmx_atlas_preview_doc},
 	{"atlas_pack", (PyCFunction)brmx_atlas_pack, METH_VARARGS, brmx_atlas_pack_doc},
+	{"settings", (PyCFunction)brmx_settings, METH_NOARGS, brmx_settings_doc},  /* BGE-Remix P10.12 */
 	{NULL, NULL, 0, NULL}
 };
 

@@ -41,6 +41,8 @@
 
 
 SCA_LogicManager::SCA_LogicManager()
+	: m_tick(0),  /* BGE-Remix P10.10 */
+	  m_tickTime(0.0)
 {
 }
 
@@ -186,6 +188,11 @@ void SCA_LogicManager::RegisterToActuator(SCA_IController* controller,SCA_IActua
 
 void SCA_LogicManager::BeginFrame(double curtime, double fixedtime)
 {
+	/* BGE-Remix P10.10: count the ticks (the live brick states; P10.12's Timer
+	 * sensor counts the tick's time as a timer property does) */
+	m_tick++;
+	m_tickTime = fixedtime;
+
 	for (vector<SCA_EventManager*>::const_iterator ie=m_eventmanagers.begin(); !(ie==m_eventmanagers.end()); ie++)
 		(*ie)->NextFrame(curtime, fixedtime);
 
@@ -197,6 +204,7 @@ void SCA_LogicManager::BeginFrame(double curtime, double fixedtime)
 			contr != NULL;
 			contr = (SCA_IController*)obj->QRemove())
 		{
+			contr->SetFiredTick(m_tick);  /* BGE-Remix P10.10 */
 			contr->Trigger(this);
 			contr->ClrJustActivated();
 		}

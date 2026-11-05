@@ -63,6 +63,7 @@
 #include "KX_SCA_ReplaceMeshActuator.h"
 #include "KX_SceneActuator.h"
 #include "KX_StateActuator.h"
+#include "KX_RemixActuator.h"  /* BGE-Remix P10.12 */
 #include "KX_SteeringActuator.h"
 #include "KX_TrackToActuator.h"
 #include "KX_VehicleWrapper.h"
@@ -72,6 +73,7 @@
 #include "SCA_ActuatorSensor.h"
 #include "SCA_AlwaysSensor.h"
 #include "SCA_DelaySensor.h"
+#include "SCA_TimerSensor.h"  /* BGE-Remix P10.12 */
 #include "SCA_JoystickSensor.h"
 #include "SCA_KeyboardSensor.h"
 #include "SCA_MouseSensor.h"
@@ -236,6 +238,7 @@ PyMODINIT_FUNC initGameTypesPythonBinding(void)
 		PyType_Ready_Attr(dict, KX_SceneActuator, init_getset);
 		PyType_Ready_Attr(dict, KX_SoundActuator, init_getset);
 		PyType_Ready_Attr(dict, KX_StateActuator, init_getset);
+		PyType_Ready_Attr(dict, KX_RemixActuator, init_getset);  /* BGE-Remix P10.12 */
 		PyType_Ready_Attr(dict, KX_SteeringActuator, init_getset);
 		PyType_Ready_Attr(dict, KX_TouchSensor, init_getset);
 		PyType_Ready_Attr(dict, KX_TrackToActuator, init_getset);
@@ -250,6 +253,7 @@ PyMODINIT_FUNC initGameTypesPythonBinding(void)
 		PyType_Ready_Attr(dict, SCA_ActuatorSensor, init_getset);
 		PyType_Ready_Attr(dict, SCA_AlwaysSensor, init_getset);
 		PyType_Ready_Attr(dict, SCA_DelaySensor, init_getset);
+		PyType_Ready_Attr(dict, SCA_TimerSensor, init_getset);  /* BGE-Remix P10.12 */
 		PyType_Ready_Attr(dict, SCA_ILogicBrick, init_getset);
 		PyType_Ready_Attr(dict, SCA_IObject, init_getset);
 		PyType_Ready_Attr(dict, SCA_ISensor, init_getset);
