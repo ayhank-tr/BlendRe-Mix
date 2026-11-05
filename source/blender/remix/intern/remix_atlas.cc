@@ -19,6 +19,7 @@
  *
  * The material's settings (written by bge_remix.atlas):
  *   bge_remix_atlas          1 tiles, 2 flipbook, 3 packed (0 or none: off)
+ *   bge_remix_atlas_size     a cell's side in pixels (else the Bake Size)
  *   bge_remix_atlas_colours  tiles: 2 (16 tiles) or 3 (81)
  *   bge_remix_atlas_seed     tiles: the corner colours' hash
  *   bge_remix_atlas_regular  tiles: 1 for a regular pattern (bricks): the
@@ -406,7 +407,12 @@ bool atlas_bake(Scene *scene, Material *ma, const std::string &name, BakeResult 
 	bNodeSocketValueFloat *scale = preset_input(ma, "Scale", linked);
 	const float s_scale = (scale && !linked) ? std::max(scale->value, 0.01f) : 1.0f;
 	const unsigned slots = bake_slots(ma);
-	const int size = bake_size(ma);
+	/* a cell's size: the material's bge_remix_atlas_size, else its Bake Size
+	 * (BGE_REMIX_BAKE_SIZE, the tests', over both) */
+	int size = prop_int(&ma->id, "bge_remix_atlas_size", 0);
+	if (size < 16 || size > 8192 || getenv("BGE_REMIX_BAKE_SIZE")) {
+		size = bake_size(ma);
+	}
 	std::shared_ptr<AtlasLayout> L(new AtlasLayout());
 	const bool regular = prop_int(&ma->id, "bge_remix_atlas_regular", 0) != 0;
 	const float drift = prop_float(&ma->id, "bge_remix_atlas_drift", 0.05f);
@@ -565,12 +571,12 @@ bool atlas_bake(Scene *scene, Material *ma, const std::string &name, BakeResult 
 			r.error = "its parts did not fit together (sizes)";
 			return false;
 		}
-		dump_atlas(*out, *L);
 		std::vector<unsigned char> levels;
 		int count = 1;
 		atlas_mips(*L, slot_kind(s), out->rgba.data(), out->width, out->height, levels, count);
 		out->rgba.swap(levels);
 		out->levels = count;
+		dump_atlas(*out, *L); /* (its top level) */
 		r.images[s] = out;
 	}
 	r.has_alpha = parts[0].has_alpha;

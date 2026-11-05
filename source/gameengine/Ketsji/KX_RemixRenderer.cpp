@@ -1263,8 +1263,22 @@ typedef std::map<std::pair<const void *, std::pair<unsigned int, std::pair<unsig
 static void face_picks(RAS_MeshObject *mesh, FacePicks &r)
 {
 	r.clear();
-	std::vector<int> picks;
-	brmx::atlas_face_picks(mesh->GetMesh(), picks);
+	Mesh *me = mesh->GetMesh();
+	const int *layer = me ? (const int *)CustomData_get_layer_named(&me->pdata, CD_PROP_INT, "bge_remix_cell") : NULL;
+	if (!layer) {
+		return;
+	}
+	/* (kept while the picks are the same: a deformer collects its mesh every
+	 * frame) */
+	static std::map<const Mesh *, std::pair<uint64_t, std::vector<int> > > cache;
+	const uint64_t key = hash_bytes(layer, sizeof(int) * (size_t)std::max(me->totpoly, 0),
+	                                hash_bytes(&me->totpoly, sizeof(me->totpoly), 1469598103934665603ull));
+	std::pair<uint64_t, std::vector<int> > &entry = cache[me];
+	if (entry.first != key || entry.second.empty()) {
+		entry.first = key;
+		brmx::atlas_face_picks(me, entry.second);
+	}
+	const std::vector<int> &picks = entry.second;
 	const int n = std::min((int)picks.size(), mesh->NumPolygons());
 	for (int p = 0; p < n; p++) {
 		RAS_Polygon *poly = mesh->GetPolygon(p);

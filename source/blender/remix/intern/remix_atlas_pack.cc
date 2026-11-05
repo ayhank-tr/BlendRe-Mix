@@ -14,7 +14,9 @@
  *
  * BGE-Remix P10.4: small images packed into pages with xatlas (MIT,
  * extern/xatlas): each image a rectangle at its own size (no scaling, no
- * turning), `padding` pixels apart, on pages of `page` x `page` pixels.
+ * turning), each with `padding` pixels round it for its gap (so two
+ * padding apart, and padding from the page's edges), on pages of `page` x
+ * `page` pixels.
  * Used by bge_remix.atlas.pack_images through _bge_remix.atlas_pack. The
  * result is checked (inside the page, apart from the others); where xatlas
  * gives something else, a plain shelf packing is used instead.
@@ -34,7 +36,7 @@ struct Place {
 	int page, x, y;
 };
 
-/* every rectangle on its page, inside it, padding apart from the others */
+/* every rectangle on its page, its gap inside it, apart from the others' gaps */
 bool valid(const int *sizes, int count, int page, int padding, const std::vector<Place> &p)
 {
 	for (int i = 0; i < count; i++) {
@@ -49,8 +51,9 @@ bool valid(const int *sizes, int count, int page, int padding, const std::vector
 				continue;
 			}
 			const int wj = sizes[j * 2], hj = sizes[j * 2 + 1];
-			const bool apart = p[i].x >= p[j].x + wj + padding || p[j].x >= p[i].x + w + padding ||
-			                   p[i].y >= p[j].y + hj + padding || p[j].y >= p[i].y + h + padding;
+			const int gap = 2 * padding;
+			const bool apart = p[i].x >= p[j].x + wj + gap || p[j].x >= p[i].x + w + gap ||
+			                   p[i].y >= p[j].y + hj + gap || p[j].y >= p[i].y + h + gap;
 			if (!apart) {
 				return false;
 			}
@@ -73,7 +76,7 @@ void shelves(const int *sizes, int count, int page, int padding, std::vector<Pla
 		const int i = order[k], w = sizes[i * 2], h = sizes[i * 2 + 1];
 		if (x + w + padding > page) {
 			x = padding;
-			y += row + padding;
+			y += row + 2 * padding;
 			row = 0;
 		}
 		if (y + h + padding > page) {
@@ -84,7 +87,7 @@ void shelves(const int *sizes, int count, int page, int padding, std::vector<Pla
 		p[i].page = pg;
 		p[i].x = x;
 		p[i].y = y;
-		x += w + padding;
+		x += w + 2 * padding;
 		row = std::max(row, h);
 	}
 }

@@ -67,6 +67,7 @@ _modules = [
     "space_filebrowser",
     "space_graph",
     "space_image",
+    "space_image_remix_atlas",  # BGE-Remix P10.4
     "space_info",
     "space_logic",
     "space_nla",
