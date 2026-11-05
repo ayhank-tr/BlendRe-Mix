@@ -110,6 +110,7 @@ set(SRC
 	KX_PythonMain.cpp
 	KX_RadarSensor.cpp
 	KX_RayCast.cpp
+	KX_LogicBrickState.cpp
 	KX_RemixRenderer.cpp
 	KX_Sprites.cpp
 	KX_RayEventManager.cpp
@@ -191,6 +192,7 @@ set(SRC
 	KX_PythonMain.h
 	KX_RadarSensor.h
 	KX_RayCast.h
+	KX_LogicBrickState.h
 	KX_RemixRenderer.h
 	KX_Sprites.h
 	KX_RayEventManager.h
