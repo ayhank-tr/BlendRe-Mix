@@ -1373,7 +1373,8 @@ unsigned node_bake_slots(const Material *ma, bool *r_alpha)
 	};
 	static const In ins[] = {{SH_REMIX_IN_ALBEDO, BAKE_ALBEDO}, {SH_REMIX_IN_ROUGHNESS, BAKE_ROUGHNESS},
 	                         {SH_REMIX_IN_METALLIC, BAKE_METALLIC}, {SH_REMIX_IN_NORMAL, BAKE_NORMAL},
-	                         {SH_REMIX_IN_EMISSIVE, BAKE_EMISSIVE}, {SH_REMIX_IN_EMISSIVE_INTENSITY, BAKE_EMISSIVE}};
+	                         {SH_REMIX_IN_EMISSIVE, BAKE_EMISSIVE}, {SH_REMIX_IN_EMISSIVE_INTENSITY, BAKE_EMISSIVE},
+	                         {SH_REMIX_IN_HEIGHT, BAKE_HEIGHT}};
 	for (size_t i = 0; i < sizeof(ins) / sizeof(ins[0]); i++) {
 		const bNodeLink *link = BKE_remix_node_link(tree, node, ins[i].input);
 		if (link && !remix_direct_image(tree, link, NULL, NULL)) {
@@ -1382,6 +1383,12 @@ unsigned node_bake_slots(const Material *ma, bool *r_alpha)
 	}
 	/* P9.4: images straight whose settings disagree: baked */
 	slots |= remix_node_disagreeing_slots(ma);
+	/* P9.6: a height wired in and no normal: the game bumps the surface by
+	 * the height (remix_height_bump), and Remix gets that bump as a normal
+	 * map */
+	if (BKE_remix_node_link(tree, node, SH_REMIX_IN_HEIGHT) && !BKE_remix_node_link(tree, node, SH_REMIX_IN_NORMAL)) {
+		slots |= 1u << BAKE_NORMAL;
+	}
 	/* the opacity: the albedo image's alpha (its texture node's Value), or
 	 * baked into the albedo's alpha */
 	const bNodeLink *op = BKE_remix_node_link(tree, node, SH_REMIX_IN_OPACITY);
@@ -1548,7 +1555,7 @@ bool from_remix_node(const Material *ma, MaterialSpec &s)
 		}
 		const bool bakeable = in.input == SH_REMIX_IN_ALBEDO || in.input == SH_REMIX_IN_ROUGHNESS ||
 		                      in.input == SH_REMIX_IN_METALLIC || in.input == SH_REMIX_IN_NORMAL ||
-		                      in.input == SH_REMIX_IN_EMISSIVE;
+		                      in.input == SH_REMIX_IN_EMISSIVE || in.input == SH_REMIX_IN_HEIGHT;
 		if (!bakeable) {
 			note(s, what + ": only an image texture read by UV reaches Remix here; its own value is sent");
 			mark(s, in.field, MATCH_NONE, what + ": not an image texture read by UV");

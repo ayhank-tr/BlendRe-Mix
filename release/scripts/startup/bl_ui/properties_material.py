@@ -1288,6 +1288,10 @@ class MATERIAL_PT_remix_node(MaterialButtonsPanel, Panel):
         mat = context.material
         node = remix_node(mat)
         ntree = mat.node_tree
+        # P9.6: a preset (a group of procedural textures feeding the node)
+        from bl_operators.bge_remix_presets import PRESETS
+        p = PRESETS.get(mat.get("bge_remix_preset", ""))
+        layout.menu("MATERIAL_MT_bge_remix_presets", text="Preset: " + (p["label"] if p else "None"))
         # the node's options, then each input and what feeds it
         col = layout.column()
         col.prop(node, "remix_type")

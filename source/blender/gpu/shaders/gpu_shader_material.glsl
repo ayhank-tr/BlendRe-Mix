@@ -4975,6 +4975,26 @@ void shade_skylight(vec4 col_in, vec3 diffcol, float refl, vec3 vn, vec3 horicol
 	col_out.rgb += refl * diffcol * sky;
 }
 
+/* BGE-Remix P9.6: the RTX Remix Material node's height as a bump (its normal
+ * not wired): the surface gradient of the height, depth metres deep, from
+ * its screen-space derivatives (Mikkelsen's bump mapping); vn as the
+ * shading inputs hold it (the true normal negated), co the view position */
+void remix_height_bump(vec3 vn, vec3 co, float height, float depth, out vec3 outnormal)
+{
+	vec3 N = -normalize(vn);
+	vec3 dpdx = dFdx(co);
+	vec3 dpdy = dFdy(co);
+	float h = height * depth;
+	float dhdx = dFdx(h);
+	float dhdy = dFdy(h);
+	vec3 r1 = cross(dpdy, N);
+	vec3 r2 = cross(N, dpdx);
+	float det = dot(dpdx, r1);
+	vec3 grad = sign(det) * (dhdx * r1 + dhdy * r2);
+	vec3 nb = abs(det) * N - grad;
+	outnormal = (dot(nb, nb) > 0.0) ? -normalize(nb) : vn;
+}
+
 /* BGE-Remix P9.2: the RTX Remix Material node's normal map (tangent space, as
  * a texture slot's: green up, or down for DirectX maps) */
 void remix_normal_map(vec4 tangent, vec3 vn, vec4 color, float directx, out vec3 outnormal)

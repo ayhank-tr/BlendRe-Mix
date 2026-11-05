@@ -286,6 +286,7 @@ typedef enum GPUBakeChannel {
 	GPU_BAKE_EMIT = 3,      /* emit / scale */
 	GPU_BAKE_NORMAL = 4,    /* the bumped normal in tangent space, 0..1 */
 	GPU_BAKE_METALLIC = 5,  /* a physical material's metallic value */
+	GPU_BAKE_HEIGHT = 6,    /* BGE-Remix P9.6: the RTX Remix node's height, 0..1 */
 } GPUBakeChannel;
 GPUMaterial *GPU_material_bake_create(struct Scene *scene, struct Material *ma, int channel, float scale);
 /* BGE-Remix P8.24: the channel a bake material draws (GPUBakeChannel), -1:
@@ -341,6 +342,8 @@ typedef struct GPUShadeInput {
 	 * textures) */
 	GPUNodeLink *emission;
 	bool no_slots;
+	/* BGE-Remix P9.6: the RTX Remix node's height (NULL: nothing wired) */
+	GPUNodeLink *height;
 } GPUShadeInput;
 
 typedef struct GPUShadeResult {
@@ -357,6 +360,11 @@ void GPU_shaderesult_set(GPUShadeInput *shi, GPUShadeResult *shr);
 typedef struct GPURemixLinks {
 	GPUNodeLink *albedo, *opacity, *roughness, *metallic, *normal, *emission, *emission_intensity;
 	bool normal_directx;
+	/* BGE-Remix P9.6: the height (NULL: nothing wired) and how deep it goes
+	 * (the node's Displace In, in metres): with no normal wired, the game
+	 * bumps the surface by it, and a bake's normal is that bump */
+	GPUNodeLink *height;
+	float displace;
 } GPURemixLinks;
 void GPU_shade_remix_node(GPUMaterial *mat, const GPURemixLinks *links, const struct bNode *node,
                           GPUNodeLink **r_color, GPUNodeLink **r_alpha);

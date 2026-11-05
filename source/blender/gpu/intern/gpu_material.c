@@ -3116,6 +3116,14 @@ void GPU_shade_remix_node(GPUMaterial *mat, const GPURemixLinks *links, const bN
 		GPU_link(mat, "remix_normal_map", GPU_attribute(CD_TANGENT, ""), shi.vn, links->normal,
 		         GPU_uniform(&directx), &shi.vn);
 	}
+	else if (links->height) {
+		/* BGE-Remix P9.6: no normal wired: the height bumps the surface, by
+		 * its depth (Displace In), as Remix displaces it */
+		float depth = links->displace;
+		GPU_link(mat, "remix_height_bump", shi.vn, GPU_builtin(GPU_VIEW_POSITION), links->height,
+		         GPU_uniform(&depth), &shi.vn);
+	}
+	shi.height = links->height;
 	if (mat->bake_channel > 0) {
 		/* a bake for Remix reads the inputs (GPU_material_bake_create) */
 		mat->bake_shi = shi;
@@ -4359,6 +4367,16 @@ static void gpu_material_bake_out(GPUMaterial *mat, GPUShadeInput *shi_in, int c
 		case GPU_BAKE_NORMAL:
 			GPU_link(mat, "bake_out_normal", shi.vn, GPU_builtin(GPU_VIEW_NORMAL),
 			         GPU_attribute(CD_TANGENT, ""), uv, &out);
+			break;
+		case GPU_BAKE_HEIGHT:
+			/* BGE-Remix P9.6: the RTX Remix node's height (else flat) */
+			if (shi.height) {
+				GPU_link(mat, "bake_out_value", shi.height, GPU_uniform(&one), uv, &out);
+			}
+			else {
+				GPU_link(mat, "set_value_zero", &value);
+				GPU_link(mat, "bake_out_value", value, GPU_uniform(&one), uv, &out);
+			}
 			break;
 		default:
 			GPU_link(mat, "set_value", GPU_uniform(&one), &value);

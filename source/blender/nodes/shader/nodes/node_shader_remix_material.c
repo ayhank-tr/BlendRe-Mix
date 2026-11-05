@@ -206,6 +206,12 @@ static int gpu_shader_remix_material(GPUMaterial *mat, bNode *node, bNodeExecDat
 	/* the normal only when something is wired in (else the surface's) */
 	links.normal = (nor && nor->link && in[SH_REMIX_IN_NORMAL].link) ? in[SH_REMIX_IN_NORMAL].link : NULL;
 	links.normal_directx = (node->custom1 & SH_NODE_REMIX_NORMAL_DIRECTX) != 0;
+	/* P9.6: the height only when something is wired in */
+	{
+		bNodeSocket *hs = BLI_findlink(&node->inputs, SH_REMIX_IN_HEIGHT);
+		links.height = (hs && hs->link && in[SH_REMIX_IN_HEIGHT].link) ? in[SH_REMIX_IN_HEIGHT].link : NULL;
+		links.displace = in[SH_REMIX_IN_DISPLACE_IN].vec[0];
+	}
 
 	GPU_shade_remix_node(mat, &links, node, &out[0].link, &out[1].link);
 	return true;
