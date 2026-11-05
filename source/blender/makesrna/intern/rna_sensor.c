@@ -644,7 +644,7 @@ static void rna_def_timer_sensor(BlenderRNA *brna)
 	                       "(no timer property needed)");
 	RNA_def_struct_sdna_from(srna, "bTimerSensor", "data");
 
-	prop = RNA_def_property(srna, "seconds", PROP_FLOAT, PROP_TIME);
+	prop = RNA_def_property(srna, "seconds", PROP_FLOAT, PROP_NONE);
 	RNA_def_property_range(prop, 0.0f, 100000.0f);
 	RNA_def_property_ui_range(prop, 0.0f, 3600.0f, 10, 3);
 	RNA_def_property_ui_text(prop, "Seconds",
