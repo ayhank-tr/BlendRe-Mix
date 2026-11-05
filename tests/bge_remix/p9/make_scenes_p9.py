@@ -738,6 +738,123 @@ def make_colour_curve(folder, E):
     files = [save_copy(folder, "p9_cc", remix=0, tone=1), save_copy(folder, "p9_cc_remix", remix=1, tone=1)]
     E["colour_curve"] = {"files": files, "rects": rects, "order": list(rects), "spheres": spheres}
 
+
+# P9.3: old materials converted when a file opens. A sphere per kind the
+# converter handles (and a Classic one, which stays): (label, old kind)
+CONVERT = [
+    ("physical", 'PHYSICAL'), ("physical_image", 'PHYSICAL'), ("physical_block", 'PHYSICAL'),
+    ("classic_block", 'BLOCK'), ("bi_nodes", 'BI_NODES'), ("cy_principled", 'CYCLES'),
+    ("cy_glass", 'CYCLES'), ("cy_emission", 'CYCLES'), ("cy_subsurface", 'CYCLES'),
+    ("cy_see_through", 'CYCLES'), ("cy_two_surfaces", 'CYCLES'), ("classic", None),
+]
+
+
+def cycles_tree(ma):
+    """ma with an empty Cycles tree: its Material Output node"""
+    ma.use_nodes = True
+    nt = ma.node_tree
+    for n in list(nt.nodes):
+        nt.nodes.remove(n)
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    out.location = (300, 0)
+    return nt, out
+
+
+def cycles_shader(nt, idname, location=(0, 0), **inputs):
+    n = nt.nodes.new(idname)
+    n.location = location
+    for k, v in inputs.items():
+        n.inputs[k].default_value = v
+    return n
+
+
+def make_convert(folder, E):
+    """p9_convert(_remix): twelve spheres, a material of each old kind on
+    each (Physical, with an image, with its RTX Remix block in use; Classic
+    with a block in use; a Blender Internal node material; Cycles Principled
+    with an image, Glass, Emission, Subsurface, a see-through Mix and a Mix
+    of two surfaces; a plain Classic one), under one sun, ACES"""
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    scene = base("P9Convert")
+    back = bpy.data.materials.new("CV_backdrop")
+    back.diffuse_color = (0.35, 0.35, 0.35)
+    wall = p2.plane(scene, "CV_backdrop", 30.0, (0.0, 3.0, 0.0), (math.radians(90.0), 0.0, 0.0), back)
+    wall.game.physics_type = 'NO_COLLISION'
+    checker = p3.image("CV_checker", p3.checker, size=128)
+    rects, mats = {}, {}
+    for i, (label, _kind) in enumerate(CONVERT):
+        name = "CV_" + label
+        if label == "physical":
+            ma = physical(name, (0.7, 0.3, 0.2), 0.0, 0.4)
+        elif label == "physical_image":
+            ma = physical(name, (1.0, 1.0, 1.0), 0.0, 0.5)
+            slot_image(ma, checker, color=True)
+        elif label == "physical_block":
+            ma = physical(name, (0.4, 0.4, 0.4), 0.0, 0.5)
+            ma.bge_remix.use = True
+            ma.bge_remix.albedo.use = True
+            ma.bge_remix.albedo.color = (0.2, 0.5, 0.8)
+            ma.bge_remix.roughness.use = True
+            ma.bge_remix.roughness.value = 0.2
+        elif label == "classic_block":
+            ma = classic_material(name, (0.6, 0.6, 0.6))
+            ma.bge_remix.use = True
+            ma.bge_remix.albedo.use = True
+            ma.bge_remix.albedo.color = (0.8, 0.6, 0.2)
+        elif label == "bi_nodes":
+            inner = classic_material("CV_bi_inner", (0.3, 0.7, 0.3))
+            ma = classic_material(name, (0.8, 0.8, 0.8))
+            ma.use_nodes = True
+            mnode = next(n for n in ma.node_tree.nodes if n.bl_idname == "ShaderNodeMaterial")
+            mnode.material = inner
+        elif label == "classic":
+            ma = classic_material(name, (0.5, 0.5, 0.5))
+        else:
+            ma = bpy.data.materials.new(name)
+            nt, out = cycles_tree(ma)
+            if label == "cy_principled":
+                sh = cycles_shader(nt, "ShaderNodeBsdfPrincipled", Roughness=0.3)
+                img = nt.nodes.new("ShaderNodeTexImage")
+                img.image = checker
+                img.location = (-300, 0)
+                nt.links.new(img.outputs["Color"], sh.inputs["Base Color"])
+            elif label == "cy_glass":
+                sh = cycles_shader(nt, "ShaderNodeBsdfGlass", Color=(0.9, 1.0, 0.9, 1.0), IOR=1.5)
+            elif label == "cy_emission":
+                sh = cycles_shader(nt, "ShaderNodeEmission", Color=(1.0, 0.5, 0.1, 1.0), Strength=2.0)
+            elif label == "cy_subsurface":
+                sh = cycles_shader(nt, "ShaderNodeSubsurfaceScattering", Color=(0.8, 0.5, 0.4, 1.0))
+            elif label == "cy_see_through":
+                sh = cycles_shader(nt, "ShaderNodeMixShader", Fac=0.5)
+                tr = cycles_shader(nt, "ShaderNodeBsdfTransparent", (-300, 100))
+                di = cycles_shader(nt, "ShaderNodeBsdfDiffuse", (-300, -100), Color=(0.2, 0.4, 0.8, 1.0))
+                nt.links.new(tr.outputs[0], sh.inputs[1])
+                nt.links.new(di.outputs[0], sh.inputs[2])
+            else:  # cy_two_surfaces: the stronger (factor 0.3: the first)
+                sh = cycles_shader(nt, "ShaderNodeMixShader", Fac=0.3)
+                di = cycles_shader(nt, "ShaderNodeBsdfDiffuse", (-300, 100), Color=(0.8, 0.2, 0.2, 1.0))
+                gl = cycles_shader(nt, "ShaderNodeBsdfGlossy", (-300, -100), Color=(0.9, 0.9, 0.9, 1.0))
+                nt.links.new(di.outputs[0], sh.inputs[1])
+                nt.links.new(gl.outputs[0], sh.inputs[2])
+            nt.links.new(sh.outputs[0], out.inputs["Surface"])
+        row, k = divmod(i, 6)
+        x, z = (k - 2.5) * 1.8, (1.2 if row == 0 else -1.0)
+        ob = p3.sphere(scene, "CV_" + label, (x, 0.0, z), ma, radius=RADIUS)
+        ob.game.physics_type = 'NO_COLLISION'
+        rects[label] = layout_rect(x, z, RADIUS * 0.7)
+        mats[label] = ma.name
+    sun = p2.lamp(scene, "Sun", 'SUN', (0.0, -10.0, 6.0), (math.radians(50.0), 0.0, math.radians(-30.0)),
+                  energy=1.0)
+    sun.data.shadow_method = 'RAY_SHADOW'
+    logic(scene, "P9Study", STUDY_SCRIPT)
+    p2.add_probe(scene)
+    for sc in bpy.data.scenes:
+        sc["bge_remix_pipeline"] = 1
+    scene.update()
+    files = [save_copy(folder, "p9_convert", remix=0, tone=1), save_copy(folder, "p9_convert_remix", remix=1, tone=1)]
+    E["convert"] = {"files": files, "rects": rects, "materials": mats, "order": [c[0] for c in CONVERT],
+                    "kinds": {c[0]: c[1] for c in CONVERT}}
+
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:]
     folder = argv[0]
@@ -746,7 +863,8 @@ def main():
     import traceback
     for name, maker in (("spheres", make_spheres), ("pipelines", make_pipelines),
                         ("remix_spheres", make_remix_spheres), ("remix_build", make_remix_build),
-                        ("light_balance", make_light_balance), ("colour_curve", make_colour_curve)):
+                        ("light_balance", make_light_balance), ("colour_curve", make_colour_curve),
+                        ("convert", make_convert)):
         try:
             maker(folder, E)
         except Exception:

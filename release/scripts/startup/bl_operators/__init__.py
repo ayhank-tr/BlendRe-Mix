@@ -29,6 +29,7 @@ _modules = [
     "anim",
     "bge_remix",
     "bge_remix_material",
+    "bge_remix_convert",
     "clip",
     "console",
     "file",

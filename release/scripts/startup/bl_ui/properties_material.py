@@ -1519,6 +1519,15 @@ class MATERIAL_PT_remix_fields(RemixMaterialPanel, Panel):
     and an image and the image's settings"""
     bl_label = "RTX Remix Fields"
 
+    @classmethod
+    def poll(cls, context):
+        # BGE-Remix P9.3: only where the block is in use (a material that used
+        # it was converted to RTX Remix, its node's inputs set from it; the
+        # block still applies in Remix and stays here to see and to turn off)
+        ma = context.material
+        return (ma is not None and context.scene.render.engine in cls.COMPAT_ENGINES and
+                bool(ma.get("bge_remix")) and ma.bge_remix.use)
+
     def draw_header(self, context):
         self.layout.prop(context.material.bge_remix, "use", text="")
 

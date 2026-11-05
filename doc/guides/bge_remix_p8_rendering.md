@@ -128,6 +128,33 @@ Material tab, under the material's name: **Classic** or **RTX Remix**.
 - Stock 2.79 does not know the node: it draws the Output node's own colour
   and alpha, kept at the node's albedo and opacity.
 
+## Old materials (P9.3)
+
+When a file opens in Blender, the materials of its game scenes that are not
+Classic become RTX Remix materials:
+
+- a Physical material (P8), as picking RTX Remix does;
+- a Cycles node material, read as RTX Remix already read it: Principled,
+  Diffuse, Glossy, Glass, Emission and Subsurface Scattering map straight,
+  an image wired straight in becomes a Texture node, a see-through Mix keeps
+  its opacity, a Mix of a surface and a glow keeps both, any other Mix the
+  stronger surface;
+- a Blender Internal node material: its graph stays and feeds the node, and
+  its Output node stays wired, so stock 2.79 draws the graph;
+- a material whose RTX Remix block (P8) is in use: the block's values and
+  images set the node's inputs. The block still applies in Remix; its panel
+  (RTX Remix Fields) shows only on materials whose block is in use.
+
+Classic materials stay as they are. Each original is kept as a fake-user
+material `<name>.p8` until the file has been saved twice. The text block
+"BGE-Remix conversion" lists what was converted and anything approximated;
+the console and the status bar say it too. The player plays old files
+unchanged. Blender run from a script (in the background) converts only with
+`BGE_REMIX_CONVERT=1`; `BGE_REMIX_CONVERT=0` turns conversion off.
+
+A material in a file that is also rendered with Cycles loses its Cycles
+nodes in the conversion (the `.p8` copy keeps them).
+
 ## Lights and shadows
 
 - One light model for all lamp types, area lamps included. Point and spot

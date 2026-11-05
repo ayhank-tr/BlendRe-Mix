@@ -359,7 +359,7 @@ def note_gl(build, tag, text):
                    "tier": int(m.group(5)) if m else None, "line": m.group(0) if m else None}
 
 
-def play(build, out, tag, blend, env=None, frames=300, seconds=0, debug=False, gl_debug=True):
+def play(build, out, tag, blend, env=None, frames=300, seconds=0, debug=False, gl_debug=True, extra=()):
     """blenderplayer at SIZE (960x540); the probe's screenshot at frame 100;
     debug: under the console debugger (when there is one), with Windows'
     page heap (each allocation followed by a guard page, so a write past its
@@ -373,7 +373,7 @@ def play(build, out, tag, blend, env=None, frames=300, seconds=0, debug=False, g
               "BGE_REMIX_P2_FRAMES": str(frames), "BGE_REMIX_P2_SECONDS": str(seconds), "BGE_REMIX_RUNTIME_DIR": None})
     e.update(GL_ENV if gl_debug else {"BGE_REMIX_NO_DIALOGS": "1"})
     e.update(env or {})
-    cmd = [p2.exe(build, "blenderplayer"), "-w", str(SIZE[0]), str(SIZE[1]), blend]
+    cmd = [p2.exe(build, "blenderplayer"), "-w", str(SIZE[0]), str(SIZE[1])] + list(extra) + [blend]
     pageheap = False
     if debug and os.path.isfile(CDB):
         handlers = "; ".join('sxe -c "%s" %s' % (ON_CRASH, ev) for ev in ("av", "c0000374", "c0000409"))
@@ -2795,7 +2795,9 @@ GAME_HIDDEN = {"MATERIAL_PT_options": ("use_raytrace", "use_full_oversampling", 
                                       "use_transparent_shadows"),
                "MATERIAL_PT_shading": ("translucency", "use_cubic")}
 GAME_MARKED = {"MATERIAL_PT_mirror": "F12 and Remix only", "MATERIAL_PT_sss": "F12 and Remix only",
-               "MATERIAL_PT_remix_fields": "Remix only", "DATA_PT_lamp": "Not in Remix"}
+               "DATA_PT_lamp": "Not in Remix"}
+# (P9.3: the RTX Remix Fields panel shows only where a block is in use; P9's
+# tests check it)
 
 
 def t837_keep(C, expected):

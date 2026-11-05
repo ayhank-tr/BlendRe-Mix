@@ -69,7 +69,9 @@ def run(cmd, env, log, timeout=TIMEOUT, cwd=None):
 
 
 def base_env(out, name):
-    env = {}
+    # BGE-Remix P9.3: no material conversion when a file opens (each phase's
+    # tests read their files as made; P9's conversion tests turn it on)
+    env = {"BGE_REMIX_CONVERT": "0"}
     for key, sub in (("BLENDER_USER_CONFIG", "config"), ("BLENDER_USER_SCRIPTS", "scripts")):
         path = os.path.join(out, "user_" + name, sub)
         os.makedirs(path, exist_ok=True)

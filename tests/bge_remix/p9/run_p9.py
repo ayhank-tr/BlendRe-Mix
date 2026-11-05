@@ -459,9 +459,12 @@ def run_pipelines(args, out):
 
     # P9.2
     p92_tests(args, out, scenes, E, tests, sheets)
+    # P9.3
+    p93_tests(args, out, scenes, E, tests, sheets)
 
     res = {"tests": tests, "sheets": sheets, "all_ok": all(t["ok"] for t in tests.values())}
-    lines = ["BGE-Remix P9.1-P9.2: Classic and RTX Remix, the RTX Remix Material node (normal run)", "=" * 70, ""]
+    lines = ["BGE-Remix P9.1-P9.3: Classic and RTX Remix, the RTX Remix Material node, old materials "
+             "(normal run)", "=" * 70, ""]
     for name, t in tests.items():
         lines.append("%-44s %s" % (name, p2.mark(t["ok"])))
         for check, ok in t["checks"].items():
@@ -470,6 +473,238 @@ def run_pipelines(args, out):
     lines += ["", "ALL PASSED" if res["all_ok"] else "SOMETHING FAILED (see results_p9.json and the logs)"]
     return res, lines, "p9"
 
+
+
+# ---------------------------------------------------------------------------
+# P9.3: old materials converted when a file opens
+
+TOL_SWEEP = 2.0  # a P0-P8 test file whose converted materials are all Physical, before against after
+
+CONVERT_CHECK = r"""
+import bpy, json, os, sys
+argv = sys.argv[sys.argv.index("--") + 1:]
+target, folder = argv[0], argv[1]
+from bl_operators.bge_remix_material import kind, remix_node
+from bl_operators.bge_remix_convert import old_kind, REPORT_TEXT, SAVES_KEY
+
+def p8_copies():
+    return sorted([m.name, int(m[SAVES_KEY])] for m in bpy.data.materials if SAVES_KEY in m)
+
+class Ctx:
+    pass
+
+def fields_shown(ma):
+    ctx = Ctx()
+    ctx.material, ctx.scene = ma, bpy.context.scene
+    try:
+        return bool(bpy.types.MATERIAL_PT_remix_fields.poll(ctx))
+    except Exception as ex:
+        return "error: %s" % ex
+
+r = {}
+src = os.path.join(folder, "p9_convert.blend")
+os.environ["BGE_REMIX_CONVERT"] = "0"
+bpy.ops.wm.open_mainfile(filepath=src)
+r["before"] = {m.name: old_kind(m) for m in bpy.data.materials if m.name.startswith("CV_")}
+# the way a person opens it (load_post converts)
+os.environ["BGE_REMIX_CONVERT"] = "1"
+bpy.ops.wm.open_mainfile(filepath=src)
+r["after"] = {}
+for m in bpy.data.materials:
+    if not m.name.startswith("CV_") or SAVES_KEY in m:
+        continue
+    node = remix_node(m)
+    st = {"kind": kind(m), "fields_panel": fields_shown(m)}
+    if node is not None:
+        st["values"] = {k: (list(v.default_value) if hasattr(v.default_value, "__len__") else v.default_value)
+                        for k, v in node.inputs.items()}
+        st["linked"] = sorted(k for k, v in node.inputs.items() if v.is_linked)
+        st["remix_type"] = node.remix_type
+    r["after"][m.name] = st
+txt = bpy.data.texts.get(REPORT_TEXT)
+r["report"] = txt.as_string() if txt else None
+r["copies_on_open"] = p8_copies()
+bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, "p9_convert_after.blend"))
+r["copies_after_first_save"] = p8_copies()
+for sc in bpy.data.scenes:
+    sc["bge_remix"] = 1
+bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, "p9_convert_after_remix.blend"))
+r["copies_after_second_save"] = p8_copies()
+# opened again: nothing more to convert, the copies as the first save kept them
+bpy.ops.wm.open_mainfile(filepath=os.path.join(folder, "p9_convert_after.blend"))
+r["reopened_kinds"] = {m.name: kind(m) for m in bpy.data.materials if m.name.startswith("CV_") and SAVES_KEY not in m}
+r["reopened_copies"] = p8_copies()
+with open(target, "w") as f:
+    json.dump(r, f, indent=1)
+print("P9-CONVERT done")
+"""
+
+SWEEP_CHECK = r"""
+import bpy, json, os, sys
+argv = sys.argv[sys.argv.index("--") + 1:]
+target, folder = argv[0], argv[1]
+from bl_operators.bge_remix_convert import game_materials, old_kind, convert_file
+r = {}
+for path in argv[2:]:
+    try:
+        os.environ["BGE_REMIX_CONVERT"] = "0"
+        bpy.ops.wm.open_mainfile(filepath=path)
+        kinds = {m.name: old_kind(m) for m in game_materials()}
+        kinds = {k: v for k, v in kinds.items() if v}
+        if not kinds:
+            continue
+        lines = convert_file()
+        name = os.path.basename(os.path.dirname(path)) + "_" + os.path.basename(path)
+        dest = os.path.join(folder, name)
+        bpy.ops.wm.save_as_mainfile(filepath=dest, copy=True)
+        r[path] = {"kinds": kinds, "report": lines, "converted": dest}
+    except Exception as ex:
+        r[path] = {"error": "%s: %s" % (type(ex).__name__, ex)}
+with open(target, "w") as f:
+    json.dump(r, f, indent=1)
+print("P9-SWEEP done")
+"""
+
+
+def convert_scene(args, out, scenes):
+    """p9_convert opened as a person would (converted), saved twice; what the
+    script saw"""
+    target = os.path.join(out, "convert_check.json")
+    if os.path.isfile(target):
+        os.remove(target)
+    p8.blender_script(args.ours, out, "p9_convert", CONVERT_CHECK, [target, scenes])
+    return p2.read_json(target) or {}
+
+
+def remix_set(lines):
+    """the fake runtime's materials, without their hashes and texture file
+    names (the same material, wherever its files went)"""
+    out = []
+    for m in mock_materials(lines):
+        out.append(" ".join("%s=%s" % (k, "tex" if k.endswith("_tex") and v != "-" else v)
+                            for k, v in sorted(m.items()) if k != "hash"))
+    return sorted(out)
+
+
+def p93_tests(args, out, scenes, E, tests, sheets):
+    S = lambda n: os.path.join(scenes, n + ".blend")  # noqa: E731
+    C = E.get("convert")
+    c, d = {}, {}
+    if not C:
+        tests["T9.7 Old materials converted on open"] = {"ok": False, "checks": {"the P9.3 scene was made": False},
+                                                         "detail": E.get("failed")}
+        return
+    R = convert_scene(args, out, scenes)
+    before, after = R.get("before") or {}, R.get("after") or {}
+    d["script"] = {k: R.get(k) for k in ("copies_on_open", "copies_after_first_save", "copies_after_second_save",
+                                         "reopened_copies")}
+    converted = [k for k in C["order"] if C["kinds"][k]]
+    for k in C["order"]:
+        name = C["materials"][k]
+        want = C["kinds"][k]
+        got_before = before.get(name)
+        got_after = (after.get(name) or {}).get("kind")
+        d[k] = {"before": got_before, "after": after.get(name)}
+        if want:
+            c["%s: read as %s, converted to RTX Remix" % (k, want)] = got_before == want and got_after == "RTX_REMIX"
+        else:
+            c["%s: stays Classic" % k] = got_before is None and got_after == "CLASSIC"
+    report = R.get("report") or ""
+    c["the report names every converted material, not the Classic one"] = \
+        all(C["materials"][k] + ": converted from" in report for k in converted) and \
+        C["materials"]["classic"] + ":" not in report
+    names = sorted(C["materials"][k] + ".p8" for k in converted)
+    on_open = [n for n, _ in R.get("copies_on_open") or []]
+    c["a .p8 copy of each converted material"] = on_open == names
+    c["the copies kept by the first save"] = [n for n, _ in R.get("copies_after_first_save") or []] == names
+    c["and gone at the second"] = R.get("copies_after_second_save") == []
+    c["opened again: nothing more converts, the copies there"] = \
+        all(v == "RTX_REMIX" for k, v in (R.get("reopened_kinds") or {}).items()
+            if k != C["materials"]["classic"]) and [n for n, _ in R.get("reopened_copies") or []] == names
+    fp = {k: (after.get(C["materials"][k]) or {}).get("fields_panel") for k in ("physical_block", "classic_block",
+                                                                              "classic", "physical")}
+    d["RTX Remix Fields panel"] = fp
+    c["the RTX Remix Fields panel: where a block is in use only"] = \
+        fp["physical_block"] is True and fp["classic_block"] is True and fp["classic"] is False and \
+        fp["physical"] is False
+    vals = lambda k: (after.get(C["materials"][k]) or {}).get("values") or {}  # noqa: E731
+    c["physical_block: the block's albedo and roughness in the node"] = \
+        near(",".join(str(x) for x in vals("physical_block").get("Albedo", [])[:3]), [0.2, 0.5, 0.8]) and \
+        abs(vals("physical_block").get("Roughness", -1) - 0.2) < 1e-3
+    c["cy_principled: its image wired to Albedo"] = \
+        "Albedo" in ((after.get(C["materials"]["cy_principled"]) or {}).get("linked") or [])
+    c["cy_glass: translucent"] = (after.get(C["materials"]["cy_glass"]) or {}).get("remix_type") == "TRANSLUCENT"
+    c["cy_emission: its glow (2)"] = abs(vals("cy_emission").get("Emissive Intensity", -1) - 2.0) < 1e-3
+    c["cy_see_through: half see-through"] = abs(vals("cy_see_through").get("Opacity", -1) - 0.5) < 1e-3
+    c["cy_two_surfaces: the stronger surface (the red diffuse)"] = \
+        near(",".join(str(x) for x in vals("cy_two_surfaces").get("Albedo", [])[:3]), [0.8, 0.2, 0.2])
+    c["bi_nodes: the graph feeds Albedo"] = "Albedo" in ((after.get(C["materials"]["bi_nodes"]) or {}).get("linked") or [])
+    # the game before and after: Physical as it was (the others: the game drew
+    # a Cycles tree wrongly before; a block was Remix's only; Blender Internal's
+    # shading becomes the physical one)
+    runs = {n: pipe_play(args.ours, out, n, S(n)) for n in ("p9_convert", "p9_convert_after")}
+    diffs = rect_diffs(p8.shot_of(runs["p9_convert"]), p8.shot_of(runs["p9_convert_after"]), C["rects"], C["order"])
+    d["game: before against after"] = diffs
+    for k in ("physical", "physical_image", "classic"):
+        c["%s: the game draws it as before (within %.1f: %s)" % (k, TOL_TWIN, diffs[k])] = \
+            diffs[k] is not None and diffs[k] <= TOL_TWIN
+    pa = p8.shot_of(runs["p9_convert_after"])
+    if pa is not None:
+        means = {k: round(float(p8.crop(pa, C["rects"][k]).mean()), 1) for k in C["order"]}
+        d["game after: each sphere's mean"] = means
+        c["after: every Cycles sphere drawn (not black)"] = all(means[k] > 20.0 for k in C["order"]
+                                                                 if k.startswith("cy_") and k != "cy_glass")
+    # the fake runtime: Remix gets the same materials before and after
+    sets = {}
+    for n in ("p9_convert_remix", "p9_convert_after_remix"):
+        log, env = p8.mock_env(args, out, n + "_mock", os.path.join(out, "cache_" + n))
+        pipe_play(args.ours, out, n + "_mock", S(n), env)
+        sets[n] = remix_set(mock_lines(log))
+    a, b = sets["p9_convert_remix"], sets["p9_convert_after_remix"]
+    d["Remix's materials: only before"] = [x for x in a if x not in b]
+    d["Remix's materials: only after"] = [x for x in b if x not in a]
+    c["Remix gets the same materials before and after (%d before, %d after)" % (len(a), len(b))] = \
+        bool(a) and a == b
+    tests["T9.7 Old materials converted on open"] = {"ok": all(c.values()), "checks": c, "detail": d}
+    sheets["convert"] = p2.contact_sheet([("before", runs["p9_convert"].get("screenshot")),
+                                          ("converted", runs["p9_convert_after"].get("screenshot"))],
+                                         os.path.join(out, "sheet_p9_convert.png"))
+    p93_sweep(args, out, tests)
+
+
+def p93_sweep(args, out, tests):
+    """every P0-P8 test file with a material to convert: converted in the
+    background, the game's picture against the original's"""
+    results = args.results or os.path.dirname(os.path.abspath(out))
+    files = test_files(results)
+    folder = os.path.join(out, "convert_all")
+    shutil.rmtree(folder, ignore_errors=True)
+    os.makedirs(folder)
+    data = {}
+    for k in range(0, len(files), 40):
+        part = os.path.join(out, "convert_all_%03d.json" % (k // 40))
+        p8.blender_script(args.ours, out, "p9_sweep_%03d" % (k // 40), SWEEP_CHECK, [part, folder] + files[k:k + 40],
+                          timeout=1800)
+        data.update(p2.read_json(part) or {})
+    c, d = {}, {}
+    c["the P0-P8 test files read (%d, %d with a material to convert)" % (len(files), len(data))] = bool(files)
+    for path, r in sorted(data.items()):
+        label = os.path.relpath(path, results)
+        if "error" in r:
+            c["%s: converted" % label] = False
+            d[label] = r
+            continue
+        # (the game's own drawing: Remix off)
+        off = ("-g", "remix", "0")
+        a = p8.play(args.ours, out, "sweep_before_%03d" % len(d), path, extra=off)
+        b = p8.play(args.ours, out, "sweep_after_%03d" % len(d), r["converted"], extra=off)
+        md = p8.picture_diff(a.get("screenshot"), b.get("screenshot"))
+        kinds = sorted(set(r["kinds"].values()))
+        d[label] = {"kinds": r["kinds"], "game_before_after": md, "report": r["report"]}
+        if kinds == ["PHYSICAL"]:
+            c["%s: Physical only, the game as before (within %.1f: %s)" % (label, TOL_SWEEP, md)] = \
+                md is not None and md <= TOL_SWEEP
+    tests["T9.8 Every P0-P8 test file converted"] = {"ok": all(c.values()), "checks": c, "detail": d}
 
 # ---------------------------------------------------------------------------
 # P9.2: the RTX Remix Material node
@@ -997,6 +1232,32 @@ def colour_curve_rtx(args, out, S, E, tests, sheets, report_lines):
                 report_lines.append("      %-6s ours  %s" % (row, "  ".join(str(d["fallback"][k]) for k in ks)))
 
 
+
+def p93_rtx(args, out, scenes, E, tests, sheets, report_lines):
+    """P9.3 in the real Remix: p9_convert before and after conversion"""
+    C = E.get("convert")
+    if not C:
+        return
+    S = lambda n: os.path.join(scenes, n + ".blend")  # noqa: E731
+    convert_scene(args, out, scenes)
+    a = p8.play(args.ours, out, "cv_before_remix", S("p9_convert_remix"), p8.REMIX_ENV, frames=p8.REMIX_FRAMES,
+                debug=True)
+    b = p8.play(args.ours, out, "cv_after_remix", S("p9_convert_after_remix"), p8.REMIX_ENV,
+                frames=p8.REMIX_FRAMES, debug=True)
+    diffs = rect_diffs(p8.picture(a.get("screenshot")), p8.picture(b.get("screenshot")), C["rects"], C["order"],
+                       blur=True)
+    c = {"p9_convert ran in Remix before and after": bool(a["ran"] and b["ran"])}
+    for k in C["order"]:
+        c["%s: Remix shows it as before (within %.0f: %s)" % (k, TOL_GATE, diffs[k])] = \
+            diffs[k] is not None and diffs[k] <= TOL_GATE
+    tests["S9.14 Converted materials in Remix (P9.3)"] = {"ok": all(c.values()), "checks": c, "detail": diffs}
+    sheets["convert_rtx"] = p2.contact_sheet([("Remix, before", a.get("screenshot")),
+                                              ("Remix, converted", b.get("screenshot"))],
+                                             os.path.join(out, "sheet_p9_convert_rtx.png"))
+    report_lines += ["", "Converted materials in Remix, before against after (gate %.0f):" % TOL_GATE]
+    for k in C["order"]:
+        report_lines.append("  %-16s %s" % (k, diffs[k]))
+
 def run_pipelines_rtx(args, out):
     """the fallback against Remix: the six spheres and the room, with ACES
     (Remix's tone mappers in turn) and with the view transform"""
@@ -1046,9 +1307,10 @@ def run_pipelines_rtx(args, out):
     p92_lines = []
     p92_rtx(args, out, scenes, E, tests, sheets, p92_lines)
     colour_curve_rtx(args, out, S, E, tests, sheets, p92_lines)
+    p93_rtx(args, out, scenes, E, tests, sheets, p92_lines)
     sheets["room"] = p2.contact_sheet(items, os.path.join(out, "sheet_p9_room.png"))
     res = {"tests": tests, "sheets": sheets, "all_ok": all(t["ok"] for t in tests.values())}
-    lines = ["BGE-Remix P9.1-P9.2 (RTX run: your RTX card, the real RTX Remix runtime)", "=" * 70, ""]
+    lines = ["BGE-Remix P9.1-P9.3 (RTX run: your RTX card, the real RTX Remix runtime)", "=" * 70, ""]
     for name, t in tests.items():
         lines.append("%-62s %s" % (name, p2.mark(t["ok"])))
         for check, ok in t["checks"].items():
