@@ -87,6 +87,8 @@ int BRMX_quality_apply(const BRMX_Quality *quality);
  * when they differ from what Remix has (a setting the scene no longer sets
  * goes back to Remix's default). Returns the number sent. */
 int BRMX_scene_options_apply(const struct Scene *scene);
+/* the scene's options Remix reads only when it starts, sent before it starts (P9.2b) */
+int BRMX_scene_startup_options_apply(const struct Scene *scene);
 /* stops added to the scene's exposure in Remix (P9.2: ACES's calibration) */
 float BRMX_scene_exposure_offset(const struct Scene *scene);
 

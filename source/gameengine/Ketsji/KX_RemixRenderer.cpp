@@ -591,6 +591,10 @@ bool KX_RemixRenderer::Start(KX_Scene *scene, int width, int height, const Setti
 		SetNotice("RTX Remix is rendering (F12); the game runs in OpenGL.");
 		return false;
 	}
+	if (status != BRB_STATUS_RUNNING) {
+		/* P9.2b: what Remix reads only when it starts */
+		BRMX_scene_startup_options_apply(scene ? scene->GetBlenderScene() : NULL);
+	}
 	status = m_bridge->startup_ex(mode, width, height, parent, x, y);
 	if (status != BRB_STATUS_RUNNING) {
 		BRMX_unlock();

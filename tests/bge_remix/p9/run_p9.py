@@ -1066,16 +1066,10 @@ def settings_rtx(args, out, S, E, tests, sheets, report_lines):
                          r"config %s = \S+ -> \d+" % re.escape(k), blog)))})
         items.append((label, png))
 
-    # 960x540: anisotropic filtering 16x
-    gl960 = os.path.join(out, "rs_aces_opengl.png")
-    base960 = os.path.join(out, "rs_aces_remix.png")
-    rows.append({"label": "960x540 fallback", "vs_unchanged": None, "detail": detail_of(gl960, 1), "answers": []})
-    add("960x540 Remix unchanged", base960, base960, 1, "", [])
-    keys = ["rtx.useAnisotropicFiltering", "rtx.maxAnisotropySamples"]
-    png, blog, _ = settings_play(args, out, "set_aniso16", blend,
-                                 "rtx.useAnisotropicFiltering=True;rtx.maxAnisotropySamples=16")
-    add("960x540 anisotropic filtering 16x", png, base960, 1, blog, keys)
-    # 1920x1080: upscaling
+    # (anisotropic filtering 16x and upscaling off while running: no change,
+    # the previous run). 1920x1080: the scene's own resolution scale 0.5,
+    # which the engine sends before Remix starts, against the same from an
+    # rtx.conf (known to work)
     size = p8.SIZE
     p8.SIZE = (1920, 1080)
     try:
@@ -1084,14 +1078,15 @@ def settings_rtx(args, out, S, E, tests, sheets, report_lines):
         rows.append({"label": "1920x1080 fallback", "vs_unchanged": None, "detail": detail_of(gl, 2), "answers": []})
         base, blog, _ = settings_play(args, out, "set_1080", blend)
         add("1920x1080 Remix unchanged", base, base, 2, blog, ["rtx.graphicsPreset"])
-        keys = ["rtx.graphicsPreset", "rtx.upscalerType", "rtx.resolutionScale"]
-        png, blog, _ = settings_play(args, out, "set_1080_custom_off", blend,
-                                     "rtx.graphicsPreset=4;rtx.upscalerType=0;rtx.resolutionScale=1")
-        add("1920x1080 preset Custom, upscaling off (while running)", png, base, 2, blog, keys)
-        png, blog, _ = settings_play(args, out, "set_1080_conf_off", blend,
-                                     conf=[("rtx.graphicsPreset", "4"), ("rtx.upscalerType", "0"),
-                                           ("rtx.resolutionScale", "1")])
-        add("1920x1080 preset Custom, upscaling off (rtx.conf)", png, base, 2, blog, keys)
+        keys = ["rtx.graphicsPreset", "rtx.resolutionScale"]
+        png, blog, _ = settings_play(args, out, "set_1080_scene_res50", S("p9_rs_nodes_aces_remix_res50"))
+        add("1920x1080 the scene's Resolution Scale 0.5 (the engine)", png, base, 2, blog, keys)
+        png, blog, _ = settings_play(args, out, "set_1080_conf_res50", blend,
+                                     conf=[("rtx.graphicsPreset", "4"), ("rtx.resolutionScale", "0.5")])
+        add("1920x1080 resolution scale 0.5 in rtx.conf (for comparison)", png, base, 2, blog, keys)
+        scene_png, conf_png = items[-2][1], items[-1][1]
+        rows.append({"label": "engine against rtx.conf (0: the same)", "vs_unchanged":
+                     p8.picture_diff(conf_png, scene_png), "detail": {}, "answers": []})
     finally:
         p8.SIZE = size
     tests["S9.13 Remix settings while a game runs (P9.2b, a report)"] = {"ok": True, "checks": {}, "detail": rows}

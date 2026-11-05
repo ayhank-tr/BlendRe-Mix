@@ -535,6 +535,13 @@ def make_remix_spheres(folder, E):
     files.append(save_copy(folder, "p9_rs_nodes_remix", remix=1, tone=0))
     files.append(save_copy(folder, "p9_rs_nodes_aces", remix=0, tone=1))
     files.append(save_copy(folder, "p9_rs_nodes_aces_remix", remix=1, tone=1))
+    # P9.2b: the same with its own resolution scale (Remix reads it only when
+    # it starts: the engine sends it before)
+    for sc in bpy.data.scenes:
+        sc["bge_rtx_resolution_scale"] = 0.5
+    files.append(save_copy(folder, "p9_rs_nodes_aces_remix_res50", remix=1, tone=1))
+    for sc in bpy.data.scenes:
+        del sc["bge_rtx_resolution_scale"]
     # F12 against the game: a black sky (Blender Internal lights nothing by it)
     w = scene.world
     w.horizon_color = (0.0, 0.0, 0.0)
