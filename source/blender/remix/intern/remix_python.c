@@ -415,6 +415,98 @@ static PyObject *brmx_debug_option(PyObject *UNUSED_self, PyObject *args)
 	Py_RETURN_NONE;
 }
 
+/* BGE-Remix P10.4: atlases (remix_atlas.cc, remix_atlas_pack.cc) */
+struct Material;
+struct Scene;
+const char *BRMX_atlas_bake_json(struct Material *ma, struct Scene *scene);
+const unsigned char *BRMX_atlas_preview(int *r_width, int *r_height);
+int BRMX_atlas_pack(const int *sizes, int count, int page, int padding, int *r_places);
+
+PyDoc_STRVAR(brmx_atlas_bake_doc,
+".. function:: atlas_bake(material_pointer, scene_pointer)\n"
+"\n"
+"   BGE-Remix P10.4: bake the material's tile set or flipbook now and encode\n"
+"   its files into the texture cache (OpenGL needed: not in the background).\n"
+"   Use bge_remix.atlas rather than this.\n"
+"\n"
+"   :rtype: str (JSON)\n");
+static PyObject *brmx_atlas_bake(PyObject *UNUSED_self, PyObject *args)
+{
+	unsigned long long ma = 0, scene = 0;
+	if (!PyArg_ParseTuple(args, "KK:atlas_bake", &ma, &scene) || !ma || !scene) {
+		if (!PyErr_Occurred()) {
+			PyErr_SetString(PyExc_ValueError, "atlas_bake: a material's and a scene's as_pointer() are needed");
+		}
+		return NULL;
+	}
+	return PyUnicode_FromString(BRMX_atlas_bake_json((struct Material *)(uintptr_t)ma,
+	                                                 (struct Scene *)(uintptr_t)scene));
+}
+
+PyDoc_STRVAR(brmx_atlas_preview_doc,
+".. function:: atlas_preview()\n"
+"\n"
+"   BGE-Remix P10.4: the last atlas_bake's albedo atlas, smaller (at most 1024\n"
+"   a side): (width, height, RGBA bytes, rows from the bottom), or None.\n");
+static PyObject *brmx_atlas_preview(PyObject *UNUSED_self, PyObject *UNUSED_args)
+{
+	int w = 0, h = 0;
+	const unsigned char *px = BRMX_atlas_preview(&w, &h);
+	if (!px || w <= 0 || h <= 0) {
+		Py_RETURN_NONE;
+	}
+	return Py_BuildValue("(iiy#)", w, h, (const char *)px, (Py_ssize_t)w * h * 4);
+}
+
+PyDoc_STRVAR(brmx_atlas_pack_doc,
+".. function:: atlas_pack(sizes, page, padding)\n"
+"\n"
+"   BGE-Remix P10.4: rectangles (a list of (width, height)) packed onto\n"
+"   pages of page x page pixels, padding apart, with xatlas: a list of\n"
+"   (page, x, y) (bottom-left corners), or None when one does not fit.\n");
+static PyObject *brmx_atlas_pack(PyObject *UNUSED_self, PyObject *args)
+{
+	PyObject *list = NULL, *seq = NULL, *out = NULL;
+	int page = 0, padding = 0;
+	Py_ssize_t n, i;
+	int *sizes, *places;
+	if (!PyArg_ParseTuple(args, "Oii:atlas_pack", &list, &page, &padding)) {
+		return NULL;
+	}
+	seq = PySequence_Fast(list, "atlas_pack: a list of (width, height) is needed");
+	if (!seq) {
+		return NULL;
+	}
+	n = PySequence_Fast_GET_SIZE(seq);
+	sizes = (int *)malloc(sizeof(int) * 2 * (size_t)(n + 1));
+	places = (int *)malloc(sizeof(int) * 3 * (size_t)(n + 1));
+	for (i = 0; i < n; i++) {
+		PyObject *item = PySequence_Fast_GET_ITEM(seq, i);
+		int w = 0, h = 0;
+		if (!PyArg_ParseTuple(item, "ii", &w, &h)) {
+			free(sizes);
+			free(places);
+			Py_DECREF(seq);
+			return NULL;
+		}
+		sizes[i * 2] = w;
+		sizes[i * 2 + 1] = h;
+	}
+	Py_DECREF(seq);
+	if (n > 0 && BRMX_atlas_pack(sizes, (int)n, page, padding, places) > 0) {
+		out = PyList_New(n);
+		for (i = 0; i < n; i++) {
+			PyList_SET_ITEM(out, i, Py_BuildValue("(iii)", places[i * 3], places[i * 3 + 1], places[i * 3 + 2]));
+		}
+	}
+	free(sizes);
+	free(places);
+	if (!out) {
+		Py_RETURN_NONE;
+	}
+	return out;
+}
+
 static PyMethodDef brmx_methods[] = {
 	{"bridge_info", (PyCFunction)brmx_bridge_info, METH_NOARGS, brmx_bridge_info_doc},
 	{"status", (PyCFunction)brmx_status, METH_NOARGS, brmx_status_doc},
@@ -433,6 +525,9 @@ static PyMethodDef brmx_methods[] = {
 	{"material_match", (PyCFunction)brmx_material_match, METH_VARARGS, brmx_material_match_doc},
 	{"inspect", (PyCFunction)brmx_inspect, METH_VARARGS, brmx_inspect_doc},
 	{"debug_option", (PyCFunction)brmx_debug_option, METH_VARARGS, brmx_debug_option_doc},
+	{"atlas_bake", (PyCFunction)brmx_atlas_bake, METH_VARARGS, brmx_atlas_bake_doc},
+	{"atlas_preview", (PyCFunction)brmx_atlas_preview, METH_NOARGS, brmx_atlas_preview_doc},
+	{"atlas_pack", (PyCFunction)brmx_atlas_pack, METH_VARARGS, brmx_atlas_pack_doc},
 	{NULL, NULL, 0, NULL}
 };
 

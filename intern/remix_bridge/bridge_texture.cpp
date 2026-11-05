@@ -72,6 +72,7 @@ struct Job {
 	int ticket = 0;
 	std::wstring path;
 	int kind = 0, width = 0, height = 0, channel = 0, flags = 0;
+	int levels = 1; /* interface 12: the caller's own mip levels */
 	std::vector<unsigned char> rgba8;
 	std::vector<float> rgbaf;
 };
@@ -441,6 +442,98 @@ HRESULT compress(const DirectX::ScratchImage &mips, DXGI_FORMAT format, int flag
 }
 
 /* ------------------------------------------------------------------------- */
+/* interface 12 (P10.4): mip levels the caller made (an atlas's) */
+
+int level_dim(int n, int l)
+{
+	return std::max(1, n >> l);
+}
+
+/* the values of `levels` levels of a width x height image */
+size_t levels_values(int width, int height, int levels)
+{
+	size_t n = 0;
+	for (int l = 0; l < levels; l++) {
+		n += (size_t)level_dim(width, l) * (size_t)level_dim(height, l) * 4;
+	}
+	return n;
+}
+
+int full_chain(int w, int h)
+{
+	int n = 1;
+	while (w > 1 || h > 1) {
+		w = std::max(w / 2, 1);
+		h = std::max(h / 2, 1);
+		n++;
+	}
+	return n;
+}
+
+/* each given level as the encoder's own top level would be, into one image
+ * with all of them */
+HRESULT build_given_mips(const Job &job, const Pixels &px, DirectX::ScratchImage &out, DXGI_FORMAT &r_target)
+{
+	const int levels = std::min(job.levels, full_chain(job.width, job.height));
+	HRESULT hr = E_INVALIDARG;
+	size_t at = 0;
+	for (int l = 0; l < levels; l++) {
+		Job one;
+		one.kind = job.kind;
+		one.width = level_dim(job.width, l);
+		one.height = level_dim(job.height, l);
+		one.channel = job.channel;
+		one.flags = job.flags;
+		Pixels p = px;
+		if (px.rgba8) {
+			p.rgba8 = px.rgba8 + at;
+		}
+		else {
+			p.rgbaf = px.rgbaf + at;
+		}
+		at += (size_t)one.width * one.height * 4;
+		DirectX::ScratchImage level;
+		DXGI_FORMAT target = DXGI_FORMAT_UNKNOWN;
+		if (job.kind == BRB_TEXTURE_NORMAL) {
+			/* (its top level only: the vectors as given, in octahedral form) */
+			DirectX::ScratchImage chain;
+			hr = build_normal_mips(one, p, chain);
+			if (SUCCEEDED(hr)) {
+				hr = level.InitializeFromImage(*chain.GetImage(0, 0, 0));
+			}
+			target = DXGI_FORMAT_BC5_UNORM;
+		}
+		else {
+			hr = build_base(one, p, level, target);
+		}
+		if (FAILED(hr)) {
+			return hr;
+		}
+		if (l == 0) {
+			r_target = target;
+			hr = out.Initialize2D(level.GetMetadata().format, (size_t)job.width, (size_t)job.height, 1,
+			                      (size_t)levels);
+			if (FAILED(hr)) {
+				return hr;
+			}
+		}
+		const DirectX::Image *src = level.GetImage(0, 0, 0);
+		const DirectX::Image *dst = out.GetImage((size_t)l, 0, 0);
+		if (!src || !dst || src->width != dst->width || src->height != dst->height) {
+			return E_FAIL;
+		}
+		for (size_t y = 0; y < src->height; y++) {
+			memcpy(dst->pixels + y * dst->rowPitch, src->pixels + y * src->rowPitch,
+			       std::min(src->rowPitch, dst->rowPitch));
+		}
+	}
+	if (out.GetMetadata().format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) {
+		out.OverrideFormat(DXGI_FORMAT_R8G8B8A8_UNORM);
+	}
+	return S_OK;
+}
+
+/* ------------------------------------------------------------------------- */
 
 bool encode(const Job &job, const Pixels &px, brb_texture_result &r)
 {
@@ -454,7 +547,11 @@ bool encode(const Job &job, const Pixels &px, brb_texture_result &r)
 		DirectX::ScratchImage mips;
 		DXGI_FORMAT target = DXGI_FORMAT_UNKNOWN;
 		HRESULT hr;
-		if (job.kind == BRB_TEXTURE_NORMAL) {
+		if (job.levels > 1) {
+			/* interface 12 (P10.4) */
+			hr = build_given_mips(job, px, mips, target);
+		}
+		else if (job.kind == BRB_TEXTURE_NORMAL) {
 			hr = build_normal_mips(job, px, mips);
 			target = DXGI_FORMAT_BC5_UNORM;
 		}
@@ -617,6 +714,7 @@ BRB_API int brb_texture_write(const brb_texture_desc *d, brb_texture_result *r_r
 	job.height = d->height;
 	job.channel = d->channel;
 	job.flags = d->flags;
+	job.levels = std::max(d->levels, 1);
 	Pixels px;
 	px.rgba8 = d->rgba8;
 	px.rgbaf = d->rgba8 ? nullptr : d->rgbaf;
@@ -642,7 +740,9 @@ BRB_API int brb_texture_submit(const brb_texture_desc *d)
 		job->height = d->height;
 		job->channel = d->channel;
 		job->flags = d->flags;
-		const size_t n = (size_t)d->width * (size_t)d->height * 4;
+		job->levels = std::max(d->levels, 1);
+		/* interface 12: with all of the caller's levels */
+		const size_t n = levels_values(d->width, d->height, std::min(job->levels, full_chain(d->width, d->height)));
 		if (d->rgba8) {
 			job->rgba8.assign(d->rgba8, d->rgba8 + n);
 		}

@@ -52,7 +52,11 @@ struct BakedImage {
 	 * baking; "cached": found so, no pixels here */
 	uint64_t key;
 	bool cached;
-	BakedImage() : width(0), height(0), key(0), cached(false) {}
+	/* BGE-Remix P10.4: an atlas's image: rgba holds this many mip levels one
+	 * after the other (each half the one before, to 1 x 1), made by the
+	 * atlas (BRMX_atlas.h) and encoded as they are */
+	int levels;
+	BakedImage() : width(0), height(0), key(0), cached(false), levels(1) {}
 };
 
 /* (P9.6: BAKE_HEIGHT, the RTX Remix node's height) */

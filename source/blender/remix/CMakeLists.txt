@@ -46,7 +46,10 @@ set(SRC
 	intern/remix_session.c
 	intern/remix_texcache.cc
 	intern/remix_bake.cc
+	intern/remix_atlas.cc
+	intern/remix_atlas_core.cc
 
+	BRMX_atlas.h
 	BRMX_bake.h
 	BRMX_light.h
 	BRMX_loader.h
@@ -64,9 +67,15 @@ if(WITH_PYTHON)
 		${PYTHON_INCLUDE_DIRS}
 	)
 
+	# BGE-Remix P10.4: atlas pages packed with xatlas (extern_xatlas)
+	list(APPEND INC
+		../../../extern/xatlas
+	)
+
 	set(SRC
 		intern/remix_python.c
 		intern/remix_view.cc
+		intern/remix_atlas_pack.cc
 
 		BRMX_remix.h
 		BRMX_view.h

@@ -74,6 +74,7 @@ struct Material;
 namespace brmx {
 
 struct BakedImage; /* BRMX_bake.h */
+struct AtlasLayout; /* BGE-Remix P10.4: BRMX_atlas.h */
 
 enum TextureSlot {
 	TEX_ALBEDO = 0,
@@ -114,6 +115,9 @@ struct TextureRequest {
 	int channel;  /* scalar maps: 0 = R .. 3 = A */
 	int flags;    /* BRB_TEXTURE_INVERT, BRB_TEXTURE_LINEAR */
 	int max_size; /* P8.24: the largest width or height (0: as the image is) */
+	/* BGE-Remix P10.4: a packed page: its mipmaps made by the atlas (each
+	 * level within the cells, the repeating images' edges averaged) */
+	std::shared_ptr<const AtlasLayout> atlas;
 	TextureRequest() : image(NULL), kind(0), channel(0), flags(0), max_size(0) {}
 	bool wanted() const { return image != NULL || baked; }
 };

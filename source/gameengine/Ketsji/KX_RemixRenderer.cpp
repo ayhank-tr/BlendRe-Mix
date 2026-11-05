@@ -58,6 +58,7 @@
 #include "RAS_IRasterizer.h"  /* P8.30: RAS_RENDER_3DPOLYGON_TEXT */
 #include "RAS_MaterialBucket.h"
 #include "RAS_MeshObject.h"
+#include "RAS_Polygon.h"  /* P10.4: the faces' picked cells */
 #include "RAS_Rect.h"
 #include "RAS_TexVert.h"
 
@@ -78,6 +79,9 @@ extern "C" {
 #  include "BKE_idprop.h"
 #  include "BLI_math.h"
 #  include "BKE_DerivedMesh.h"
+#  include "BKE_customdata.h"
+#  include "DNA_customdata_types.h"
+#  include "DNA_mesh_types.h"
 #  include "DNA_ID.h"
 #  include "DNA_lamp_types.h"
 #  include "DNA_material_types.h"
@@ -103,6 +107,7 @@ extern "C" {
 #include "GPU_material.h"
 
 #include "BRMX_loader.h"  /* C linkage inside */
+#include "BRMX_atlas.h"
 #include "BRMX_bake.h"
 #include "BRMX_light.h"
 #include "BRMX_material.h"
@@ -948,6 +953,19 @@ const KX_RemixRenderer::MaterialEntry &KX_RemixRenderer::EnsureMaterial(KX_Scene
 		/* P8.4: Face Textures make one polymaterial per face image */
 		brmx::apply_face_image(ma, pm->GetBlenderImage(), *e.spec);
 	}
+	/* P10.4: small images packed into a page (bge_remix.atlas.pack_images) */
+	if (brmx::atlas_kind(ma) == brmx::ATLAS_PACKED) {
+		std::string note;
+		if (baked) {
+			note = "it is baked: its images are not packed";
+		}
+		else {
+			e.atlas = brmx::atlas_packed(ma, *e.spec, note);
+		}
+		if (!note.empty()) {
+			NoteOnce("material \"" + name + "\": " + note);
+		}
+	}
 	e.spec->desc.hash = per_mesh ? UniqueHash("material", name + "@" + mesh->GetName().ReadPtr(), &m_materials[key])
 	                             : UniqueHash("material", name, pm);
 	for (size_t i = 0; i < e.spec->notes.size(); i++) {
@@ -987,8 +1005,21 @@ void KX_RemixRenderer::Bake(MaterialEntry &e)
 	memcpy(obmat, e.obmat, sizeof(obmat));
 	/* (a tile's files are named by its material alone: one for every mesh) */
 	const std::string name = brmx::bake_is_tile(ma) ? e.name : e.name + "_" + e.mesh->GetName().ReadPtr();
-	const bool ok = dm && brmx::bake_material(e.scene->GetBlenderScene(), ma, dm, e.pm->GetMaterialIndex() + 1, obmat,
-	                                         name, r);
+	bool ok = false;
+	e.atlas.reset();
+	const int atlas = brmx::atlas_kind(ma);
+	if (dm && (atlas == brmx::ATLAS_TILES || atlas == brmx::ATLAS_FLIPBOOK)) {
+		/* P10.4: the preset as a tile set or a flipbook (else its plain tile) */
+		ok = brmx::atlas_bake(e.scene->GetBlenderScene(), ma, name, r, e.atlas);
+		if (!ok) {
+			NoteOnce("material \"" + e.name + "\": no " + (atlas == brmx::ATLAS_TILES ? "tile set" : "flipbook") +
+			         " (" + r.error + "): its plain tile instead");
+		}
+	}
+	if (!ok) {
+		ok = dm && brmx::bake_material(e.scene->GetBlenderScene(), ma, dm, e.pm->GetMaterialIndex() + 1, obmat,
+		                               name, r);
+	}
 	Trace("bake: releasing the mesh");
 	if (dm) {
 		dm->release(dm);
@@ -998,6 +1029,9 @@ void KX_RemixRenderer::Bake(MaterialEntry &e)
 	m_bake_ms += (e.bake_checked - t0) * 1000.0;
 	if (ok) {
 		brmx::apply_bake(r, *e.spec);
+		if (e.atlas) {
+			brmx::atlas_apply(*e.atlas, *e.spec); /* P10.4 */
+		}
 		if (r.from_cache) {
 			printf("BGE-Remix: material \"%s\" on mesh \"%s\": procedural textures from the cache (%.0f ms)\n",
 			       e.name.c_str(), e.mesh->GetName().ReadPtr(), (now_seconds() - t0) * 1000.0);
@@ -1219,6 +1253,31 @@ KX_RemixRenderer::Geometry::Geometry()
 {
 }
 
+/* BGE-Remix P10.4: the cells picked by hand for the mesh's faces (their
+ * "bge_remix_cell" layer), by the game's polygons: each found by its
+ * material and its first three vertices (Blender's vertex indices, the same
+ * in a deformer's copy) */
+typedef std::map<std::pair<const void *, std::pair<unsigned int, std::pair<unsigned int, unsigned int> > >, int>
+        FacePicks;
+
+static void face_picks(RAS_MeshObject *mesh, FacePicks &r)
+{
+	r.clear();
+	std::vector<int> picks;
+	brmx::atlas_face_picks(mesh->GetMesh(), picks);
+	const int n = std::min((int)picks.size(), mesh->NumPolygons());
+	for (int p = 0; p < n; p++) {
+		RAS_Polygon *poly = mesh->GetPolygon(p);
+		if (!picks[p] || !poly || poly->VertexCount() < 3) {
+			continue;
+		}
+		r[std::make_pair((const void *)poly->GetMaterial(),
+		                 std::make_pair(poly->GetVertex(0)->getOrigIndex(),
+		                                std::make_pair(poly->GetVertex(1)->getOrigIndex(),
+		                                               poly->GetVertex(2)->getOrigIndex())))] = picks[p];
+	}
+}
+
 void KX_RemixRenderer::Collect(KX_Scene *scene, RAS_MeshObject *mesh, void *client, const void *weights_in,
                                Geometry &g, uint32_t identity_bone)
 {
@@ -1226,6 +1285,8 @@ void KX_RemixRenderer::Collect(KX_Scene *scene, RAS_MeshObject *mesh, void *clie
 	const std::vector<RW> *weights = (const std::vector<RW> *)weights_in;
 	g = Geometry();
 	std::vector<std::vector<const RW *> > vw;
+	FacePicks picks;
+	face_picks(mesh, picks);
 
 	for (std::list<RAS_MeshMaterial>::iterator mit = mesh->GetFirstMaterial(); mit != mesh->GetLastMaterial(); ++mit) {
 		RAS_MeshSlot *slot = mit->m_baseslot;
@@ -1257,6 +1318,7 @@ void KX_RemixRenderer::Collect(KX_Scene *scene, RAS_MeshObject *mesh, void *clie
 		std::vector<brb_vertex> v;
 		std::vector<uint32_t> idx;
 		std::vector<const RW *> w;
+		std::vector<int> tri_pick; /* P10.4: per triangle, a cell picked by hand + 1 */
 		RAS_MeshSlot::iterator it;
 		for (slot->begin(it); !slot->end(it); slot->next(it)) {
 			const uint32_t base = (uint32_t)v.size();
@@ -1284,6 +1346,19 @@ void KX_RemixRenderer::Collect(KX_Scene *scene, RAS_MeshObject *mesh, void *clie
 				}
 				if (!ok) {
 					continue;
+				}
+				int pick = 0;
+				if (!picks.empty()) {
+					FacePicks::const_iterator f = picks.find(std::make_pair(
+					        (const void *)mit->m_bucket,
+					        std::make_pair(it.vertex[q[0]].getOrigIndex(),
+					                       std::make_pair(it.vertex[q[1]].getOrigIndex(),
+					                                      it.vertex[q[2]].getOrigIndex()))));
+					pick = (f != picks.end()) ? f->second : 0;
+				}
+				tri_pick.push_back(pick);
+				if (type == RAS_DisplayArray::QUAD) {
+					tri_pick.push_back(pick);
 				}
 				if (type == RAS_DisplayArray::TRIANGLE) {
 					idx.push_back(base + q[0]);
@@ -1381,6 +1456,25 @@ void KX_RemixRenderer::Collect(KX_Scene *scene, RAS_MeshObject *mesh, void *clie
 			brmx::apply_uv_transform(*me.spec, &v[0], v.size());
 			g.content = hash_bytes(me.spec->uv_matrix, sizeof(me.spec->uv_matrix), g.content);
 		}
+		/* P10.4: a tile set or a packed page: the surface split along its UV
+		 * grid, each square into its cell (the file's mesh is not changed) */
+		if (me.atlas && !v.empty()) {
+			std::vector<uint32_t> source;
+			std::vector<brmx::AtlasSquare> squares;
+			const std::vector<int> *tp = (tri_pick.size() * 3 == idx.size()) ? &tri_pick : NULL;
+			if (brmx::atlas_split(*me.atlas, v, idx, tp, weights ? &source : NULL, &squares)) {
+				if (weights) {
+					/* each new vertex moves with the corner it came from */
+					std::vector<const RW *> nw(source.size(), NULL);
+					for (size_t i = 0; i < source.size(); i++) {
+						nw[i] = source[i] < w.size() ? w[source[i]] : NULL;
+					}
+					w.swap(nw);
+				}
+				g.content = hash_bytes(&me.atlas->key, sizeof(me.atlas->key), g.content);
+				brmx::atlas_dump_squares(mesh->GetName().ReadPtr(), me.name, *me.atlas, squares);
+			}
+		}
 		if (mode & RAS_IPolyMaterial::BILLBOARD_SCREENALIGNED) {
 			g.billboard = 1;
 		}
@@ -1449,6 +1543,12 @@ void KX_RemixRenderer::CollectDerived(KX_Scene *scene, RAS_MeshObject *mesh, Der
 	if (!faces || !mv) {
 		return;
 	}
+	/* P10.4: the cells picked by hand, through the faces' original polygons */
+	const Mesh *orig_me = mesh->GetMesh();
+	const int *pick_layer = orig_me ? (const int *)CustomData_get_layer_named(&orig_me->pdata, CD_PROP_INT,
+	                                                                          "bge_remix_cell") : NULL;
+	const int *face_orig = pick_layer ? (const int *)dm->getTessFaceDataArray(dm, CD_ORIGINDEX) : NULL;
+	const int *poly_orig = pick_layer ? (const int *)dm->getPolyDataArray(dm, CD_ORIGINDEX) : NULL;
 	for (std::list<RAS_MeshMaterial>::iterator mit = mesh->GetFirstMaterial(); mit != mesh->GetLastMaterial(); ++mit) {
 		RAS_IPolyMaterial *pm = mit->m_bucket ? mit->m_bucket->GetPolyMaterial() : NULL;
 		const int mode = pm ? pm->GetDrawingMode() : 0;
@@ -1467,6 +1567,7 @@ void KX_RemixRenderer::CollectDerived(KX_Scene *scene, RAS_MeshObject *mesh, Der
 		}
 		std::vector<brb_vertex> v;
 		std::vector<uint32_t> idx;
+		std::vector<int> tri_pick;
 		for (int f = 0; f < nf; f++) {
 			const MFace &mf = faces[f];
 			if (mf.mat_nr != matnr) {
@@ -1512,6 +1613,18 @@ void KX_RemixRenderer::CollectDerived(KX_Scene *scene, RAS_MeshObject *mesh, Der
 				idx.push_back(base + 2);
 				idx.push_back(base + 3);
 			}
+			int pick = 0;
+			if (pick_layer) {
+				int p = face_orig ? face_orig[f] : f;
+				if (p >= 0 && poly_orig) {
+					p = poly_orig[p];
+				}
+				pick = (p >= 0 && p < orig_me->totpoly) ? std::max(pick_layer[p], 0) : 0;
+			}
+			tri_pick.push_back(pick);
+			if (n == 4) {
+				tri_pick.push_back(pick);
+			}
 		}
 		if (idx.empty()) {
 			continue;
@@ -1529,6 +1642,15 @@ void KX_RemixRenderer::CollectDerived(KX_Scene *scene, RAS_MeshObject *mesh, Der
 		if (me.spec && me.spec->uv_transform && !v.empty()) {
 			brmx::apply_uv_transform(*me.spec, &v[0], v.size());
 			g.content = hash_bytes(me.spec->uv_matrix, sizeof(me.spec->uv_matrix), g.content);
+		}
+		/* P10.4: a tile set or a packed page (as Collect) */
+		if (me.atlas && !v.empty()) {
+			std::vector<brmx::AtlasSquare> squares;
+			const std::vector<int> *tp = (tri_pick.size() * 3 == idx.size()) ? &tri_pick : NULL;
+			if (brmx::atlas_split(*me.atlas, v, idx, tp, NULL, &squares)) {
+				g.content = hash_bytes(&me.atlas->key, sizeof(me.atlas->key), g.content);
+				brmx::atlas_dump_squares(mesh->GetName().ReadPtr(), me.name, *me.atlas, squares);
+			}
 		}
 		g.verts.push_back(v);
 		g.indices.push_back(idx);
