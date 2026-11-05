@@ -827,6 +827,26 @@ class GAMEVIEW_PT_remix_stats(DebugPanel, Panel):
         GAMEVIEW_MT_remix_stats.draw(self, context)
 
 
+class GAMEVIEW_PT_remaster_preview(DebugPanel, Panel):
+    """BGE-Remix P10.5: the texture remaster's preview square: the chosen
+    image's original and its plan's result, side by side, as Remix draws
+    them"""
+    bl_label = "Remaster Preview"
+
+    def draw(self, context):
+        layout = self.layout
+        wm = context.window_manager
+        name = getattr(wm, "bge_remix_remaster_image", "")
+        if not name:
+            layout.label(text="Choose an image in the Image editor's RTX Remix Remaster panel")
+            return
+        layout.label(text=name, icon='IMAGE_DATA')
+        row = layout.row(align=True)
+        row.operator("image.bge_remix_remaster_preview", text="Show", icon='VISIBLE_IPO_ON').image = name
+        row.operator("image.bge_remix_remaster_preview", text="Close", icon='X').show = False
+        layout.label(text="Left: the original; right: the result")
+
+
 classes = (
     GAMEVIEW_OT_mark_known,
     GAMEVIEW_OT_unmark_known,
@@ -847,6 +867,7 @@ classes = (
     GAMEVIEW_PT_model,
     GAMEVIEW_PT_inspect,
     GAMEVIEW_PT_remix_stats,
+    GAMEVIEW_PT_remaster_preview,
 )
 
 # P9.7: Debug mode's settings (the window manager is Blender's own type)

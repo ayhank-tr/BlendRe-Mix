@@ -1340,6 +1340,109 @@ class IMAGE_PT_tools_grease_pencil_brushcurves(GreasePencilBrushCurvesPanel, Pan
     bl_space_type = 'IMAGE_EDITOR'
 
 
+# BGE-Remix P10: the texture remaster (bl_operators/bge_remix_remaster.py)
+
+class IMAGE_PT_bge_remix_remaster(Panel):
+    """The images the game uses, what each needs for the best RTX Remix picture, and Apply"""
+    bl_space_type = 'IMAGE_EDITOR'
+    bl_region_type = 'UI'
+    bl_label = "RTX Remix Remaster"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    PLAN_TEXT = {'FIT': "fit", 'DERIVE': "derive", 'KEEP': "keep"}
+    DECISION_ICON = {'NONE': 'NONE', 'ACCEPT': 'FILE_TICK', 'ADJUSTED': 'MODIFIER', 'REJECT': 'CANCEL'}
+
+    @classmethod
+    def poll(cls, context):
+        sima = context.space_data
+        return sima is not None and not sima.show_maskedit
+
+    def draw(self, context):
+        try:
+            from bge_remix import remaster_tool as T
+        except ImportError:
+            self.layout.label(text="Not in this build", icon='ERROR')
+            return
+        layout = self.layout
+        row = layout.row(align=True)
+        row.operator("image.bge_remix_remaster_audit", icon='VIEWZOOM')
+        row.operator("image.bge_remix_remaster_catalogue", icon='TEXTURE')
+        audit = T.last_audit()
+        if audit is None:
+            layout.label(text="Audit lists every image the game uses")
+            return
+        col = layout.column(align=True)
+        for r in audit["images"]:
+            ima = bpy.data.images.get(r["image"])
+            if ima is None:
+                continue
+            rm = ima.bge_remix_remaster
+            line = col.row(align=True)
+            op = line.operator("image.bge_remix_remaster_select", text=r["image"],
+                               icon='IMAGE_COL' if context.space_data.image == ima else 'NONE', emboss=False)
+            op.image = r["image"]
+            kind = (r.get("kind") or "data")[:3].lower()
+            text = "%s, %s" % (kind, self.PLAN_TEXT.get(rm.plan, rm.plan))
+            if rm.fitted:
+                text += " %.2f" % rm.score
+            line.label(text=text, icon=self.DECISION_ICON.get(rm.decision, 'NONE'))
+        if audit["values"]:
+            layout.label(text="%d value problems (see the text)" % len(audit["values"]), icon='ERROR')
+
+        ima = context.space_data.image
+        row = T.audit_row(ima.name) if ima is not None else None
+        if row is None or row.get("error"):
+            layout.separator()
+            layout.operator("image.bge_remix_remaster_apply", icon='FILE_TICK')
+            return
+        rm = ima.bge_remix_remaster
+        box = layout.box()
+        box.label(text="%s, %d x %d" % (ima.name, row["size"][0], row["size"][1]), icon='IMAGE_DATA')
+        sub = box.column(align=True)
+        sub.label(text="Used by: " + "; ".join(row["used_by"]))
+        sub.label(text="Missing: " + (", ".join(row["missing"]) or "nothing"))
+        sub.label(text="Density: %.0f px/m%s" % (row["density"], "" if row["sharp"] else " (below %.0f)" %
+                                                 audit["target"]), icon='NONE' if row["sharp"] else 'ERROR')
+        sub.label(text="Repeats: %.2g x %.2g" % tuple(row["repeats"]))
+        if row.get("kind"):
+            sub.label(text="Kind: %s; painted light %.2f" % (row["kind"].lower(), row["painted_light"]))
+        for n in row["notes"]:
+            sub.label(text=n, icon='INFO')
+        box.prop(rm, "plan")
+        if rm.plan == 'FIT':
+            box.operator("image.bge_remix_remaster_fit", icon='TEXTURE').image = ima.name
+            if rm.fitted:
+                box.label(text="%s, score %.2f" % (rm.preset.replace("_", " ").title(), rm.score))
+                col = box.column(align=True)
+                col.prop(rm, "coarseness", slider=True)
+                col.prop(rm, "regularity", slider=True)
+                d = col.row()
+                d.enabled = False
+                d.prop(rm, "direction", slider=True)
+                col = box.column(align=True)
+                col.prop(rm, "scale")
+                col.prop(rm, "colour", text="")
+                col.prop(rm, "wear", slider=True)
+                from bl_operators.bge_remix_presets import PRESETS
+                if PRESETS.get(rm.preset, {}).get("wet"):
+                    col.prop(rm, "wetness", slider=True)
+                col.prop(rm, "seed")
+                box.prop(rm, "bake_size", expand=True)
+        elif rm.plan == 'DERIVE':
+            box.prop(rm, "light_amount", slider=True)
+            box.label(text="Roughness, normal and height made from the image (approximate)", icon='INFO')
+        row = box.row(align=True)
+        for key, text, icon in (('ACCEPT', "Accept", 'FILE_TICK'), ('REJECT', "Reject", 'CANCEL')):
+            op = row.operator("image.bge_remix_remaster_decide", text=text, icon=icon)
+            op.image, op.decision = ima.name, key
+        box.label(text="Decision: " + rm.decision.title())
+        row = box.row(align=True)
+        row.operator("image.bge_remix_remaster_preview", icon='VISIBLE_IPO_ON').image = ima.name
+        row.operator("image.bge_remix_remaster_preview", text="Close", icon='X').show = False
+        layout.separator()
+        layout.operator("image.bge_remix_remaster_apply", icon='FILE_TICK')
+
+
 classes = (
     IMAGE_MT_view,
     IMAGE_MT_select,
@@ -1364,6 +1467,7 @@ classes = (
     IMAGE_PT_active_mask_point,
     IMAGE_PT_image_properties,
     IMAGE_PT_game_properties,
+    IMAGE_PT_bge_remix_remaster,
     IMAGE_PT_view_properties,
     IMAGE_PT_tools_transform_uvs,
     IMAGE_PT_tools_align_uvs,

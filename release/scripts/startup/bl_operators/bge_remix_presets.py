@@ -43,7 +43,10 @@ from bpy.props import EnumProperty
 
 from .bge_remix_material import is_remix, make_remix_material, remix_node
 
-VERSION = 1
+# BGE-Remix P10.2: version 2: Brick's value per brick never 0 - 1 (the
+# Math node's Modulo gives -1 for 0 in the game's GLSL: one black brick at
+# each tile corner, where its column and row hash to 0); the tiles' modes
+VERSION = 2
 GROUP_PREFIX = "Remix Preset: "
 BRICKS_GROUP = "Remix Bricks"
 
@@ -92,6 +95,12 @@ PRESETS = {
     'CONCRETE': dict(label="Concrete", colour=(0.51, 0.51, 0.50), albedo=(0.7, 1.12), rough=(0.75, 0.95),
                      displace=0.003),
 }
+# BGE-Remix P10.2: the presets whose pattern repeats exactly inside the
+# tile (regular: whole repeats, no cross-fade); the rest are random
+# (cross-faded, their contrast kept). The tile modes as remix_bake.cc reads
+# them ("bge_remix_tile_mode"; BRMX_bake.h TileMode)
+REGULAR = ('BRICK',)
+TILE_WHOLE, TILE_KEEP_CONTRAST = 1, 2
 ORDER = ('ROCK', 'GRAVEL', 'TARMAC', 'GRASS', 'BRICK', 'BARK', 'WATER', 'SKIN_LIGHT', 'SKIN_MEDIUM',
          'SKIN_DARK', 'DIRT', 'SAND', 'SNOW', 'CONCRETE')
 # the group's outputs, and the RTX Remix node's inputs they feed
@@ -334,7 +343,10 @@ def _bricks_group():
     cm = b.m('MODULO', col, b.m('MULTIPLY', g["Columns"], g["Period"]))
     rm = b.m('MODULO', row, b.m('MULTIPLY', g["Rows"], g["Period"]))
     s = b.m('SINE', b.m('ADD', b.m('MULTIPLY', cm, 12.9898), b.m('MULTIPLY', rm, 78.233)))
-    brick = b.m('MODULO', b.m('MULTIPLY', b.m('ABSOLUTE', s), 43758.5453), 1.0)
+    # its fraction as v - floor(v) (P10.2: not Modulo, which the game's GLSL
+    # makes -1 for 0: the brick at column and row 0 came out black)
+    v = b.m('MULTIPLY', b.m('ABSOLUTE', s), 43758.5453)
+    brick = b.m('SUBTRACT', v, floor(v))
     b.out("Mortar", mortar)
     b.out("Brick", brick)
     b.out("Edge", b.m('ADD', edge, 0.0, clamp=True))
@@ -539,11 +551,25 @@ def apply_preset(mat, key):
     if out is not None:
         out.inputs["Color"].default_value = tuple(p["colour"]) + (1.0,)
         out.inputs["Alpha"].default_value = 1.0
-    # baked for Remix as one seamless tile (remix_bake.cc)
+    # baked for Remix as one seamless tile (remix_bake.cc); P10.2: whole
+    # repeats (regular) or a contrast-keeping cross-fade (random)
     mat["bge_remix_tile"] = 1
     mat["bge_remix_tile_metres"] = 1.0
     mat["bge_remix_preset"] = key
+    mat["bge_remix_tile_mode"] = TILE_WHOLE if key in REGULAR else TILE_KEEP_CONTRAST
     return g
+
+
+def preset_inputs(key):
+    """BGE-Remix P10.2: the preset's settings a fit sets, with their ranges:
+    [(name, lo, hi, whole)] (whole: snapped to whole numbers; Brick's Scale
+    to halves, so the tile holds whole repeats)"""
+    p = PRESETS[key]
+    ins = [("Scale", 0.5, 16.0, False), ("Wear", 0.0, 1.0, False)]
+    if p.get("wet"):
+        ins.append(("Wetness", 0.0, 1.0, False))
+    ins.append(("Seed", 0.0, 20.0, True))
+    return ins
 
 
 class MATERIAL_OT_bge_remix_preset(Operator):

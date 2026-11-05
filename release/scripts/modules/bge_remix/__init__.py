@@ -229,3 +229,28 @@ def pin_for_install():
     p.VERSION = data.get("version", "test")
     p.API_VERSION = pin.API_VERSION
     return p
+
+
+# ---------------------------------------------------------------------------
+# BGE-Remix P10: the texture remaster (remaster_tool.py; the measures in
+# remaster.py; the Image editor's RTX Remix Remaster panel)
+
+def remaster_audit(write_text=True):
+    """BGE-Remix P10.1: every image the game scenes use, with its size, the
+    materials and objects using it, its missing channels (roughness, normal,
+    height), its texel density (the lowest, pixels a metre), its repeats,
+    its painted light, its kind (regular, random, unique) and its plan (fit
+    a preset, derive channels, keep); and P10.3's value check of every
+    material. Changes nothing in the file but its report, the text
+    "BGE-Remix remaster audit" (when write_text). Returns {"images": [...],
+    "values": [...], "target": the sharpness target, "scenes": [...]}"""
+    from . import remaster_tool
+    return remaster_tool.remaster_audit(write_text)
+
+
+def remaster_fit(image, **kw):
+    """BGE-Remix P10.2: the image (bpy.types.Image) matched with the
+    presets' catalogues and refined (needs Blender's window, for the bakes):
+    {"preset", "settings", "colour", "score", "plan", ...}"""
+    from . import remaster_tool
+    return remaster_tool.fit_image(image, **kw)

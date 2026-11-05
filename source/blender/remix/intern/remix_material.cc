@@ -377,6 +377,8 @@ static void shadeless_glow(const Material *ma, MaterialSpec &s, bool face_image)
 		return;
 	}
 	s.textures[TEX_EMISSIVE] = s.textures[TEX_ALBEDO];
+	/* (P10.3: shadeless shows the image as it is, without the intensity) */
+	s.textures[TEX_EMISSIVE].scale = 1.0f;
 	if (face_image) {
 		set3(d.emissive, 1.0f, 1.0f, 1.0f);
 	}
@@ -746,6 +748,16 @@ void image_slots(const Material *ma, MaterialSpec &s, bool physical)
 		if ((mtex->mapto & MAP_COL) && !s.textures[TEX_ALBEDO].image) {
 			s.textures[TEX_ALBEDO] = texture(tex->ima, BRB_TEXTURE_COLOR);
 			albedo_image = tex->ima;
+			if (!physical) {
+				/* BGE-Remix P10.3: the image replaces the colour, and the game
+				 * multiplies it by Diffuse Intensity; Remix uses its albedo
+				 * colour only without an image, so the image itself carries
+				 * the intensity (these tiles read about 25 levels brighter in
+				 * Remix than in the game before, P9.4's texture wall); the
+				 * colour 1, so either way Remix reads it the image is it */
+				s.textures[TEX_ALBEDO].scale = ma->ref;
+				set3(d.albedo, 1.0f, 1.0f, 1.0f);
+			}
 		}
 		if ((mtex->mapto & MAP_NORM) && !s.textures[TEX_NORMAL].image) {
 			s.textures[TEX_NORMAL] = texture(tex->ima, BRB_TEXTURE_NORMAL);
@@ -1955,8 +1967,10 @@ void apply_face_image(const Material *ma, Image *face_image, MaterialSpec &r_spe
 	}
 	r_spec.textures[TEX_ALBEDO] = texture(face_image, BRB_TEXTURE_COLOR);
 	if (r_spec.source == MaterialSpec::BLENDER_INTERNAL) {
-		/* the image replaces the material colour */
-		set3(d.albedo, ma->ref, ma->ref, ma->ref);
+		/* the image replaces the material colour; P10.3: the image carries
+		 * Diffuse Intensity (Remix's colour is not used with an image) */
+		set3(d.albedo, 1.0f, 1.0f, 1.0f);
+		r_spec.textures[TEX_ALBEDO].scale = ma->ref;
 	}
 	if ((ma->mode & MA_FACETEXTURE_ALPHA) && (d.alpha_blend || d.alpha_test)) {
 		/* the image's alpha is the opacity */

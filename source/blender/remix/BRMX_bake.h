@@ -82,6 +82,17 @@ uint64_t bake_signature(const Material *ma);
  * over the mesh (the same for every mesh) */
 bool bake_is_tile(const Material *ma);
 
+/* BGE-Remix P10.2: how a preset's tile repeats. TILE_WHOLE: a regular
+ * pattern (Brick) drawn over UV 0..1 holding whole repeats, no cross-fade;
+ * TILE_KEEP_CONTRAST: a random one (Rock) cross-faded at its edges, the
+ * blend given the patches' contrast; TILE_CROSSFADE: P9.6's plain
+ * cross-fade (a material's "bge_remix_tile_mode" 3). The material's
+ * "bge_remix_tile_mode" (1, 2, 3) says which; P9.6's files without it: Brick
+ * whole, the rest contrast-keeping. A Brick whose Scale is not a whole
+ * number of halves is cross-faded (its pattern does not fit the tile). */
+enum TileMode { TILE_NONE = 0, TILE_WHOLE = 1, TILE_KEEP_CONTRAST = 2, TILE_CROSSFADE = 3 };
+TileMode bake_tile_mode(const Material *ma);
+
 /* The size of a material's baked images: the RTX Remix panel's Bake Size
  * (the material's "bge_remix_bake_size"), else 1024; BGE_REMIX_BAKE_SIZE
  * overrides it (tests). */
@@ -97,7 +108,12 @@ DerivedMesh *bake_mesh_from(Mesh *me);
  * channels made into Remix's images by compute shaders; when the cache
  * already holds every image of the same content, nothing is drawn. */
 bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const float obmat[4][4],
-                   const std::string &name, BakeResult &r);
+                   const std::string &name, BakeResult &r, int size_override = 0, bool use_cache = true,
+                   unsigned only_slots = ~0u);
+/* (BGE-Remix P10.2: size_override >= 16: the bake's size, whatever the
+ * material says; use_cache false: always drawn, the pixels returned;
+ * only_slots: the slots wanted (1 << BakeSlot), for the remaster's
+ * catalogue and fits; a preset's tile needs no mesh: dm may be NULL) */
 
 /* The baked images into the Remix material. */
 void apply_bake(const BakeResult &r, MaterialSpec &spec);
