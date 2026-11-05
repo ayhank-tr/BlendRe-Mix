@@ -121,24 +121,25 @@ def _mesh_arrays(ob):
     layer's coordinates (or None), the face images (or None)"""
     me = ob.data
     nv, nl, np_ = len(me.vertices), len(me.loops), len(me.polygons)
-    co = np.zeros(nv * 3, dtype=np.float64)
+    # (the buffers in Blender's own types: floats and ints of 32 bits)
+    co = np.zeros(nv * 3, dtype=np.float32)
     me.vertices.foreach_get("co", co)
-    co = co.reshape(nv, 3)
+    co = co.reshape(nv, 3).astype(np.float64)
     m = np.array(ob.matrix_world, dtype=np.float64)
     co = np.dot(co, m[:3, :3].T) + m[:3, 3]
-    lv = np.zeros(nl, dtype=np.int64)
+    lv = np.zeros(nl, dtype=np.int32)
     me.loops.foreach_get("vertex_index", lv)
-    ls = np.zeros(np_, dtype=np.int64)
-    lt = np.zeros(np_, dtype=np.int64)
-    mi = np.zeros(np_, dtype=np.int64)
+    ls = np.zeros(np_, dtype=np.int32)
+    lt = np.zeros(np_, dtype=np.int32)
+    mi = np.zeros(np_, dtype=np.int32)
     me.polygons.foreach_get("loop_start", ls)
     me.polygons.foreach_get("loop_total", lt)
     me.polygons.foreach_get("material_index", mi)
     uv = None
     if me.uv_layers.active is not None:
-        uv = np.zeros(nl * 2, dtype=np.float64)
+        uv = np.zeros(nl * 2, dtype=np.float32)
         me.uv_layers.active.data.foreach_get("uv", uv)
-        uv = uv.reshape(nl, 2)
+        uv = uv.reshape(nl, 2).astype(np.float64)
     faces = None
     if me.uv_textures.active is not None:
         faces = [d.image for d in me.uv_textures.active.data]
