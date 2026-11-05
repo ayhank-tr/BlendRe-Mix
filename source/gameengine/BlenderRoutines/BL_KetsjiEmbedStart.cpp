@@ -65,6 +65,7 @@
 
 #include "BL_System.h"
 #include "BL_GameView.h"
+#include "BL_GameViewRun.h"  /* BGE-Remix P10.9: the Remix View's Run mode */
 
 #include "GPU_extensions.h"
 #include "GPU_layer.h"
@@ -163,6 +164,13 @@ static int BL_KetsjiNextFrame(KX_KetsjiEngine *ketsjiengine, bContext *C, wmWind
 		//unsigned short event = 0; //XXX extern_qread(&val);
 		unsigned int unicode = event->utf8_buf[0] ? BLI_str_utf8_as_unicode(event->utf8_buf) : event->ascii;
 
+		/* BGE-Remix P10.9: Run mode's Suspend and Stop (buttons, Pause key) */
+		if (BL_GameViewRunActive() && BL_GameViewRunEvent(event, ar)) {
+			BLI_remlink(&win->queue, event);
+			wm_event_free(event);
+			continue;
+		}
+
 		if (keyboarddevice->ConvertBlenderEvent(event->type, event->val, unicode))
 			exitrequested = KX_EXIT_REQUEST_BLENDER_ESC;
 
@@ -187,6 +195,10 @@ static int BL_KetsjiNextFrame(KX_KetsjiEngine *ketsjiengine, bContext *C, wmWind
 
 	if (win != CTX_wm_window(C)) {
 		exitrequested= KX_EXIT_REQUEST_OUTSIDE; /* window closed while bge runs */
+	}
+	/* BGE-Remix P10.9: Run mode's suspend and stop */
+	if (!exitrequested && BL_GameViewRunActive()) {
+		exitrequested = BL_GameViewRunFrame(ketsjiengine);
 	}
 	return exitrequested;
 }
@@ -351,6 +363,10 @@ extern "C" void StartKetsjiShell(struct bContext *C, struct ARegion *ar, rcti *c
 		ketsjiengine->SetNetworkDevice(networkdevice);
 		ketsjiengine->SetCanvas(canvas);
 		ketsjiengine->SetRasterizer(rasterizer);
+		/* BGE-Remix P10.9: Run mode's holograms over the game, before each swap */
+		if (BL_GameViewRunActive()) {
+			static_cast<KX_BlenderCanvas *>(canvas)->SetPreSwapHook(BL_GameViewRunPreSwap, ketsjiengine);
+		}
 		ketsjiengine->SetUseFixedTime(usefixed);
 		ketsjiengine->SetTimingDisplay(frameRate, profile, properties);
 		ketsjiengine->SetRestrictAnimationFPS(restrictAnimFPS);
@@ -528,6 +544,10 @@ extern "C" void StartKetsjiShell(struct bContext *C, struct ARegion *ar, rcti *c
 				/* BGE-Remix P7: the Game View's checks, in the console */
 				BL_GameViewReportGame(startscene, blenderdata, static_cast<KX_BlenderSceneConverter *>(sceneconverter));
 				ketsjiengine->AddScene(startscene);
+				/* BGE-Remix P10.9: Run mode's mock-up, a resume's snapshot */
+				if (BL_GameViewRunActive()) {
+					BL_GameViewRunConverted(startscene, ketsjiengine);
+				}
 				
 				// init the rasterizer
 				rasterizer->Init();
@@ -582,6 +602,10 @@ extern "C" void StartKetsjiShell(struct bContext *C, struct ARegion *ar, rcti *c
 					}
 				}
 				printf("Blender Game Engine Finished\n");
+				/* BGE-Remix P10.9: a suspend keeps the game's state (the scene is still there) */
+				if (BL_GameViewRunActive()) {
+					BL_GameViewRunStopping(ketsjiengine);
+				}
 				exitstring = ketsjiengine->GetExitString();
 #ifdef WITH_PYTHON
 				if (python_main) MEM_freeN(python_main);

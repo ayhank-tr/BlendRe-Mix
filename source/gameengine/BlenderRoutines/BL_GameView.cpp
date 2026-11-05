@@ -54,6 +54,7 @@
 
 #include "BL_GameView.h"
 #include "BL_GameViewBuild.h"
+#include "BL_GameViewRun.h"  /* BGE-Remix P10.9: Run mode's Python functions */
 
 extern "C" {
 	#include "DNA_material_types.h"
@@ -329,6 +330,7 @@ struct Store {
 	bool dirty;
 	int generation;
 	int selected;
+	std::string selected_key;  /* BGE-Remix P10.7: kind|owner|name, kept across rebuilds */
 	Store() : built(false), dirty(true), generation(0), selected(-1)
 	{
 		memset(&model, 0, sizeof(model));
@@ -380,6 +382,18 @@ void publish(GVBuilder &b, const char *scene, bool converted, double build_ms, d
 	if (s.selected >= m.element_count) {
 		s.selected = -1;
 	}
+	/* BGE-Remix P10.7: the selection follows its element (an edit rebuilds
+	 * the model and the indices move) */
+	if (!s.selected_key.empty()) {
+		s.selected = -1;
+		for (int i = 0; i < m.element_count; i++) {
+			const GVElement &e = s.elements[i];
+			if (s.selected_key == std::string(e.kind) + "|" + e.owner + "|" + e.name) {
+				s.selected = i;
+				break;
+			}
+		}
+	}
 }
 
 }  /* namespace */
@@ -410,6 +424,7 @@ extern "C" void BL_GameViewClear(void)
 	s.built = false;
 	s.dirty = true;
 	s.selected = -1;
+	s.selected_key.clear();
 }
 
 extern "C" int BL_GameViewSelected(void)
@@ -421,6 +436,11 @@ extern "C" void BL_GameViewSetSelected(int element)
 {
 	Store &s = store();
 	s.selected = (element >= 0 && element < (int)s.elements.size()) ? element : -1;
+	s.selected_key.clear();
+	if (s.selected >= 0) {
+		const GVElement &e = s.elements[s.selected];
+		s.selected_key = std::string(e.kind) + "|" + e.owner + "|" + e.name;
+	}
 }
 
 /* ------------------------------------------------------------------------- */
@@ -807,7 +827,9 @@ static struct PyModuleDef gv_module = {
 
 extern "C" PyObject *BL_GameView_initPython(void)
 {
-	return PyModule_Create(&gv_module);
+	PyObject *module = PyModule_Create(&gv_module);
+	BL_GameViewRun_addPython(module);  /* BGE-Remix P10.9 */
+	return module;
 }
 
 #else

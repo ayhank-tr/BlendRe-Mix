@@ -55,6 +55,7 @@ set(SRC
 	view3d_edit.c
 	view3d_fly.c
 	view3d_gameview.c
+	view3d_gameview_run.c
 	view3d_walk.c
 	view3d_header.c
 	view3d_iterators.c

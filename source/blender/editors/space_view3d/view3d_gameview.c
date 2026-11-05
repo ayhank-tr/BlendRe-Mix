@@ -34,6 +34,7 @@
 #include "MEM_guardedalloc.h"
 
 #include "DNA_object_types.h"
+#include "DNA_property_types.h"
 #include "DNA_scene_types.h"
 #include "DNA_screen_types.h"
 #include "DNA_space_types.h"
@@ -47,12 +48,15 @@
 #include "BLI_listbase.h"
 #include "BLI_math.h"
 #include "BLI_path_util.h"
+#include "BLI_rect.h"
 #include "BLI_string.h"
 
 #include "BKE_appdir.h"
 #include "BKE_context.h"
 #include "BKE_global.h"
 #include "BKE_main.h"
+#include "BKE_report.h"
+#include "BKE_scene.h"
 #include "BKE_screen.h"
 
 #include "BIF_gl.h"
@@ -73,6 +77,7 @@
 #include "WM_api.h"
 #include "WM_types.h"
 
+#include "ED_object.h"
 #include "ED_screen.h"
 #include "ED_view3d.h"
 
@@ -83,6 +88,8 @@
 #ifdef WITH_GAMEENGINE
 
 #include "BL_GameView.h"
+#include "BL_GameViewLive.h"  /* BGE-Remix P10.9 */
+#include "BL_GameViewRun.h"
 
 /* ------------------------------------------------------------------------- */
 /* the rebuild policy */
@@ -158,6 +165,12 @@ static bool gv_build(bContext *C, ARegion *ar)
 		win->queue = queue;
 	}
 	return ok != 0;
+}
+
+/* BGE-Remix P10.9: Run mode builds the model before the game starts */
+bool view3d_gameview_build(bContext *C, ARegion *ar)
+{
+	return gv_build(C, ar);
 }
 
 /* at the start of a Game View's draw: rebuild when due */
@@ -369,6 +382,7 @@ typedef struct GVView {
 	int layers;
 	int selected;
 	double time;
+	bool live;   /* BGE-Remix P10.9: over the running game: its live data */
 } GVView;
 
 static void gv_view_init(GVView *gv, const bContext *C, ARegion *ar)
@@ -399,12 +413,29 @@ static Object *gv_owner(const GVView *gv, const GVElement *e)
 	return e->owner[0] ? BLI_ghash_lookup(gv->owners, e->owner) : NULL;
 }
 
+/* BGE-Remix P10.9: over the running game, the element's live data (NULL: none) */
+static const GVLive *gv_live(const GVView *gv, const GVElement *e)
+{
+	return gv->live ? BL_GameViewLiveGet((int)(e - gv->m->elements)) : NULL;
+}
+
+/* the state an element is drawn in: its live one while the game runs */
+static int gv_element_state(const GVView *gv, const GVElement *e)
+{
+	const GVLive *l = gv_live(gv, e);
+	return l ? l->state : e->state;
+}
+
 /* where an element's avatar is now; false: its owner is gone */
 static bool gv_element_pos(const GVView *gv, const GVElement *e, float r[3])
 {
 	Object *ob = gv_owner(gv, e);
+	const GVLive *l = gv_live(gv, e);
 	if (e->owner[0] && !ob) {
 		return false;
+	}
+	if (l && !l->present) {
+		return false;  /* not in the running game (a mock-up hides it) */
 	}
 	if (!ob) {
 		copy_v3_v3(r, e->pos);
@@ -425,7 +456,11 @@ static bool gv_element_pos(const GVView *gv, const GVElement *e, float r[3])
 static bool gv_element_origin(const GVView *gv, const GVElement *e, float r[3])
 {
 	Object *ob = gv_owner(gv, e);
+	const GVLive *l = gv_live(gv, e);
 	if (e->owner[0] && !ob) {
+		return false;
+	}
+	if (l && !l->present) {
 		return false;
 	}
 	copy_v3_v3(r, ob ? ob->obmat[3] : e->pos);
@@ -918,8 +953,9 @@ static void gv_draw_avatar(const GVView *gv, const GVElement *e, const float pos
 	glPushMatrix();
 	glMultMatrixf((float *)mat);
 	if (!billboard) {
-		gv_state_colour(e->state, c);
-		if (e->state == GV_STATE_BLACK) {
+		const int state = gv_element_state(gv, e);
+		gv_state_colour(state, c);
+		if (state == GV_STATE_BLACK) {
 			c[0] = c[1] = c[2] = 0.14f;
 		}
 		glColor4f(c[0], c[1], c[2], alpha);
@@ -987,7 +1023,17 @@ static void gv_draw_elements(GVView *gv, float alpha, bool *r_flashing)
 		if (e->flag & (GV_EL_HIDDEN_LAYER | GV_EL_NOT_IN_GAME)) {
 			a *= 0.4f;
 		}
-		gv_ring(gv, pos, size, e->state, a);
+		gv_ring(gv, pos, size, gv_element_state(gv, e), a);
+		if (gv->live) {
+			/* BGE-Remix P10.9: what fired this frame: a second, wider ring */
+			const GVLive *l = gv_live(gv, e);
+			if (l && l->fired) {
+				glLineWidth(2.0f);
+				gv_line_colour(GV_STATE_GREEN, a);
+				gv_circle(pos, gv->right, gv->up, size * 0.9f, 32);
+				glLineWidth(1.0f);
+			}
+		}
 		if (e->flag & GV_EL_OVER_TARGET) {
 			*r_flashing = true;
 			if (flash_on) {
@@ -1065,7 +1111,18 @@ static void gv_draw_labels(GVView *gv)
 				unknown++;
 			}
 		}
-		if (unknown) {
+		if (gv->live) {
+			/* BGE-Remix P10.9: the live value (a property's, a body's contacts) */
+			const GVLive *l = gv_live(gv, e);
+			if (l && l->text[0]) {
+				BLI_snprintf(buf, sizeof(buf), "%s: %s", e->name, l->text);
+			}
+			else {
+				BLI_strncpy(buf, e->name, sizeof(buf));
+			}
+			unknown = 0;
+		}
+		else if (unknown) {
 			BLI_snprintf(buf, sizeof(buf), "%s (%d)", e->name, unknown);
 		}
 		else {
@@ -1078,6 +1135,9 @@ static void gv_draw_labels(GVView *gv)
 			BLF_draw_default(x + 1.0f, y - 1.0f, 0.0f, buf, sizeof(buf));
 			if (unknown) {
 				glColor4f(1.0f, 0.62f, 0.55f, 1.0f);
+			}
+			else if (gv_live(gv, e) && gv_live(gv, e)->fired) {
+				glColor4f(0.55f, 1.0f, 0.55f, 1.0f);  /* BGE-Remix P10.9: fired, changed, touching */
 			}
 			else if (e->flag & (GV_EL_HIDDEN_LAYER | GV_EL_NOT_IN_GAME)) {
 				glColor4f(0.7f, 0.7f, 0.7f, 0.8f);
@@ -1108,6 +1168,41 @@ static void gv_draw_summary(GVView *gv)
 	BLF_draw_default(rect.xmin + 11.0f * U.pixelsize, rect.ymin + 9.0f * U.pixelsize, 0.0f, buf, sizeof(buf));
 	glColor4f(0.95f, 0.97f, 1.0f, 1.0f);
 	BLF_draw_default(rect.xmin + 10.0f * U.pixelsize, rect.ymin + 10.0f * U.pixelsize, 0.0f, buf, sizeof(buf));
+}
+
+/* BGE-Remix P10.7: Edit mode's wiring: the drag from an avatar */
+static struct {
+	bool active;
+	int source;
+	ARegion *ar;
+	int mval[2];
+} gv_drag = {false, -1, NULL, {0, 0}};
+
+static void gv_draw_drag(GVView *gv)
+{
+	const GVModel *m = gv->m;
+	float pos[3], sco[2];
+	if (!gv_drag.active || gv_drag.ar != gv->ar || gv_drag.source < 0 || gv_drag.source >= m->element_count) {
+		return;
+	}
+	if (!gv_element_pos(gv, &m->elements[gv_drag.source], pos) ||
+	    ED_view3d_project_float_global(gv->ar, pos, sco, V3D_PROJ_TEST_NOP) != V3D_PROJ_RET_OK)
+	{
+		return;
+	}
+	glLineWidth(3.0f);
+	glColor4f(0.0f, 0.0f, 0.0f, 0.7f);
+	glBegin(GL_LINES);
+	glVertex2fv(sco);
+	glVertex2f((float)gv_drag.mval[0], (float)gv_drag.mval[1]);
+	glEnd();
+	glLineWidth(1.5f);
+	glColor4f(1.0f, 0.84f, 0.16f, 1.0f);
+	glBegin(GL_LINES);
+	glVertex2fv(sco);
+	glVertex2f((float)gv_drag.mval[0], (float)gv_drag.mval[1]);
+	glEnd();
+	glLineWidth(1.0f);
 }
 
 /* after the scene (or RTX Remix's picture), before the view's info */
@@ -1169,6 +1264,7 @@ void view3d_gameview_draw(const bContext *C, Scene *scene, ARegion *ar, View3D *
 	if (v3d->gameview_flag & V3D_GAMEVIEW_LABELS) {
 		gv_draw_labels(&gv);
 	}
+	gv_draw_drag(&gv);  /* BGE-Remix P10.7 */
 	gv_draw_summary(&gv);
 
 	glPopAttrib();
@@ -1179,6 +1275,195 @@ void view3d_gameview_draw(const bContext *C, Scene *scene, ARegion *ar, View3D *
 	if (flashing) {
 		gv_timer_set(CTX_wm_manager(C), CTX_wm_window(C), true);
 	}
+}
+
+/* ------------------------------------------------------------------------- */
+/* BGE-Remix P10.9: Run mode's holograms over the running game. Called by the
+ * embedded loop before each swap (BL_GameViewRun.h), in the window's OpenGL
+ * context with the game's state: what the game had bound is put back. The
+ * region draws through the game camera for the call (a copy of its view
+ * data), and the objects' matrices are the game's for the call. */
+
+static void gv_draw_run_strip(ARegion *ar)
+{
+	int sus[4], stop[4], k;
+	char buf[96];
+	const int *rects[2];
+	const char *texts[2] = {"Suspend", "Stop"};
+	BL_GameViewRunButtons(ar->winx, ar->winy, sus, stop);
+	rects[0] = sus;
+	rects[1] = stop;
+	for (k = 0; k < 2; k++) {
+		const int *r = rects[k];
+		const float w = BLF_width_default(texts[k], 16);
+		glColor4f(k ? 0.55f : 0.16f, k ? 0.12f : 0.32f, k ? 0.10f : 0.62f, 0.85f);
+		glRecti(r[0], r[1], r[2], r[3]);
+		glColor4f(1.0f, 1.0f, 1.0f, 0.9f);
+		glBegin(GL_LINE_LOOP);
+		glVertex2i(r[0], r[1]);
+		glVertex2i(r[2], r[1]);
+		glVertex2i(r[2], r[3]);
+		glVertex2i(r[0], r[3]);
+		glEnd();
+		BLF_draw_default(0.5f * (r[0] + r[2]) - 0.5f * w, r[1] + 6.0f * U.pixelsize, 0.0f, texts[k], 16);
+	}
+	BLI_snprintf(buf, sizeof(buf), "Run: frame %d   Pause: suspend   the exit key: stop", BL_GameViewRunFrames());
+	glColor4f(0.0f, 0.0f, 0.0f, 0.85f);
+	BLF_draw_default(stop[2] + 13.0f * U.pixelsize, stop[1] + 5.0f * U.pixelsize, 0.0f, buf, sizeof(buf));
+	glColor4f(0.95f, 0.97f, 1.0f, 1.0f);
+	BLF_draw_default(stop[2] + 12.0f * U.pixelsize, stop[1] + 6.0f * U.pixelsize, 0.0f, buf, sizeof(buf));
+}
+
+void view3d_gameview_draw_live(bContext *C, ARegion *ar, const int frame[4], float viewmat[4][4], float winmat[4][4])
+{
+	View3D *v3d = CTX_wm_view3d(C);
+	Main *bmain = CTX_data_main(C);
+	RegionView3D *rv3d_orig = ar->regiondata;
+	RegionView3D rv;
+	const short winx = ar->winx, winy = ar->winy;
+	const rcti winrct = ar->winrct;
+	const int w = frame[2] - frame[0], h = frame[3] - frame[1];
+	GLint program = 0, abuf = 0, ebuf = 0, active_tex = 0, tex2d = 0, vao = 0;
+	const bool has_vao = GLEW_VERSION_3_0 || GLEW_ARB_vertex_array_object;
+	float (*saved)[4][4] = NULL;
+	Object **moved = NULL;
+	int nmoved = 0, nobj = 0;
+	Object *ob;
+	GVView gv;
+	bool flashing = false;
+
+	if (!rv3d_orig || !v3d || !BL_GameViewModel() || w <= 0 || h <= 0) {
+		return;
+	}
+
+	/* what the game has bound */
+	glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+	glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &abuf);
+	glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &ebuf);
+	glGetIntegerv(GL_ACTIVE_TEXTURE, &active_tex);
+	if (has_vao) {
+		glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &vao);
+		glBindVertexArray(0);
+	}
+	glUseProgram(0);
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+	glActiveTexture(GL_TEXTURE0);
+	glGetIntegerv(GL_TEXTURE_BINDING_2D, &tex2d);
+	glPushAttrib(GL_ALL_ATTRIB_BITS);
+	glMatrixMode(GL_TEXTURE);
+	glPushMatrix();
+	glLoadIdentity();
+	glMatrixMode(GL_PROJECTION);
+	glPushMatrix();
+	glMatrixMode(GL_MODELVIEW);
+	glPushMatrix();
+
+	/* the view through the game camera, over the game's rectangle */
+	rv = *rv3d_orig;
+	copy_m4_m4(rv.viewmat, viewmat);
+	copy_m4_m4(rv.winmat, winmat);
+	mul_m4_m4m4(rv.persmat, winmat, viewmat);
+	invert_m4_m4(rv.persinv, rv.persmat);
+	invert_m4_m4(rv.viewinv, viewmat);
+	rv.is_persp = winmat[3][3] == 0.0f;
+	{
+		/* as ED_view3d_update_viewmat's pixel size */
+		float v1[3], v2[3], len_px, len_sc;
+		v1[0] = rv.persmat[0][0];
+		v1[1] = rv.persmat[1][0];
+		v1[2] = rv.persmat[2][0];
+		v2[0] = rv.persmat[0][1];
+		v2[1] = rv.persmat[1][1];
+		v2[2] = rv.persmat[2][1];
+		len_px = 2.0f / sqrtf(max_ff(min_ff(len_squared_v3(v1), len_squared_v3(v2)), 1e-12f));
+		len_sc = (float)max_ii(w, h);
+		rv.pixsize = len_px / len_sc;
+	}
+	ar->regiondata = &rv;
+	ar->winx = (short)w;
+	ar->winy = (short)h;
+	BLI_rcti_init(&ar->winrct, frame[0], frame[2], frame[1], frame[3]);
+
+	/* the objects where the game has them */
+	for (ob = bmain->object.first; ob; ob = ob->id.next) {
+		nobj++;
+	}
+	if (nobj) {
+		saved = MEM_mallocN(sizeof(*saved) * nobj, __func__);
+		moved = MEM_mallocN(sizeof(*moved) * nobj, __func__);
+		for (ob = bmain->object.first; ob; ob = ob->id.next) {
+			float mat[4][4];
+			if (BL_GameViewLiveMatrix(ob->id.name + 2, mat)) {
+				copy_m4_m4(saved[nmoved], ob->obmat);
+				copy_m4_m4(ob->obmat, mat);
+				moved[nmoved++] = ob;
+			}
+		}
+	}
+
+	glViewport(frame[0], frame[1], w, h);
+	glScissor(frame[0], frame[1], w, h);
+	glEnable(GL_SCISSOR_TEST);
+	glDisable(GL_LIGHTING);
+	glDisable(GL_FOG);
+	glDisable(GL_CULL_FACE);
+	glDisable(GL_TEXTURE_2D);
+	glDisable(GL_ALPHA_TEST);
+	glDisable(GL_STENCIL_TEST);
+	glDisable(GL_COLOR_LOGIC_OP);
+	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	/* over the game: no depth (RTX Remix's picture has none) */
+	glDisable(GL_DEPTH_TEST);
+	glDepthMask(GL_FALSE);
+
+	gv_view_init(&gv, C, ar);
+	gv.live = true;
+	if (gv.m) {
+		glMatrixMode(GL_PROJECTION);
+		glLoadMatrixf((float *)winmat);
+		glMatrixMode(GL_MODELVIEW);
+		glLoadMatrixf((float *)viewmat);
+		glEnable(GL_LINE_SMOOTH);
+		gv_draw_shapes(&gv, 0.9f);
+		gv_draw_elements(&gv, 0.92f, &flashing);
+		glDisable(GL_LINE_SMOOTH);
+		ED_region_pixelspace(ar);
+		if (v3d->gameview_flag & V3D_GAMEVIEW_LABELS) {
+			gv_draw_labels(&gv);
+		}
+		gv_draw_run_strip(ar);
+	}
+	gv_view_free(&gv);
+
+	/* everything back */
+	while (nmoved--) {
+		copy_m4_m4(moved[nmoved]->obmat, saved[nmoved]);
+	}
+	MEM_SAFE_FREE(saved);
+	MEM_SAFE_FREE(moved);
+	ar->regiondata = rv3d_orig;
+	ar->winx = winx;
+	ar->winy = winy;
+	ar->winrct = winrct;
+
+	glMatrixMode(GL_TEXTURE);
+	glPopMatrix();
+	glMatrixMode(GL_PROJECTION);
+	glPopMatrix();
+	glMatrixMode(GL_MODELVIEW);
+	glPopMatrix();
+	glPopAttrib();
+	glBindTexture(GL_TEXTURE_2D, (GLuint)tex2d);
+	glActiveTexture((GLenum)active_tex);
+	glBindBuffer(GL_ARRAY_BUFFER, (GLuint)abuf);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (GLuint)ebuf);
+	if (has_vao) {
+		glBindVertexArray((GLuint)vao);
+	}
+	glUseProgram((GLuint)program);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1228,6 +1513,36 @@ static int gameview_poll(bContext *C)
 	return v3d && (v3d->gameview_flag & V3D_GAMEVIEW) && CTX_wm_region_view3d(C);
 }
 
+/* BGE-Remix P10.7: in Edit mode a click on an avatar also makes its object
+ * the active one, so Blender's own editors show the same thing */
+static void gv_activate_owner(bContext *C, int el)
+{
+	const GVModel *m = BL_GameViewModel();
+	Scene *scene = CTX_data_scene(C);
+	Base *base, *b;
+	if (!m || !scene || el < 0 || el >= m->element_count || !m->elements[el].owner[0]) {
+		return;
+	}
+	base = BKE_scene_base_find_by_name(scene, m->elements[el].owner);
+	if (!base) {
+		return;
+	}
+	for (b = scene->base.first; b; b = b->next) {
+		if (b != base && (b->flag & SELECT)) {
+			ED_base_object_select(b, BA_DESELECT);
+		}
+	}
+	ED_base_object_select(base, BA_SELECT);
+	ED_base_object_activate(C, base);
+	WM_event_add_notifier(C, NC_SCENE | ND_OB_ACTIVE, scene);
+}
+
+static bool gv_edit_mode(bContext *C)
+{
+	View3D *v3d = CTX_wm_view3d(C);
+	return v3d && (v3d->gameview_flag & V3D_GAMEVIEW) && (v3d->gameview_flag & V3D_GAMEVIEW_EDIT);
+}
+
 static int gameview_select_invoke(bContext *C, wmOperator *UNUSED(op), const wmEvent *event)
 {
 	ARegion *ar = CTX_wm_region(C);
@@ -1246,13 +1561,20 @@ static int gameview_select_invoke(bContext *C, wmOperator *UNUSED(op), const wmE
 		return OPERATOR_CANCELLED | OPERATOR_PASS_THROUGH;
 	}
 	BL_GameViewSetSelected(el);
+	if (gv_edit_mode(C)) {
+		gv_activate_owner(C, el);
+	}
 	ED_area_tag_redraw(CTX_wm_area(C));
 	return OPERATOR_FINISHED;
 }
 
 static int gameview_select_exec(bContext *C, wmOperator *op)
 {
-	BL_GameViewSetSelected(RNA_int_get(op->ptr, "element"));
+	const int el = RNA_int_get(op->ptr, "element");
+	BL_GameViewSetSelected(el);
+	if (gv_edit_mode(C)) {
+		gv_activate_owner(C, el);
+	}
 	ED_area_tag_redraw(CTX_wm_area(C));
 	return OPERATOR_FINISHED;
 }
@@ -1331,10 +1653,125 @@ void VIEW3D_OT_gameview_refresh(wmOperatorType *ot)
 	ot->poll = gameview_poll;
 }
 
+/* ------------------------------------------------------------------------- */
+/* BGE-Remix P10.7: wiring by dragging from one avatar to another (Edit
+ * mode). The wire itself is Python's gameview.wire (source and target
+ * elements), which the tests call directly. A press and release without a
+ * drag is a click: it selects the avatar. */
+
+#define GV_DRAG_MIN_PX 6
+
+static void gv_drag_end(bContext *C)
+{
+	gv_drag.active = false;
+	gv_drag.source = -1;
+	gv_drag.ar = NULL;
+	ED_area_tag_redraw(CTX_wm_area(C));
+}
+
+static int gameview_wire_drag_invoke(bContext *C, wmOperator *op, const wmEvent *event)
+{
+	ARegion *ar = CTX_wm_region(C);
+	int el;
+	if (!gv_edit_mode(C)) {
+		return OPERATOR_CANCELLED | OPERATOR_PASS_THROUGH;
+	}
+	el = view3d_gameview_pick(C, ar, event->mval);
+	if (el < 0) {
+		return OPERATOR_CANCELLED | OPERATOR_PASS_THROUGH;
+	}
+	gv_drag.active = true;
+	gv_drag.source = el;
+	gv_drag.ar = ar;
+	gv_drag.mval[0] = event->mval[0];
+	gv_drag.mval[1] = event->mval[1];
+	RNA_int_set(op->ptr, "source", el);
+	BL_GameViewSetSelected(el);
+	gv_activate_owner(C, el);
+	WM_event_add_modal_handler(C, op);
+	ED_area_tag_redraw(CTX_wm_area(C));
+	return OPERATOR_RUNNING_MODAL;
+}
+
+static int gameview_wire_drag_modal(bContext *C, wmOperator *op, const wmEvent *event)
+{
+	ARegion *ar = CTX_wm_region(C);
+	const int source = RNA_int_get(op->ptr, "source");
+	int start[2];
+	switch (event->type) {
+		case MOUSEMOVE:
+			gv_drag.mval[0] = event->mval[0];
+			gv_drag.mval[1] = event->mval[1];
+			ED_area_tag_redraw(CTX_wm_area(C));
+			return OPERATOR_RUNNING_MODAL;
+		case LEFTMOUSE:
+			if (event->val != KM_RELEASE) {
+				return OPERATOR_RUNNING_MODAL;
+			}
+			start[0] = event->prevclickx - ar->winrct.xmin;
+			start[1] = event->prevclicky - ar->winrct.ymin;
+			if (abs(event->mval[0] - start[0]) < GV_DRAG_MIN_PX && abs(event->mval[1] - start[1]) < GV_DRAG_MIN_PX) {
+				gv_drag_end(C);  /* a click: the avatar stays selected */
+				return OPERATOR_FINISHED;
+			}
+			else {
+				const int target = view3d_gameview_pick(C, ar, event->mval);
+				wmOperatorType *ot = WM_operatortype_find("GAMEVIEW_OT_wire", true);
+				gv_drag_end(C);
+				if (target < 0 || target == source) {
+					return OPERATOR_CANCELLED;
+				}
+				if (!ot) {
+					BKE_report(op->reports, RPT_ERROR, "Wiring needs the Remix View's Python (gameview.wire)");
+					return OPERATOR_CANCELLED;
+				}
+				{
+					PointerRNA ptr;
+					WM_operator_properties_create_ptr(&ptr, ot);
+					RNA_int_set(&ptr, "source", source);
+					RNA_int_set(&ptr, "target", target);
+					WM_operator_name_call_ptr(C, ot, WM_OP_EXEC_DEFAULT, &ptr);
+					WM_operator_properties_free(&ptr);
+				}
+				return OPERATOR_FINISHED;
+			}
+		case ESCKEY:
+		case RIGHTMOUSE:
+			gv_drag_end(C);
+			return OPERATOR_CANCELLED;
+		default:
+			return OPERATOR_RUNNING_MODAL;
+	}
+}
+
+static void gameview_wire_drag_cancel(bContext *C, wmOperator *UNUSED(op))
+{
+	gv_drag_end(C);
+}
+
+void VIEW3D_OT_gameview_wire_drag(wmOperatorType *ot)
+{
+	PropertyRNA *prop;
+	ot->name = "Wire Remix View Avatars";
+	ot->description = "Edit mode: drag from one avatar to another to wire them (sensor to controller, controller "
+	                  "to actuator, actuator to the object it acts on, message to listener, child to parent)";
+	ot->idname = "VIEW3D_OT_gameview_wire_drag";
+	ot->invoke = gameview_wire_drag_invoke;
+	ot->modal = gameview_wire_drag_modal;
+	ot->cancel = gameview_wire_drag_cancel;
+	ot->poll = gameview_poll;
+	ot->flag = OPTYPE_BLOCKING;
+	prop = RNA_def_int(ot->srna, "source", -1, -1, INT_MAX, "Source", "The element dragged from", -1, INT_MAX);
+	RNA_def_property_flag(prop, PROP_HIDDEN | PROP_SKIP_SAVE);
+}
+
 void view3d_gameview_keymap(wmKeyConfig *keyconf)
 {
 	/* BGE-Remix P9.7: the Remix View (P7's Game View) */
 	wmKeyMap *keymap = WM_keymap_find(keyconf, "Remix View", SPACE_VIEW3D, 0);
+	/* BGE-Remix P10.7: Edit mode (each passes on outside Edit mode) */
+	WM_keymap_add_item(keymap, "VIEW3D_OT_gameview_wire_drag", LEFTMOUSE, KM_PRESS, 0, 0);
+	WM_keymap_add_item(keymap, "GAMEVIEW_OT_element_menu", WKEY, KM_PRESS, 0, 0);
 	WM_keymap_add_item(keymap, "VIEW3D_OT_gameview_select", SELECTMOUSE, KM_PRESS, 0, 0);
 	WM_keymap_add_item(keymap, "VIEW3D_OT_gameview_refresh", F5KEY, KM_PRESS, 0, 0);
 }

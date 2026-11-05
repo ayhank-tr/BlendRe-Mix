@@ -53,7 +53,9 @@ extern "C" {
 KX_BlenderCanvas::KX_BlenderCanvas(wmWindowManager *wm, wmWindow *win, RAS_Rect &rect, struct ARegion *ar) :
 m_wm(wm),
 m_win(win),
-m_frame_rect(rect)
+m_frame_rect(rect),
+m_preswap(NULL),
+m_preswap_user(NULL)
 {
 	// initialize area so that it's available for game logic on frame 1 (ImageViewport)
 	m_area_rect = rect;
@@ -77,6 +79,9 @@ void KX_BlenderCanvas::Init()
 
 void KX_BlenderCanvas::SwapBuffers()
 {
+	if (m_preswap) {
+		m_preswap(m_preswap_user);  /* BGE-Remix P10.9 */
+	}
 	wm_window_swap_buffers(m_win);
 }
 

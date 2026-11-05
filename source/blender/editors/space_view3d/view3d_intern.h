@@ -236,6 +236,14 @@ int view3d_gameview_pick(struct bContext *C, struct ARegion *ar, const int mval[
 void VIEW3D_OT_gameview_select(struct wmOperatorType *ot);
 void VIEW3D_OT_gameview_frame(struct wmOperatorType *ot);
 void VIEW3D_OT_gameview_refresh(struct wmOperatorType *ot);
+/* BGE-Remix P10.7: Edit mode's wiring by dragging; P10.9: Run mode */
+void VIEW3D_OT_gameview_wire_drag(struct wmOperatorType *ot);
+bool view3d_gameview_build(struct bContext *C, struct ARegion *ar);
+void view3d_gameview_draw_live(struct bContext *C, struct ARegion *ar, const int frame[4], float viewmat[4][4],
+                               float winmat[4][4]);
+/* view3d_gameview_run.c */
+void VIEW3D_OT_gameview_play(struct wmOperatorType *ot);
+void VIEW3D_OT_gameview_file_state(struct wmOperatorType *ot);
 #endif
 
 
