@@ -1967,10 +1967,12 @@ void apply_face_image(const Material *ma, Image *face_image, MaterialSpec &r_spe
 	}
 	r_spec.textures[TEX_ALBEDO] = texture(face_image, BRB_TEXTURE_COLOR);
 	if (r_spec.source == MaterialSpec::BLENDER_INTERNAL) {
-		/* the image replaces the material colour; P10.3: the image carries
-		 * Diffuse Intensity (Remix's colour is not used with an image) */
-		set3(d.albedo, 1.0f, 1.0f, 1.0f);
-		r_spec.textures[TEX_ALBEDO].scale = ma->ref;
+		/* the image replaces the material colour (BGE-Remix P10.3: left as
+		 * P8 made it; Remix does not use this colour with an image, so a
+		 * face image reaches Remix without Diffuse Intensity: P8's
+		 * Multitexture scenes, whose fixed-function drawing differs, are
+		 * matched as they are) */
+		set3(d.albedo, ma->ref, ma->ref, ma->ref);
 	}
 	if ((ma->mode & MA_FACETEXTURE_ALPHA) && (d.alpha_blend || d.alpha_test)) {
 		/* the image's alpha is the opacity */

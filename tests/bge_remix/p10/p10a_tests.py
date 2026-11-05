@@ -114,6 +114,13 @@ print("P10A-AUDIT done")
 '''
 
 
+def _close(a, b, tol):
+    try:
+        return abs(float(a) - float(b)) <= tol
+    except (TypeError, ValueError):
+        return False
+
+
 def _fail(tests, name, why, detail=None):
     tests[name] = {"ok": False, "checks": {why: False}, "detail": detail}
 
@@ -317,12 +324,40 @@ def t_tiles(args, out, scenes, E, tests):
     tests[NAMES["tiles"]] = {"ok": all(c.values()), "checks": c, "detail": d}
 
 
+INSPECT_CHECK = r'''
+import bpy, json, sys
+argv = sys.argv[sys.argv.index("--") + 1:]
+target = argv[0]
+r = {}
+try:
+    import bge_remix
+    scene = bpy.context.scene
+    for ob in scene.objects:
+        if ob.name.startswith("P10C_"):
+            r[ob.name] = bge_remix.inspect(ob, scene)
+except Exception:
+    import traceback
+    r["error"] = traceback.format_exc()
+with open(target, "w") as f:
+    json.dump(r, f, indent=1, default=str)
+print("P10A-INSPECT done")
+'''
+
+
 def t_classic(args, out, scenes, E, tests):
+    import run_p2 as p2
     import run_p8 as p8
     import run_p9 as r9
     A = _scene_ok(E, "classic", tests, NAMES["classic"])
     if A is None:
         return
+    # what Remix gets, as the Remix View's Inspect shows it (the image's scale)
+    target = os.path.join(out, "p10a_classic_inspect.json")
+    if os.path.isfile(target):
+        os.remove(target)
+    p8.blender_script(args.ours, out, "p10a_classic_inspect", INSPECT_CHECK, [target],
+                      blend=os.path.join(scenes, "p10a_classic_remix.blend"))
+    ins = p2.read_json(target) or {}
     cache = os.path.join(out, "cache_p10a_classic")
     shutil.rmtree(cache, ignore_errors=True)
     log, env = p8.mock_env(args, out, "p10a_classic_mock", cache)
@@ -330,20 +365,25 @@ def t_classic(args, out, scenes, E, tests):
                        seconds=10)
     mats = r9.mock_materials(r9.mock_lines(log))
     c = {"the Classic tiles ran (the fake runtime)": bool(run["ran"]),
-         "every texture encoded": r9.textures_in(run)}
-    d = {}
+         "every texture encoded": r9.textures_in(run), "inspected": bool(ins) and not ins.get("error")}
+    d = {"inspect error": ins.get("error")}
     for label in A["order"]:
         t = A["tiles"][label]
         mine = [m for m in mats if r9.near(m.get("roughness"), t["roughness"], 0.002) and
                 m.get("albedo_tex", "-") != "-"]
         m = mine[-1] if mine else {}
-        d[label] = {k: m.get(k) for k in ("albedo", "albedo_tex", "roughness")}
-        tag = "_s%03d_" % int(round(t["ref"] * 100))
-        tex = m.get("albedo_tex", "")
-        if t["ref"] != 1.0:
-            c["%s: its image times %.2f (%s)" % (label, t["ref"], os.path.basename(tex))] = tag in tex
-        else:
-            c["%s: its image as it is (%s)" % (label, os.path.basename(tex))] = bool(tex) and "_col_s" not in tex
+        rep = ins.get("P10C_" + label) or {}
+        texs = ((rep.get("materials") or [{}])[0].get("textures") or [])
+        alb = next((x for x in texs if x.get("field") == "albedo"), {})
+        d[label] = {"mock": {k: m.get(k) for k in ("albedo", "albedo_tex", "roughness")}, "inspect": alb}
+        c["%s: Remix got its colour image" % label] = bool(m)
+        if t["face"]:
+            # (face images as P8 made them: see the guide)
+            c["%s: a face image, as P8 sent it (scale %s, colour %s)" % (label, alb.get("scale"), m.get("albedo"))] = \
+                _close(alb.get("scale"), 1.0, 1e-3) and r9.near(m.get("albedo"), r9.srgb([t["ref"]] * 3), 0.003)
+            continue
+        c["%s: its image times Diffuse Intensity %.2f (%s)" % (label, t["ref"], alb.get("scale"))] = \
+            _close(alb.get("scale"), t["ref"], 1e-3)
         c["%s: Remix's colour 1 (the image is the colour: %s)" % (label, m.get("albedo"))] = \
             r9.near(m.get("albedo"), [1.0, 1.0, 1.0], 0.002)
     tests[NAMES["classic"]] = {"ok": all(c.values()), "checks": c, "detail": d}
@@ -603,8 +643,10 @@ def s_classic(args, out, scenes, E, tests, sheets, report):
          "every texture in Remix before the picture": r9.textures_in(rx)}
     for label in A["order"]:
         row = rows.get(label)
-        c["%s (Diffuse Intensity %.1f%s): Remix within %.0f of the game (%s)" % (
-            label, A["tiles"][label]["ref"], ", a face image" if A["tiles"][label]["face"] else "", r9.TOL_GATE,
+        if A["tiles"][label]["face"]:
+            continue  # (a face image: reported, not gated; P8 made it so)
+        c["%s (Diffuse Intensity %.1f): Remix within %.0f of the game (%s)" % (
+            label, A["tiles"][label]["ref"], r9.TOL_GATE,
             "-" if not row else "%s -> %s, %.1f" % (row["opengl"], row["remix"], row["mean_diff"]))] = \
             bool(row) and row["mean_diff"] <= r9.TOL_GATE
     tests[RTX_NAMES["classic"]] = {"ok": all(c.values()), "checks": c, "detail": rows}

@@ -135,17 +135,6 @@ int key_bits(const TextureRequest &r)
 	return bits;
 }
 
-/* BGE-Remix P10.3: a scaled image's tag in its file's name ("" unscaled) */
-std::wstring scale_tag(const TextureRequest &r)
-{
-	if (r.scale == 1.0f || r.baked) {
-		return std::wstring();
-	}
-	wchar_t tag[16];
-	swprintf(tag, 16, L"_s%03d", std::max(0, std::min(999, (int)(r.scale * 100.0f + 0.5f))));
-	return tag;
-}
-
 float srgb_to_linear_f(float c)
 {
 	return (c < 0.04045f) ? ((c < 0.0f) ? 0.0f : c * (1.0f / 12.92f)) :
@@ -234,7 +223,7 @@ std::wstring TextureCache::file_name_of(const TextureRequest &req, bool *r_exact
 	if (!req.image) {
 		return std::wstring();
 	}
-	return folder() + L"\\" + safe_name(req.image->id.name + 2) + L"_" + kind_tag(req) + scale_tag(req) + L"_";
+	return folder() + L"\\" + safe_name(req.image->id.name + 2) + L"_" + kind_tag(req) + L"_";
 }
 
 bool TextureCache::cached(const TextureRequest &req)
@@ -400,12 +389,13 @@ TextureCache::State TextureCache::request(const TextureRequest &req, std::wstrin
 	wchar_t hex[16];
 	swprintf(hex, 16, L"%08x", hash);
 	if (!(req.baked && req.baked->key)) {
-		e.path = dir + L"\\" + safe_name(name.c_str()) + L"_" + kind_tag(req) + scale_tag(req) + L"_" + hex + L".dds";
+		/* (P10.3: a scaled image's name as an unscaled one's: its pixels, so
+		 * its hash, differ) */
+		e.path = dir + L"\\" + safe_name(name.c_str()) + L"_" + kind_tag(req) + L"_" + hex + L".dds";
 		if (req.max_size > 0) {
 			wchar_t size[16];
 			swprintf(size, 16, L"_m%d", req.max_size);
-			e.path = dir + L"\\" + safe_name(name.c_str()) + L"_" + kind_tag(req) + scale_tag(req) + size + L"_" +
-			         hex + L".dds";
+			e.path = dir + L"\\" + safe_name(name.c_str()) + L"_" + kind_tag(req) + size + L"_" + hex + L".dds";
 		}
 	}
 	r_path = e.path;

@@ -88,9 +88,12 @@ suggested fix:
 - Classic materials read about 25 levels brighter in Remix than in the game
   (the P9.4 texture wall): Remix's albedo colour is only used when there is
   no albedo image, so a Classic material's Diffuse Intensity (0.8 by
-  default), which the game multiplies its colour image by, was lost. The
-  image now reaches Remix multiplied by it (in linear light; its file in
-  the cache is tagged, e.g. `_s080`). Face images likewise.
+  default), which the game multiplies its colour image by, was lost. A
+  texture slot's colour image now reaches Remix multiplied by it (in linear
+  light; a new file in the cache, as its pixels differ; the Remix View's
+  Inspect shows its scale). Face images are left as P8 made them (P8's
+  Multitexture scenes draw them by fixed-function OpenGL and were matched
+  as they are).
 
 ## RTX Remix's own texture tools
 
