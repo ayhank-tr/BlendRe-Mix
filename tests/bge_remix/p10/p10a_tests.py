@@ -1,4 +1,4 @@
-"""BGE-Remix p10a: the tests for the texture remaster (P10.1-P10.5) (called from run_p10.py)."""
+"""BGE-Remix p10a: the tests for the texture remaster (P10.1-P10.3, P10.5) (called from run_p10.py)."""
 
 
 def normal(args, out, scenes, E, tests, sheets):

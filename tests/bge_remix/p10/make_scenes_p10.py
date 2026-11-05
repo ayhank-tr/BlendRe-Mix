@@ -1,7 +1,8 @@
 """BGE-Remix P10: the test scenes (run inside our Blender, background).
 
 Each track makes its own scenes in its own module, each with make(folder, E):
-  p10a_scenes  the texture remaster (P10.1-P10.5)
+  p10a_scenes  the texture remaster (P10.1-P10.3, P10.5)
+  p10a4_scenes the texture remaster's atlases (P10.4)
   p10b_scenes  the Remix View's Edit and Run modes (P10.6-P10.9)
   p10c_scenes  the logic bricks (P10.10-P10.13)
 
@@ -22,7 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "p9"))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "p3"))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "p2"))
 
-TRACKS = ("p10a", "p10b", "p10c")
+TRACKS = ("p10a", "p10a4", "p10b", "p10c")
 
 
 def main():

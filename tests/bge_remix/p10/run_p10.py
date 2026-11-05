@@ -10,7 +10,7 @@ logic bricks brought up to date (run_local.bat p10; run_p10_rtx.bat).
 The tracks (each its own scene module and test module):
   p10a  the texture remaster: the audit (P10.1), preset fitting and bakes
         (P10.2), derived channels and the value check (P10.3), atlases
-        (P10.4), the panel and Apply (P10.5)
+        (P10.4: its own modules, p10a4), the panel and Apply (P10.5)
   p10b  the Remix View's Edit and Run modes (P10.6-P10.9)
   p10c  the logic bricks (P10.10-P10.13)
 """
@@ -30,7 +30,7 @@ import run_p2 as p2  # noqa: E402  (running Blender, contact sheets)
 import run_p8 as p8  # noqa: E402  (the player, pictures, the fake runtime)
 import run_p9 as r9  # noqa: E402,F401  (P9's helpers: pipe_play, mock_materials, textures_in, ...)
 
-TRACKS = ("p10a", "p10b", "p10c")
+TRACKS = ("p10a", "p10a4", "p10b", "p10c")
 
 
 def make_scenes(ours, out):
