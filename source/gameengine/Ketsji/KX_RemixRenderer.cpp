@@ -362,6 +362,8 @@ KX_RemixRenderer::Settings KX_RemixRenderer::GetSettings(KX_Scene *scene, int ov
 	if (!(s.exposure >= -10.0f && s.exposure <= 10.0f)) {
 		s.exposure = DEFAULT_EXPOSURE;
 	}
+	/* P9.2: ACES's calibration, in the same exposure */
+	s.exposure += BRMX_scene_exposure_offset(bscene);
 	return s;
 }
 

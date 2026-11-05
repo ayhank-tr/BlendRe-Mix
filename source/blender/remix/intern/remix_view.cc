@@ -1161,7 +1161,7 @@ bool ensure_running(int width, int height, bool gl_current, std::string &r_messa
 /* Exposure and quality, sent when they change (with the lock held). */
 void apply_scene_settings(const Scene *scene, float exposure)
 {
-	brmx::apply_exposure(BRMX_bridge(), exposure);
+	brmx::apply_exposure(BRMX_bridge(), exposure + BRMX_scene_exposure_offset(scene));
 	BRMX_Quality q;
 	BRMX_quality_from_scene(scene, &q);
 	BRMX_quality_apply(&q);
