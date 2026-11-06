@@ -20,6 +20,21 @@ normal(args, out, scenes, E, tests, sheets)   with the fake runtime (--mock)
   T10.c9 Stock 2.79b              p10c_new_bricks opened, played and saved
                                   in the official 2.79b; ours reopens it
   T10.c10 Earlier phases          P4's, P6's and P7's results in this round
+  P10.13's approved fixes (one light test each; an option: as stock when
+  off, the new behaviour when on):
+  T10.c11 A3 several states       a controller in states 1 and 2 runs in both
+  T10.c12 A4 logic priority       three objects' order: as stock 2.79b at 0,
+                                  a higher priority first
+  T10.c13 A8 the Delay's limit    the editor takes up to 32767 tics
+  T10.c14 A13 message filters     by sender, by body, none
+  T10.c15 A1 add per message      two messages in a tic: 1 off, 2 on
+  T10.c16 A2 read held keys       a key held when a state is entered: no
+                                  event off, one event on
+  T10.c17 A5 stop left state now  the servo stops in the tic its state is left
+  T10.c18 A6, A7 a slow game      physics and timers against the game clock
+  T10.c19 The logic layer's checks  B1, B2, A9, A10, A11, A14, A16
+  T10.c20 Options in stock 2.79b  every option on: stock opens, plays and
+                                  saves the file; ours reads them back
 rtx(args, out, scenes, E, tests, sheets, report)   the real runtime
   S10.c1 The RTX Remix actuator   a pulse given while Remix starts waits
                                   and is sent once it runs
@@ -578,6 +593,306 @@ def t_earlier(args, out, tests):
 
 
 # ---------------------------------------------------------------------------
+# P10.13: the approved fixes
+
+def _green(st, ob, brick):
+    return ticks_in(st, ob, brick, "GREEN")
+
+
+def t_multistate(args, out, scenes, E, tests):
+    name = "T10.c11 A controller in several states (P10.13 A3)"
+    M = E.get("multistate")
+    if not M:
+        return _fail(tests, name, "the p10c multistate scene was made", E.get("failed"))
+    blend = os.path.join(scenes, M["file"] + ".blend")
+    r = play_logged(args, out, "p10c_multistate", blend, 50)
+    st, masks, ob = r["bricks"], r["masks"], M["object"]
+    back = blender_json(args.ours, out, "p10c_multistate_rna", MULTI_CHECK, blend)
+    c = {"the scene played": bool(r["ran"]),
+         "made through RNA: state_mask [1, 2], states (the first) 1":
+             M["made"] == {"states": 1, "state_mask": [1, 2]},
+         "the file keeps it": back.get("M_both") == {"states": 1, "state_mask": [1, 2]},
+         "tic 10: in state 1, M_both runs (Green)": masks.get(10, {}).get(ob) == 1 and
+         st.get(10, {}).get((ob, "M_both")) == "GREEN",
+         "tic 40: in state 2, M_both still runs (Green)": masks.get(40, {}).get(ob) == 2 and
+         st.get(40, {}).get((ob, "M_both")) == "GREEN",
+         "tic 40: M_go, in state 1 only, is off (Black)": st.get(40, {}).get((ob, "M_go")) == "BLACK"}
+    _put(tests, name, c, {"run": run_summary(r), "rna": back})
+
+
+MULTI_CHECK = r"""
+import bpy, json, sys
+out = sys.argv[sys.argv.index("--") + 1]
+c = bpy.data.objects["Multi"].game.controllers["M_both"]
+with open(out, "w") as f:
+    json.dump({"M_both": {"states": c.states, "state_mask": [i + 1 for i in range(30) if c.state_mask[i]]}}, f)
+"""
+
+
+def t_order(args, out, scenes, E, tests):
+    import run_p2 as p2
+    import run_p8 as p8
+    name = "T10.c12 Logic priority between objects (P10.13 A4)"
+    O = E.get("order")
+    if not O:
+        return _fail(tests, name, "the p10c order scenes were made", E.get("failed"))
+    orders, runs = {}, {}
+    for tag, f in sorted(O["files"].items()):
+        path = os.path.join(out, "p10c_order_%s_order.json" % tag)
+        if os.path.isfile(path):
+            os.remove(path)
+        runs[tag] = play_logged(args, out, "p10c_order_" + tag, os.path.join(scenes, f + ".blend"), 10,
+                                {"BGE_REMIX_P10C_ORDER": path}, log=False)
+        orders[tag] = p2.read_json(path) if os.path.isfile(path) else None
+    stock = None
+    if getattr(args, "official", None):
+        path = os.path.join(out, "p10c_order_zero_stock_order.json")
+        if os.path.isfile(path):
+            os.remove(path)
+        sr = p8.play(args.official, out, "stock_p10c_order_zero", os.path.join(scenes, O["files"]["zero"] + ".blend"),
+                     {"BGE_REMIX_P10C_ORDER": path}, frames=10)
+        sr.pop("text", None)
+        stock = p2.read_json(path) if os.path.isfile(path) else None
+    c = {"the three files played": all(r["ran"] for r in runs.values()),
+         "each run recorded the three objects": all(o and len(o) == 3 for o in orders.values()),
+         "all at 0: the order stock 2.79b gives (the official 2.79b's player)": bool(stock) and
+         orders.get("zero") == stock,
+         "OrderC at 5 runs first": bool(orders.get("c_first")) and orders["c_first"][0] == "OrderC",
+         "OrderB at 5 first, OrderA at -1 last": bool(orders.get("b_first")) and
+         orders["b_first"][0] == "OrderB" and orders["b_first"][-1] == "OrderA"}
+    _put(tests, name, c, {"orders": orders, "stock_zero": stock})
+
+
+def t_delay_range(args, out, scenes, E, tests):
+    name = "T10.c13 The Delay sensor's limit in the editor (P10.13 A8)"
+    D = E.get("delay_range")
+    if not D:
+        return _fail(tests, name, "the p10c delay scene was made", E.get("failed"))
+    g = D["got"]
+    c = {"5000 and 20000 kept (stock stopped at 5000)": g.get("delay 5000") == 5000 and g.get("delay 20000") == 20000
+         and g.get("duration 20000") == 20000,
+         "32767 kept (the file's number holds no more)": g.get("delay 32767") == 32767,
+         "40000 clamped to 32767": g.get("delay 40000") == 32767 and g.get("duration 40000") == 32767}
+    _put(tests, name, c, {"got": g})
+
+
+def t_msgfilter(args, out, scenes, E, tests):
+    name = "T10.c14 The Message sensor's sender and body filters (P10.13 A13)"
+    F = E.get("msgfilter")
+    if not F:
+        return _fail(tests, name, "the p10c message filter scene was made", E.get("failed"))
+    r = play_logged(args, out, "p10c_msgfilter", os.path.join(scenes, F["file"] + ".blend"), 25)
+    st, ob = r["bricks"], F["object"]
+    anyt, fromt, bodyt = _green(st, ob, "R_any"), _green(st, ob, "R_from"), _green(st, ob, "R_body")
+    c = {"the scene played": bool(r["ran"]),
+         "no filter: both messages heard (two tics, as stock)": len(anyt) == 2,
+         "From SendA: only SendA's (the first)": len(anyt) == 2 and fromt == anyt[:1],
+         "Body \"b\": only SendB's (the second)": len(anyt) == 2 and bodyt == anyt[1:]}
+    _put(tests, name, c, {"run": run_summary(r), "any": anyt, "from": fromt, "body": bodyt})
+
+
+def t_permessage(args, out, scenes, E, tests):
+    import run_p2 as p2
+    name = "T10.c15 Add once per message (P10.13 A1)"
+    P = E.get("permessage")
+    if not P:
+        return _fail(tests, name, "the p10c per-message scene was made", E.get("failed"))
+    path = os.path.join(out, "p10c_permessage_props.json")
+    if os.path.isfile(path):
+        os.remove(path)
+    r = play_logged(args, out, "p10c_permessage", os.path.join(scenes, P["file"] + ".blend"), 15,
+                    {"BGE_REMIX_P10C_PROPS": path + ";10"}, log=False)
+    props = p2.read_json(path) if os.path.isfile(path) else {}
+    c = {"the scene played": bool(r["ran"]), "the properties were read at tic 10": bool(props),
+         "off: two messages in one tic add once (1, as stock)": props.get(P["off"]) == 1,
+         "on: once per message (2)": props.get(P["on"]) == 2}
+    _put(tests, name, c, {"props": props, "run": run_summary(r)})
+
+
+def t_heldkey(args, out, scenes, E, tests):
+    name = "T10.c16 Read held keys (P10.13 A2)"
+    K = E.get("heldkey")
+    if not K:
+        return _fail(tests, name, "the p10c held-key scene was made", E.get("failed"))
+    r = play_logged(args, out, "p10c_heldkey", os.path.join(scenes, K["file"] + ".blend"), 40,
+                    {"BGE_REMIX_P10_HOLD_KEY": K["hold"]})
+    st, ob = r["bricks"], K["object"]
+    now, plain, held = _green(st, ob, "C_now"), _green(st, ob, "C_plain"), _green(st, ob, "C_held")
+    c = {"the scene played": bool(r["ran"]),
+         "the test key reached the game: pressed at tic %d" % K["press_tic"]: now == [K["press_tic"]],
+         "state 2 entered (tic 30: in state 2)": r["masks"].get(30, {}).get(ob) == 2,
+         "off: the held key gives no event in the state entered (as stock)": not plain,
+         "on: one event when the state is entered": len(held) == 1 and held[0] > K["state2_tic"] - 1}
+    _put(tests, name, c, {"run": run_summary(r), "C_now": now, "C_plain": plain, "C_held": held})
+
+
+def t_stopnow(args, out, scenes, E, tests):
+    name = "T10.c17 Stop the left state's actuators now (P10.13 A5)"
+    S = E.get("states")
+    if not S or not S.get("stopnow_file"):
+        return _fail(tests, name, "the p10c states scenes were made", E.get("failed"))
+    r = play_logged(args, out, "p10c_states_stopnow", os.path.join(scenes, S["stopnow_file"] + ".blend"), 100)
+    st = r["bricks"]
+    heard = ticks_in(st, "Listener", "L_hear", "GREEN")
+    c = {"the scene played": bool(r["ran"]),
+         "tic 92: A2_to3 leaves state 2 (Green)": st.get(92, {}).get(("Brain", "A2_to3")) == "GREEN",
+         "tic 92: the servo stopped in that tic (Black; off it is still Blue, T10.c1)":
+             st.get(92, {}).get(("Brain", "A2_servo")) == "BLACK",
+         "a pulse given in the same tic still runs: the message sent with A1_to2 is heard": len(heard) == 1 and
+         31 <= heard[0] <= 33}
+    _put(tests, name, c, {"run": run_summary(r), "listener": heard,
+                          "servo": {t: st.get(t, {}).get(("Brain", "A2_servo")) for t in (90, 91, 92, 93)}})
+
+
+def t_slow(args, out, scenes, E, tests):
+    import run_p2 as p2
+    name = "T10.c18 A slow game: Max Physics Steps and timers (P10.13 A6, A7)"
+    W = E.get("slow")
+    if not W:
+        return _fail(tests, name, "the p10c slow scenes were made", E.get("failed"))
+    dt = 1.0 / W["ticrate"]
+    got, runs = {}, {}
+    for tag, f in sorted(W["files"].items()):
+        path = os.path.join(out, "p10c_slow_%s_slow.json" % tag)
+        if os.path.isfile(path):
+            os.remove(path)
+        runs[tag] = play_logged(args, out, "p10c_slow_" + tag, os.path.join(scenes, f + ".blend"), W["at"] + 5,
+                                {"BGE_REMIX_P10C_SLOW": path}, log=False)
+        j = p2.read_json(path) if os.path.isfile(path) else {}
+        if j:
+            a, b = j["first"], j["last"]
+            got[tag] = {"tics": b["tic"] - a["tic"], "game": b["frame_time"] - a["frame_time"],
+                        "game_physics": b["prev_frame_time"] - a["prev_frame_time"],
+                        "timer": b["timer"] - a["timer"], "physics": -(b["vz"] - a["vz"]) / W["gravity"]}
+    # (an exact accounting: Bullet steps whole substeps of 1 / tic rate and
+    # keeps less than one in hand; a timer adds its tic's time each tic)
+    slack = dt + 1e-3
+
+    def near(x, y, tol):
+        return x is not None and y is not None and abs(x - y) <= tol
+
+    def g(tag, key):
+        return (got.get(tag) or {}).get(key)
+
+    c = {"new files and new scenes have the option on": W.get("new_file_option") == 1 and
+         W.get("new_scene_option") == 1,
+         "the three runs played and recorded": all(r["ran"] for r in runs.values()) and len(got) == 3,
+         "the game ran slower than its tic rate (more game time than tics)": len(got) == 3 and all(
+             v["game"] > (v["tics"] + 1) * dt for v in got.values()),
+         "old file (option off): physics one tic a tic, as stock": near(g("old", "physics"),
+                                                                        (g("old", "tics") or 0) * dt, slack),
+         "old file: timers one tic a tic, as stock": near(g("old", "timer"), (g("old", "tics") or 0) * dt, 1e-3),
+         "Own Max Physics Steps: physics keeps up with the game clock": near(g("a7", "physics"),
+                                                                            g("a7", "game_physics"), slack),
+         "... timers still one tic a tic (A6 off)": near(g("a7", "timer"), (g("a7", "tics") or 0) * dt, 1e-3),
+         "Timers Follow Game Time: timers keep up with the game clock": near(g("a7_a6", "timer"),
+                                                                           g("a7_a6", "game"), 1e-3)}
+    _put(tests, name, c, {"got": got, "runs": {k: run_summary(v) for k, v in runs.items()},
+                          "note": "A6 changes nothing unless the game is slow AND Max Physics Steps (A7) lets "
+                                  "logic tics stand for more than one tic"})
+
+
+def t_checks(args, out, scenes, E, tests):
+    name = "T10.c19 The logic layer's new checks (P10.13 B1, B2, A9-A11, A14, A16)"
+    K = E.get("checks")
+    if not K:
+        return _fail(tests, name, "the p10c checks scene was made", E.get("failed"))
+    r = probe(args, out, "p10c_checks", os.path.join(scenes, K["file"] + ".blend"),
+              {"BGE_REMIX_P10C_ONLY_BUILD": "1"})
+    built = (r.get("steps") or {}).get("s_build") or {}
+    els = {e["index"]: e for e in built.get("logic") or []}
+    ws = built.get("warnings") or []
+
+    def on(owner, brick, prefix, code):
+        return [w for w in ws if w["code"] == code and w["owner"] == owner and w["name"] == brick and
+                (els.get(w["element"]) or {}).get("kind", "").startswith(prefix)]
+
+    c = {"the probe ran and built the model": r["ran"] and bool(built.get("model"))}
+    found = {}
+    for owner, brick, prefix, code, level in K["expect"]:
+        hits = on(owner, brick, prefix, code)
+        found["%s/%s %s" % (owner, brick, code)] = [w["text"] for w in hits]
+        want = 2 if code == "LOG_EXPR_NAME_CLASH" else 1
+        el = els.get(hits[0]["element"]) if hits else {}
+        ok = len(hits) == want and all(w["level"] == level for w in hits)
+        if level == "RED":
+            ok = ok and (el or {}).get("state") == "RED"
+        c["%s %s on %s's %s (%s)" % (code, "twice (Ping linked and a property; Pong not linked)" if want == 2 else
+                                     "once", owner, brick, level)] = ok
+    codes = {e[3] for e in K["expect"]}
+    for owner, brick, prefix in K["clean"]:
+        stray = [w for code in codes for w in on(owner, brick, prefix, code)]
+        c["nothing of these on %s's %s%s" % (owner, prefix, brick)] = not stray
+    c["the full expression is 127 characters"] = K.get("full_length") == 127
+    _put(tests, name, c, {"found": found, "ran": r["ran"], "errors": r.get("errors")})
+
+
+STOCK_OPTIONS = r"""
+import bpy, json, sys
+argv = sys.argv[sys.argv.index("--") + 1:]
+out, saved = argv[0], argv[1]
+ob = bpy.data.objects.get("Opts")
+r = {"version": bpy.app.version_string, "found": ob is not None}
+if ob is not None:
+    r["sensors"] = [s.name for s in ob.game.sensors]
+    r["actuators"] = [a.name for a in ob.game.actuators]
+bpy.ops.wm.save_as_mainfile(filepath=saved, check_existing=False, copy=True)
+with open(out, "w") as f:
+    json.dump(r, f)
+"""
+
+OURS_OPTIONS = r"""
+import bpy, json, sys
+out = sys.argv[sys.argv.index("--") + 1]
+ob = bpy.data.objects["Opts"]
+g = ob.game
+sc = bpy.context.scene
+m = g.sensors["O_msg"]
+r = {"O_key": g.sensors["O_key"].use_read_held_keys,
+     "O_msg": [m.from_object.name if m.from_object else None, m.body],
+     "O_and": [i + 1 for i in range(30) if g.controllers["O_and"].state_mask[i]],
+     "O_add": g.actuators["O_add"].use_add_per_message,
+     "O_state": g.actuators["O_state"].use_stop_left_state,
+     "priority": ob.get("bge_logic_priority"),
+     "physics_steps_own": sc.get("bge_physics_steps_own"), "timers_game_time": sc.get("bge_timers_game_time")}
+with open(out, "w") as f:
+    json.dump(r, f)
+"""
+
+
+def t_options_stock(args, out, scenes, E, tests):
+    import run_p8 as p8
+    name = "T10.c20 Every P10.13 option in stock 2.79b: opens, plays, saves; ours reads them back"
+    O = E.get("options")
+    if not O:
+        return _fail(tests, name, "the p10c options scene was made", E.get("failed"))
+    d = O["defaults"]
+    c = {"new bricks start with every option off (stock behaviour)":
+         d == {"keyboard use_read_held_keys": False, "controller state_mask": [1],
+               "property use_add_per_message": False, "state use_stop_left_state": False,
+               "object bge_logic_priority": 0}}
+    blend = os.path.join(scenes, O["file"] + ".blend")
+    mine = blender_json(args.ours, out, "p10c_options_ours", OURS_OPTIONS, blend)
+    c["ours reads every option from the file"] = {k: mine.get(k) for k in O["set"]} == O["set"]
+    if not getattr(args, "official", None):
+        c["the official 2.79b was given (--official)"] = False
+        return _put(tests, name, c, {"ours": mine})
+    saved = os.path.join(out, "p10c_options_stock_saved.blend")
+    if os.path.isfile(saved):
+        os.remove(saved)
+    opened = blender_json(args.official, out, "p10c_options_stock", STOCK_OPTIONS, blend, [saved])
+    played = p8.play(args.official, out, "stock_p10c_options", blend, frames=30)
+    back = blender_json(args.ours, out, "p10c_options_back", OURS_OPTIONS, saved) if os.path.isfile(saved) else {}
+    c.update({"stock opens it, no error": opened.get("_exit") == 0 and not opened.get("_traceback") and
+              bool(opened.get("found")),
+              "stock's player plays it 30 frames, no crash": bool(played.get("ran")) and not played.get("crashed"),
+              "stock saves it": os.path.isfile(saved),
+              "stock's copy keeps every option (ours reads them)": {k: back.get(k) for k in O["set"]} == O["set"]})
+    _put(tests, name, c, {"ours": mine, "stock_open": opened, "after_stock": back,
+                          "stock_play": {k: played.get(k) for k in ("ran", "exit", "frames", "crashed")}})
+
+
+# ---------------------------------------------------------------------------
 
 def normal(args, out, scenes, E, tests, sheets):
     """the normal run (the fake Remix runtime)"""
@@ -590,6 +905,17 @@ def normal(args, out, scenes, E, tests, sheets):
     t_timer(args, out, scenes, P, tests)
     t_remix_actuator(args, out, scenes, P, tests)
     t_stock(args, out, scenes, P, tests)
+    # P10.13
+    t_multistate(args, out, scenes, P, tests)
+    t_order(args, out, scenes, P, tests)
+    t_delay_range(args, out, scenes, P, tests)
+    t_msgfilter(args, out, scenes, P, tests)
+    t_permessage(args, out, scenes, P, tests)
+    t_heldkey(args, out, scenes, P, tests)
+    t_stopnow(args, out, scenes, P, tests)
+    t_slow(args, out, scenes, P, tests)
+    t_checks(args, out, scenes, P, tests)
+    t_options_stock(args, out, scenes, P, tests)
     t_earlier(args, out, tests)
 
 

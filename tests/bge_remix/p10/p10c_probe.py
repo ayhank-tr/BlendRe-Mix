@@ -8,6 +8,7 @@
 # Brain's starting states set through RNA as the Starting States panel does
 # (state 3 added), the model rebuilt and read again, and the file saved as
 # BGE_REMIX_P10C_SAVED.
+# With BGE_REMIX_P10C_ONLY_BUILD=1 (P10.13), only the model built and read.
 # Results: BGE_REMIX_P10C_OUT (JSON).
 
 import json
@@ -81,7 +82,7 @@ def model():
             "messages": [{k: e[k] for k in keep} for e in msgs],
             "shapes": shapes, "message_shapes": msg_shapes,
             "warnings": [{"code": w["code"], "level": w["level"], "owner": w["owner"], "name": w["name"],
-                          "layer": w["layer"], "text": w["text"]} for w in warnings]}
+                          "layer": w["layer"], "text": w["text"], "element": w["element"]} for w in warnings]}
 
 
 def s_view():
@@ -128,6 +129,10 @@ def s_save():
 
 
 def queue_all():
+    if os.environ.get("BGE_REMIX_P10C_ONLY_BUILD") == "1":
+        # (P10.13: the logic layer's checks only)
+        QUEUE.extend([(0, s_view), (5, s_build)])
+        return
     QUEUE.extend([(0, s_view), (5, s_build), (10, s_shot), (0, s_start_states), (5, s_rebuild), (0, s_save)])
 
 

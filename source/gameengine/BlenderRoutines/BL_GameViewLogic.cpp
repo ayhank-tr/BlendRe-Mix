@@ -338,9 +338,18 @@ static bool is_expr_word(const std::string &w)
 	return l == "and" || l == "or" || l == "not" || l == "true" || l == "false" || l == "if" || l == "else";
 }
 
-/* A16: the shape keys a Shape Action's action animates */
+/* A16: whether an action animates shape keys at all, and one of key's */
+static bool action_has_key_curves(const bAction *act)
+{
+	for (const FCurve *fcu = (const FCurve *)act->curves.first; fcu; fcu = fcu->next) {
+		if (fcu->rna_path && STRPREFIX(fcu->rna_path, "key_blocks[")) return true;
+	}
+	return false;
+}
+
 static bool action_moves_a_key(const bAction *act, const Key *key)
 {
+	if (!key) return false;
 	for (const FCurve *fcu = (const FCurve *)act->curves.first; fcu; fcu = fcu->next) {
 		if (!fcu->rna_path) continue;
 		for (const KeyBlock *kb = (const KeyBlock *)key->block.first; kb; kb = kb->next) {
@@ -452,11 +461,13 @@ void GVBuilder::LogicChecks()
 					     (std::string("starts the game file \"") + ga->filename + "\", which is not there").c_str());
 				}
 			}
-			/* A16: a Shape Action whose action moves none of the mesh's shape keys */
-			if (a->type == ACT_SHAPEACTION) {
+			/* A16: a shape key action (a Shape Action actuator of old files, or an
+			 * Action actuator playing one) moving none of the mesh's shape keys */
+			if (a->type == ACT_SHAPEACTION || a->type == ACT_ACTION) {
 				const bActionActuator *aa = (const bActionActuator *)a->data;
 				const Key *key = (ob->type == OB_MESH && ob->data) ? ((const Mesh *)ob->data)->key : NULL;
-				if (aa->act && (!key || !action_moves_a_key(aa->act, key))) {
+				const bool shape = aa->act && (a->type == ACT_SHAPEACTION || action_has_key_curves(aa->act));
+				if (shape && !action_moves_a_key(aa->act, key)) {
 					Warn(it->second, "LOG_SHAPE_NO_KEYS", GV_WARN_NOTE,
 					     key ? "its action moves none of the mesh's shape keys: it plays and changes nothing" :
 					           "the mesh has no shape keys: it plays and changes nothing");
