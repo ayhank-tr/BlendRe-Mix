@@ -164,7 +164,9 @@ def clear_phase(phase):
     if phase == "p0":
         for name in os.listdir(RESULTS):
             path = os.path.join(RESULTS, name)
-            if not re.match(r"^p\d+$", name) and name not in ("local.txt", "crashes.txt"):
+            # (the phases' folders, the crash check's and the debugger runs' stay)
+            if not re.match(r"^p\d+$", name) and name not in ("local.txt", "crashes.txt", "smoke", "smoke_file",
+                                                                 "debug_blender", "debug_memory.log"):
                 if os.path.isdir(path):
                     shutil.rmtree(path, ignore_errors=True)
                 else:
