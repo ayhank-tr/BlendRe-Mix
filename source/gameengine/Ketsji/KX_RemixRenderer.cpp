@@ -3373,13 +3373,23 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 		m_first_textured_seconds = now_seconds() - m_start_time;
 	}
 
+	/* BGE-Remix P10 fix: where the picture goes, in the window's pixels.
+	 * BGE's viewport is the canvas's own (from the camera frame's corner in
+	 * a 3D view); the canvas's viewport is the window's (KX_BlenderCanvas
+	 * adds the frame's place). Inside Blender with the camera view the frame
+	 * is inset in the view, and the picture was drawn at the window's corner
+	 * and clipped away (P and the Remix View's Run). The player's canvas is
+	 * the window: the same numbers there. */
+	const int *win_vp = m_canvas->GetViewPort();
+	const int win_x = win_vp ? win_vp[0] : viewport.GetLeft();
+	const int win_y = win_vp ? win_vp[1] : viewport.GetBottom();
 	if (m_mode == BRB_MODE_DIRECT) {
 		const double t2 = now_seconds();
-		BRMX_present_draw(viewport.GetLeft(), viewport.GetBottom(), width, height);
+		BRMX_present_draw(win_x, win_y, width, height);
 		m_upload_ms.push_back((float)((now_seconds() - t2) * 1000.0));
 		std::wstring path;
 		if (m_frames == m_screenshot_frame && env_path(L"BGE_REMIX_SCREENSHOT", path)) {
-			SaveWindowBmp(path, viewport.GetLeft(), viewport.GetBottom(), width, height);
+			SaveWindowBmp(path, win_x, win_y, width, height);
 		}
 	}
 	else {
@@ -3388,7 +3398,7 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 
 	if (m_mode == BRB_MODE_COPY) {
 		const double t2 = now_seconds();
-		BRMX_present_draw(viewport.GetLeft(), viewport.GetBottom(), width, height);
+		BRMX_present_draw(win_x, win_y, width, height);
 		m_upload_ms.push_back((float)((now_seconds() - t2) * 1000.0));
 	}
 	m_last_end = now_seconds();
