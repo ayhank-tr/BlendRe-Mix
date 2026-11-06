@@ -233,48 +233,6 @@ TextureRequest slot_request(int slot)
 	return t;
 }
 
-/* what a component bake is drawn on: bake_material draws a preset's tile on
- * its own square, but wants a mesh */
-DerivedMesh *small_quad()
-{
-	DerivedMesh *dm = CDDM_new(4, 4, 0, 4, 1);
-	MVert *mv = dm->getVertArray(dm);
-	MEdge *med = dm->getEdgeArray(dm);
-	MLoop *ml = dm->getLoopArray(dm);
-	MPoly *mp = dm->getPolyArray(dm);
-	const float uv[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
-	for (int i = 0; i < 4; i++) {
-		mv[i].co[0] = uv[i][0];
-		mv[i].co[1] = uv[i][1];
-		mv[i].co[2] = 0.0f;
-		mv[i].no[0] = mv[i].no[1] = 0;
-		mv[i].no[2] = 32767;
-		med[i].v1 = (unsigned int)i;
-		med[i].v2 = (unsigned int)((i + 1) % 4);
-		ml[i].v = (unsigned int)i;
-		ml[i].e = (unsigned int)i;
-	}
-	mp[0].loopstart = 0;
-	mp[0].totloop = 4;
-	mp[0].mat_nr = 0;
-	MLoopUV *luv = (MLoopUV *)CustomData_add_layer(&dm->loopData, CD_MLOOPUV, CD_CALLOC, NULL, 4);
-	for (int i = 0; i < 4; i++) {
-		copy_v2_v2(luv[i].uv, uv[i]);
-	}
-	CDDM_recalc_tessellation(dm);
-	return dm;
-}
-
-struct ReleaseDM {
-	DerivedMesh *dm;
-	~ReleaseDM()
-	{
-		if (dm) {
-			dm->release(dm);
-		}
-	}
-};
-
 /* the Seed put back whatever happens */
 struct Restore {
 	bNodeSocketValueFloat *seed;
@@ -512,7 +470,6 @@ bool atlas_bake(Scene *scene, Material *ma, const std::string &name, BakeResult 
 	restore.seed = seed;
 	restore.seed_value = s0;
 	std::vector<BakeResult> parts(seeds.size());
-	ReleaseDM quad = {small_quad()};
 	double gpu_ms = 0.0;
 	for (size_t i = 0; i < seeds.size(); i++) {
 		seed->value = seeds[i];
@@ -520,7 +477,10 @@ bool atlas_bake(Scene *scene, Material *ma, const std::string &name, BakeResult 
 		snprintf(part, sizeof(part), "_part%02d", (int)i);
 		trace("baking " + atlas_name + part);
 		/* at the cell's size, always drawn (the pixels are needed here) */
-		if (!bake_material(scene, ma, quad.dm, 1, NULL, name + part, parts[i], L->pitch, false)) {
+		/* (no mesh: a preset's tile is drawn on bake_material's own square,
+		 * with its material slots; fix round 2: the square made here had
+		 * none, and the P10 guard against such meshes refused every part) */
+		if (!bake_material(scene, ma, NULL, 1, NULL, name + part, parts[i], L->pitch, false)) {
 			r.error = parts[i].error.empty() ? std::string("a part of it could not be baked") : parts[i].error;
 			return false;
 		}
