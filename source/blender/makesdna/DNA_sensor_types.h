@@ -276,6 +276,10 @@ typedef struct bJoystickSensor {
 #define SENS_VISIBLE	16
 #define SENS_PIN		32
 #define SENS_DEACTIVATE	64
+/* BGE-Remix P10.13 (A2): a Keyboard sensor fires for a key already held when
+ * its state is entered (off: stock 2.79b, which waits for a new press; stock
+ * keeps the bit and ignores it) */
+#define SENS_KEY_READ_HELD	256
 
 /* sensor->pulse */
 #define SENS_PULSE_CONT 	0

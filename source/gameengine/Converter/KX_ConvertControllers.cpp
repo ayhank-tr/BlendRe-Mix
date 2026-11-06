@@ -63,6 +63,10 @@
 
 #include "BLI_blenlib.h"
 
+extern "C" {
+#include "BKE_idprop.h"  /* BGE-Remix P10.13 (A4) */
+}
+
 /* end of blender include block */
 
 
@@ -107,6 +111,18 @@ void BL_ConvertControllers(
 		count++;
 	}
 	gameobj->ReserveController(count);
+
+	/* BGE-Remix P10.13 (A4): the object's logic priority (the object's ID
+	 * property bge_logic_priority; absent or 0: stock 2.79b's order) */
+	{
+		IDProperty *prio = blenderobject->id.properties ?
+		        IDP_GetPropertyFromGroup(blenderobject->id.properties, "bge_logic_priority") : NULL;
+		if (prio && prio->type == IDP_INT && IDP_Int(prio) != 0) {
+			gameobj->SetLogicPriority(IDP_Int(prio));
+			logicmgr->NoteLogicPriority();
+		}
+	}
+
 	bcontr = (bController*)blenderobject->controllers.first;
 	while (bcontr)
 	{

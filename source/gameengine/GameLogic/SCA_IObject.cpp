@@ -46,6 +46,7 @@ SCA_IObject::SCA_IObject():
 	CValue(),
 	m_initState(0),
 	m_state(0),
+	m_logicPriority(0),  /* BGE-Remix P10.13 (A4) */
 	m_firstState(NULL)
 {
 	m_suspended = false;

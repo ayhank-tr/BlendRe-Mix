@@ -57,6 +57,9 @@ class SCA_KeyboardSensor : public SCA_ISensor
 	 * response.
 	 */
 	bool						m_bAllKeys;
+	/* BGE-Remix P10.13 (A2): fire for a key already held when the sensor
+	 * becomes active (off: stock 2.79b waits for a new press, Level aside) */
+	bool						m_readHeld;
 
 	/**
 	 * The name of the property to which logged text is appended. If
@@ -87,6 +90,8 @@ class SCA_KeyboardSensor : public SCA_ISensor
 	bool IsShifted(void);
 	
 public:
+	void SetReadHeld(bool on) { m_readHeld = on; }  /* BGE-Remix P10.13 (A2) */
+
 	SCA_KeyboardSensor(class SCA_KeyboardManager* keybdmgr,
 					   short int hotkey,
 					   short int qual,

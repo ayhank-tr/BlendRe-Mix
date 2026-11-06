@@ -94,6 +94,9 @@ class SCA_LogicManager
 	 * game time one tick stands for (its fixedtime: 1 / tic rate) */
 	int									m_tick;
 	double								m_tickTime;
+	/* BGE-Remix P10.13 (A4): some object has a logic priority (else the
+	 * controllers run in stock 2.79b's order, unsorted) */
+	bool								m_usePriority;
 public:
 	SCA_LogicManager();
 	virtual ~SCA_LogicManager();
@@ -106,6 +109,7 @@ public:
 							   class SCA_IActuator* actuator);
 	
 	void	BeginFrame(double curtime, double fixedtime);
+	void	SortTriggeredByPriority();  /* BGE-Remix P10.13 (A4) */
 	void	UpdateFrame(double curtime, bool frame);
 	void	EndFrame();
 	void	AddActiveActuator(SCA_IActuator* actua,bool event)
@@ -121,6 +125,8 @@ public:
 	/* BGE-Remix P10.10: the logic tick being run (1 for the first; 0 before
 	 * it) and the game time one tick stands for (seconds) */
 	int		GetTick() const { return m_tick; }
+	/* BGE-Remix P10.13 (A4): an object with a logic priority was converted */
+	void	NoteLogicPriority() { m_usePriority = true; }
 	double	GetTickTime() const { return m_tickTime; }
 
 	void	AddTriggeredController(SCA_IController* controller, SCA_ISensor* sensor);

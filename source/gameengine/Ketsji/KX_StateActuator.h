@@ -62,9 +62,12 @@ class KX_StateActuator : public SCA_IActuator
 	static SG_QList	m_stateActuatorHead;
 	int				m_operation;
 	int				m_mask;
+	/* BGE-Remix P10.13 (A5): stop the left states' running actuators now */
+	bool			m_stopNow;
 
  public:
-	
+	void SetStopNow(bool on) { m_stopNow = on; }  /* BGE-Remix P10.13 (A5) */
+
 	KX_StateActuator(
 		SCA_IObject* gameobj,
 		int operation,

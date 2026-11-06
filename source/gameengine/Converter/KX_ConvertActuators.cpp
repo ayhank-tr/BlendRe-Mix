@@ -519,6 +519,8 @@ void BL_ConvertActuators(const char* maggiename,
 				            propact->value,
 				            propact->type + 1); // + 1 because Ketsji Logic starts
 				// with 0 for KX_ACT_PROP_NODEF
+				/* BGE-Remix P10.13 (A1) */
+				tmppropact->SetPerMessage((bact->flag & ACT_PROP_PER_MESSAGE) != 0);
 				baseact = tmppropact;
 				break;
 			}
@@ -995,6 +997,8 @@ void BL_ConvertActuators(const char* maggiename,
 
 			tmp_sta_act = 
 				new KX_StateActuator(gameobj, sta_act->type, sta_act->mask);
+			/* BGE-Remix P10.13 (A5) */
+			tmp_sta_act->SetStopNow((bact->flag & ACT_STATE_STOP_NOW) != 0);
 			
 			baseact = tmp_sta_act;
 		}

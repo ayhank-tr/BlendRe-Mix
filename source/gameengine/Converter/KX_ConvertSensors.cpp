@@ -224,12 +224,17 @@ void BL_ConvertSensors(struct Object* blenderobject,
 						NG_NetworkScene *NetworkScene = kxscene->GetNetworkScene();
 						/* filter on the incoming subjects, might be empty */
 						const STR_String subject = msgSens->subject;
+						/* BGE-Remix P10.13 (A13): the sender and body filters */
+						const STR_String from = msgSens->fromObject ? msgSens->fromObject->id.name + 2 : "";
+						const STR_String body = msgSens->body;
 
 						gamesensor = new KX_NetworkMessageSensor(
 							eventmgr,		// our eventmanager
 							NetworkScene,	// our NetworkScene
 							gameobj,		// the sensor controlling object
-							subject);		// subject to filter on
+							subject,		// subject to filter on
+							from,
+							body);
 					}
 					break;
 				}
@@ -286,6 +291,8 @@ void BL_ConvertSensors(struct Object* blenderobject,
 							blenderkeybdsensor->toggleName,
 							gameobj,
 							KX_KetsjiEngine::GetExitKey()); //			blenderkeybdsensor->pad);
+						/* BGE-Remix P10.13 (A2) */
+						((SCA_KeyboardSensor *)gamesensor)->SetReadHeld((sens->flag & SENS_KEY_READ_HELD) != 0);
 
 					}
 

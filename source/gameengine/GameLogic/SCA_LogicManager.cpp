@@ -38,11 +38,13 @@
 #include "SCA_EventManager.h"
 #include "SCA_PythonController.h"
 #include <set>
+#include <algorithm>  /* BGE-Remix P10.13 (A4) */
 
 
 SCA_LogicManager::SCA_LogicManager()
 	: m_tick(0),  /* BGE-Remix P10.10 */
-	  m_tickTime(0.0)
+	  m_tickTime(0.0),
+	  m_usePriority(false)  /* BGE-Remix P10.13 (A4) */
 {
 }
 
@@ -196,6 +198,12 @@ void SCA_LogicManager::BeginFrame(double curtime, double fixedtime)
 	for (vector<SCA_EventManager*>::const_iterator ie=m_eventmanagers.begin(); !(ie==m_eventmanagers.end()); ie++)
 		(*ie)->NextFrame(curtime, fixedtime);
 
+	/* BGE-Remix P10.13 (A4): objects with a higher logic priority first (a
+	 * stable sort: equal priorities keep stock 2.79b's order, marked
+	 * controllers first within an object) */
+	if (m_usePriority)
+		SortTriggeredByPriority();
+
 	for (SG_QList* obj = (SG_QList*)m_triggeredControllerSet.Remove();
 		obj != NULL;
 		obj = (SG_QList*)m_triggeredControllerSet.Remove())
@@ -212,6 +220,28 @@ void SCA_LogicManager::BeginFrame(double curtime, double fixedtime)
 }
 
 
+
+/* BGE-Remix P10.13 (A4) */
+static int head_priority(SG_QList *head)
+{
+	SCA_IController *first = (SCA_IController *)head->QPeek();
+	return (first && first->GetParent()) ? first->GetParent()->GetLogicPriority() : 0;
+}
+
+static bool higher_priority(SG_QList *a, SG_QList *b)
+{
+	return head_priority(a) > head_priority(b);
+}
+
+void SCA_LogicManager::SortTriggeredByPriority()
+{
+	std::vector<SG_QList *> heads;
+	for (SG_DList *d = m_triggeredControllerSet.Remove(); d; d = m_triggeredControllerSet.Remove())
+		heads.push_back((SG_QList *)d);
+	std::stable_sort(heads.begin(), heads.end(), higher_priority);
+	for (size_t i = 0; i < heads.size(); i++)
+		m_triggeredControllerSet.AddBack(heads[i]);
+}
 
 void SCA_LogicManager::UpdateFrame(double curtime, bool frame)
 {

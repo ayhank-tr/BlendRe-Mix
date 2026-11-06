@@ -41,7 +41,8 @@ KX_StateActuator::KX_StateActuator(
 	) 
 	: SCA_IActuator(gameobj, KX_ACT_STATE),
 	  m_operation(operation),
-	  m_mask(mask)
+	  m_mask(mask),
+	  m_stopNow(false)
 {
 	// intentionally empty
 }
@@ -100,6 +101,20 @@ KX_StateActuator::Update()
 		return false;
 	}
 	obj->SetState(objMask);
+	/* BGE-Remix P10.13 (A5): the running actuators the state change left
+	 * without a controller get their stop now. State actuators run first in
+	 * a tic, so they process it in this tic's update; stock 2.79b gives it
+	 * after their update (SCA_LogicManager::UpdateFrame), one tic later. An
+	 * actuator pulsed on this tic keeps that pulse. */
+	if (m_stopNow) {
+		SCA_ActuatorList &acts = obj->GetActuators();
+		for (size_t i = 0; i < acts.size(); i++) {
+			SCA_IActuator *a = acts[i];
+			if (a != this && a->IsActive() && a->IsNoLink()) {
+				a->AddEvent(false);
+			}
+		}
+	}
 	return false;
 }
 

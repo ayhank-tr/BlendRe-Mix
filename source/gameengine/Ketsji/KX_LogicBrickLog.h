@@ -43,4 +43,11 @@ const char *KX_LogicBrickStateName(KX_BrickLiveState state);
 /* after the scene's LogicEndFrame (KX_KetsjiEngine::NextFrame) */
 void KX_LogicBrickLogTick(KX_Scene *scene);
 
+/* BGE-Remix P10.13: tests only: with BGE_REMIX_P10_HOLD_KEY=<key>:<tic> (key
+ * a digit or a letter), that key is pressed at that logic tic and held
+ * (the Keyboard sensor's Read Held Keys test). Called before each tic's
+ * logic; unset, it costs one test a tic. */
+class SCA_IInputDevice;
+void KX_LogicTestHoldKey(SCA_IInputDevice *keyboard);
+
 #endif  /* __KX_LOGICBRICKLOG_H__ */

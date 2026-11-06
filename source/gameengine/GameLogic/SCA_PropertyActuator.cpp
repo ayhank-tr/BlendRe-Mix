@@ -36,6 +36,9 @@
 #include <stddef.h>
 
 #include "SCA_PropertyActuator.h"
+#include "SCA_IController.h"  /* BGE-Remix P10.13 (A1) */
+#include "SCA_ISensor.h"
+#include "SCA_LogicManager.h"
 #include "EXP_InputParser.h"
 #include "EXP_Operator2Expr.h"
 #include "EXP_ConstExpr.h"
@@ -47,6 +50,7 @@
 SCA_PropertyActuator::SCA_PropertyActuator(SCA_IObject* gameobj,SCA_IObject* sourceObj,const STR_String& propname,const STR_String& expr,int acttype)
    :	SCA_IActuator(gameobj, KX_ACT_PROPERTY),
 	m_type(acttype),
+	m_perMessage(false),
 	m_propname(propname),
 	m_exprtxt(expr),
 	m_sourceObj(sourceObj)
@@ -61,6 +65,28 @@ SCA_PropertyActuator::~SCA_PropertyActuator()
 {
 	if (m_sourceObj)
 		m_sourceObj->UnregisterActuator(this);
+}
+
+/* BGE-Remix P10.13 (A1): the most messages one of its positive sensors caught
+ * this tic, among the sensors of the controllers that ran this tic (at least
+ * 1) */
+int SCA_PropertyActuator::MessagesThisTick()
+{
+	int most = 1;
+	const int tick = m_logicManager ? m_logicManager->GetTick() : -1;
+	for (size_t i = 0; i < m_linkedcontrollers.size(); i++) {
+		SCA_IController *c = m_linkedcontrollers[i];
+		if (c->GetFiredTick() != tick) {
+			continue;
+		}
+		std::vector<SCA_ISensor *> &sensors = c->GetLinkedSensors();
+		for (size_t k = 0; k < sensors.size(); k++) {
+			if (sensors[k]->GetState() && sensors[k]->GetEventCount() > most) {
+				most = sensors[k]->GetEventCount();
+			}
+		}
+	}
+	return most;
 }
 
 bool SCA_PropertyActuator::Update()
@@ -143,7 +169,10 @@ bool SCA_PropertyActuator::Update()
 		case KX_ACT_PROP_ADD:
 			{
 				CValue* oldprop = propowner->GetProperty(m_propname);
-				if (oldprop)
+				/* BGE-Remix P10.13 (A1): once per message caught this tic (off:
+				 * once, as stock 2.79b) */
+				const int times = m_perMessage ? MessagesThisTick() : 1;
+				for (int k = 0; oldprop && k < times; k++)
 				{
 					// int waarde = (int)oldprop->GetNumber();  /*unused*/
 					CExpression* expr = new COperator2Expr(VALUE_ADD_OPERATOR,new CConstExpr(oldprop->AddRef()),

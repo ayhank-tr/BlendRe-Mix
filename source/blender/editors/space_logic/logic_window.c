@@ -797,14 +797,37 @@ static uiBlock *actuator_menu(bContext *C, ARegion *ar, void *UNUSED(arg))
 	return block;
 }
 
-static void check_controller_state_mask(bContext *UNUSED(C), void *arg1_but, void *arg2_mask)
+static void check_controller_state_mask(bContext *C, void *arg1_but, void *arg2_mask)
 {
 	unsigned int *cont_mask = arg2_mask;
 	uiBut *but = arg1_but;
+	wmWindow *win = CTX_wm_window(C);
 	
-	/* a controller is always in a single state */
-	*cont_mask = (1<<but->retval);
+	/* BGE-Remix P10.13 (A3): Shift+click adds or removes a state (the engine
+	 * always allowed several; at least one stays); a click alone picks one
+	 * state, as stock 2.79b */
+	if (win && win->eventstate && win->eventstate->shift) {
+		if (*cont_mask == 0)
+			*cont_mask = (1u << but->retval);
+	}
+	else {
+		*cont_mask = (1u << but->retval);
+	}
 	but->retval = B_REDR;
+}
+
+/* BGE-Remix P10.13 (A3): the controller's states as the header shows them:
+ * its first state, "+" when it is in more */
+static void controller_state_label(const bController *cont, char *r_str, size_t size)
+{
+	int bit, first = 0, count = 0;
+	for (bit = 0; bit < 30; bit++) {
+		if (cont->state_mask & (1u << bit)) {
+			if (!count) first = bit + 1;
+			count++;
+		}
+	}
+	BLI_snprintf(r_str, size, "%d%s", first, count > 1 ? "+" : "");
 }
 
 static uiBlock *controller_state_mask_menu(bContext *C, ARegion *ar, void *arg_cont)
@@ -1093,11 +1116,15 @@ static void draw_sensor_keyboard(uiLayout *layout, PointerRNA *ptr)
 	RNA_pointer_create((ID *)ob, &RNA_GameObjectSettings, ob, &settings_ptr);
 	uiItemPointerR(layout, ptr, "log", &settings_ptr, "properties", NULL, ICON_NONE);
 	uiItemPointerR(layout, ptr, "target", &settings_ptr, "properties", NULL, ICON_NONE);
+	uiItemR(layout, ptr, "use_read_held_keys", 0, NULL, ICON_NONE);  /* BGE-Remix P10.13 (A2) */
 }
 
 static void draw_sensor_message(uiLayout *layout, PointerRNA *ptr)
 {
 	draw_subject(layout, ptr, true);  /* BGE-Remix P10.11 */
+	/* BGE-Remix P10.13 (A13): the sender and body filters */
+	uiItemR(layout, ptr, "from_object", 0, NULL, ICON_OBJECT_DATA);
+	uiItemR(layout, ptr, "body", 0, NULL, ICON_NONE);
 }
 
 static void draw_sensor_mouse(uiLayout *layout, PointerRNA *ptr, bContext *C)
@@ -1273,8 +1300,8 @@ static void draw_controller_header(uiLayout *layout, PointerRNA *ptr, int xco, i
 	uiLayout *box, *row, *sub;
 	bController *cont= (bController *)ptr->data;
 
-	char state[3];
-	BLI_snprintf(state, sizeof(state), "%d", RNA_int_get(ptr, "states"));
+	char state[8];
+	controller_state_label(cont, state, sizeof(state));  /* BGE-Remix P10.13 (A3) */
 	
 	box = uiLayoutBox(layout);
 	row = uiLayoutRow(box, false);
@@ -1286,7 +1313,7 @@ static void draw_controller_header(uiLayout *layout, PointerRNA *ptr, int xco, i
 		uiItemR(sub, ptr, "type", 0, "", ICON_NONE);
 		uiItemR(sub, ptr, "name", 0, "", ICON_NONE);
 		/* XXX provisory for Blender 2.50Beta */
-		uiDefBlockBut(uiLayoutGetBlock(layout), controller_state_mask_menu, cont, state, (short)(xco+width-44), yco, 22+22, UI_UNIT_Y, IFACE_("Set controller state index (from 1 to 30)"));
+		uiDefBlockBut(uiLayoutGetBlock(layout), controller_state_mask_menu, cont, state, (short)(xco+width-44), yco, 22+22, UI_UNIT_Y, IFACE_("Set controller state index (from 1 to 30); Shift+click: in several states"));
 	}
 	else {
 		uiItemL(sub, IFACE_(controller_name(cont->type)), ICON_NONE);
@@ -1927,6 +1954,7 @@ static void draw_actuator_property(uiLayout *layout, PointerRNA *ptr)
 			break;
 		case ACT_PROP_ADD:
 			uiItemR(layout, ptr, "value", 0, NULL, ICON_NONE);
+			uiItemR(layout, ptr, "use_add_per_message", 0, NULL, ICON_NONE);  /* BGE-Remix P10.13 (A1) */
 			break;
 		case ACT_PROP_ASSIGN:
 			uiItemR(layout, ptr, "value", 0, NULL, ICON_NONE);
@@ -2115,6 +2143,7 @@ static void draw_actuator_state(uiLayout *layout, PointerRNA *ptr)
 	uiItemR(split, ptr, "operation", 0, NULL, ICON_NONE);
 
 	uiTemplateLayers(split, ptr, "states", &settings_ptr, "used_states", 0);
+	uiItemR(layout, ptr, "use_stop_left_state", 0, NULL, ICON_NONE);  /* BGE-Remix P10.13 (A5) */
 }
 
 static void draw_actuator_visibility(uiLayout *layout, PointerRNA *ptr)

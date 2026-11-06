@@ -170,6 +170,7 @@ KX_Scene::KX_Scene(class SCA_IInputDevice* keyboarddevice,
 	m_active_camera(NULL),
 	m_ueberExecutionPriority(0),
 	m_blenderScene(scene),
+	m_timersGameTime(-1),  /* BGE-Remix P10.13 (A6): read at the first tic */
 	m_isActivedHysteresis(false),
 	m_lodHysteresisValue(0),
 	m_texcoObjectsKnown(false)
@@ -1621,6 +1622,13 @@ void KX_Scene::CalculateVisibleMeshes(RAS_IRasterizer* rasty,KX_Camera* cam, int
 // logic stuff
 void KX_Scene::LogicBeginFrame(double curtime)
 {
+	/* BGE-Remix P10.13 (A6): what a tic counts on timers (properties, the
+	 * Timer sensor, added objects' life): its game time with the scene's
+	 * option, else 1 / tic rate as stock 2.79b */
+	if (m_timersGameTime < 0)
+		m_timersGameTime = BKE_scene_game_option(m_blenderScene, BKE_SCENE_GAME_TIMERS_GAME_TIME) ? 1 : 0;
+	const double tic = m_timersGameTime ? KX_KetsjiEngine::GetLogicFrameStep() : 1.0/KX_KetsjiEngine::GetTicRate();
+
 	// have a look at temp objects ...
 	int lastobj = m_tempObjectList->GetCount() - 1;
 	
@@ -1631,7 +1639,7 @@ void KX_Scene::LogicBeginFrame(double curtime)
 		
 		if (propval)
 		{
-			float timeleft = (float)(propval->GetNumber() - 1.0/KX_KetsjiEngine::GetTicRate());
+			float timeleft = (float)(propval->GetNumber() - tic);
 			
 			if (timeleft > 0)
 			{
@@ -1648,7 +1656,7 @@ void KX_Scene::LogicBeginFrame(double curtime)
 			// all object is the tempObjectList should have a clock
 		}
 	}
-	m_logicmgr->BeginFrame(curtime, 1.0/KX_KetsjiEngine::GetTicRate());
+	m_logicmgr->BeginFrame(curtime, tic);
 }
 
 void KX_Scene::AddAnimatedObject(CValue* gameobj)

@@ -32,6 +32,8 @@
 #include "SCA_IController.h"
 #include "SCA_ISensor.h"
 #include "SCA_LogicManager.h"
+#include "SCA_IInputDevice.h"
+#include <ctype.h>
 
 static FILE *brick_log()
 {
@@ -90,4 +92,28 @@ void KX_LogicBrickLogTick(KX_Scene *scene)
 		}
 	}
 	fflush(log);
+}
+
+void KX_LogicTestHoldKey(SCA_IInputDevice *keyboard)
+{
+	static int state = -1;  /* -1: not read; 0: off */
+	static int key = 0, from = 0, tick = 0;
+	if (state < 0) {
+		const char *env = getenv("BGE_REMIX_P10_HOLD_KEY");
+		state = 0;
+		if (env && isalnum((unsigned char)env[0]) && env[1] == ':') {
+			/* (the engine's codes: '0'-'9' and 'a'-'z' are their ASCII) */
+			key = isdigit((unsigned char)env[0]) ? env[0] : tolower((unsigned char)env[0]);
+			from = atoi(env + 2);
+			state = 1;
+			printf("BGE-Remix: test: key %c held from logic tic %d\n", env[0], from);
+		}
+	}
+	if (state != 1 || !keyboard) {
+		return;
+	}
+	tick++;
+	if (tick >= from) {
+		keyboard->HoldKeyForTest((SCA_IInputDevice::KX_EnumInputs)key);
+	}
 }

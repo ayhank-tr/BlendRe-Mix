@@ -309,6 +309,15 @@ public:
 	virtual int		GetNumJustEvents();
 	
 	virtual void		HookEscape();
+
+	/* BGE-Remix P10.13: tests only (BGE_REMIX_P10_HOLD_KEY): the key pressed
+	 * and held from now on, as the device would report it */
+	void HoldKeyForTest(SCA_IInputDevice::KX_EnumInputs inputcode)
+	{
+		SCA_InputEvent &e = m_eventStatusTables[m_currentTable][inputcode];
+		if (e.m_status == SCA_InputEvent::KX_NO_INPUTSTATUS || e.m_status == SCA_InputEvent::KX_JUSTRELEASED)
+			e = SCA_InputEvent(SCA_InputEvent::KX_JUSTACTIVATED, 1);
+	}
 	
 	/**
 	 * Next frame: we calculate the new key states. This goes as follows:

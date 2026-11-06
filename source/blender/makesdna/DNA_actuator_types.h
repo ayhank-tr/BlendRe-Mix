@@ -351,6 +351,14 @@ typedef struct bActuator {
 #define ACT_VISIBLE		16	
 #define ACT_PIN			32
 #define ACT_DEACTIVATE  64
+/* BGE-Remix P10.13: options kept in actuator->flag (stock 2.79b keeps the
+ * bits and ignores them; off: stock behaviour)
+ * A1: a Property actuator's Add adds once per message its Message sensors
+ * caught this tic */
+#define ACT_PROP_PER_MESSAGE	256
+/* A5: a State actuator stops the left state's running actuators in the tic it
+ * runs (stock: one tic later) */
+#define ACT_STATE_STOP_NOW		512
 
 /* link codes */
 #define LINK_SENSOR		0

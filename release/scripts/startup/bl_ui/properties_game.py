@@ -808,6 +808,10 @@ class SCENE_PT_game_physics(SceneButtonsPanel, Panel):
             col.label(text="Logic Steps:")
             col.prop(gs, "logic_step_max", text="Max")
 
+            # BGE-Remix P10.13 (A6, A7)
+            from .space_view3d_gameview_logic import draw_scene_logic_options
+            draw_scene_logic_options(layout, context.scene)
+
             col = layout.column()
             col.label(text="Physics Deactivation:")
             sub = col.row(align=True)

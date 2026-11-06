@@ -94,6 +94,8 @@ void BLO_update_defaults_startup_blend(Main *bmain)
 	for (Scene *scene = bmain->scene.first; scene; scene = scene->id.next) {
 		/* BGE-Remix P8 Part B: a new file's scene uses the Modern pipeline */
 		BKE_scene_game_pipeline_set(scene, BKE_SCENE_GAME_PIPELINE_MODERN);
+		/* BGE-Remix P10.13 (A7): a new file's Max Physics Steps works as labelled */
+		BKE_scene_game_option_set(scene, BKE_SCENE_GAME_OWN_PHYSICS_STEPS, 1);
 		scene->r.im_format.planes = R_IMF_PLANES_RGBA;
 		scene->r.im_format.compress = 15;
 

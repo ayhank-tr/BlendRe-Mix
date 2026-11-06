@@ -464,13 +464,13 @@ void BL_GameViewCollect(KX_Scene *kxscene, GVConverted &r)
 				r.hidden.insert(name);
 			}
 			for (SCA_ISensor *s : gameobj->GetSensors()) {
-				r.bricks.insert(name + "/" + s->GetName().ReadPtr());
+				r.bricks.insert(name + "/sensor/" + s->GetName().ReadPtr());  /* BGE-Remix P10.13 (B1) */
 			}
 			for (SCA_IController *c : gameobj->GetControllers()) {
-				r.bricks.insert(name + "/" + c->GetName().ReadPtr());
+				r.bricks.insert(name + "/controller/" + c->GetName().ReadPtr());
 			}
 			for (SCA_IActuator *a : gameobj->GetActuators()) {
-				r.bricks.insert(name + "/" + a->GetName().ReadPtr());
+				r.bricks.insert(name + "/actuator/" + a->GetName().ReadPtr());
 			}
 			if (gameobj->GetPhysicsController()) {
 				r.physics.insert(name);
