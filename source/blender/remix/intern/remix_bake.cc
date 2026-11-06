@@ -1212,8 +1212,9 @@ bool bake_material(Scene *scene, Material *ma, DerivedMesh *dm, int slot, const 
 	}
 	/* BGE-Remix P10 fix: Blender's GLSL drawing sizes its tables by the
 	 * derived mesh's material slots and writes past them when there are none
-	 * (a crash later, elsewhere): such a mesh is never drawn */
-	if (dm && dm->totmat <= 0) {
+	 * (a crash later, elsewhere): such a mesh is never drawn (a preset's
+	 * tile is drawn on its own square, not on the mesh given) */
+	if (dm && dm->totmat <= 0 && !bake_is_tile(ma)) {
 		r.error = "its mesh has no material slots set up (an internal error: the bake was skipped)";
 		return false;
 	}
