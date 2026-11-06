@@ -51,6 +51,13 @@ PICK_LAYER = "bge_remix_cell"
 # presets whose pattern is regular (P10.2's term): their corner colours keep
 # the pattern in step (whole repeats), only the noise on it differs
 REGULAR = {'BRICK'}
+# random presets without the 16 tiles by default: Water (its flipbook)
+NOT_BY_DEFAULT = {'WATER'}
+DEFAULT_TILE_SIZE = 512          # the default set's largest tile (512 a metre)
+# the flipbook: how far the noise moves through its third axis over a loop
+# (the waves change shape; 0: only moved) and its normal map's slopes times
+DEFAULT_MORPH = 0.6
+DEFAULT_NORMAL_GAIN = 2.0
 # how fast an animated preset's pattern drifts over the surface (m/s)
 SPEEDS = {'WATER': 0.15}
 DEFAULT_SPEED = 0.05
@@ -289,7 +296,7 @@ def flipbook_speed(material, speed=None):
     return {"speed": speed, "fps": fps, "loop_seconds": loop, "shift": frames * FRAME_STEP}
 
 
-def bake_flipbook(material, frames=16, speed=None, size=512):
+def bake_flipbook(material, frames=16, speed=None, size=512, morph=DEFAULT_MORPH, normal_gain=DEFAULT_NORMAL_GAIN):
     """Make an animated preset's Remix textures a looping sprite sheet.
 
     material  a preset material (as for bake_tile_set): P9.6's water, or any
@@ -301,16 +308,26 @@ def bake_flipbook(material, frames=16, speed=None, size=512):
               1 to 60)
     size      a frame's side in pixels (a power of two, at most 512 for 16
               frames, 256 for 64)
+    morph     how far the noise moves through its third axis over one loop
+              (its units; water's waves are 0.4 across): the waves change
+              shape; 0: the pattern only drifts
+    normal_gain  the normal map's slopes times this (2: the waves read in
+              Remix, where the plain map showed only thin lines moving)
 
-    The preset's tile is baked once and moved over one full loop (by
-    frames / 64 of the tile): frame k is the tile moved by k / frames of
-    that, cross-faded into the tile moved a loop earlier, so the last frame
-    runs into the first without a jump. Remix plays it by
+    The preset is baked once at each phase of the loop (16 bakes; water,
+    glass: after the first, only its normal map), the Seed stepped so the
+    noise moves through its third axis; the drift across that comes with it
+    is taken back out, and the pattern moves by frames / 64 of the tile over
+    the loop instead. Two such layers, half a loop and half a tile apart,
+    are cross-faded (a flow map's way), each jumping back to its start where
+    it is not seen, so the last frame runs into the first without a jump.
+    Baked once: the game finds the sheet in its cache after. Remix plays it by
     itself, by time, for the whole material (its sprite sheet rows, columns
     and frame rate); the game's OpenGL keeps drawing the preset as it is.
 
     Returns a dict: "kind" ("flipbook"), "frames", "grid", "pitch", "size",
-    "cells" (per frame), "fps", "loop_seconds", "speed", "shift", "baked",
+    "cells" (per frame), "fps", "loop_seconds", "speed", "shift", "morph",
+    "normal_gain", "baked",
     "files", "preview", "note", "error" (as bake_tile_set). Raises
     ValueError when the material cannot have one.
     """
@@ -324,6 +341,9 @@ def bake_flipbook(material, frames=16, speed=None, size=512):
     material["bge_remix_atlas_size"] = pitch
     material["bge_remix_atlas_fps"] = t["fps"]
     material["bge_remix_atlas_shift"] = t["shift"]
+    material["bge_remix_atlas_morph"] = float(morph)
+    material["bge_remix_atlas_normal_gain"] = float(normal_gain)
+    t["morph"], t["normal_gain"] = float(morph), float(normal_gain)
     if "bge_remix_atlas_drift" in material:
         del material["bge_remix_atlas_drift"]
     result = flipbook_layout(frames, pitch, t["fps"])
@@ -333,11 +353,40 @@ def bake_flipbook(material, frames=16, speed=None, size=512):
     return _bake_now(material, result)
 
 
+def tiles_by_default(material):
+    """Ayhan's decision (7 Nov): a random preset (not Brick or another
+    regular one, not Water: its own is the flipbook) with no atlas chosen
+    gets the 16-tile set in Remix (remix_atlas.cc: the same rule)"""
+    if material is None or "bge_remix_atlas" in material or not material.get("bge_remix_tile"):
+        return False
+    key = material.get("bge_remix_preset")
+    if not key or key in REGULAR or key in NOT_BY_DEFAULT:
+        return False
+    return material.get("bge_remix_tile_mode", 0) != 1  # (1: whole repeats, regular)
+
+
+def _bake_size(material):
+    """the material's Bake Size (the RTX Remix node's; else 1024)"""
+    try:
+        from bl_operators.bge_remix_material import remix_node
+        node = remix_node(material)
+    except ImportError:
+        node = None
+    n = int(getattr(node, "bake_size", 0) or 0) if node is not None else 0
+    return n if 16 <= n <= 8192 else 1024
+
+
 def atlas_of(material):
     """what the material has: None, or a dict as the bake_* functions return
-    (without baking) or, packed: {"kind": "packed", "page", "cell", "rect"}"""
+    (without baking) or, packed: {"kind": "packed", "page", "cell", "rect"};
+    a random preset with no choice: its default 16 tiles ("default": True)"""
     if material is None:
         return None
+    if tiles_by_default(material):
+        r = tiles_layout(2, _pow2_floor(min(_bake_size(material), DEFAULT_TILE_SIZE)), 0)
+        r["regular"] = False
+        r["default"] = True
+        return r
     kind = material.get("bge_remix_atlas", 0)
     if kind == TILES:
         r = tiles_layout(int(material.get("bge_remix_atlas_colours", 2)), int(material.get("bge_remix_atlas_size", 1024)),
@@ -363,13 +412,25 @@ def atlas_of(material):
     return None
 
 
+_KEYS = ("bge_remix_atlas", "bge_remix_atlas_colours", "bge_remix_atlas_size", "bge_remix_atlas_seed",
+         "bge_remix_atlas_regular", "bge_remix_atlas_frames", "bge_remix_atlas_fps", "bge_remix_atlas_drift",
+         "bge_remix_atlas_shift", "bge_remix_atlas_morph", "bge_remix_atlas_normal_gain")
+
+
 def clear(material):
-    """the material's atlas off (its Remix textures as before); a packed
+    """the material's atlas choice forgotten: its default again (a random
+    preset: 16 tiles; anything else: its plain Remix textures); a packed
     material's images keep their page until pack_images runs again"""
-    for k in ("bge_remix_atlas", "bge_remix_atlas_colours", "bge_remix_atlas_size", "bge_remix_atlas_seed",
-              "bge_remix_atlas_regular", "bge_remix_atlas_frames", "bge_remix_atlas_fps", "bge_remix_atlas_drift", "bge_remix_atlas_shift"):
+    for k in _KEYS:
         if k in material:
             del material[k]
+
+
+def single_tile(material):
+    """Remix gets the material's plain textures (a preset: its single tile),
+    whatever the default ("bge_remix_atlas" 0)"""
+    clear(material)
+    material["bge_remix_atlas"] = 0
 
 
 # ---------------------------------------------------------------------------

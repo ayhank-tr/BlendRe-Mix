@@ -543,43 +543,115 @@ bool atlas_compose_tiles(const AtlasLayout &L, int kind, bool regular, const std
 	return true;
 }
 
-bool atlas_compose_flipbook(const AtlasLayout &L, int kind, const BakedImage &src, float shift_u, float shift_v,
+bool atlas_compose_flipbook(const AtlasLayout &L, int kind, const std::vector<const BakedImage *> &keys,
+                            const std::vector<float> &key_shift, float flow_u, float flow_v, float normal_gain,
                             BakedImage &r_out)
 {
-	const int sw = src.width, sh = src.height;
-	if (L.kind != ATLAS_FLIPBOOK || sw <= 0 || sh <= 0 || src.rgba.size() < (size_t)sw * sh * 4) {
+	/* BGE-Remix P10.4 (Ayhan's decision, 7 Nov): the waves change shape.
+	 * keys[j]: the pattern at phase j / frames of the loop (one key: the
+	 * same pattern at every phase, moved only), key_shift[2j..]: the shift
+	 * (tiles) that puts key j back in place. Two layers, half a loop apart
+	 * (a flow map's): layer 1 at phase p = k / frames, layer 2 at p + 1/2,
+	 * each the key at its phase moved by p x flow, weighted 1 - |2p - 1| and
+	 * the rest: a layer jumps back to phase 0 only where its weight is 0,
+	 * and frame `frames` is frame 0 again (the loop closes exactly). */
+	const int n = L.frames;
+	if (L.kind != ATLAS_FLIPBOOK || n < 2 || n % 2 || keys.empty() || !keys[0] ||
+	    ((int)keys.size() != 1 && (int)keys.size() != n) || key_shift.size() < keys.size() * 2)
+	{
 		return false;
 	}
-	/* BGE-Remix P10.4 (fix round 1): one bake, moved: frame k (t = k /
-	 * frames) is the seamless tile moved by t x shift, cross-faded (its
-	 * contrast kept) into the tile moved by (t - 1) x shift: frame 0 is the
-	 * tile itself, and after the last frame the second copy has reached it,
-	 * so the loop closes exactly (a flow-map loop). Before, each frame was
-	 * baked twice: 31 bakes, 23 s */
-	std::vector<float> S;
-	decode(kind, src.rgba.data(), (size_t)sw * sh, S);
-	std::vector<std::vector<float> > one(1, S);
+	const int sw = keys[0]->width, sh = keys[0]->height;
+	std::vector<std::vector<float> > K(keys.size());
+	for (size_t j = 0; j < keys.size(); j++) {
+		const BakedImage *im = keys[j];
+		if (!im || im->width != sw || im->height != sh || sw <= 0 || sh <= 0 ||
+		    im->rgba.size() < (size_t)sw * sh * 4)
+		{
+			return false;
+		}
+		decode(kind, im->rgba.data(), (size_t)sw * sh, K[j]);
+	}
 	double mu[4];
-	channel_means(one, mu);
-	one.clear();
+	channel_means(K, mu);
 	std::vector<float> out((size_t)L.width * L.height * 4, 0.0f);
 	const int P = L.pitch;
-	for (int k = 0; k < L.frames; k++) {
-		const float t = (float)k / (float)L.frames;
-		const float w[2] = {1.0f - t, t};
-		const float au = t * shift_u * sw, av = t * shift_v * sh;
-		const float bu = (t - 1.0f) * shift_u * sw, bv = (t - 1.0f) * shift_v * sh;
+	for (int k = 0; k < n; k++) {
+		const int ph[2] = {k, (k + n / 2) % n};
+		const float p1 = (float)k / (float)n;
+		const float w1 = 1.0f - fabsf(2.0f * p1 - 1.0f);
+		const float w[2] = {w1, 1.0f - w1};
+		float ou[2], ov[2];
+		const std::vector<float> *img[2];
+		for (int l = 0; l < 2; l++) {
+			const size_t j = keys.size() == 1 ? 0 : (size_t)ph[l];
+			const float p = (float)ph[l] / (float)n;
+			/* (layer 2 also half a tile across: made of the same keys, its
+			 * frames would be layer 1's half a loop later, and the loop half
+			 * as long) */
+			ou[l] = (key_shift[j * 2] + flow_u * p + (l ? 0.5f : 0.0f)) * sw;
+			ov[l] = (key_shift[j * 2 + 1] + flow_v * p + (l ? 0.31f : 0.0f)) * sh;
+			img[l] = &K[j];
+		}
 		const AtlasCell &cell = L.cells[k];
+		/* the two layers read at the cell's pixels */
+		std::vector<float> A((size_t)P * P * 4), B((size_t)P * P * 4);
 		for (int y = 0; y < P; y++) {
 			for (int x = 0; x < P; x++) {
-				float va[4], vb[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 				const float sx = (x + 0.5f) / (float)P * sw, sy = (y + 0.5f) / (float)P * sh;
-				sample_wrap(S, sw, sh, sx - au, sy - av, va);
-				if (k > 0) {
-					sample_wrap(S, sw, sh, sx - bu, sy - bv, vb);
+				sample_wrap(*img[0], sw, sh, sx - ou[0], sy - ov[0], &A[((size_t)y * P + x) * 4]);
+				sample_wrap(*img[1], sw, sh, sx - ou[1], sy - ov[1], &B[((size_t)y * P + x) * 4]);
+			}
+		}
+		/* the blend keeps the layers' contrast: its spread divided by what
+		 * the weights leave of it, sqrt(w1^2 + w2^2 + 2 w1 w2 corr) with the
+		 * layers' own correlation (a plain 1 / |w| makes alike layers
+		 * pulse); normal maps: their slopes (x, y) */
+		float gain[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+		{
+			double sab[4] = {0, 0, 0, 0}, saa[4] = {0, 0, 0, 0}, sbb[4] = {0, 0, 0, 0};
+			for (size_t i = 0; i < (size_t)P * P; i++) {
+				for (int c = 0; c < 4; c++) {
+					const double a = A[i * 4 + c] - mu[c], b = B[i * 4 + c] - mu[c];
+					sab[c] += a * b;
+					saa[c] += a * a;
+					sbb[c] += b * b;
 				}
-				const float *v[2] = {va, vb};
-				blend(kind, true, v, w, k > 0 ? 2 : 1, mu, &out[((size_t)(cell.y + y) * L.width + cell.x + x) * 4]);
+			}
+			for (int c = 0; c < 4; c++) {
+				double rho = (saa[c] > 1e-12 && sbb[c] > 1e-12) ? sab[c] / sqrt(saa[c] * sbb[c]) : 1.0;
+				rho = std::min(std::max(rho, -0.5), 1.0);
+				const double d = w[0] * w[0] + w[1] * w[1] + 2.0 * w[0] * w[1] * rho;
+				gain[c] = d > 1e-6 ? (float)(1.0 / sqrt(d)) : 1.0f;
+			}
+		}
+		for (int y = 0; y < P; y++) {
+			for (int x = 0; x < P; x++) {
+				const size_t i = ((size_t)y * P + x) * 4;
+				float *o = &out[((size_t)(cell.y + y) * L.width + cell.x + x) * 4];
+				if (kind == BRB_TEXTURE_NORMAL) {
+					/* the slopes blended and made stronger, z made up again */
+					float nx = (w[0] * A[i] + w[1] * B[i]) * gain[0] * normal_gain;
+					float ny = (w[0] * A[i + 1] + w[1] * B[i + 1]) * gain[1] * normal_gain;
+					const float l2 = nx * nx + ny * ny;
+					if (l2 > 0.98f) {
+						const float f = sqrtf(0.98f / l2);
+						nx *= f;
+						ny *= f;
+					}
+					o[0] = nx;
+					o[1] = ny;
+					o[2] = sqrtf(std::max(1.0f - nx * nx - ny * ny, 0.0f));
+					o[3] = 1.0f;
+					continue;
+				}
+				for (int c = 0; c < 4; c++) {
+					float v = w[0] * A[i + c] + w[1] * B[i + c];
+					if (c < 3) {
+						v = (float)mu[c] + (v - (float)mu[c]) * gain[c];
+					}
+					o[c] = std::min(std::max(v, 0.0f), 1.0f);
+				}
 			}
 		}
 	}

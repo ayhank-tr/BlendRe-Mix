@@ -8,7 +8,9 @@ pixels a metre at 960 x 540), as P9.6's seams scene:
 
 p10a4_floor_plain       a large Rock floor (12.4 x 7 m, one UV unit a
                         metre: the preset's tile repeats every metre), its
-                        plain tile in Remix (the repeat to beat)
+                        single tile chosen for Remix (the repeat to beat)
+p10a4_floor_default     the same floor, nothing chosen: Remix's default for
+                        a random preset, 16 tiles (Ayhan, 7 Nov)
 p10a4_floor_tiles16     the same floor, its material a 16-tile set (two
                         corner colours); a small Brick square in the corner
                         as a 16-tile set too (a regular pattern)
@@ -146,12 +148,15 @@ def save_pair(folder, name, files):
 
 
 def floor_scene(name, mode):
-    """the Rock floor: plain tile, 16 or 81 tiles"""
+    """the Rock floor: a single tile (chosen), 16 or 81 tiles, or nothing
+    chosen (Ayhan's 7 Nov default: 16 tiles)"""
     from bge_remix import atlas
     scene = s96.scene_base(name)
     ma = preset("P10A4_rock", 'ROCK')
     info = None
-    if mode != "plain":
+    if mode == "plain":
+        atlas.single_tile(ma)
+    elif mode != "default":
         info = atlas.bake_tile_set(ma, TILE_SIZE, 2 if mode == "tiles16" else 3)
     hw, hh = FLOOR_W / 2.0, FLOOR_H / 2.0
     # one UV unit a metre, the UVs' 0 at the floor's corner
@@ -170,7 +175,7 @@ def floor_scene(name, mode):
 def make_floors(folder, E, files):
     from bge_remix import atlas
     out = {}
-    for mode in ("plain", "tiles16", "tiles81"):
+    for mode in ("plain", "tiles16", "tiles81", "default"):
         bpy.ops.wm.read_factory_settings(use_empty=True)
         scene, ma, info, brick = floor_scene("P10A4Floor_" + mode, mode)
         save_pair(folder, "p10a4_floor_" + mode, files)
