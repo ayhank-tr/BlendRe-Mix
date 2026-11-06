@@ -519,8 +519,6 @@ void BLI_task_scheduler_free(TaskScheduler *scheduler)
 	BLI_condition_notify_all(&scheduler->queue_cond);
 	BLI_mutex_unlock(&scheduler->queue_mutex);
 
-	pthread_key_delete(scheduler->tls_id_key);
-
 	/* delete threads */
 	if (scheduler->threads) {
 		int i;
@@ -532,6 +530,13 @@ void BLI_task_scheduler_free(TaskScheduler *scheduler)
 
 		MEM_freeN(scheduler->threads);
 	}
+
+	/* BGE-Remix P10 fix: the threads' key deleted once they have ended (it
+	 * was deleted before the join: a thread that had not started yet set its
+	 * value on a deleted key and wrote to freed memory; the Remix View's
+	 * builds, which make and free a game engine's schedulers within
+	 * milliseconds, crashed on it) */
+	pthread_key_delete(scheduler->tls_id_key);
 
 	/* Delete task thread data */
 	if (scheduler->task_threads) {
