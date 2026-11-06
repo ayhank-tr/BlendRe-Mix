@@ -28,7 +28,14 @@ import shutil
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROBE = os.path.join(HERE, "p10b_probe.py")
 FRAMES = 30
-RTX_FRAMES = 600
+# the RTX run's picture: this long after RTX Remix's first frame (its start
+# takes about half a minute; the scene has no images to encode)
+RTX_SECONDS = 15
+# Remix's picture under the holograms: the brightness range of the 16 px
+# blocks no hologram touches (a flat colour where Remix's picture should be
+# measured 0.7 in the fix round's picture)
+RTX_BLOCK_RANGE = 5.0
+RTX_BLOCKS = 20
 TOL = 0.051        # one tic's step (a frame may hold one tic more or less than counted)
 
 READ_BACK = r'''
@@ -55,7 +62,7 @@ with open(out, "w") as f:
 '''
 
 
-def probe(args, out, tag, blend, part, env, timeout=900, frames=FRAMES):
+def probe(args, out, tag, blend, part, env, timeout=900, frames=FRAMES, seconds=0):
     import run_p2 as p2
     import run_p8 as p8
     res = os.path.join(out, tag + "_p10b.json")
@@ -69,7 +76,7 @@ def probe(args, out, tag, blend, part, env, timeout=900, frames=FRAMES):
     e.update(env)
     e.update({"BGE_REMIX_P10B_OUT": res, "BGE_REMIX_P10B_PART": part, "BGE_REMIX_P10B_DIR": folder,
               "BGE_REMIX_P10B_SAVE": os.path.join(folder, "p10b_edited.blend"),
-              "BGE_REMIX_P10B_FRAMES": str(frames)})
+              "BGE_REMIX_P10B_FRAMES": str(frames), "BGE_REMIX_P10B_SECONDS": str(seconds)})
     code, text, secs = p2.run([p2.exe(args.ours, "blender"), "--disable-crash-handler"] + p8.WINDOW +
                               [blend, "--python", PROBE], e, os.path.join(out, tag + ".log"), timeout=timeout,
                               cwd=out)
@@ -473,19 +480,56 @@ def rtx(args, out, scenes, E, tests, sheets, report):
     blend = os.path.join(scenes, V["file"] + ".blend")
     env = dict(p8.REMIX_ENV)
     env["BGE_REMIX_P10B_WAIT"] = "20"
-    # (Remix starts with the game's first frame, about 32 s, then needs a moment for its textures)
-    r = probe(args, out, "p10b_rtx", blend, "rtx", env, timeout=1800, frames=RTX_FRAMES)
+    # (Remix starts with the game's first frame, about 32 s: the picture is
+    # taken RTX_SECONDS after the first frame Remix drew)
+    r = probe(args, out, "p10b_rtx", blend, "rtx", env, timeout=1800, seconds=RTX_SECONDS)
     s = r.get("steps", {})
     run = s.get("s_rtx_run") or {}
+    res = run.get("result") or {}
     stats = p8.picture(run.get("shot")) if run.get("shot") else None
+    under = remix_under_holograms(stats)
     c = {
         "the probe ran": bool(r.get("ran")),
-        "Run played and suspended": (run.get("result") or {}).get("outcome") == "SUSPEND",
+        "Run played and suspended": res.get("outcome") == "SUSPEND",
+        "RTX Remix drew the game": res.get("remix_frame", -1) >= 0,
+        "the picture was taken %d s after Remix's first frame" % RTX_SECONDS:
+            res.get("remix_seconds", -1.0) >= RTX_SECONDS - 0.5,
         "the picture of the last frame was taken": stats is not None and float(stats.std()) >= 2.0,
+        "Remix's picture is under the holograms (not one flat colour: brightness range %.1f over %d free "
+        "blocks, gate %.0f)" % ((under or {}).get("block_range") or 0.0, (under or {}).get("blocks", 0),
+                                RTX_BLOCK_RANGE):
+            bool(under) and under["blocks"] >= RTX_BLOCKS and under["block_range"] >= RTX_BLOCK_RANGE,
         "the live data was made": bool(run.get("live")),
     }
-    tests[name] = {"ok": all(c.values()), "checks": c, "detail": dict(_base(r), run=run)}
+    tests[name] = {"ok": all(c.values()), "checks": c, "detail": dict(_base(r), run=run, under=under)}
     sheets["p10b_rtx_run"] = p2.contact_sheet([("Run in RTX Remix", run.get("shot"))],
                                               os.path.join(out, "sheet_p10b_rtx_run.png"))
-    report += ["", "Run in RTX Remix: %s after %s frames; picture %s" % (
-        (run.get("result") or {}).get("outcome"), (run.get("result") or {}).get("frames"), run.get("shot"))]
+    report += ["", "Run in RTX Remix: %s after %s frames (Remix's first frame: %s, then %.1f s); picture %s" % (
+        res.get("outcome"), res.get("frames"), res.get("remix_frame"), res.get("remix_seconds", -1.0) or -1.0,
+        run.get("shot")),
+        "  Remix's picture under the holograms: %s" % under]
+
+
+def remix_under_holograms(a):
+    """how much Remix's picture varies where no hologram is: the holograms
+    (green lines and rings, white text and rings, the Suspend/Stop strip at
+    the top) are masked and widened by 6 px; the 16 px blocks left whole are
+    compared by their mean brightness. One flat colour (Remix's picture
+    missing) gives a range near 0."""
+    if a is None:
+        return None
+    import numpy as np
+    h, w = a.shape[:2]
+    hol = ((a[..., 1] - np.maximum(a[..., 0], a[..., 2])) > 25) | (a.min(axis=2) > 225)
+    hol[:max(40, int(0.12 * h)), :] = True
+    m = hol.copy()
+    for dy in range(-6, 7, 2):
+        for dx in range(-6, 7, 2):
+            m |= np.roll(np.roll(hol, dy, 0), dx, 1)
+    free = ~m
+    lum = a.mean(axis=2)
+    means = [float(lum[y:y + 16, x:x + 16].mean()) for y in range(0, h - 16, 16) for x in range(0, w - 16, 16)
+             if free[y:y + 16, x:x + 16].all()]
+    return {"free_fraction": round(float(free.mean()), 3), "blocks": len(means),
+            "block_range": round(max(means) - min(means), 1) if means else None,
+            "block_std": round(float(np.std(means)), 2) if means else None}

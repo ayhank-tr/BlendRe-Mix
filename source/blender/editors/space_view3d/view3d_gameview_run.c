@@ -197,6 +197,8 @@ static int gameview_play_exec(bContext *C, wmOperator *op)
 	opts.resume = RNA_boolean_get(op->ptr, "resume");
 	opts.mockup = RNA_boolean_get(op->ptr, "mockup");
 	opts.suspend_after = RNA_int_get(op->ptr, "suspend_after");
+	opts.suspend_seconds = RNA_float_get(op->ptr, "suspend_seconds");
+	opts.from_remix = RNA_boolean_get(op->ptr, "from_remix");
 	opts.frame[0] = cam_frame.xmin;
 	opts.frame[1] = cam_frame.ymin;
 	opts.frame[2] = cam_frame.xmax;
@@ -261,6 +263,10 @@ void VIEW3D_OT_gameview_play(wmOperatorType *ot)
 	RNA_def_string(ot->srna, "keep", NULL, 0, "Keep", "Mock-up: the objects to play, one name per line");
 	RNA_def_int(ot->srna, "suspend_after", 0, 0, INT_MAX, "Suspend After",
 	            "Suspend by itself after this many frames (0: only when asked)", 0, 100000);
+	RNA_def_float(ot->srna, "suspend_seconds", 0.0f, 0.0f, FLT_MAX, "Suspend After Seconds",
+	              "Suspend by itself after this many seconds (0: only when asked)", 0.0f, 3600.0f);
+	RNA_def_boolean(ot->srna, "from_remix", false, "From RTX Remix's First Frame",
+	                "Count the seconds from the first frame RTX Remix drew (its start takes about half a minute)");
 	prop = RNA_def_string(ot->srna, "shot", NULL, 0, "Picture", "A picture of the last frame (PNG file)");
 	RNA_def_property_flag(prop, PROP_SKIP_SAVE);
 }

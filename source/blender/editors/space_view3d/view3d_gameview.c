@@ -1121,11 +1121,50 @@ static void gv_draw_shapes(GVView *gv, float alpha)
 	}
 }
 
+/* BGE-Remix P10.9 fix: over the running game (often a small view) labels
+ * that would cover each other are moved down a line or two, or left out;
+ * the label that kept the place ends in "..." */
+typedef struct GVLabel {
+	float x, y, w;
+	int element;
+	short prio;      /* 0: a live value or the selected element, 1: the rest */
+	short more;      /* labels left out because of this one */
+	char text[100];
+} GVLabel;
+
+static int gv_label_cmp(const void *a, const void *b)
+{
+	const GVLabel *la = a, *lb = b;
+	if (la->prio != lb->prio) {
+		return la->prio - lb->prio;
+	}
+	return la->element - lb->element;
+}
+
+static bool gv_label_free(const GVLabel *placed, int n, float x, float y, float w, float h, int *r_hit)
+{
+	int k;
+	for (k = 0; k < n; k++) {
+		const GVLabel *o = &placed[k];
+		if (x < o->x + o->w + 4.0f && o->x < x + w + 4.0f && y < o->y + h && o->y < y + h) {
+			*r_hit = k;
+			return false;
+		}
+	}
+	return true;
+}
+
 static void gv_draw_labels(GVView *gv)
 {
 	const GVModel *m = gv->m;
 	int i;
 	char buf[96];
+	GVLabel *live_labels = NULL;
+	int live_count = 0;
+
+	if (gv->live && m->element_count > 0) {
+		live_labels = MEM_mallocN(sizeof(GVLabel) * m->element_count, __func__);
+	}
 
 	for (i = 0; i < m->element_count; i++) {
 		const GVElement *e = &m->elements[i];
@@ -1166,6 +1205,19 @@ static void gv_draw_labels(GVView *gv)
 		else {
 			BLI_strncpy(buf, e->name, sizeof(buf));
 		}
+		if (live_labels) {
+			/* placed and drawn below, once all are known */
+			GVLabel *lb = &live_labels[live_count++];
+			const GVLive *l = gv_live(gv, e);
+			lb->w = BLF_width_default(buf, sizeof(buf));
+			lb->x = sco[0] - lb->w * 0.5f;
+			lb->y = sco[1] - 12.0f * U.pixelsize;
+			lb->element = i;
+			lb->prio = (i == gv->selected || (l && (l->text[0] || l->fired))) ? 0 : 1;
+			lb->more = 0;
+			BLI_strncpy(lb->text, buf, sizeof(lb->text));
+			continue;
+		}
 		{
 			const float w = BLF_width_default(buf, sizeof(buf));
 			const float x = sco[0] - w * 0.5f, y = sco[1] - 12.0f * U.pixelsize;
@@ -1185,6 +1237,59 @@ static void gv_draw_labels(GVView *gv)
 			}
 			BLF_draw_default(x, y, 0.0f, buf, sizeof(buf));
 		}
+	}
+
+	if (live_labels) {
+		const float h = 13.0f * U.pixelsize;
+		GVLabel *placed = MEM_mallocN(sizeof(GVLabel) * max_ii(live_count, 1), __func__);
+		int nplaced = 0, k;
+		qsort(live_labels, live_count, sizeof(GVLabel), gv_label_cmp);
+		for (i = 0; i < live_count; i++) {
+			GVLabel *lb = &live_labels[i];
+			int hit = -1, first_hit = -1, tries;
+			bool ok = false;
+			for (tries = 0; tries < 3 && !ok; tries++) {
+				const float y = lb->y - tries * h;
+				ok = gv_label_free(placed, nplaced, lb->x, y, lb->w, h, &hit);
+				if (first_hit < 0) {
+					first_hit = hit;
+				}
+				if (ok) {
+					lb->y = y;
+				}
+			}
+			if (ok) {
+				placed[nplaced++] = *lb;
+			}
+			else if (first_hit >= 0) {
+				placed[first_hit].more++;
+			}
+		}
+		for (k = 0; k < nplaced; k++) {
+			GVLabel *lb = &placed[k];
+			const GVElement *e = &m->elements[lb->element];
+			const GVLive *l = gv_live(gv, e);
+			if (lb->more) {
+				const size_t len = strlen(lb->text);
+				if (len + 4 <= sizeof(lb->text)) {
+					memcpy(lb->text + len, "...", 4);
+				}
+			}
+			glColor4f(0.0f, 0.0f, 0.0f, 0.85f);
+			BLF_draw_default(lb->x + 1.0f, lb->y - 1.0f, 0.0f, lb->text, sizeof(lb->text));
+			if (l && l->fired) {
+				glColor4f(0.55f, 1.0f, 0.55f, 1.0f);
+			}
+			else if (e->flag & (GV_EL_HIDDEN_LAYER | GV_EL_NOT_IN_GAME)) {
+				glColor4f(0.7f, 0.7f, 0.7f, 0.8f);
+			}
+			else {
+				glColor4f(0.95f, 0.97f, 1.0f, 1.0f);
+			}
+			BLF_draw_default(lb->x, lb->y, 0.0f, lb->text, sizeof(lb->text));
+		}
+		MEM_freeN(placed);
+		MEM_freeN(live_labels);
 	}
 }
 
@@ -1345,7 +1450,25 @@ static void gv_draw_run_strip(ARegion *ar)
 		glEnd();
 		BLF_draw_default(0.5f * (r[0] + r[2]) - 0.5f * w, r[1] + 6.0f * U.pixelsize, 0.0f, texts[k], 16);
 	}
-	BLI_snprintf(buf, sizeof(buf), "Run: frame %d   Pause: suspend   the exit key: stop", BL_GameViewRunFrames());
+	{
+		/* BGE-Remix P10.9 fix: the longest line that fits the view's width
+		 * (a small view cut it off) */
+		const float room = (float)ar->winx - (float)stop[2] - 16.0f * U.pixelsize;
+		const int frame = BL_GameViewRunFrames();
+		int n;
+		buf[0] = '\0';
+		for (n = 0; n < 4; n++) {
+			switch (n) {
+				case 0: BLI_snprintf(buf, sizeof(buf), "Run: frame %d   Pause: suspend   the exit key: stop", frame); break;
+				case 1: BLI_snprintf(buf, sizeof(buf), "Frame %d   Pause: suspend", frame); break;
+				case 2: BLI_snprintf(buf, sizeof(buf), "Frame %d", frame); break;
+				default: buf[0] = '\0'; break;
+			}
+			if (BLF_width_default(buf, sizeof(buf)) <= room) {
+				break;
+			}
+		}
+	}
 	glColor4f(0.0f, 0.0f, 0.0f, 0.85f);
 	BLF_draw_default(stop[2] + 13.0f * U.pixelsize, stop[1] + 5.0f * U.pixelsize, 0.0f, buf, sizeof(buf));
 	glColor4f(0.95f, 0.97f, 1.0f, 1.0f);

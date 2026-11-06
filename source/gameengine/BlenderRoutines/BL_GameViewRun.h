@@ -61,6 +61,12 @@ typedef struct GVRunOptions {
 	int resume;              /* put the snapshot back after converting */
 	int mockup;              /* play only the objects in keep */
 	int suspend_after;       /* suspend after this many frames (0: no) */
+	/* BGE-Remix P10 fix round: suspend after this many seconds (0: no),
+	 * counted from the first frame RTX Remix drew when from_remix is set (or
+	 * from the start if Remix has not drawn in two minutes) */
+	float suspend_seconds;
+	int from_remix;
+	int pad;
 	int frame[4];            /* the game's rectangle (window coordinates) */
 	const char *keep;        /* mock-up: object names, one per line */
 	const char *shot;        /* tests: a picture of the last frame (PNG), or NULL */

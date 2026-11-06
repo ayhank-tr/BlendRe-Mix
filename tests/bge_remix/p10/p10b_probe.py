@@ -38,6 +38,8 @@ PART = os.environ.get("BGE_REMIX_P10B_PART", "edit")
 SAVE = os.environ.get("BGE_REMIX_P10B_SAVE", os.path.join(DIR, "p10b_edited.blend"))
 FRAMES = int(os.environ.get("BGE_REMIX_P10B_FRAMES", "30"))
 WAIT = int(os.environ.get("BGE_REMIX_P10B_WAIT", "5"))
+# the RTX part: seconds played after RTX Remix's first frame before the picture (0: FRAMES frames)
+SECONDS = float(os.environ.get("BGE_REMIX_P10B_SECONDS", "0"))
 
 result = {"part": PART, "steps": {}, "errors": [], "finished": False}
 QUEUE = []
@@ -618,7 +620,11 @@ def queue_run():
 def s_rtx_run():
     mode('RUN')
     view().game_view_background = 'REMIX'
-    ret = run_op(bpy.ops.gameview.run, scope='SCENE', suspend_after=FRAMES, shot=os.path.join(DIR, "rtx_run.png"))
+    if SECONDS > 0.0:
+        ret = run_op(bpy.ops.gameview.run, scope='SCENE', suspend_seconds=SECONDS, from_remix=True,
+                     shot=os.path.join(DIR, "rtx_run.png"))
+    else:
+        ret = run_op(bpy.ops.gameview.run, scope='SCENE', suspend_after=FRAMES, shot=os.path.join(DIR, "rtx_run.png"))
     r = after_run("rtx_run")
     r["ret"] = ret
     r["stop"] = run_op(bpy.ops.gameview.run_stop, keep='NO')

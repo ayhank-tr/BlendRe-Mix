@@ -66,6 +66,9 @@
 
 #include "BL_GameView.h"
 #include "BL_GameViewLive.h"
+extern "C" {
+	#include "PIL_time.h"
+}
 #include "BL_GameViewRun.h"
 
 extern "C" {
@@ -145,6 +148,11 @@ struct Run {
 	ARegion *ar;
 	Scene *blender_scene;     /* the scene Run started (compared, never used after) */
 	int resume, mockup, suspend_after;
+	float suspend_seconds;
+	int from_remix;
+	double start_time, remix_time;  /* when the run started, when Remix first drew (0: not yet) */
+	int remix_frame;                /* the frame Remix first drew (-1: none) */
+	double remix_played;            /* seconds played since then, at the end (-1: none) */
 	int frame[4];
 	std::string shot;
 	GVRunOverlayFn overlay;
@@ -169,6 +177,7 @@ struct Run {
 	std::map<std::string, std::vector<float> > live_mats;
 	Run()
 	    : active(false), C(NULL), ar(NULL), blender_scene(NULL), resume(0), mockup(0), suspend_after(0),
+	      suspend_seconds(0.0f), from_remix(0), start_time(0.0), remix_time(0.0), remix_frame(-1), remix_played(-1.0),
 	      overlay(NULL), frames(0), outcome(GV_RUN_OUT_NONE), suspend_req(false), stop_req(false), restored(false),
 	      converted(false), shot_taken(false), eat_release(false), engine(NULL), live_generation(-1)
 	{
@@ -612,6 +621,29 @@ void update_live(KX_Scene *scene)
 	}
 }
 
+/* the run asked to suspend by itself is due (a number of frames, or of
+ * seconds, from the start or from Remix's first frame) */
+bool run_due(const Run &r)
+{
+	if (r.suspend_after > 0 && r.frames >= r.suspend_after) {
+		return true;
+	}
+	if (r.suspend_seconds > 0.0f) {
+		const double now = PIL_check_seconds_timer();
+		double from = r.start_time;
+		if (r.from_remix) {
+			if (r.remix_time > 0.0) {
+				from = r.remix_time;
+			}
+			else if (now - r.start_time < 120.0) {
+				return false;  /* Remix has not drawn yet */
+			}
+		}
+		return now - from >= r.suspend_seconds;
+	}
+	return false;
+}
+
 void take_shot(const Run &r)
 {
 	const int x = r.frame[0], y = r.frame[1];
@@ -660,6 +692,12 @@ extern "C" void BL_GameViewRunBegin(bContext *C, ARegion *ar, const GVRunOptions
 	r.resume = opts->resume;
 	r.mockup = opts->mockup;
 	r.suspend_after = opts->suspend_after;
+	r.suspend_seconds = opts->suspend_seconds;
+	r.from_remix = opts->from_remix;
+	r.start_time = PIL_check_seconds_timer();
+	r.remix_time = 0.0;
+	r.remix_frame = -1;
+	r.remix_played = -1.0;
 	memcpy(r.frame, opts->frame, sizeof(r.frame));
 	r.shot = opts->shot ? opts->shot : "";
 	r.overlay = opts->overlay;
@@ -881,7 +919,7 @@ int BL_GameViewRunFrame(KX_KetsjiEngine *engine)
 		r.outcome = GV_RUN_OUT_STOP;
 		return KX_EXIT_REQUEST_BLENDER_ESC;
 	}
-	if (r.suspend_req || (r.suspend_after > 0 && r.frames >= r.suspend_after)) {
+	if (r.suspend_req || run_due(r)) {
 		r.outcome = GV_RUN_OUT_SUSPEND;
 		return KX_EXIT_REQUEST_BLENDER_ESC;
 	}
@@ -909,7 +947,13 @@ void BL_GameViewRunPreSwap(void *engine_v)
 		cam->GetProjectionMatrix().getValue(&proj[0][0]);
 		r.overlay(r.C, r.ar, r.frame, view, proj);
 	}
-	const bool last = r.suspend_req || r.stop_req || (r.suspend_after > 0 && r.frames >= r.suspend_after);
+#ifdef WITH_REMIX
+	if (r.remix_time == 0.0 && engine->GetRemixScene() == scene) {
+		r.remix_time = PIL_check_seconds_timer();  /* RTX Remix drew this frame */
+		r.remix_frame = r.frames;
+	}
+#endif
+	const bool last = r.suspend_req || r.stop_req || run_due(r);
 	if (last && !r.shot.empty() && !r.shot_taken) {
 		take_shot(r);
 		r.shot_taken = true;
@@ -919,6 +963,9 @@ void BL_GameViewRunPreSwap(void *engine_v)
 void BL_GameViewRunStopping(KX_KetsjiEngine *engine)
 {
 	Run &r = run();
+	if (r.remix_time > 0.0) {
+		r.remix_played = PIL_check_seconds_timer() - r.remix_time;
+	}
 	if (r.outcome == GV_RUN_OUT_SUSPEND) {
 		capture(engine);
 	}
@@ -969,9 +1016,11 @@ static PyObject *gvr_live(PyObject *, PyObject *)
 static PyObject *gvr_result(PyObject *, PyObject *)
 {
 	Run &r = run();
-	return Py_BuildValue("{s:s,s:i,s:i,s:O,s:O}", "outcome", outcome_name(r.outcome), "frames", r.frames,
+	return Py_BuildValue("{s:s,s:i,s:i,s:O,s:O,s:i,s:d}", "outcome", outcome_name(r.outcome), "frames", r.frames,
 	                     "live_generation", r.live_generation, "snapshot", snapshot().valid ? Py_True : Py_False,
-	                     "other_scene", snapshot().other_scene ? Py_True : Py_False);
+	                     "other_scene", snapshot().other_scene ? Py_True : Py_False,
+	                     "remix_frame", r.remix_frame,
+	                     "remix_seconds", r.remix_played);
 }
 
 static PyObject *gvr_snapshot(PyObject *, PyObject *)
