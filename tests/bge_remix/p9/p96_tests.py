@@ -308,9 +308,14 @@ def _seam_steps(a, rect, cols, rows, p8):
             beside = float(np.median(np.concatenate([g[i - 8:i - 1], g[i + 2:i + 9]])))
             half = 0.0
             if tile >= 8:
-                j = i - tile // 2 if i - tile // 2 >= 1 else i + tile // 2
-                if 1 <= j <= len(g) - 2:
-                    half = float(g[j - 1:j + 2].max())
+                # (fix round 2: within 3 pixels of half a tile in: the tile is
+                # a fraction of a pixel off whole pixels on screen, and a
+                # joint under a pixel wide moves by one; the second RTX run's
+                # Brick missed its joint at 270 by one pixel, its step 4.5
+                # against 11 there and 13 at every joint beside the edge)
+                j = i - tile // 2 if i - tile // 2 >= 3 else i + tile // 2
+                if 3 <= j <= len(g) - 4:
+                    half = float(g[j - 3:j + 4].max())
             res.append({"at": line, "across": round(across, 2), "beside": round(beside, 2), "half": round(half, 2),
                         "seam": across > SEAM_RATIO * max(beside, half) + SEAM_SLACK})
     return res
