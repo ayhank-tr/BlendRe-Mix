@@ -42,7 +42,7 @@ import os
 import bpy
 from bpy.app.handlers import persistent
 from bpy.types import Menu, Operator, Panel
-from bpy.props import EnumProperty, IntProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
 
 import remix_view_tools as rvt
 
@@ -255,7 +255,7 @@ def _names(text):
     return [n.strip() for n in text.replace(",", "\n").split("\n") if n.strip()]
 
 
-def _play(op, context, resume, suspend_after, shot):
+def _play(op, context, resume, suspend_after, shot, seconds=0.0, from_remix=False):
     o = rvt.view_override(context)
     if o is None:
         op.report({'ERROR'}, "Run plays inside a Remix View")
@@ -264,7 +264,8 @@ def _play(op, context, resume, suspend_after, shot):
     S["state"] = 'RUNNING'
     try:
         ret = bpy.ops.view3d.gameview_play(o, resume=resume, mockup=S["scope"] == 'MOCKUP', keep="\n".join(S["keep"]),
-                                           suspend_after=suspend_after, shot=shot)
+                                           suspend_after=suspend_after, suspend_seconds=seconds,
+                                           from_remix=from_remix, shot=shot)
     except RuntimeError as ex:
         ret = {'CANCELLED'}
         op.report({'ERROR'}, str(ex))
@@ -353,6 +354,10 @@ class GAMEVIEW_OT_run(Operator):
     scope = EnumProperty(name="Play", items=SCOPES)
     objects = StringProperty(name="Objects", description="A mock-up's objects, one name per line (empty: the "
                                                          "selected objects)")
+    suspend_seconds = FloatProperty(name="Suspend After Seconds", default=0.0, min=0.0,
+                                    description="Suspend by itself after this many seconds (0: only when asked)")
+    from_remix = BoolProperty(name="From RTX Remix's First Frame", default=False,
+                              description="Count the seconds from the first frame RTX Remix drew")
     suspend_after = IntProperty(name="Suspend After", description="Suspend by itself after this many frames "
                                 "(0: only when asked)", default=0, min=0)
     shot = StringProperty(name="Picture", description="A picture of the last frame (PNG file)",
@@ -384,7 +389,7 @@ class GAMEVIEW_OT_run(Operator):
         S["chosen"] = chosen if self.scope == 'MOCKUP' else []
         S["keep"] = sorted(rvt.mockup_objects(scene, chosen)) if self.scope == 'MOCKUP' else []
         gv.run_forget()
-        return _play(self, context, False, self.suspend_after, self.shot)
+        return _play(self, context, False, self.suspend_after, self.shot, self.suspend_seconds, self.from_remix)
 
 
 CHOICES = (('ASK', "Ask", "Show the choice"),
@@ -422,6 +427,8 @@ class GAMEVIEW_OT_run_continue(Operator):
 
     choice = EnumProperty(name="Choice", items=CHOICES)
     suspend_after = IntProperty(name="Suspend After", default=0, min=0)
+    suspend_seconds = FloatProperty(name="Suspend After Seconds", default=0.0, min=0.0)
+    from_remix = BoolProperty(name="From RTX Remix's First Frame", default=False)
     shot = StringProperty(name="Picture", options={'SKIP_SAVE', 'HIDDEN'})
 
     @classmethod
@@ -449,7 +456,8 @@ class GAMEVIEW_OT_run_continue(Operator):
             rvt.unpose(scene)
             gv.run_forget()
             S["frame"] = 0
-        return _play(self, context, self.choice == 'RESUME', self.suspend_after, self.shot)
+        return _play(self, context, self.choice == 'RESUME', self.suspend_after, self.shot, self.suspend_seconds,
+                     self.from_remix)
 
 
 KEEPS = (('ASK', "Ask", "Show the choice"),
