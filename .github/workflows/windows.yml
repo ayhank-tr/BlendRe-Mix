@@ -233,6 +233,69 @@ jobs:
           p6native/Release/p6_physx_checks.exe
           if ($LASTEXITCODE -ne 0) { Write-Output "::error title=PhysX native checks::some checks failed (see the log)"; exit 1 }
 
+  # BGE-Remix P10: the pre-flight (every push, no graphics card): the test
+  # scripts compile, and every test scene of P9 and P10 is made in a
+  # background Blender; a scene that cannot be made fails here, not on the
+  # PC's run
+  preflight:
+    needs: build
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: blender
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: blendremix-win64
+          path: ours
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: The test scripts compile
+        shell: pwsh
+        run: |
+          python -m compileall -q blender/tests/bge_remix
+          if ($LASTEXITCODE -ne 0) { Write-Output "::error title=Pre-flight::a test script does not compile"; exit 1 }
+
+      - name: The P9 and P10 test scenes are made
+        shell: pwsh
+        run: |
+          $bl = Get-ChildItem ours -Recurse -Filter blender.exe | Select-Object -First 1
+          $bad = 0
+          foreach ($p in @(@("p9", "make_scenes_p9.py", "p9_expected.json"), @("p10", "make_scenes_p10.py", "p10_expected.json"))) {
+            $out = "preflight/$($p[0])"
+            New-Item -ItemType Directory -Force $out | Out-Null
+            $env:BGE_REMIX_CONVERT = "0"
+            & $bl.FullName --background --factory-startup --python "blender/tests/bge_remix/$($p[0])/$($p[1])" -- $out *> "$out/make.log"
+            $e = Get-Content "$out/$($p[2])" -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
+            if (-not $e) {
+              Write-Output "::error title=Pre-flight $($p[0])::the scene maker wrote no $($p[2]) (see make.log)"; $bad = 1
+            }
+            else {
+              foreach ($k in $e.failed.PSObject.Properties.Name) {
+                Write-Output "::error title=Pre-flight $($p[0])::the $k scenes could not be made"; $bad = 1
+              }
+              foreach ($t in $e.PSObject.Properties) {
+                if ($t.Value -and $t.Value.PSObject.Properties.Name -contains "failed") {
+                  foreach ($k in $t.Value.failed.PSObject.Properties.Name) {
+                    Write-Output "::error title=Pre-flight $($p[0])::$($t.Name): the $k scenes could not be made"; $bad = 1
+                  }
+                }
+              }
+            }
+          }
+          exit $bad
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: preflight
+          path: preflight/*/*.log
+
   # Since P8 Part B the tests run on a PC with a graphics card
   # (tests/bge_remix/run_local.bat); this job runs only when started by hand
   # (Actions, "Run workflow")

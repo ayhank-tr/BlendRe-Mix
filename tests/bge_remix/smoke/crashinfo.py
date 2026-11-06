@@ -95,9 +95,12 @@ def crash_report(debugger_log, map_path, frames=25):
         text = open(debugger_log, errors="replace").read()
     except OSError:
         return r
-    i = text.find("BGE-Remix crash")
-    if i < 0:
+    # (the line the debugger writes on a crash, alone on its line: the
+    # commands it was given, echoed at the start, hold the same words)
+    m = re.search(r"^BGE-Remix crash\s*$", text, re.M)
+    if not m:
         return r
+    i = m.start()
     r["crashed"] = True
     tail = text[i:]
     m = re.search(r"Last event: .*?: (.*)", tail)

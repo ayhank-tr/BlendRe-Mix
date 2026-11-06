@@ -32,6 +32,9 @@ def main():
     ap.add_argument("--steps", default=os.environ.get("BGE_REMIX_SMOKE_STEPS", ""))
     args = ap.parse_args()
     out = os.path.abspath(args.out)
+    if args.file:
+        # (a person's file: its own folder, so our scene's report stays)
+        out += "_file"
     shutil.rmtree(out, ignore_errors=True)
     os.makedirs(out)
     exe = os.path.join(args.ours, "blender.exe")
@@ -75,8 +78,11 @@ def main():
              "=" * 70, ""]
     if not crashinfo.debugger():
         lines.append("(Windows' console debugger is not installed: a crash is found, its stack is not)")
-    for name, st in (r.get("steps") or {}).items():
-        lines.append("  %-6s %-28s %6.1f s" % ("ok" if st.get("ok") else "ERROR", name, st.get("seconds") or 0))
+    steps = r.get("steps") or {}
+    for i, name in enumerate(r.get("order") or sorted(steps)):
+        st = steps.get(name) or {}
+        mark = "ok" if st.get("ok") else ("ERROR" if st else "...")
+        lines.append("  %2d %-6s %-28s %6.1f s" % (i + 1, mark, name, st.get("seconds") or 0))
     for e in r.get("errors") or []:
         lines += ["", "Python error in " + e.strip()]
     crashed = rep.get("crashed") or (code not in (0, "timeout") and not r.get("finished"))

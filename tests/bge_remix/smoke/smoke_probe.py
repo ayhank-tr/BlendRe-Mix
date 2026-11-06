@@ -31,7 +31,7 @@ PICK = [s for s in os.environ.get("BGE_REMIX_SMOKE_STEPS", "").split(",") if s]
 REMIX_WAIT = float(os.environ.get("BGE_REMIX_SMOKE_REMIX_WAIT", "60"))  # seconds for Remix's first frames
 OWN_FILE = bool(bpy.data.filepath)
 
-result = {"steps": {}, "errors": [], "finished": False, "doing": None, "own_file": OWN_FILE,
+result = {"steps": {}, "order": [], "errors": [], "finished": False, "doing": None, "own_file": OWN_FILE,
           "started": time.time()}
 
 
@@ -460,6 +460,7 @@ def step(fn):
     name = fn.__name__
     # (written before it runs: a crash names the step it happened in)
     result["doing"] = name
+    result["order"].append(name)
     write()
     print("SMOKE step", name, flush=True)
     t = time.time()
