@@ -136,6 +136,27 @@ static void rna_Controller_state_number_set(struct PointerRNA *ptr, const int va
 	cont->state_mask = (1 << (value - 1));
 }
 
+/* BGE-Remix P10.13 (A3): the controller's states as a mask (the engine and
+ * the file always allowed several; at least one stays set) */
+static void rna_Controller_state_mask_get(PointerRNA *ptr, int *values)
+{
+	bController *cont = (bController *)ptr->data;
+	int i;
+	for (i = 0; i < OB_MAX_STATES; i++)
+		values[i] = (cont->state_mask & (1u << i)) != 0;
+}
+
+static void rna_Controller_state_mask_set(PointerRNA *ptr, const int *values)
+{
+	bController *cont = (bController *)ptr->data;
+	unsigned int mask = 0;
+	int i;
+	for (i = 0; i < OB_MAX_STATES; i++)
+		if (values[i]) mask |= (1u << i);
+	if (mask)
+		cont->state_mask = mask;
+}
+
 static void rna_Controller_actuators_begin(CollectionPropertyIterator *iter, PointerRNA *ptr)
 {
 	bController *cont = (bController *)ptr->data;
@@ -261,6 +282,13 @@ void RNA_def_controller(BlenderRNA *brna)
 	RNA_def_property_range(prop, 1, OB_MAX_STATES);
 	RNA_def_property_ui_text(prop, "", "Set Controller state index (1 to 30)");
 	RNA_def_property_int_funcs(prop, "rna_Controller_state_number_get", "rna_Controller_state_number_set", NULL);
+
+	/* BGE-Remix P10.13 (A3): every state it is in */
+	prop = RNA_def_property(srna, "state_mask", PROP_BOOLEAN, PROP_LAYER_MEMBER);
+	RNA_def_property_array(prop, OB_MAX_STATES);
+	RNA_def_property_boolean_funcs(prop, "rna_Controller_state_mask_get", "rna_Controller_state_mask_set");
+	RNA_def_property_ui_text(prop, "States", "Every state the controller is in (at least one)");
+	RNA_def_property_update(prop, NC_LOGIC, NULL);
 	RNA_def_property_update(prop, NC_LOGIC, NULL);
 
 	/* Expression Controller */

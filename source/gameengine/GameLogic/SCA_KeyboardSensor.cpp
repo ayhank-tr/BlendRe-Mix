@@ -62,6 +62,7 @@ SCA_KeyboardSensor::SCA_KeyboardSensor(SCA_KeyboardManager* keybdmgr,
 	 m_qual(qual),
 	 m_qual2(qual2),
 	 m_bAllKeys(bAllKeys),
+	 m_readHeld(false),
 	 m_targetprop(targetProp),
 	 m_toggleprop(toggleProp)
 {
@@ -128,6 +129,9 @@ bool SCA_KeyboardSensor::Evaluate()
 {
 	bool result    = false;
 	bool reset     = m_reset && m_level;
+	/* BGE-Remix P10.13 (A2): the first look after the sensor became active
+	 * (Init) also reports a held key, when asked to */
+	const bool read_held = m_readHeld && m_reset;
 	bool qual	   = true;
 	bool qual_change = false;
 	short int m_val_orig = m_val;
@@ -191,7 +195,7 @@ bool SCA_KeyboardSensor::Evaluate()
 					if (m_val == 0)
 					{
 						m_val = 1;
-						if (m_level) {
+						if (m_level || read_held) {
 							result = true;
 						}
 					}
@@ -289,7 +293,7 @@ bool SCA_KeyboardSensor::Evaluate()
 						if (m_val == 0)
 						{
 							m_val = 1;
-							if (m_level) 
+							if (m_level || read_held)
 							{
 								result = true;
 							}

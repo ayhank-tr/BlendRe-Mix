@@ -151,6 +151,10 @@ public:
 
 	virtual sensortype GetSensorType() { return ST_NONE; }
 
+	/* BGE-Remix P10.13 (A1): how many events it caught this tic (a Message
+	 * sensor: its messages; the others: 1) */
+	virtual int GetEventCount() { return 1; }
+
 	/** Stop sensing for a while. */
 	void Suspend();
 

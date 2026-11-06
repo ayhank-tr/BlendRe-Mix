@@ -46,6 +46,11 @@ class KX_NetworkMessageSensor : public SCA_ISensor
 	// The subject we filter on.
 	STR_String m_subject;
 
+	/* BGE-Remix P10.13 (A13): the sender and body filters the file always
+	 * kept (bMessageSensor fromObject, body); empty: any, as before */
+	STR_String m_from;
+	STR_String m_body;
+
 	// The number of messages caught since the last frame.
 	int m_frame_message_count;
 
@@ -58,8 +63,13 @@ public:
 		KX_NetworkEventManager* eventmgr,	// our eventmanager
 		NG_NetworkScene *NetworkScene,		// our scene
 		SCA_IObject* gameobj,				// the sensor controlling object
-		const STR_String &subject
+		const STR_String &subject,
+		const STR_String &from = "",		// BGE-Remix P10.13 (A13)
+		const STR_String &body = ""
 	);
+
+	/* BGE-Remix P10.13 (A1): the messages caught this tic */
+	virtual int GetEventCount() { return m_frame_message_count; }
 	virtual ~KX_NetworkMessageSensor();
 
 	virtual CValue* GetReplica();

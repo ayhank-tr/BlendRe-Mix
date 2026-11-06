@@ -296,6 +296,7 @@ protected:
 	double				m_suspendeddelta;
 
 	struct Scene* m_blenderScene;
+	int m_timersGameTime;  /* BGE-Remix P10.13 (A6): -1 not read yet, 0 stock, 1 game time */
 
 	RAS_2DFilterManager m_filtermanager;
 

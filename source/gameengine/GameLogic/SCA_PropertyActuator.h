@@ -52,6 +52,7 @@ class SCA_PropertyActuator : public SCA_IActuator
 	bool isValid(KX_ACT_PROP_MODE mode);
 	
 	int			m_type;
+	bool		m_perMessage;  /* BGE-Remix P10.13 (A1): Add once per message */
 	STR_String	m_propname;
 	STR_String	m_exprtxt;
 	SCA_IObject* m_sourceObj; // for copy property actuator
@@ -83,6 +84,9 @@ public:
 
 	/* BGE-Remix P10.10: for the live brick states (KX_LogicBrickState) */
 	bool IsMissingSource() const { return m_type == KX_ACT_PROP_COPY && m_sourceObj == NULL; }
+	/* BGE-Remix P10.13 (A1) */
+	void SetPerMessage(bool on) { m_perMessage = on; }
+	int MessagesThisTick();
 
 	/* --------------------------------------------------------------------- */
 	/* Python interface ---------------------------------------------------- */

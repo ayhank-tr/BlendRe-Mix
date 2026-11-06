@@ -850,6 +850,8 @@ Scene *BKE_scene_add(Main *bmain, const char *name)
 	BKE_scene_init(sce);
 	/* BGE-Remix P8 Part B: new scenes start with the Modern pipeline */
 	BKE_scene_game_pipeline_set(sce, BKE_SCENE_GAME_PIPELINE_MODERN);
+	/* BGE-Remix P10.13 (A7): new scenes' Max Physics Steps works as labelled */
+	BKE_scene_game_option_set(sce, BKE_SCENE_GAME_OWN_PHYSICS_STEPS, 1);
 
 	return sce;
 }
@@ -2314,6 +2316,30 @@ void BKE_scene_game_pipeline_set(Scene *scene, int pipeline)
 		IDP_AddToGroup(group, prop);
 	}
 	IDP_Int(prop) = pipeline;
+}
+
+/* BGE-Remix P10.13: the logic's options (BKE_scene.h) */
+int BKE_scene_game_option(const Scene *scene, const char *name)
+{
+	IDProperty *group = scene ? scene->id.properties : NULL;
+	IDProperty *prop = group ? IDP_GetPropertyFromGroup(group, name) : NULL;
+	return (prop && prop->type == IDP_INT) ? IDP_Int(prop) : 0;
+}
+
+void BKE_scene_game_option_set(Scene *scene, const char *name, int value)
+{
+	IDProperty *group = IDP_GetProperties(&scene->id, true);
+	IDProperty *prop = IDP_GetPropertyFromGroup(group, name);
+	if (prop && prop->type != IDP_INT) {
+		IDP_FreeFromGroup(group, prop);
+		prop = NULL;
+	}
+	if (!prop) {
+		IDPropertyTemplate val = {0};
+		prop = IDP_New(IDP_INT, &val, name);
+		IDP_AddToGroup(group, prop);
+	}
+	IDP_Int(prop) = value;
 }
 
 /* BGE-Remix P9.1: RTX Remix's tone mapping (a hidden ID property, as the

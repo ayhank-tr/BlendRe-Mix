@@ -1,9 +1,9 @@
-# P10, third track: the logic bricks brought up to date (P10.10-P10.12)
+# P10, third track: the logic bricks brought up to date (P10.10-P10.13)
 
 The bricks stay, and old games play as before. Node logic is not part of
-P10. The list of the bricks' old limits (P10.13) is in
-`bge_remix_p10_brick_limits.md`, for your approval. Nothing in it has been
-fixed yet.
+P10. The bricks' old limits (P10.13) are listed in
+`bge_remix_p10_brick_limits.md`; the approved ones are built (the last
+section below).
 
 ## P10.10: each brick's live state
 
@@ -96,3 +96,42 @@ data. It reads them without their data, and its converter makes nothing for
 them. The rest of the game runs (test T10.c9). If stock 2.79b saves the
 file, the two bricks lose their settings. BGE-Remix gives them their
 defaults again: 1 second, and no setting.
+
+## P10.13: the bricks' old limits, fixed (approved 6 Nov)
+
+The full list, with each entry marked fixed, option or warning, is in
+`bge_remix_p10_brick_limits.md`. Old games play exactly as before. Each
+option is kept in the file and is off in every old file, and the files still
+open in stock 2.79b, which keeps the options and ignores them.
+
+**Fixed:**
+- **A controller in several states**: Shift+click in the logic editor's state menu adds or removes a state. The header shows "2+" for a controller in more than one.
+- **Logic Priority**: set per object in the logic editor's sidebar (Logic Order). Objects with a higher number run their controllers first in each logic tic. At 0 (every old file) the order is the one stock 2.79b gives.
+- **The Delay sensor**: takes up to 32767 tics in the editor (stock: 5000). The file holds no more than that; for longer waits, use the Timer sensor.
+- **The Message sensor's From and Body**: optional filters. When set, the sensor only hears messages from that object, or with that body. Empty means any, as before.
+
+**Options, off unless you turn them on:**
+- **Add Once per Message** (Property actuator, Add mode): two messages in one tic add twice, not once.
+- **Read Held Keys** (Keyboard sensor): a key already held when the sensor's state is entered fires the sensor once. Stock waits for a new press, unless the sensor's Level is on.
+- **Stop Left State Now** (State actuator): the running actuators of the states it leaves stop in the same tic, not one tic later.
+- **Own Max Physics Steps** (World tab, Physics): Max Physics Steps works as labelled. Stock reads Max Logic Steps for it. It is on in new files and new scenes, and off in old files.
+- **Timers Follow Game Time** (World tab, Physics): when the game runs slower than its logic rate, timers, Timer sensors and added objects' life count the game time each logic step stands for. This only matters with Own Max Physics Steps on: without it, a logic step never stands for more than one tic.
+
+**New warnings in the Remix View's logic layer:**
+
+| Code | Colour | When |
+|---|---|---|
+| LOG_NO_TARGET | Red (was Black) | An actuator aimed at nothing. |
+| DAT_PROP_MISSING | Red (was Black) | A Property sensor watching a property its object does not have. |
+| LOG_NO_ACTUATOR | Red | An Actuator sensor watching an actuator its object does not have. |
+| LOG_NO_FILE | Red | A Start Game file that is not there. |
+| LOG_EXPR_FULL | Note | An expression that fills its 127 characters. |
+| LOG_EXPR_NAME_CLASH | Note | An expression name that is both a linked sensor and a property (the sensor is read), or a sensor not linked to the controller (it cannot be read). |
+| LOG_SEES_ACTORS | Note | A Near or Radar sensor, and no other object with Actor on. |
+| LOG_SHAPE_NO_KEYS | Note | An action that animates shape keys, none of them the mesh's. |
+
+Bricks are now told apart by kind as well as name, so a sensor and an
+actuator with the same name no longer mix up their warnings.
+
+For the tests only: `BGE_REMIX_P10_HOLD_KEY=<key>:<tic>` presses a key (a
+digit or a letter) at that logic tic and holds it.

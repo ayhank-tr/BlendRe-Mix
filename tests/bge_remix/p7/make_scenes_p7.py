@@ -47,7 +47,8 @@ FAULTS = [
     ("PHY_GHOST_MESH", "GhostWall", "NOTE", "a Ghost with Triangle Mesh bounds (PhysX)"),
     ("MED_STEREO_3D", "Radio", "NOTE", "a stereo sound set to 3D"),
     ("LOG_UNCONNECTED", "Brain", "BLACK", "an unconnected brick"),
-    ("LOG_NO_TARGET", "Brain", "BLACK", "an actuator aimed at nothing"),
+    # (BGE-Remix P10.13, B2 approved 6 Nov: Red, as the live brick states; P7 had Black)
+    ("LOG_NO_TARGET", "Brain", "RED", "an actuator aimed at nothing"),
     ("PY_SYNTAX", "Brain", "RED", "a script with an error"),
     ("ANI_BONES", "Rig", "NOTE", "an animation made for another armature"),
     ("MSG_NO_LISTENER", "Ball", "NOTE", "a message nobody hears"),

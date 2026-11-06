@@ -164,6 +164,16 @@ bool BKE_scene_game_rtx_pipeline(const struct Scene *scene);
  * ID properties of the scene ("bge_fx_<name>"), with their defaults */
 float BKE_scene_game_fx(const struct Scene *scene, const char *name, float def);
 void BKE_scene_game_fx_set(struct Scene *scene, const char *name, float value);
+/* BGE-Remix P10.13: the logic's options, hidden ID properties of the scene
+ * (an old file has none: stock 2.79b's behaviour)
+ * A7: Max Physics Steps works as labelled (stock reads Max Logic Steps for
+ * it); on for new scenes and new files */
+#define BKE_SCENE_GAME_OWN_PHYSICS_STEPS "bge_physics_steps_own"
+/* A6: timers and object life times count the logic tic's game time when the
+ * game runs slow (stock: always 1 / tic rate) */
+#define BKE_SCENE_GAME_TIMERS_GAME_TIME "bge_timers_game_time"
+int BKE_scene_game_option(const struct Scene *scene, const char *name);
+void BKE_scene_game_option_set(struct Scene *scene, const char *name, int value);
 bool BKE_scene_check_color_management_enabled(const struct Scene *scene);
 bool BKE_scene_check_rigidbody_active(const struct Scene *scene);
 

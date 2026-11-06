@@ -135,6 +135,7 @@ private:
 	static int				m_maxLogicFrame;	/* maximum number of consecutive logic frame */
 	static int				m_maxPhysicsFrame;	/* maximum number of consecutive physics frame */
 	static double			m_ticrate;
+	static double			m_logicFrameStep;	/* BGE-Remix P10.13 (A6): the game time of a logic tic */
 	static double			m_anim_framerate; /* for animation playback only - ipo and action */
 
 	static bool				m_restrict_anim_fps;
@@ -393,6 +394,9 @@ public:
 	 * Gets the maximum number of physics frame before render frame
 	 */
 	static int GetMaxPhysicsFrame();
+	/* BGE-Remix P10.13 (A6): the game time the current logic tic stands for
+	 * (1 / tic rate, more when the game runs slower than its tic rate) */
+	static double GetLogicFrameStep();
 	/**
 	 * Sets the maximum number of physics frame before render frame
 	 */

@@ -262,6 +262,14 @@ const char *bounds_name(int b)
 	}
 }
 
+/* BGE-Remix P10.13 (B1): a brick's key: its object, kind ("sensor",
+ * "controller", "actuator") and name (a sensor and an actuator may share a
+ * name: Blender's own default names do) */
+std::string brick_id(const std::string &object, const char *kind, const char *name)
+{
+	return object + "/" + kind + "/" + name;
+}
+
 const char *sensor_id(short type)
 {
 	switch (type) {
@@ -875,6 +883,7 @@ void GVBuilder::Build()
 	Physics();
 	Media();
 	Logic();     /* before Data, Python, Messages, Input: they use the bricks */
+	LogicChecks();  /* BGE-Remix P10.13 */
 	LogicStates();  /* BGE-Remix P10.11 */
 	Data();
 	Python();
@@ -1594,7 +1603,7 @@ void GVBuilder::Logic()
 			}
 			const int el = Add(id ? fmt("sensor:%s", id).c_str() : "sensor:OTHER", s->name, ob, info.c_str());
 			brick[s] = el;
-			m_brickElement[obname + "/" + s->name] = el;
+			m_brickElement[brick_id(obname, "sensor", s->name)] = el;
 			if (s->flag & SENS_DEACTIVATE) {
 				elements[el].state = GV_STATE_WHITE;
 				BLI_strncpy(elements[el].info, "deactivated", sizeof(elements[el].info));
@@ -1613,7 +1622,7 @@ void GVBuilder::Logic()
 				shapes[sh].p[1] = DEG2RADF(((bRadarSensor *)s->data)->angle * 0.5f);
 				shapes[sh].dashed = 1;
 			}
-			if (m_conv.converted && !(s->flag & SENS_DEACTIVATE) && !m_conv.bricks.count(obname + "/" + s->name)) {
+			if (m_conv.converted && !(s->flag & SENS_DEACTIVATE) && !m_conv.bricks.count(brick_id(obname, "sensor", s->name))) {
 				Warn(el, "LOG_NOT_MADE", GV_WARN_BLACK, "the converter made nothing for it");
 			}
 		}
@@ -1629,7 +1638,7 @@ void GVBuilder::Logic()
 			info = std::string("state ") + states;
 			const int el = Add(id ? fmt("controller:%s", id).c_str() : "controller:OTHER", c->name, ob, info.c_str());
 			brick[c] = el;
-			m_brickElement[obname + "/" + c->name] = el;
+			m_brickElement[brick_id(obname, "controller", c->name)] = el;
 			if (c->flag & CONT_DEACTIVATE) {
 				elements[el].state = GV_STATE_WHITE;
 				BLI_strncpy(elements[el].info, "deactivated", sizeof(elements[el].info));
@@ -1658,7 +1667,7 @@ void GVBuilder::Logic()
 					         states.c_str()).c_str());
 				}
 			}
-			if (m_conv.converted && !m_conv.bricks.count(obname + "/" + c->name)) {
+			if (m_conv.converted && !m_conv.bricks.count(brick_id(obname, "controller", c->name))) {
 				Warn(el, "LOG_NOT_MADE", GV_WARN_BLACK, "the converter made nothing for it");
 			}
 		}
@@ -1666,7 +1675,7 @@ void GVBuilder::Logic()
 			const char *id = actuator_id(a->type);
 			const int el = Add(id ? fmt("actuator:%s", id).c_str() : "actuator:OTHER", a->name, ob, "");
 			brick[a] = el;
-			m_brickElement[obname + "/" + a->name] = el;
+			m_brickElement[brick_id(obname, "actuator", a->name)] = el;
 			if (a->flag & ACT_DEACTIVATE) {
 				elements[el].state = GV_STATE_WHITE;
 				BLI_strncpy(elements[el].info, "deactivated", sizeof(elements[el].info));
@@ -1720,7 +1729,8 @@ void GVBuilder::Logic()
 					break;
 			}
 			if (missing) {
-				Warn(el, "LOG_NO_TARGET", GV_WARN_BLACK, missing);
+				/* BGE-Remix P10.13 (B2): Red, as P10.10's live state (stock P7: Black) */
+				Warn(el, "LOG_NO_TARGET", GV_WARN_RED, missing);
 			}
 			/* BGE-Remix P10.12: Remix's settings mean nothing to the Classic pipeline */
 			if (a->type == ACT_REMIX && !m_remix) {
@@ -1729,7 +1739,7 @@ void GVBuilder::Logic()
 				     true);
 				m_warn[el].back().layer = GV_LAYER_REMIX;
 			}
-			if (m_conv.converted && !m_conv.bricks.count(obname + "/" + a->name)) {
+			if (m_conv.converted && !m_conv.bricks.count(brick_id(obname, "actuator", a->name))) {
 				Warn(el, "LOG_NOT_MADE", GV_WARN_BLACK, "the converter made nothing for it");
 			}
 		}
@@ -1791,24 +1801,27 @@ void GVBuilder::Data()
 			}
 			return false;
 		};
-		auto need = [&](const char *prop, const char *brickname, bool write) {
+		/* BGE-Remix P10.13 (B1): kind: "sensor" or "actuator"; (B2) a Property
+		 * sensor watching a property its object does not have is Red */
+		auto need = [&](const char *prop, const char *brickname, bool write, const char *kind, int level) {
 			if (!prop || !prop[0]) return;
 			(write ? writes : reads)[prop] = brickname;
 			if (!has_prop(prop)) {
-				auto it = m_brickElement.find(obname + "/" + brickname);
+				auto it = m_brickElement.find(brick_id(obname, kind, brickname));
 				if (it != m_brickElement.end()) {
-					Warn(it->second, "DAT_PROP_MISSING", GV_WARN_BLACK,
+					Warn(it->second, "DAT_PROP_MISSING", level,
 					     fmt("uses the property \"%s\", which %s does not have", prop, obname.c_str()).c_str());
 					m_warn[it->second].back().layer = GV_LAYER_DATA;
 				}
 			}
 		};
 		for (bSensor *s = (bSensor *)ob->sensors.first; s; s = s->next) {
-			if (s->type == SENS_PROPERTY && s->data) need(((bPropertySensor *)s->data)->name, s->name, false);
+			if (s->type == SENS_PROPERTY && s->data)
+				need(((bPropertySensor *)s->data)->name, s->name, false, "sensor", GV_WARN_RED);
 			if (s->type == SENS_KEYBOARD && s->data) {
 				bKeyboardSensor *ks = (bKeyboardSensor *)s->data;
-				need(ks->targetName, s->name, true);
-				need(ks->toggleName, s->name, true);
+				need(ks->targetName, s->name, true, "sensor", GV_WARN_BLACK);
+				need(ks->toggleName, s->name, true, "sensor", GV_WARN_BLACK);
 			}
 		}
 		for (bController *c = (bController *)ob->controllers.first; c; c = c->next) {
@@ -1818,16 +1831,16 @@ void GVBuilder::Data()
 			}
 		}
 		for (bActuator *a = (bActuator *)ob->actuators.first; a; a = a->next) {
-			if (a->type == ACT_PROPERTY && a->data) need(((bPropertyActuator *)a->data)->name, a->name, true);
-			if (a->type == ACT_RANDOM && a->data) need(((bRandomActuator *)a->data)->propname, a->name, true);
+			if (a->type == ACT_PROPERTY && a->data) need(((bPropertyActuator *)a->data)->name, a->name, true, "actuator", GV_WARN_BLACK);
+			if (a->type == ACT_RANDOM && a->data) need(((bRandomActuator *)a->data)->propname, a->name, true, "actuator", GV_WARN_BLACK);
 			if (a->type == ACT_ACTION && a->data) {
 				bActionActuator *aa = (bActionActuator *)a->data;
-				if (aa->type == ACT_ACTION_FROM_PROP) need(aa->name, a->name, false);
-				need(aa->frameProp, a->name, true);
+				if (aa->type == ACT_ACTION_FROM_PROP) need(aa->name, a->name, false, "actuator", GV_WARN_BLACK);
+				need(aa->frameProp, a->name, true, "actuator", GV_WARN_BLACK);
 			}
 			if (a->type == ACT_MESSAGE && a->data) {
 				bMessageActuator *ma = (bMessageActuator *)a->data;
-				if (ma->bodyType == ACT_MESG_PROP) need(ma->body, a->name, false);
+				if (ma->bodyType == ACT_MESG_PROP) need(ma->body, a->name, false, "actuator", GV_WARN_BLACK);
 			}
 			if (a->type == ACT_GAME && a->data) {
 				bGameActuator *ga = (bGameActuator *)a->data;
@@ -1993,7 +2006,7 @@ void GVBuilder::Animation()
 			}
 			bActionActuator *aa = (bActionActuator *)a->data;
 			if (!aa->act) {
-				auto it = m_brickElement.find(std::string(name_of(ob)) + "/" + a->name);
+				auto it = m_brickElement.find(brick_id(name_of(ob), "actuator", a->name));
 				if (it != m_brickElement.end()) {
 					Warn(it->second, "ANI_NO_ACTION", GV_WARN_BLACK, "no action chosen");
 					m_warn[it->second].back().layer = GV_LAYER_ANIMATION;
@@ -2083,8 +2096,11 @@ void GVBuilder::Animation()
 
 void GVBuilder::Messages()
 {
-	struct Send { int el; std::string subject, to; Object *ob; };
-	struct Recv { int el; std::string subject; Object *ob; };
+	/* BGE-Remix P10.13 (A13): a sender's body (text bodies only: a body taken
+	 * from a property is not known before the game); a listener's sender
+	 * and body filters */
+	struct Send { int el; std::string subject, to; Object *ob; bool body_known; std::string body; };
+	struct Recv { int el; std::string subject; Object *ob; std::string from, body; };
 	std::vector<Send> sends;
 	std::vector<Recv> recvs;
 	for (Object *ob : m_objects) {
@@ -2095,7 +2111,7 @@ void GVBuilder::Messages()
 			const std::string to = ma->toPropName[0] == 'O' && ma->toPropName[1] == 'B' ? ma->toPropName + 2 : ma->toPropName;
 			const int el = Add("message:SEND", ma->subject[0] ? ma->subject : "(no subject)", ob,
 			                   to.empty() ? "to everyone" : fmt("to %s", to.c_str()).c_str());
-			Send s = {el, ma->subject, to, ob};
+			Send s = {el, ma->subject, to, ob, ma->bodyType == ACT_MESG_MESG, ma->body};
 			sends.push_back(s);
 			if (!to.empty() && !BLI_findstring(&m_main->object, to.c_str(), offsetof(ID, name) + 2)) {
 				Warn(el, "MSG_TO_MISSING", GV_WARN_RED, fmt("sent to %s, which does not exist", to.c_str()).c_str());
@@ -2109,7 +2125,7 @@ void GVBuilder::Messages()
 			bMessageSensor *ms = (bMessageSensor *)s->data;
 			const int el = Add("message:RECEIVE", ms->subject[0] ? ms->subject : "(any subject)", ob,
 			                   fmt("heard by %s", s->name).c_str());
-			Recv r = {el, ms->subject, ob};
+			Recv r = {el, ms->subject, ob, ms->fromObject ? ms->fromObject->id.name + 2 : "", ms->body};
 			recvs.push_back(r);
 		}
 	}
@@ -2120,7 +2136,9 @@ void GVBuilder::Messages()
 			const Recv &r = recvs[i];
 			const bool subject = r.subject.empty() || r.subject == s.subject;
 			const bool addressed = s.to.empty() || s.to == name_of(r.ob);
-			if (subject && addressed) {
+			const bool filters = (r.from.empty() || r.from == name_of(s.ob)) &&
+			                     (r.body.empty() || !s.body_known || r.body == s.body);
+			if (subject && addressed && filters) {
 				const int sh = Shape(GV_SHAPE_ARC, GV_LAYER_MESSAGES, s.el, r.el);
 				shapes[sh].p[7] = 1.0f;  /* BGE-Remix P10.11: an arrowhead at the listener */
 				any = true;
@@ -2231,7 +2249,7 @@ void GVBuilder::Input()
 					keys["any key"].push_back(u);
 				}
 				else if (ks->key == 0) {
-					auto it = m_brickElement.find(std::string(name_of(ob)) + "/" + s->name);
+					auto it = m_brickElement.find(brick_id(name_of(ob), "sensor", s->name));
 					if (it != m_brickElement.end()) {
 						Warn(it->second, "INP_NO_KEY", GV_WARN_BLACK, "no key chosen");
 						m_warn[it->second].back().layer = GV_LAYER_INPUT;
@@ -2252,7 +2270,7 @@ void GVBuilder::Input()
 			if (a->type == ACT_MOUSE && a->data && ((bMouseActuator *)a->data)->type == 1 &&
 			    (m_scene->gm.flag & GAME_SHOW_MOUSE))
 			{
-				auto it = m_brickElement.find(std::string(name_of(ob)) + "/" + a->name);
+				auto it = m_brickElement.find(brick_id(name_of(ob), "actuator", a->name));
 				if (it != m_brickElement.end()) {
 					Warn(it->second, "INP_MOUSELOOK_CURSOR", GV_WARN_NOTE, "mouse look with the mouse cursor shown");
 					m_warn[it->second].back().layer = GV_LAYER_INPUT;
@@ -2291,7 +2309,7 @@ void GVBuilder::Input()
 	};
 	auto users = [&](int el, const std::vector<Use> &uses) {
 		for (const Use &u : uses) {
-			auto it = m_brickElement.find(std::string(name_of(u.ob)) + "/" + u.s->name);
+			auto it = m_brickElement.find(brick_id(name_of(u.ob), "sensor", u.s->name));
 			if (it != m_brickElement.end()) {
 				const int s = Shape(GV_SHAPE_LINE, GV_LAYER_INPUT, el, it->second);
 				shapes[s].dashed = 1;
@@ -2357,7 +2375,7 @@ void GVBuilder::Scenes()
 			bSceneActuator *sa = (bSceneActuator *)a->data;
 			if (ELEM(sa->type, ACT_SCENE_RESTART, ACT_SCENE_CAMERA)) continue;
 			if (!sa->scene) {
-				auto it = m_brickElement.find(std::string(name_of(ob)) + "/" + a->name);
+				auto it = m_brickElement.find(brick_id(name_of(ob), "actuator", a->name));
 				if (it != m_brickElement.end()) {
 					Warn(it->second, "SCN_NO_SCENE", GV_WARN_BLACK, "no scene chosen");
 					m_warn[it->second].back().layer = GV_LAYER_SCENES;
@@ -2542,7 +2560,7 @@ void GVBuilder::Remix()
 	for (Object *ob : m_objects) {
 		for (bActuator *a = (bActuator *)ob->actuators.first; a; a = a->next) {
 			if (a->type != ACT_2DFILTER) continue;
-			auto it = m_brickElement.find(std::string(name_of(ob)) + "/" + a->name);
+			auto it = m_brickElement.find(brick_id(name_of(ob), "actuator", a->name));
 			if (it != m_brickElement.end()) {
 				Warn(it->second, "RMX_FILTER2D", GV_WARN_NOTE, "2D filters run over RTX Remix's picture, without its depth", true);
 				m_warn[it->second].back().layer = GV_LAYER_REMIX;

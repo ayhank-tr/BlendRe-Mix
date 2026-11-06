@@ -28,6 +28,8 @@
  * to the groups of the states it enters.
  */
 
+#include <ctype.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -41,12 +43,21 @@
 #include "BL_GameViewBuild.h"
 
 extern "C" {
+	#include "DNA_action_types.h"
 	#include "DNA_actuator_types.h"
+	#include "DNA_anim_types.h"
 	#include "DNA_controller_types.h"
+	#include "DNA_key_types.h"
+	#include "DNA_mesh_types.h"
 	#include "DNA_object_types.h"
+	#include "DNA_property_types.h"
 	#include "DNA_sensor_types.h"
 
+	#include "BKE_main.h"
+
+	#include "BLI_fileops.h"
 	#include "BLI_listbase.h"
+	#include "BLI_path_util.h"
 	#include "BLI_string.h"
 	#include "BLI_utildefines.h"
 }
@@ -291,4 +302,177 @@ bool GVBuilder::LayoutStates(const std::vector<int> &els, float z0)
 		}
 	}
 	return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/* BGE-Remix P10.13: the bricks' limits the logic layer flags */
+
+static std::string check_id(const char *object, const char *kind, const char *name)
+{
+	/* (BL_GameViewLayers.cpp's brick_id: "object/kind/name") */
+	return std::string(object) + "/" + kind + "/" + name;
+}
+
+/* B2: the file a Start Game actuator opens, looked for as the player does
+ * (relative to the game's file, then with "//" in front) */
+static bool game_file_found(const char *name, const char *blend)
+{
+	char path[FILE_MAX];
+	if (!name || !name[0]) {
+		return false;
+	}
+	BLI_strncpy(path, name, sizeof(path));
+	BLI_path_abs(path, blend);
+	if (BLI_exists(path)) {
+		return true;
+	}
+	BLI_snprintf(path, sizeof(path), "//%s", name);
+	BLI_path_abs(path, blend);
+	return BLI_exists(path) != 0;
+}
+
+static bool is_expr_word(const std::string &w)
+{
+	std::string l = w;
+	for (char &ch : l) ch = (char)tolower((unsigned char)ch);
+	return l == "and" || l == "or" || l == "not" || l == "true" || l == "false" || l == "if" || l == "else";
+}
+
+/* A16: whether an action animates shape keys at all, and one of key's */
+static bool action_has_key_curves(const bAction *act)
+{
+	for (const FCurve *fcu = (const FCurve *)act->curves.first; fcu; fcu = fcu->next) {
+		if (fcu->rna_path && STRPREFIX(fcu->rna_path, "key_blocks[")) return true;
+	}
+	return false;
+}
+
+static bool action_moves_a_key(const bAction *act, const Key *key)
+{
+	if (!key) return false;
+	for (const FCurve *fcu = (const FCurve *)act->curves.first; fcu; fcu = fcu->next) {
+		if (!fcu->rna_path) continue;
+		for (const KeyBlock *kb = (const KeyBlock *)key->block.first; kb; kb = kb->next) {
+			char want[128];
+			BLI_snprintf(want, sizeof(want), "key_blocks[\"%s\"]", kb->name);
+			if (strstr(fcu->rna_path, want)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+void GVBuilder::LogicChecks()
+{
+	for (Object *ob : m_objects) {
+		const char *obname = ob->id.name + 2;
+		std::map<std::string, int>::const_iterator it;
+		for (bSensor *s = (bSensor *)ob->sensors.first; s; s = s->next) {
+			if ((s->flag & SENS_DEACTIVATE) || !s->data ||
+			    (it = m_brickElement.find(check_id(obname, "sensor", s->name))) == m_brickElement.end())
+			{
+				continue;
+			}
+			/* B2 (A14): an Actuator sensor watching no actuator of its object */
+			if (s->type == SENS_ACTUATOR) {
+				const char *act = ((bActuatorSensor *)s->data)->name;
+				if (!BLI_findstring(&ob->actuators, act, offsetof(bActuator, name))) {
+					Warn(it->second, "LOG_NO_ACTUATOR", GV_WARN_RED,
+					     act[0] ? (std::string("watches the actuator \"") + act + "\", which " + obname +
+					               " does not have: it never fires").c_str() :
+					              "watches no actuator: it never fires");
+				}
+			}
+			/* A11: Near and Radar sensors only see Actor objects */
+			if ((s->type == SENS_NEAR || s->type == SENS_RADAR)) {
+				bool other_actor = false;
+				for (Object *o : m_objects) {
+					other_actor |= o != ob && (o->gameflag & OB_ACTOR);
+				}
+				if (!other_actor) {
+					Warn(it->second, "LOG_SEES_ACTORS", GV_WARN_NOTE,
+					     "sees only objects with Actor on (Physics), and no other object here has it");
+				}
+			}
+		}
+		for (bController *c = (bController *)ob->controllers.first; c; c = c->next) {
+			if (c->type != CONT_EXPRESSION || (c->flag & CONT_DEACTIVATE) || !c->data ||
+			    (it = m_brickElement.find(check_id(obname, "controller", c->name))) == m_brickElement.end())
+			{
+				continue;
+			}
+			const char *expr = ((bExpressionCont *)c->data)->str;
+			/* A9: the field holds 127 characters: a full one was likely cut */
+			if (strlen(expr) >= sizeof(((bExpressionCont *)c->data)->str) - 1) {
+				Warn(it->second, "LOG_EXPR_FULL", GV_WARN_NOTE,
+				     "the expression fills its 127 characters: a longer one was cut (use a Python controller)");
+			}
+			/* A10: names the expression reads: a linked sensor wins over a
+			 * property of the same name; a sensor not linked to it is not
+			 * seen at all (SCA_ExpressionController::FindIdentifier) */
+			std::set<std::string> said;
+			const std::vector<bSensor *> &linked = SensorsOf(c);
+			for (const char *p = expr; *p;) {
+				if (!(isalpha((unsigned char)*p) || *p == '_')) {
+					if (*p == '"') {  /* (skip a string) */
+						const char *q = strchr(p + 1, '"');
+						p = q ? q + 1 : p + strlen(p);
+					}
+					else {
+						p++;
+					}
+					continue;
+				}
+				const char *q = p;
+				while (isalnum((unsigned char)*q) || *q == '_') q++;
+				const std::string word(p, q - p);
+				p = q;
+				if (is_expr_word(word) || !said.insert(word).second) continue;
+				bool is_linked = false, is_sensor = false, is_prop = false;
+				for (bSensor *s : linked) is_linked |= word == s->name;
+				is_sensor = BLI_findstring(&ob->sensors, word.c_str(), offsetof(bSensor, name)) != NULL;
+				is_prop = BLI_findstring(&ob->prop, word.c_str(), offsetof(bProperty, name)) != NULL;
+				if (is_linked && is_prop) {
+					Warn(it->second, "LOG_EXPR_NAME_CLASH", GV_WARN_NOTE,
+					     ("\"" + word + "\" is a linked sensor and a property: the expression reads the sensor")
+					     .c_str());
+				}
+				else if (is_sensor && !is_linked) {
+					Warn(it->second, "LOG_EXPR_NAME_CLASH", GV_WARN_NOTE,
+					     ("\"" + word + "\" is a sensor not linked to this controller: the expression " +
+					      (is_prop ? "reads the property of that name" : "cannot read it")).c_str());
+				}
+			}
+		}
+		for (bActuator *a = (bActuator *)ob->actuators.first; a; a = a->next) {
+			if ((a->flag & ACT_DEACTIVATE) || !a->data ||
+			    (it = m_brickElement.find(check_id(obname, "actuator", a->name))) == m_brickElement.end())
+			{
+				continue;
+			}
+			/* B2: a Start Game file that is not there */
+			if (a->type == ACT_GAME) {
+				const bGameActuator *ga = (const bGameActuator *)a->data;
+				if ((ga->type == ACT_GAME_LOAD || ga->type == ACT_GAME_START) &&
+				    !game_file_found(ga->filename, m_main->name))
+				{
+					Warn(it->second, "LOG_NO_FILE", GV_WARN_RED,
+					     (std::string("starts the game file \"") + ga->filename + "\", which is not there").c_str());
+				}
+			}
+			/* A16: a shape key action (a Shape Action actuator of old files, or an
+			 * Action actuator playing one) moving none of the mesh's shape keys */
+			if (a->type == ACT_SHAPEACTION || a->type == ACT_ACTION) {
+				const bActionActuator *aa = (const bActionActuator *)a->data;
+				const Key *key = (ob->type == OB_MESH && ob->data) ? ((const Mesh *)ob->data)->key : NULL;
+				const bool shape = aa->act && (a->type == ACT_SHAPEACTION || action_has_key_curves(aa->act));
+				if (shape && !action_moves_a_key(aa->act, key)) {
+					Warn(it->second, "LOG_SHAPE_NO_KEYS", GV_WARN_NOTE,
+					     key ? "its action moves none of the mesh's shape keys: it plays and changes nothing" :
+					           "the mesh has no shape keys: it plays and changes nothing");
+				}
+			}
+		}
+	}
 }

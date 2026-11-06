@@ -122,6 +122,31 @@ static StructRNA *rna_Actuator_refine(struct PointerRNA *ptr)
 	}
 }
 
+/* BGE-Remix P10.13: options kept in the actuator's own flag (A1, A5) */
+static int rna_PropertyActuator_per_message_get(PointerRNA *ptr)
+{
+	return (((bActuator *)ptr->data)->flag & ACT_PROP_PER_MESSAGE) != 0;
+}
+
+static void rna_PropertyActuator_per_message_set(PointerRNA *ptr, int value)
+{
+	bActuator *act = (bActuator *)ptr->data;
+	if (value) act->flag |= ACT_PROP_PER_MESSAGE;
+	else act->flag &= ~ACT_PROP_PER_MESSAGE;
+}
+
+static int rna_StateActuator_stop_now_get(PointerRNA *ptr)
+{
+	return (((bActuator *)ptr->data)->flag & ACT_STATE_STOP_NOW) != 0;
+}
+
+static void rna_StateActuator_stop_now_set(PointerRNA *ptr, int value)
+{
+	bActuator *act = (bActuator *)ptr->data;
+	if (value) act->flag |= ACT_STATE_STOP_NOW;
+	else act->flag &= ~ACT_STATE_STOP_NOW;
+}
+
 static void rna_Actuator_name_set(PointerRNA *ptr, const char *value)
 {
 	Object *ob = ptr->id.data;
@@ -1117,6 +1142,15 @@ static void rna_def_property_actuator(BlenderRNA *brna)
 	RNA_def_property_string_sdna(prop, NULL, "value");
 	RNA_def_property_ui_text(prop, "Property Name", "Copy this property");
 	RNA_def_property_update(prop, NC_LOGIC, NULL);
+
+	/* BGE-Remix P10.13 (A1) */
+	prop = RNA_def_property(srna, "use_add_per_message", PROP_BOOLEAN, PROP_NONE);
+	RNA_def_property_boolean_funcs(prop, "rna_PropertyActuator_per_message_get",
+	                               "rna_PropertyActuator_per_message_set");
+	RNA_def_property_ui_text(prop, "Add Once per Message",
+	                         "Add mode: add the value once for every message its Message sensors caught this tic "
+	                         "(off: once, as stock 2.79b)");
+	RNA_def_property_update(prop, NC_LOGIC, NULL);
 }
 
 static void rna_def_constraint_actuator(BlenderRNA *brna)
@@ -1895,6 +1929,14 @@ static void rna_def_state_actuator(BlenderRNA *brna)
 	RNA_def_property_array(prop, OB_MAX_STATES);
 	RNA_def_property_ui_text(prop, "State", "");
 	RNA_def_property_boolean_funcs(prop, NULL, "rna_StateActuator_state_set");
+
+	/* BGE-Remix P10.13 (A5) */
+	prop = RNA_def_property(srna, "use_stop_left_state", PROP_BOOLEAN, PROP_NONE);
+	RNA_def_property_boolean_funcs(prop, "rna_StateActuator_stop_now_get", "rna_StateActuator_stop_now_set");
+	RNA_def_property_ui_text(prop, "Stop Left State Now",
+	                         "Stop the running actuators of the states it leaves in the same tic "
+	                         "(off: one tic later, as stock 2.79b)");
+	RNA_def_property_update(prop, NC_LOGIC, NULL);
 }
 
 static void rna_def_armature_actuator(BlenderRNA *brna)

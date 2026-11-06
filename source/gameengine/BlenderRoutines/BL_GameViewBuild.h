@@ -45,7 +45,7 @@ struct GVConverted {
 	bool converted;
 	std::set<std::string> objects;      /* every game object (also on hidden layers) */
 	std::set<std::string> hidden;       /* game objects on hidden layers */
-	std::set<std::string> bricks;       /* "object/sensor", "object/controller", "object/actuator" names */
+	std::set<std::string> bricks;       /* "object/sensor/name", "object/controller/name", "object/actuator/name" (P10.13) */
 	std::set<std::string> physics;      /* objects with a physics controller */
 	std::set<std::string> properties;   /* "object/property" */
 	std::set<std::string> glsl_fallback; /* P8: materials drawn without their GLSL shader */
@@ -103,7 +103,7 @@ private:
 	std::vector<std::vector<GVWarning> > m_warn;  /* per element */
 	std::vector<Object *> m_objects;              /* the scene's objects (and its set scenes') */
 	std::map<std::string, int> m_objectElement;   /* object name -> its Objects element */
-	std::map<std::string, int> m_brickElement;    /* "object/brick" -> element */
+	std::map<std::string, int> m_brickElement;    /* "object/kind/brick" -> element (P10.13: kind too) */
 	Object *m_camera;
 	int m_physx;                                  /* 0 Bullet, 1 PhysX CPU, 2 PhysX GPU, -1 none */
 	bool m_remix;                                 /* the scene uses RTX Remix */
@@ -136,6 +136,9 @@ private:
 	 * elements), its starting states marked, State actuators as arrows
 	 * between the groups (BL_GameViewLogic.cpp) */
 	void LogicStates();
+	/* BGE-Remix P10.13: the bricks' limits the logic layer flags (B2's
+	 * missing actuator and file; A9, A10, A11, A16; BL_GameViewLogic.cpp) */
+	void LogicChecks();
 	std::map<int, int> m_elementState;            /* brick or group element -> its state (0-29; -1 none) */
 	bool LayoutStates(const std::vector<int> &els, float z0);
 	void Python();

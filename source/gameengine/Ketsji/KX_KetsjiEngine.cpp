@@ -139,6 +139,7 @@ const char KX_KetsjiEngine::m_profileLabels[tc_numCategories][15] = {
 };
 
 double KX_KetsjiEngine::m_ticrate = DEFAULT_LOGIC_TIC_RATE;
+double KX_KetsjiEngine::m_logicFrameStep = 0.0;  /* BGE-Remix P10.13 (A6) */
 int	   KX_KetsjiEngine::m_maxLogicFrame = 5;
 int	   KX_KetsjiEngine::m_maxPhysicsFrame = 5;
 double KX_KetsjiEngine::m_anim_framerate = 25.0;
@@ -504,7 +505,12 @@ void KX_KetsjiEngine::StartEngine(bool clearIpo)
 	{
 		m_ticrate = scene->gm.ticrate ? scene->gm.ticrate : DEFAULT_LOGIC_TIC_RATE;
 		m_maxLogicFrame = scene->gm.maxlogicstep ? scene->gm.maxlogicstep : 5;
-		m_maxPhysicsFrame = scene->gm.maxphystep ? scene->gm.maxlogicstep : 5;
+		/* BGE-Remix P10.13 (A7): stock 2.79b reads Max Logic Steps here; a scene
+		 * with the option (new files) gets its own Max Physics Steps */
+		if (BKE_scene_game_option(scene, BKE_SCENE_GAME_OWN_PHYSICS_STEPS))
+			m_maxPhysicsFrame = scene->gm.maxphystep ? scene->gm.maxphystep : 5;
+		else
+			m_maxPhysicsFrame = scene->gm.maxphystep ? scene->gm.maxlogicstep : 5;
 	}
 	else
 	{
@@ -793,12 +799,18 @@ bool KX_KetsjiEngine::NextFrame()
 		frames = m_maxLogicFrame;
 	}
 
+	/* BGE-Remix P10.13 (A6): the game time one logic tic stands for */
+	m_logicFrameStep = framestep;
+
 	while (frames)
 	{
 	
 
 		m_frameTime += framestep;
 		
+		/* BGE-Remix P10.13: tests only (BGE_REMIX_P10_HOLD_KEY) */
+		KX_LogicTestHoldKey(m_keyboarddevice);
+
 		m_sceneconverter->MergeAsyncLoads();
 
 		for (sceneit = m_scenes.begin();sceneit != m_scenes.end(); ++sceneit)
@@ -2869,6 +2881,12 @@ int KX_KetsjiEngine::GetMaxLogicFrame()
 void KX_KetsjiEngine::SetMaxLogicFrame(int frame)
 {
 	m_maxLogicFrame = frame;
+}
+
+double KX_KetsjiEngine::GetLogicFrameStep()
+{
+	/* (before the first tic: one tic at the tic rate) */
+	return m_logicFrameStep > 0.0 ? m_logicFrameStep : 1.0 / m_ticrate;
 }
 
 int KX_KetsjiEngine::GetMaxPhysicsFrame()

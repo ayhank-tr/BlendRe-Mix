@@ -51,11 +51,15 @@ KX_NetworkMessageSensor::KX_NetworkMessageSensor(
         class KX_NetworkEventManager* eventmgr,	// our eventmanager
         class NG_NetworkScene *NetworkScene,	// our scene
         SCA_IObject* gameobj,					// the sensor controlling object
-        const STR_String &subject
+        const STR_String &subject,
+        const STR_String &from,
+        const STR_String &body
         ) :
     SCA_ISensor(gameobj,eventmgr),
     m_NetworkScene(NetworkScene),
     m_subject(subject),
+    m_from(from),
+    m_body(body),
     m_frame_message_count (0),
     m_BodyList(NULL),
     m_SubjectList(NULL)
@@ -107,6 +111,24 @@ bool KX_NetworkMessageSensor::Evaluate()
 
 	vector<NG_NetworkMessage*> messages =
 		m_NetworkScene->FindMessages(toname,"",subject,true);
+
+	/* BGE-Remix P10.13 (A13): only the messages from the sender and with the
+	 * body asked for (none asked: every message, as before) */
+	if (!m_from.IsEmpty() || !m_body.IsEmpty()) {
+		vector<NG_NetworkMessage*> kept;
+		for (size_t i = 0; i < messages.size(); i++) {
+			NG_NetworkMessage *msg = messages[i];
+			if ((m_from.IsEmpty() || msg->GetSenderName() == m_from) &&
+			    (m_body.IsEmpty() || msg->GetMessageText() == m_body))
+			{
+				kept.push_back(msg);
+			}
+			else {
+				msg->Release();
+			}
+		}
+		messages.swap(kept);
+	}
 
 	m_frame_message_count = messages.size();
 
@@ -195,6 +217,9 @@ PyMethodDef KX_NetworkMessageSensor::Methods[] = {
 
 PyAttributeDef KX_NetworkMessageSensor::Attributes[] = {
 	KX_PYATTRIBUTE_STRING_RW("subject", 0, 100, false, KX_NetworkMessageSensor, m_subject),
+	/* BGE-Remix P10.13 (A13): the sender's name and the body to filter on ("": any) */
+	KX_PYATTRIBUTE_STRING_RW("fromObject", 0, 100, false, KX_NetworkMessageSensor, m_from),
+	KX_PYATTRIBUTE_STRING_RW("body", 0, 100, false, KX_NetworkMessageSensor, m_body),
 	KX_PYATTRIBUTE_INT_RO("frameMessageCount", KX_NetworkMessageSensor, m_frame_message_count),
 	KX_PYATTRIBUTE_RO_FUNCTION("bodies", KX_NetworkMessageSensor, pyattr_get_bodies),
 	KX_PYATTRIBUTE_RO_FUNCTION("subjects", KX_NetworkMessageSensor, pyattr_get_subjects),

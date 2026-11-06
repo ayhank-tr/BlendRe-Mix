@@ -103,6 +103,7 @@ protected:
 	 * current state = bit mask of state that are active
 	 */
 	unsigned int			m_state;
+	int						m_logicPriority;  /* BGE-Remix P10.13 (A4) */
 
 	/**
 	 * pointer inside state actuator list for sorting
@@ -212,6 +213,12 @@ public:
 	 * Get the object state
 	 */
 	unsigned int GetState(void)	{ return m_state; }
+
+	/* BGE-Remix P10.13 (A4): the object's place among objects when their
+	 * controllers run in a tic: a higher number runs first; 0 (every old
+	 * file) keeps stock 2.79b's order */
+	int GetLogicPriority() const { return m_logicPriority; }
+	void SetLogicPriority(int priority) { m_logicPriority = priority; }
 
 //	const class MT_Point3&	ConvertPythonPylist(PyObject *pylist);
 
