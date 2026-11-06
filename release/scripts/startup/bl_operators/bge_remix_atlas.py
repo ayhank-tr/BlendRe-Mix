@@ -97,15 +97,34 @@ class IMAGE_OT_bge_remix_flipbook(Operator):
 
 
 class IMAGE_OT_bge_remix_atlas_off(Operator):
-    """Remix gets this material's plain textures again"""
+    """Remix gets this material's plain textures (a preset: its single """ \
+        """tile), even where 16 tiles are the default"""
     bl_idname = "image.bge_remix_atlas_off"
-    bl_label = "Atlas Off"
+    bl_label = "Single Tile"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        from bge_remix import atlas
+        return atlas.atlas_of(_material(context)) is not None
+
+    def execute(self, context):
+        from bge_remix import atlas
+        atlas.single_tile(_material(context))
+        return {'FINISHED'}
+
+
+class IMAGE_OT_bge_remix_atlas_default(Operator):
+    """Back to the default: a random preset gets 16 tiles in Remix, """ \
+        """anything else its plain textures"""
+    bl_idname = "image.bge_remix_atlas_default"
+    bl_label = "Default"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
         ma = _material(context)
-        return ma is not None and bool(ma.get("bge_remix_atlas"))
+        return ma is not None and "bge_remix_atlas" in ma
 
     def execute(self, context):
         from bge_remix import atlas
@@ -251,6 +270,7 @@ classes = (
     IMAGE_OT_bge_remix_tile_set,
     IMAGE_OT_bge_remix_flipbook,
     IMAGE_OT_bge_remix_atlas_off,
+    IMAGE_OT_bge_remix_atlas_default,
     IMAGE_OT_bge_remix_pack_images,
     IMAGE_OT_bge_remix_pick_cell,
     IMAGE_OT_bge_remix_atlas_check,

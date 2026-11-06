@@ -202,6 +202,22 @@ def plain_tiling(tile, cols, rows):
     return np.tile(tile, (rows, cols, 1))
 
 
+def shifted_alike(a, b):
+    """how alike two (seamless) pictures are after the best wrap-round shift
+    of one against the other: the peak of their normalised circular
+    cross-correlation (1: b is a moved a)"""
+    import numpy as np
+    a = _grey(np.asarray(a, dtype=np.float64))
+    b = _grey(np.asarray(b, dtype=np.float64))
+    a = a - a.mean()
+    b = b - b.mean()
+    den = math.sqrt(float((a * a).sum() * (b * b).sum()))
+    if den <= 1e-9:
+        return None
+    c = np.fft.ifft2(np.fft.fft2(a) * np.conj(np.fft.fft2(b))).real
+    return round(float(c.max()) / den, 3)
+
+
 def mock_run(args, out, tag, blend, p8, r9, seconds=20):
     dump, cache, adump = (os.path.join(out, tag + x) for x in ("_bakes", "_cache", "_atlas"))
     for folder in (dump, cache, adump):
@@ -364,6 +380,29 @@ def _t_tiles(args, out, S, P, tests, sheets, p8, p2, r9):
     uv = _floats(meshes[-1].get("uvbox")) if meshes else None
     d["plain uvbox"] = uv
     c["plain floor: its UVs as they are (0..%g)" % F["size"][0]] = bool(uv) and uv[2] > 10.0
+    # Ayhan's default (7 Nov): a random preset with nothing chosen gets 16
+    # tiles in Remix
+    if "default" in F:
+        run, lines, dump, adump = mock_run(args, out, "p10a4_default_mock", S(F["default"]["file"] + "_remix"), p8,
+                                           r9)
+        st = run.get("stats") or {}
+        dm = "MA" + F["default"]["material"]
+        c["default (nothing chosen): Remix drew the floor (the fake runtime)"] = bool(run["ran"]) and \
+            st.get("running") is True
+        mats = r9.mock_materials(lines)
+        m = _material(mats, dm + "_tiles")
+        d["default material"] = m and {k: m.get(k) for k in ("albedo_tex", "normal_tex")}
+        c["default: Remix's material is the 16-tile atlas"] = bool(m) and dm + "_tiles_" in (m.get("albedo_tex") or "")
+        lay = _layout_json(dump, dm + "_tiles.albedo")
+        c["default: 16 tiles, two corner colours"] = bool(lay) and len(lay["cells"]) == 16 and lay["colours"] == 2
+        sq = _layout_json(adump, "P10A4_floor__" + dm)
+        meshes = _meshes_of(_mock_meshes(lines), _hashes(mats, dm + "_tiles"))
+        uv = _floats(meshes[-1].get("uvbox")) if meshes else None
+        want = int(math.ceil(F["size"][0])) * int(math.ceil(F["size"][1]))
+        c["default: the floor's mesh split (%d squares), its UVs inside the atlas" % want] = bool(sq) and \
+            len(sq["squares"]) == want and bool(uv) and all(-1e-4 <= v <= 1.0 + 1e-4 for v in uv)
+    else:
+        c["the default floor was made"] = False
     repeats = {}
     for mode, colours, tiles in (("tiles16", 2, 16), ("tiles81", 3, 81)):
         run, lines, dump, adump = runs[mode]
@@ -371,7 +410,7 @@ def _t_tiles(args, out, S, P, tests, sheets, p8, p2, r9):
         tag = "%d tiles" % tiles
         c["%s: Remix drew the floor (the fake runtime)" % tag] = bool(run["ran"]) and st.get("running") is True
         c["%s: every texture encoded before the end" % tag] = r9.textures_in(run)
-        lay = _layout_json(dump, material + "_tiles_albedo")
+        lay = _layout_json(dump, material + "_tiles.albedo")
         d[mode + " layout"] = lay and {k: lay.get(k) for k in ("width", "height", "pitch", "gutter", "colours",
                                                                 "levels", "seed")}
         c["%s: the atlas's layout (%d cells, %d px, gaps)" % (tag, tiles, F["tile_size"])] = bool(lay) and \
@@ -405,7 +444,7 @@ def _t_tiles(args, out, S, P, tests, sheets, p8, p2, r9):
                 b = tile_corners(squares[(i, j + 1)], colours)
                 disagree += (a[3], a[2]) != (b[0], b[1])
         c["%s: neighbouring squares' corners agree" % tag] = bool(squares) and disagree == 0
-        atlas = _ppm(_find(dump, material + "_tiles_albedo.ppm"))
+        atlas = _ppm(_find(dump, material + "_tiles.albedo.ppm"))
         if atlas is None or not lay:
             c["%s: the baked atlas was written" % tag] = False
             continue
@@ -430,8 +469,8 @@ def _t_tiles(args, out, S, P, tests, sheets, p8, p2, r9):
         # the Brick patch (16 tiles, regular)
         if mode == "tiles16":
             bname = "MA" + (F["tiles16"].get("brick") or {}).get("material", "P10A4_brick")
-            blay = _layout_json(dump, bname + "_tiles_albedo")
-            batlas = _ppm(_find(dump, bname + "_tiles_albedo.ppm"))
+            blay = _layout_json(dump, bname + "_tiles.albedo")
+            batlas = _ppm(_find(dump, bname + "_tiles.albedo.ppm"))
             if blay and batlas is not None:
                 bs = tile_seams(batlas, {"colours": 2, "cells": [cc[:4] for cc in blay["cells"]]})
                 d["brick seams (atlas)"] = bs
@@ -491,8 +530,8 @@ def _t_water(args, out, S, P, tests, sheets, p8, p2, r9):
         material + "_flipbook_" in (m.get("normal_tex") or "")
     c["the frame rate from the speed (%.2f m/s: %d a second, a %.2f s loop)" % (
         fb["speed"], fb["fps"], fb["loop_seconds"])] = fb["fps"] == max(1, min(60, int(round(fb["speed"] * 64.0))))
-    sheet = _ppm(_find(dump, material + "_flipbook_normal.ppm"))
-    lay = _layout_json(dump, material + "_flipbook_normal")
+    sheet = _ppm(_find(dump, material + "_flipbook.normal.ppm"))
+    lay = _layout_json(dump, material + "_flipbook.normal")
     c["the sheet was baked (%d frames)" % fb["frames"]] = sheet is not None and bool(lay) and \
         len(lay["cells"]) == fb["frames"]
     if sheet is not None and lay:
@@ -503,6 +542,12 @@ def _t_water(args, out, S, P, tests, sheets, p8, p2, r9):
         d["frame steps"] = [round(s, 2) for s in steps]
         d["the loop's step (last to first)"] = round(loop, 2)
         c["the frames change (median step %.2f levels)" % med] = med > 0.3
+        # (Ayhan's decision, 7 Nov: the waves change shape) how alike two
+        # frames a quarter loop apart are after the best shift (1: only
+        # moved); measured, not gated
+        q = len(frames) // 4
+        alike = [shifted_alike(frames[k], frames[(k + q) % len(frames)]) for k in range(0, len(frames), q)]
+        d["frames a quarter loop apart, alike after the best shift (1: only moved; measured)"] = alike
         c["the last frame runs into the first without a jump (%.2f against %.2f)" % (loop, med)] = \
             loop <= LOOP_RATIO * med + LOOP_SLACK and loop >= 0.25 * med
     tests["T10.4b Water flipbook (P10.4, fake runtime)"] = {"ok": all(c.values()), "checks": c, "detail": d}

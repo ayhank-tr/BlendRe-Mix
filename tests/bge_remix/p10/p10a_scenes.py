@@ -301,6 +301,9 @@ def make_tiles(folder, E):
     for i, key in enumerate(TILE_PRESETS):
         ma = bpy.data.materials.new("P10T_" + key)
         apply_preset(ma, key)
+        # (P10.4, Ayhan's 7 Nov default: a random preset gets 16 tiles in
+        # Remix; these tests are about the single tile, so it is chosen)
+        ma["bge_remix_atlas"] = 0
         x = (i - (k - 1) / 2.0) * (size + 0.4)
         s96.uv_square(scene, "P10T_" + key, size, (x, 0.0, 0.0), ma, repeat=float(rep))
         s = size / 2.0

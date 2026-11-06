@@ -27,9 +27,18 @@ floor you can see the repeat. A tile set fixes that.
 - **Bricks.** For a regular preset (Brick), the colours' Seeds keep the
   bricks in step. Only the grain and the wear differ between tiles, and the
   brick layout itself still repeats, as a real wall does.
-- **How.** In the UV editor's sidebar, open *RTX Remix Atlas* and press
-  *Make Tile Set*. Choose 16 or 81 tiles and the tile size there. P10.5's
-  Apply does the same for fitted presets.
+- **The default (your decision, 7 Nov).** Every random preset (Rock,
+  Gravel, Tarmac, Grass, Bark, Dirt, Sand, Snow, Concrete, the skins) gets
+  16 tiles in Remix without you doing anything, old files included. The
+  tiles are 512 pixels each (512 a metre), so the atlas is 2048 pixels. The
+  bake costs about a second a preset, once: after that the game finds it in
+  its cache.
+- **Not by default.** Brick (a regular pattern) and Water (its moving
+  flipbook) keep their single tile unless you choose otherwise.
+- **Your choice wins.** In the UV editor's sidebar, open *RTX Remix Atlas*:
+  *Single Tile* turns the tiles off for that material, *Make Tile Set* picks
+  16 or 81 tiles and their size, and *Default* goes back to the rule above.
+  P10.5's Apply makes a tile set for fitted presets.
 - **16 or 81?** 16 tiles cut the repeat at the tile's period to about two
   thirds of a plain tile (0.66, where a plain repeat is 1). 81 tiles cut it
   to about a half (0.55), with an atlas about five times larger. The test
@@ -44,10 +53,16 @@ moves in Remix.
 - **Speed.** The frame rate comes from the preset's speed: each frame moves
   the pattern by 1/64 of the tile. Water moves at 0.15 m/s, which gives 10
   frames a second, so the loop lasts 1.6 s.
-- **The loop.** The preset's tile is baked once. Each frame is that tile
-  moved a little further, blended into a copy moved one loop behind, so the
-  last frame runs into the first without a jump. One bake takes under a
-  second, so the game starts quickly.
+- **The waves change shape (your decision, 7 Nov).** The water is baked 16
+  times, once for each moment of the loop, so its waves form and fade
+  rather than only sliding. Its normal map is made twice as strong, so the
+  waves read in Remix. Water is glass in Remix, so only its normal map is
+  baked 16 times; the rest once.
+- **The loop.** Two layers of these frames, half a loop and half a tile
+  apart, are blended so that each one jumps back to its start only while
+  it is invisible. The last frame runs into the first without a jump.
+- **Baked once.** The first start takes a few seconds for it; after that
+  the game finds the sheet in its cache.
 - **Remix 1.6.1 plays it.** Remix shows frame (seconds x frame rate) modulo
   16. It picks the frame by time for the whole material, never per face.
 - **How.** In the *RTX Remix Atlas* panel, press *Make Flipbook*.

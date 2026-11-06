@@ -28,6 +28,10 @@
  *   bge_remix_atlas_fps      flipbook: frames per second (from the speed)
  *   bge_remix_atlas_shift    flipbook: how far the pattern moves over one loop
  *                            (tiles; the frames' count / 64)
+ *   bge_remix_atlas_morph    flipbook: how far the noise moves through its
+ *                            third axis over one loop (its units: the waves'
+ *                            shape changes; 0: moved only)
+ *   bge_remix_atlas_normal_gain  flipbook: its normal map's slopes times this
  * Packed images (their own settings): bge_remix_atlas_page (the page
  * image's name), bge_remix_atlas_cell; a page: bge_remix_atlas_cells
  * (x, y, w, h, repeat per image), bge_remix_atlas_gutter.
@@ -233,6 +237,19 @@ TextureRequest slot_request(int slot)
 	return t;
 }
 
+/* the default tile set's largest tile (pixels) */
+const int DEFAULT_TILE_SIZE = 512;
+
+/* the flipbook: P9.6's coordinates move by these a Seed (bge_remix_presets
+ * _coords: across, and through the noise's third axis); how far the noise
+ * moves through its third axis over a loop (water's waves are 0.4 across:
+ * they change shape), and its normal map made stronger (Remix showed only
+ * thin lines moving, 6 Nov) */
+const float SEED_XY[2] = {17.17f, 31.31f};
+const float SEED_Z = 7.77f;
+const float DEFAULT_MORPH = 0.6f;
+const float DEFAULT_NORMAL_GAIN = 2.0f;
+
 /* the Seed put back whatever happens */
 struct Restore {
 	bNodeSocketValueFloat *seed;
@@ -281,7 +298,15 @@ void dump_atlas(const BakedImage &img, const AtlasLayout &L)
 	if (!dir || !dir[0] || img.width <= 0 || img.rgba.size() < (size_t)img.width * img.height * 4) {
 		return;
 	}
-	const std::string base = std::string(dir) + "/" + safe(img.name);
+	/* "<material>_tiles.albedo": an atlas is no seamless tile (the earlier
+	 * phases' tests read every "*_albedo.ppm" as one) */
+	std::string name = img.name;
+	const size_t us = name.rfind('_');
+	if (us != std::string::npos) {
+		name[us] = '.';
+	}
+	const std::string base = std::string(dir) + "/" + safe(name.substr(0, us)) +
+	                         (us != std::string::npos ? "." + safe(name.substr(us + 1)) : std::string());
 	FILE *f = fopen((base + ".ppm").c_str(), "wb");
 	if (f) {
 		fprintf(f, "P6\n%d %d\n255\n", img.width, img.height);
@@ -337,8 +362,27 @@ void keep_preview(const BakedImage &img)
 
 }  /* namespace */
 
+bool atlas_tiles_by_default(const Material *ma)
+{
+	/* Ayhan's decision (7 Nov): a random preset's Remix texture is a 16-tile
+	 * set unless the material says otherwise ("bge_remix_atlas" 0: a single
+	 * tile); regular presets (Brick) and Water (its own: the flipbook) keep
+	 * the single tile */
+	if (!ma || prop(&ma->id, "bge_remix_atlas") || !bake_is_tile(ma)) {
+		return false;
+	}
+	const std::string key = prop_string(&ma->id, "bge_remix_preset");
+	if (key.empty() || key == "BRICK" || key == "WATER") {
+		return false;
+	}
+	return prop_int(&ma->id, "bge_remix_tile_mode", 0) != TILE_WHOLE;
+}
+
 int atlas_kind(const Material *ma)
 {
+	if (atlas_tiles_by_default(ma)) {
+		return ATLAS_TILES;
+	}
 	const int k = ma ? prop_int(&ma->id, "bge_remix_atlas", 0) : 0;
 	return (k >= ATLAS_TILES && k <= ATLAS_PACKED) ? k : ATLAS_NONE;
 }
@@ -372,12 +416,21 @@ bool atlas_bake(Scene *scene, Material *ma, const std::string &name, BakeResult 
 	int size = prop_int(&ma->id, "bge_remix_atlas_size", 0);
 	if (size < 16 || size > 8192 || getenv("BGE_REMIX_BAKE_SIZE")) {
 		size = bake_size(ma);
+		/* by default (no choice made) at most 512 pixels a tile: 512 a
+		 * metre, P10.1's "sharp enough", and a 2048 atlas (a 2K bake's
+		 * size), so a game's start stays quick */
+		if (atlas_tiles_by_default(ma)) {
+			size = std::min(size, DEFAULT_TILE_SIZE);
+		}
 	}
 	std::shared_ptr<AtlasLayout> L(new AtlasLayout());
 	const bool regular = prop_int(&ma->id, "bge_remix_atlas_regular", 0) != 0;
 	const int frames_asked = prop_int(&ma->id, "bge_remix_atlas_frames", 16) == 64 ? 64 : 16;
 	const float shift = std::max(0.0f, std::min(prop_float(&ma->id, "bge_remix_atlas_shift",
 	                                                       (float)frames_asked / 64.0f), 4.0f));
+	const float morph = std::max(0.0f, std::min(prop_float(&ma->id, "bge_remix_atlas_morph", DEFAULT_MORPH), 8.0f));
+	const float normal_gain = std::max(0.25f, std::min(prop_float(&ma->id, "bge_remix_atlas_normal_gain",
+	                                                              DEFAULT_NORMAL_GAIN), 8.0f));
 	if (kind == ATLAS_TILES) {
 		const int colours = prop_int(&ma->id, "bge_remix_atlas_colours", 2) == 3 ? 3 : 2;
 		const int pitch = pow2_floor(std::min(size, colours == 2 ? 1024 : 512));
@@ -394,7 +447,8 @@ bool atlas_bake(Scene *scene, Material *ma, const std::string &name, BakeResult 
 	/* the atlas's content key: the material (its signature holds the node
 	 * values and the bake size) and the atlas's own settings */
 	{
-		static const char version[] = "BGE-Remix atlas 2"; /* (2: a flipbook from one bake) */
+		/* (2: a flipbook from one bake; 3: from a bake per phase) */
+		static const char version[] = "BGE-Remix atlas 3";
 		uint64_t h = fnv(version, sizeof(version), 1469598103934665603ull);
 		h = fnv_v(bake_signature(ma), h);
 		h = fnv_v(L->kind, h);
@@ -405,6 +459,8 @@ bool atlas_bake(Scene *scene, Material *ma, const std::string &name, BakeResult 
 		h = fnv_v(L->seed, h);
 		h = fnv_v(regular, h);
 		h = fnv_v(shift, h);
+		h = fnv_v(morph, h);
+		h = fnv_v(normal_gain, h);
 		h = fnv_v(size, h);
 		L->key = h ? h : 1;
 	}
@@ -453,8 +509,12 @@ bool atlas_bake(Scene *scene, Material *ma, const std::string &name, BakeResult 
 	/* the Seeds of the parts: tiles, one a corner colour (bricks: steps of
 	 * 100/101 of the Scale move the pattern by whole repeats, P9.6's
 	 * coordinates moving 17.17 and 31.31 a Seed; only the noise changes);
-	 * flipbook (fix round 1): one bake, its frames moved on the CPU */
-	std::vector<float> seeds;
+	 * flipbook (Ayhan's decision, 7 Nov): one a phase of the loop, the Seed
+	 * stepped so the noise moves through its third axis (P9.6: 7.77 a Seed:
+	 * the waves change shape) and, along with it, across (17.17, 31.31 a
+	 * Seed: put back on the CPU, key_shift, so the drift is the flow's) */
+	std::vector<float> seeds, key_shift;
+	unsigned frame_slots = ~0u;
 	const float s0 = seed->value;
 	if (kind == ATLAS_TILES) {
 		const float step = regular ? 100.0f / 101.0f * s_scale : 7.31f;
@@ -463,7 +523,22 @@ bool atlas_bake(Scene *scene, Material *ma, const std::string &name, BakeResult 
 		}
 	}
 	else {
-		seeds.push_back(s0);
+		const int keys = morph > 0.0f ? L->frames : 1;
+		const float span = morph / SEED_Z;
+		for (int j = 0; j < keys; j++) {
+			const float ds = span * (float)j / (float)L->frames;
+			seeds.push_back(s0 + ds);
+			/* (the pattern moved back by what the Seed moved it, in tiles: a
+			 * UV unit spans Scale of the preset's coordinates) */
+			key_shift.push_back(SEED_XY[0] * ds / s_scale);
+			key_shift.push_back(SEED_XY[1] * ds / s_scale);
+		}
+		/* glass (water): Remix shows its normal map, the rest stays put:
+		 * the phases bake only that (the first bakes everything) */
+		const bNode *node = BKE_material_remix_node(ma);
+		if (node && (node->custom1 & SH_NODE_REMIX_TRANSLUCENT)) {
+			frame_slots = 1u << BAKE_NORMAL;
+		}
 	}
 
 	Restore restore;
@@ -480,7 +555,8 @@ bool atlas_bake(Scene *scene, Material *ma, const std::string &name, BakeResult 
 		/* (no mesh: a preset's tile is drawn on bake_material's own square,
 		 * with its material slots; fix round 2: the square made here had
 		 * none, and the P10 guard against such meshes refused every part) */
-		if (!bake_material(scene, ma, NULL, 1, NULL, name + part, parts[i], L->pitch, false)) {
+		if (!bake_material(scene, ma, NULL, 1, NULL, name + part, parts[i], L->pitch, false,
+		                   i == 0 ? ~0u : frame_slots)) {
 			r.error = parts[i].error.empty() ? std::string("a part of it could not be baked") : parts[i].error;
 			return false;
 		}
@@ -509,8 +585,22 @@ bool atlas_bake(Scene *scene, Material *ma, const std::string &name, BakeResult 
 			ok = atlas_compose_tiles(*L, slot_kind(s), regular, src, *out);
 		}
 		else {
-			ok = atlas_compose_flipbook(*L, slot_kind(s), *parts[0].images[s], shift * FLOW_DIR[0],
-			                            shift * FLOW_DIR[1], *out);
+			/* the phases' keys of this image (one when only the first has it) */
+			std::vector<const BakedImage *> keys;
+			std::vector<float> ks;
+			for (size_t j = 0; j < parts.size(); j++) {
+				if (parts[j].images[s]) {
+					keys.push_back(parts[j].images[s].get());
+					ks.push_back(key_shift[j * 2]);
+					ks.push_back(key_shift[j * 2 + 1]);
+				}
+			}
+			if (keys.size() != parts.size()) {
+				keys.resize(1);
+				ks.resize(2);
+			}
+			ok = atlas_compose_flipbook(*L, slot_kind(s), keys, ks, shift * FLOW_DIR[0], shift * FLOW_DIR[1],
+			                            slot_kind(s) == BRB_TEXTURE_NORMAL ? normal_gain : 1.0f, *out);
 		}
 		if (!ok) {
 			r.error = "its parts did not fit together (sizes)";

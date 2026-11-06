@@ -55,7 +55,8 @@ class IMAGE_PT_bge_remix_atlas(Panel):
         if lay is None:
             col.label(text="Remix: its plain textures")
         elif lay["kind"] == "tiles":
-            col.label(text="Remix: %d tiles, %d px each" % (lay["tiles"], lay["pitch"]))
+            col.label(text="Remix: %d tiles, %d px each%s" % (lay["tiles"], lay["pitch"],
+                                                            " (the default)" if lay.get("default") else ""))
         elif lay["kind"] == "flipbook":
             col.label(text="Remix: %d frames, %d a second" % (lay["frames"], lay["fps"]))
         else:
@@ -65,8 +66,11 @@ class IMAGE_PT_bge_remix_atlas(Panel):
             row.operator("image.bge_remix_tile_set")
             row.operator("image.bge_remix_flipbook")
         layout.operator("image.bge_remix_pack_images")
+        row = layout.row(align=True)
         if lay is not None:
-            layout.operator("image.bge_remix_atlas_off")
+            row.operator("image.bge_remix_atlas_off")
+        if "bge_remix_atlas" in ma:
+            row.operator("image.bge_remix_atlas_default")
         layout.separator()
         row = layout.row(align=True)
         row.operator("image.bge_remix_atlas_show", text="Hide Cells" if context.scene.get("bge_remix_atlas_show")

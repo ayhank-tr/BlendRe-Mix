@@ -26,8 +26,8 @@
  *             agree with its neighbours': a corner's colour is a hash of the
  *             grid corner. A face can be given a tile by hand (its
  *             "bge_remix_cell" face layer: tile + 1).
- *   flipbook  an animated preset baked once and moved into a looping run
- *             of frames in a sprite sheet (16 frames, 4 x 4); Remix plays it by itself (the
+ *   flipbook  an animated preset baked at each phase of a loop (its waves
+ *             changing shape) into a sprite sheet (16 frames, 4 x 4); Remix plays it by itself (the
  *             material's sprite sheet rows, columns and frames per second:
  *             it picks the frame by time, for the whole material).
  *   packed    small images packed into shared pages (by Python with xatlas,
@@ -119,11 +119,14 @@ void atlas_flipbook_layout(int frames, int fps, int pitch, AtlasLayout &r);
 bool atlas_compose_tiles(const AtlasLayout &L, int kind, bool regular, const std::vector<const BakedImage *> &src,
                          BakedImage &r_out);
 
-/* flipbook: frame k of `frames` (t = k / frames) from one seamless tile:
- * the tile moved by t x shift (in tiles: u, v) cross-faded, its contrast
- * kept, into the tile moved by (t - 1) x shift (frame 0 is the tile itself,
- * so the last frame runs into the first) */
-bool atlas_compose_flipbook(const AtlasLayout &L, int kind, const BakedImage &src, float shift_u, float shift_v,
+/* flipbook: frame k of `frames` from keys[j], the pattern at phase j /
+ * frames of the loop (or one key for every phase), each put back in place by
+ * key_shift[2j], [2j + 1] (tiles) and moved by phase x flow (tiles); two
+ * layers half a loop apart, cross-faded so each jumps back where it is not
+ * seen: the last frame runs into the first. Normal maps: their slopes times
+ * normal_gain. */
+bool atlas_compose_flipbook(const AtlasLayout &L, int kind, const std::vector<const BakedImage *> &keys,
+                            const std::vector<float> &key_shift, float flow_u, float flow_v, float normal_gain,
                             BakedImage &r_out);
 
 /* the atlas's mipmaps from its top level (rows from the bottom), every
@@ -154,12 +157,18 @@ bool atlas_split(const AtlasLayout &L, std::vector<brb_vertex> &v, std::vector<u
 /* the Blender parts (remix_atlas.cc) */
 
 /* the atlas a material asks for (its "bge_remix_atlas", set by
- * bge_remix.atlas): ATLAS_TILES or ATLAS_FLIPBOOK (baked presets),
- * ATLAS_PACKED, or ATLAS_NONE */
+ * bge_remix.atlas; 0: a single tile; none: a random preset's default, the
+ * 16-tile set): ATLAS_TILES or ATLAS_FLIPBOOK (baked presets), ATLAS_PACKED,
+ * or ATLAS_NONE */
 int atlas_kind(const Material *ma);
 
+/* Ayhan's decision (7 Nov): a random preset (not Brick, not Water) with no
+ * atlas chosen gets the 16-tile set in Remix */
+bool atlas_tiles_by_default(const Material *ma);
+
 /* tiles and flipbooks: the preset baked (tiles: once a corner colour, its
- * Seed moved; flipbook: once, then moved) and made into the atlas's images (r.images, each with its mipmaps), as
+ * Seed moved; flipbook: once a phase of its loop, glass's phases only its
+ * normal map) and made into the atlas's images (r.images, each with its mipmaps), as
  * bake_material does for the plain tile. Main thread, OpenGL current.
  * False: r.error says why (the caller then bakes the plain tile). */
 bool atlas_bake(Scene *scene, Material *ma, const std::string &name, BakeResult &r,
