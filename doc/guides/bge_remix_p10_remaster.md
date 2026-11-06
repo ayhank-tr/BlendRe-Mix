@@ -104,27 +104,52 @@ suggested fix:
   Multitexture scenes draw them by fixed-function OpenGL and were matched
   as they are).
 
-## Classic brightness after the fix (the first PC run)
+## Known difference: Classic materials read a little brighter in Remix
 
-Remix still draws the Classic tiles brighter than the game: about 12 levels
-at Diffuse Intensity 0.8 and 1.0, 21 at 0.5. In scene-linear light (ACES and
-sRGB undone) Remix adds about the same amount at every intensity (+0.036 to
-+0.045), and its brightness rises with Diffuse Intensity as the game's does
-(0.224 against 0.214 per unit): the image's scale is right, and the rest is
-a reflection Remix adds whatever the colour, most likely its own dielectric
-specular (Remix's opaque materials always reflect about 4 % at the surface;
-Blender Internal's Specular Intensity has nothing to set in Remix). The next
-run measures a tile without specular (Specular Intensity 0, roughness 1 in
-Remix) beside them to confirm it. Reported, not gated.
+Accepted by Ayhan on 6 Nov. Classic (Blender Internal) materials with a
+colour image read about 12 levels brighter in Remix than in the game (21 at
+Diffuse Intensity 0.5). It is Remix's own reflection, not the colour: in
+scene-linear light Remix adds about the same amount at every intensity
+(+0.036 to +0.045), and its brightness rises with Diffuse Intensity as the
+game's does (0.224 against 0.214 per unit). A matte tile beside them
+(Specular Intensity 0, so roughness 1 in Remix) reads within 2 levels
+(game [141.2, 136.2, 128.1], Remix [143.7, 137.6, 129.7]), while the same
+tile with its specular reads 12.3 brighter. Remix's opaque materials always
+reflect a little at the surface (a dielectric's few percent), which Blender
+Internal draws only through its Specular settings: a material's Specular
+Intensity and Hardness control how much of it shows (lower intensity or
+hardness: rougher in Remix, less of it).
 
-## The catalogue's time
+## The catalogue, built on first use (6 Nov)
 
-A bake compiles its shader each time, about a second or more on the RTX
-3080 with the debug context the tests use: the full catalogue (14 presets,
-about 200 bakes each) took over an hour on the first PC run. The tests now
-build a catalogue of three presets with 9 entries each, and measure a
-bake's time. Building only the presets an image can be (its kind and main
-colour), on first use, is proposed for users.
+A bake compiles its shader each time, about a second on the RTX 3080: a
+full catalogue (14 presets, about 200 bakes each) takes over an hour. So
+**Fit** builds it on first use, only for the presets an image may be: from
+its kind (a regular image: Brick and the random presets nearest its main
+colour; a random one: the random presets nearest its colour), four in all.
+The progress bar shows it, and the console names each preset as it is
+built. Each preset's catalogue is kept, so the next fit builds nothing for
+it. **Build Catalogue** still builds every preset at once, for those who
+want it all ready.
+
+## Old files brought up to date (6 Nov)
+
+When a file made before P10 opens in Blender (as P9.3's conversion does),
+its Brick presets are mended in place: the value per brick no longer comes
+from a Modulo node, so the black brick at each tile's corner goes. Every
+material keeps its settings (Scale, Colour, Wear, Seed, the tile's size);
+nothing else in the picture changes. The text "BGE-Remix conversion" says
+which were brought up to date. It happens once: a mended file is left
+alone the next time.
+
+## Classic to RTX Remix keeps Diffuse Intensity (6 Nov)
+
+Making a Classic material RTX Remix (Material: RTX Remix, or a file's
+conversion) keeps its Diffuse Intensity: with a colour image, a Multiply
+node by the intensity goes between the image and the RTX Remix node's
+Albedo (the game draws it; Remix gets the image times the intensity, not a
+bake); without one, the Albedo colour is the colour times the intensity, as
+before. Materials made RTX Remix before keep what they have.
 
 ## RTX Remix's own texture tools
 

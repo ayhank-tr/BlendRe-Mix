@@ -591,13 +591,21 @@ def conversion_wanted():
 def convert_on_load(_dummy):
     if not conversion_wanted():
         return
-    lines = convert_file()
+    # BGE-Remix P10: old presets brought up to date first (Brick's black brick)
+    try:
+        from .bge_remix_presets import upgrade_old_presets
+        upgraded = upgrade_old_presets()
+    except Exception as e:  # the file opens as it was
+        upgraded = ["the presets were not brought up to date (%s: %s)" % (type(e).__name__, e)]
+    lines = upgraded + convert_file()
     if not lines:
         return
     write_report(lines)
     n = sum(1 for l in lines if ": converted from " in l)
     msg = "BGE-Remix: %d material%s converted to RTX Remix (see the text \"%s\")" % (n, "" if n == 1 else "s",
                                                                                         REPORT_TEXT)
+    if upgraded:
+        msg += "; presets brought up to date"
     print(msg)
     if not bpy.app.background:
         try:

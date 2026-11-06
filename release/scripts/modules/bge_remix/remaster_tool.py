@@ -619,6 +619,42 @@ def catalogues_missing():
     return [k for k in catalogue_keys() if not catalogue_ready(k)]
 
 
+def build_catalogues(keys, progress=None):
+    """the missing catalogues of these presets (progress(key, done, total)
+    after each bake); returns the presets built"""
+    built = []
+    for key in keys:
+        if catalogue_ready(key):
+            continue
+        for done, total in catalogue_build(key):
+            if progress:
+                progress(key, done, total)
+        built.append(key)
+    return built
+
+
+LIKELY = 4  # BGE-Remix P10 (6 Nov): the presets a fit builds catalogues for on first use
+
+
+def likely_presets(kind, main, n=LIKELY):
+    """BGE-Remix P10 (Ayhan's decision, 6 Nov): the presets an image may be,
+    from its kind and main colour (linear RGB): a regular image the regular
+    presets (Brick) and the random ones nearest its colour, a random one the
+    random presets nearest its colour; n in all. Only these get a catalogue
+    on first use."""
+    P = presets_module()
+    keys = catalogue_keys()
+    regular = [k for k in keys if k in P.REGULAR]
+    random_ = sorted((k for k in keys if k not in P.REGULAR), key=lambda k: _colour_prior(k, main))
+    if kind == 'REGULAR':
+        out = regular + random_[:max(0, n - len(regular))]
+    elif kind == 'RANDOM':
+        out = random_[:n]
+    else:
+        out = sorted(keys, key=lambda k: _colour_prior(k, main))[:n]
+    return out
+
+
 def build_all_catalogues(progress=None):
     """every missing catalogue, at once (the tests; the panel uses the
     operator, a step at a time)"""
@@ -655,11 +691,13 @@ def mesh_metres(row):
     return best or 1.0
 
 
-def fit_image(ima, row=None, keys=None, refine=True, candidates=None, iterations=None):
-    """P10.2: the image matched against every preset's catalogue, the best
-    refined by the simplex search. Returns {"preset", "settings", "colour",
-    "score", "distance", "parts", "perceptual", "tile_metres", "ranking",
-    "evaluations", "seconds"}"""
+def fit_image(ima, row=None, keys=None, refine=True, candidates=None, iterations=None, progress=None):
+    """P10.2: the image matched against the likely presets' catalogues (each
+    built on first use when missing and the bakes can be drawn; progress(key,
+    done, total) as it builds), the best refined by the simplex search.
+    Returns {"preset", "settings", "colour", "score", "distance", "parts",
+    "perceptual", "tile_metres", "ranking", "evaluations", "seconds",
+    "likely", "built"}"""
     P = presets_module()
     t0 = time.time()
     rgb = image_rgb(ima, size=R.WORK * 2)
@@ -667,7 +705,11 @@ def fit_image(ima, row=None, keys=None, refine=True, candidates=None, iterations
         raise RuntimeError("the image has no pixels")
     target = R.features(rgb)
     main = R.main_colours(R.even_out(R.resample(rgb, R.WORK), 1.0))[0][0]
-    keys = list(keys or catalogue_keys())
+    kind = (row or {}).get("kind") or R.kind_of(R.kind_measures(R.luminance(rgb)))
+    likely = likely_presets(kind, main)
+    keys = list(keys or likely)
+    # BGE-Remix P10 (6 Nov): the likely presets' catalogues, built now if missing
+    built = build_catalogues(keys, progress) if can_bake() else []
     # (the tests: fewer steps, BGE_REMIX_REMASTER_ITERATIONS and _CANDIDATES)
     if candidates is None:
         candidates = _env_int("BGE_REMIX_REMASTER_CANDIDATES", 2)
@@ -686,7 +728,8 @@ def fit_image(ima, row=None, keys=None, refine=True, candidates=None, iterations
         prior = _colour_prior(key, main)
         ranking.append((best_d + 0.05 * prior, best_d, key, cat, best_i))
     if not ranking:
-        raise RuntimeError("no catalogue yet (Build Catalogue first)")
+        raise RuntimeError("no catalogue for %s (its bakes need RTX Remix support and Blender's window)" %
+                           ", ".join(keys))
     ranking.sort(key=lambda r: r[0])
     evaluations = 0
     best = None
@@ -760,6 +803,9 @@ def fit_image(ima, row=None, keys=None, refine=True, candidates=None, iterations
     best["evaluations"] = evaluations
     best["tile_metres"] = round(mesh_metres(row or audit_row(ima.name)), 4)
     best["seconds"] = round(time.time() - t0, 2)
+    best["likely"] = likely
+    best["kind"] = kind
+    best["built"] = built
     best["plan"] = 'FIT' if best["score"] >= R.SCORE_THRESHOLD else 'DERIVE'
     best["target_perceptual"] = R.perceptual(target)
     _state["fits"][ima.name] = best

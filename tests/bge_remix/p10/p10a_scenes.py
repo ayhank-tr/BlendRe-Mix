@@ -366,6 +366,10 @@ FAMILIES = {'SKIN_LIGHT': "skin", 'SKIN_MEDIUM': "skin", 'SKIN_DARK': "skin"}
 TEST_CATALOGUE = {"BGE_REMIX_REMASTER_PRESETS": "BRICK,ROCK,CONCRETE", "BGE_REMIX_REMASTER_ENTRIES": "9",
                   "BGE_REMIX_REMASTER_ITERATIONS": "4", "BGE_REMIX_REMASTER_CANDIDATES": "1"}
 FIT_PRESETS = ['BRICK', 'ROCK']
+# 6 Nov (Ayhan's decision): the catalogue built on first use for the likely
+# presets only; the test's entries few (every preset may be built)
+LAZY_CATALOGUE = {"BGE_REMIX_REMASTER_ENTRIES": "3", "BGE_REMIX_REMASTER_ITERATIONS": "2",
+                  "BGE_REMIX_REMASTER_CANDIDATES": "1"}
 
 
 def make_fit(folder, E):
@@ -376,11 +380,15 @@ def make_fit(folder, E):
     lights(scene)
     sign = bl_image("P10F_sign", sign_image(seed=41))
     sign.use_fake_user = True
+    # (6 Nov: the lazy catalogue's noise image, a random kind)
+    lazy = bl_image("P10F_noise", noise_image(256, seed=43))
+    lazy.use_fake_user = True
     finish(scene)
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(folder, "p10a_fit.blend"), check_existing=False, compress=False)
     E["p10a"]["fit"] = {"file": "p10a_fit", "sign": sign.name, "settings": FIT_SETTINGS, "scale_brick": FIT_SCALE_BRICK,
                         "tint": FIT_TINT, "tolerance": FIT_TOL, "families": FAMILIES, "presets": FIT_PRESETS,
-                        "catalogue_env": TEST_CATALOGUE}
+                        "catalogue_env": TEST_CATALOGUE, "lazy_image": lazy.name,
+                        "lazy_env": LAZY_CATALOGUE}
 
 
 def make_encode(folder, E):
@@ -452,11 +460,81 @@ def make_apply(folder, E):
     E["p10a"]["apply"] = {"file": os.path.join("apply", "p10a_apply_remix"), "walls": walls}
 
 
+UPGRADE_SETTINGS = {"Scale": 3.0, "Wear": 0.7, "Seed": 5.0}
+UPGRADE_COLOUR = (0.30, 0.12, 0.08)
+UPGRADE_METRES = 2.0
+
+
+def _downgrade_bricks(ng):
+    """the version 2 "Remix Bricks" group made as P9.6 made it (version 1):
+    its value per brick by Modulo(v, 1)"""
+    gout = next(n for n in ng.nodes if n.bl_idname == "NodeGroupOutput")
+    frac = gout.inputs["Brick"].links[0].from_node          # v - floor(v)
+    v = frac.inputs[0].links[0].from_socket
+    rnd = frac.inputs[1].links[0].from_node                  # floor(v) = round(v - 0.5)
+    shift = rnd.inputs[0].links[0].from_node
+    mod = ng.nodes.new("ShaderNodeMath")
+    mod.operation = 'MODULO'
+    ng.links.new(v, mod.inputs[0])
+    mod.inputs[1].default_value = 1.0
+    ng.links.new(mod.outputs[0], gout.inputs["Brick"])
+    for n in (frac, rnd, shift):
+        ng.nodes.remove(n)
+    ng["bge_remix_preset_version"] = 1
+
+
+def make_upgrade(folder, E):
+    """6 Nov (Ayhan's decision): a P9-style file, a Brick preset of version 1
+    (its black brick) with its own settings, made as P9.6 saved it"""
+    from bl_operators.bge_remix_presets import apply_preset, BRICKS_GROUP
+    scene = s96.scene_base("P10Upgrade")
+    ma = bpy.data.materials.new("P10U_brick")
+    g = apply_preset(ma, 'BRICK')
+    for k, v in UPGRADE_SETTINGS.items():
+        g.inputs[k].default_value = v
+    g.inputs["Colour"].default_value = UPGRADE_COLOUR + (1.0,)
+    ma["bge_remix_tile_metres"] = UPGRADE_METRES
+    del ma["bge_remix_tile_mode"]            # (P9.6 had no tile modes)
+    _downgrade_bricks(bpy.data.node_groups[BRICKS_GROUP])
+    g.node_tree["bge_remix_preset_version"] = 1
+    s96.uv_square(scene, "P10U_brick", 2.0, (0.0, 0.0, 0.0), ma, repeat=2.0)
+    s96.finish(scene)
+    m9.save_copy(folder, "p10a_upgrade_v1", remix=0, tone=1)
+    E["p10a"]["upgrade"] = {"file": "p10a_upgrade_v1", "material": ma.name, "group": g.node_tree.name,
+                            "bricks": BRICKS_GROUP, "settings": UPGRADE_SETTINGS, "colour": list(UPGRADE_COLOUR),
+                            "metres": UPGRADE_METRES}
+
+
+INTENSITY_TILES = (("img050", 0.5, True), ("img100", 1.0, True), ("col050", 0.5, False))
+
+
+def make_intensity(folder, E):
+    """6 Nov (Ayhan's decision): Classic materials to be made RTX Remix (the
+    test does it): a colour image at Diffuse Intensity 0.5 and 1.0, and a
+    plain colour at 0.5, under a sun and a black sky"""
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    scene = m9.base("P10Intensity")
+    img = bl_image("P10I_image", noise_image(256, seed=51))
+    rects, tiles = {}, {}
+    for i, (label, ref, use_img) in enumerate(INTENSITY_TILES):
+        ma = classic("P10I_" + label, img if use_img else None, ref=ref, colour=(0.6, 0.55, 0.5))
+        x = (i - 1) * 2.6
+        plane(scene, "P10I_" + label, 2.0, 2.0, (x, 0.0, 0.0), ma)
+        rects[label] = m9.layout_rect(x, 0.0, 1.0)
+        tiles[label] = {"material": ma.name, "ref": ref, "image": use_img, "colour": [0.6, 0.55, 0.5]}
+    lights(scene, black_sky=True)
+    finish(scene)
+    m9.save_copy(folder, "p10a_intensity", remix=0, tone=1)
+    E["p10a"]["intensity"] = {"file": "p10a_intensity", "rects": rects, "tiles": tiles,
+                              "order": [t[0] for t in INTENSITY_TILES]}
+
+
 def make(folder, E):
     E["p10a"] = {"failed": {}}
     import traceback
     for name, fn in (("audit", make_audit), ("tiles", make_tiles), ("classic", make_classic), ("fit", make_fit),
-                     ("encode", make_encode), ("apply", make_apply)):
+                     ("encode", make_encode), ("apply", make_apply), ("upgrade", make_upgrade),
+                     ("intensity", make_intensity)):
         try:
             fn(folder, E)
         except Exception:

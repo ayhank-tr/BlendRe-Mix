@@ -56,6 +56,9 @@ NAMES = {
     "fit": "T10.6 Preset fitting (P10.2)",
     "preview": "T10.7 The preview square (P10.5)",
     "apply": "T10.8 Apply: no texture waiting at the start (P10.5, fake runtime)",
+    "upgrade": "T10.9 An old Brick preset brought up to date when the file opens (P10, 6 Nov)",
+    "intensity": "T10.10 Classic made RTX Remix keeps its Diffuse Intensity (P10, 6 Nov)",
+    "lazy": "T10.11 The catalogue built on first use, the likely presets only (P10, 6 Nov)",
 }
 RTX_NAMES = {
     "tiles": "S10.1 Brick and Rock tiles in Remix: no seam, no ghosting (P10.2)",
@@ -581,6 +584,219 @@ def t_apply(args, out, scenes, E, tests, sheets, rtx=False, report=None):
         sheets["p10a_apply"] = p2.contact_sheet(shots, os.path.join(out, "sheet_p10a_apply.png"))
 
 
+UPGRADE_CHECK = r'''
+import bpy, json, os, sys
+argv = sys.argv[sys.argv.index("--") + 1:]
+target, src, copy = argv[0], argv[1], argv[2]
+r = {}
+
+def state(A):
+    ng = bpy.data.node_groups.get(A["bricks"])
+    g = next((n for n in bpy.data.materials[A["material"]].node_tree.nodes
+              if n.bl_idname == "ShaderNodeGroup" and n.node_tree is not None and n.node_tree.get("bge_remix_preset")),
+             None)
+    gout = next(n for n in ng.nodes if n.bl_idname == "NodeGroupOutput")
+    feed = gout.inputs["Brick"].links[0].from_node
+    ma = bpy.data.materials[A["material"]]
+    return {"bricks_version": ng.get("bge_remix_preset_version"), "group_version": g.node_tree.get(
+            "bge_remix_preset_version"), "group": g.node_tree.name, "bricks_nodes": len(ng.nodes),
+            "brick_from": [feed.bl_idname, getattr(feed, "operation", None)],
+            "modulo_into_brick": feed.bl_idname == "ShaderNodeMath" and feed.operation == 'MODULO',
+            "inputs": {i.name: (list(i.default_value) if hasattr(i.default_value, "__len__") else i.default_value)
+                       for i in g.inputs},
+            "metres": ma.get("bge_remix_tile_metres"), "groups": sorted(n.name for n in bpy.data.node_groups)}
+
+try:
+    A = json.loads(os.environ["BGE_REMIX_P10A_UPGRADE"])
+    from bl_operators.bge_remix_convert import REPORT_TEXT
+    from bl_operators.bge_remix_presets import upgrade_old_presets
+    os.environ["BGE_REMIX_CONVERT"] = "0"
+    bpy.ops.wm.open_mainfile(filepath=src)
+    r["before"] = state(A)
+    os.environ["BGE_REMIX_CONVERT"] = "1"            # (as a person opens it)
+    bpy.ops.wm.open_mainfile(filepath=src)
+    r["after"] = state(A)
+    txt = bpy.data.texts.get(REPORT_TEXT)
+    r["report"] = txt.as_string() if txt else None
+    bpy.ops.wm.save_as_mainfile(filepath=copy)
+    bpy.ops.wm.open_mainfile(filepath=copy)          # (opened again: nothing more)
+    r["reopened"] = state(A)
+    r["again"] = upgrade_old_presets()
+except Exception:
+    import traceback
+    r["error"] = traceback.format_exc()
+with open(target, "w") as f:
+    json.dump(r, f, indent=1, default=str)
+print("P10A-UPGRADE done")
+'''
+
+INTENSITY_CONVERT = r'''
+import bpy, json, os, sys
+argv = sys.argv[sys.argv.index("--") + 1:]
+target, copy = argv[0], argv[1]
+r = {}
+try:
+    A = json.loads(os.environ["BGE_REMIX_P10A_INTENSITY"])
+    import bge_remix
+    from bl_operators.bge_remix_material import make_remix_material, remix_node
+    for label in A["order"]:
+        make_remix_material(bpy.data.materials[A["tiles"][label]["material"]])
+    bpy.ops.wm.save_as_mainfile(filepath=copy, copy=True)
+    scene = bpy.context.scene
+    for label in A["order"]:
+        ma = bpy.data.materials[A["tiles"][label]["material"]]
+        node = remix_node(ma)
+        alb = node.inputs["Albedo"]
+        st = {"albedo_value": list(alb.default_value)[:3], "linked": alb.is_linked}
+        if alb.is_linked:
+            src = alb.links[0].from_node
+            st["from"] = [src.bl_idname, getattr(src, "blend_type", None)]
+            if src.bl_idname == "ShaderNodeMixRGB":
+                st["factor"] = list(src.inputs["Color2"].default_value)[:3]
+                st["fac"] = src.inputs["Fac"].default_value
+                st["behind"] = src.inputs["Color1"].links[0].from_node.bl_idname if src.inputs["Color1"].is_linked \
+                    else None
+        ob = scene.objects["P10I_" + label]
+        rep = bge_remix.inspect(ob, scene) if bge_remix.available() else None
+        if rep:
+            m = rep["materials"][0]
+            st["remix_albedo"] = m["values"]["albedo"]
+            st["remix_textures"] = [{k: t.get(k) for k in ("field", "image", "baked", "scale")} for t in m["textures"]]
+        r[label] = st
+except Exception:
+    import traceback
+    r["error"] = traceback.format_exc()
+with open(target, "w") as f:
+    json.dump(r, f, indent=1, default=str)
+print("P10A-INTENSITY done")
+'''
+
+
+def t_upgrade(args, out, scenes, E, tests):
+    import run_p2 as p2
+    import run_p8 as p8
+    A = _scene_ok(E, "upgrade", tests, NAMES["upgrade"])
+    if A is None:
+        return
+    target = os.path.join(out, "p10a_upgrade.json")
+    if os.path.isfile(target):
+        os.remove(target)
+    os.environ["BGE_REMIX_P10A_UPGRADE"] = json.dumps(A)
+    try:
+        p8.blender_script(args.ours, out, "p10a_upgrade", UPGRADE_CHECK,
+                          [target, os.path.join(scenes, A["file"] + ".blend"),
+                           os.path.join(out, "p10a_upgrade_opened.blend")])
+    finally:
+        del os.environ["BGE_REMIX_P10A_UPGRADE"]
+    R = p2.read_json(target) or {}
+    b, a, o = R.get("before") or {}, R.get("after") or {}, R.get("reopened") or {}
+    c = {"the check ran": bool(R) and not R.get("error"),
+         "the file as made: version 1, Brick's value by Modulo (%s)" % b.get("brick_from"):
+             b.get("bricks_version") == 1 and b.get("modulo_into_brick") is True,
+         "opened: version 2, Brick's value no longer by Modulo (%s)" % a.get("brick_from"):
+             a.get("bricks_version") == 2 and a.get("group_version") == 2 and a.get("modulo_into_brick") is False,
+         "the same groups, mended in place (%s)" % a.get("groups"): a.get("groups") == b.get("groups") and
+             a.get("group") == b.get("group"),
+         "every setting kept (Scale, Wear, Seed, Colour, the tile's metres)":
+             bool(a) and a.get("inputs") == b.get("inputs") and a.get("metres") == b.get("metres"),
+         "the conversion report says so": "Brick's pattern brought up to P10" in (R.get("report") or ""),
+         "opened again: nothing more done (%s nodes, then %s)" % (a.get("bricks_nodes"), o.get("bricks_nodes")):
+             bool(o) and o.get("bricks_nodes") == a.get("bricks_nodes") and o.get("modulo_into_brick") is False and
+             R.get("again") == []}
+    tests[NAMES["upgrade"]] = {"ok": all(c.values()), "checks": c, "detail": R}
+
+
+def t_intensity(args, out, scenes, E, tests):
+    import run_p2 as p2
+    import run_p8 as p8
+    import run_p9 as r9
+    A = _scene_ok(E, "intensity", tests, NAMES["intensity"])
+    if A is None:
+        return
+    target = os.path.join(out, "p10a_intensity.json")
+    copy = os.path.join(scenes, "p10a_intensity_converted.blend")
+    for f in (target, copy):
+        if os.path.isfile(f):
+            os.remove(f)
+    os.environ["BGE_REMIX_P10A_INTENSITY"] = json.dumps(A)
+    try:
+        p8.blender_script(args.ours, out, "p10a_intensity", INTENSITY_CONVERT, [target, copy],
+                          blend=os.path.join(scenes, A["file"] + ".blend"))
+    finally:
+        del os.environ["BGE_REMIX_P10A_INTENSITY"]
+    R = p2.read_json(target) or {}
+    c = {"converted": bool(R) and not R.get("error")}
+    for label in A["order"]:
+        t, st = A["tiles"][label], R.get(label) or {}
+        texs = st.get("remix_textures") or []
+        alb = next((x for x in texs if x.get("field") == "albedo"), {})
+        if t["image"] and t["ref"] != 1.0:
+            c["%s: a Multiply by %.2f between the image and Albedo (%s, %s)" % (label, t["ref"], st.get("from"),
+                                                                              st.get("factor"))] = \
+                st.get("from") == ["ShaderNodeMixRGB", "MULTIPLY"] and st.get("behind") == "ShaderNodeTexture" and \
+                st.get("fac") == 1.0 and all(abs(v - t["ref"]) < 1e-4 for v in st.get("factor") or [9])
+            c["%s: Remix gets the image times %.2f, not a bake (%s)" % (label, t["ref"], alb)] = \
+                bool(alb.get("image")) and not alb.get("baked") and _close(alb.get("scale"), t["ref"], 1e-3)
+        elif t["image"]:
+            c["%s: the image wired straight (%s)" % (label, st.get("from"))] = \
+                (st.get("from") or [None])[0] == "ShaderNodeTexture"
+            c["%s: Remix gets the image as it is (%s)" % (label, alb)] = \
+                bool(alb.get("image")) and not alb.get("baked") and _close(alb.get("scale"), 1.0, 1e-3)
+        else:
+            want = [x * t["ref"] for x in t["colour"]]
+            c["%s: the colour times %.2f (%s)" % (label, t["ref"], st.get("albedo_value"))] = \
+                not st.get("linked") and all(abs(a - b) < 1e-4 for a, b in zip(st.get("albedo_value") or [], want))
+    # the game's picture before and after (measured, not gated)
+    shot = {"BGE_REMIX_P2_SHOT_FRAME": "100"}
+    before = p8.play(args.ours, out, "p10a_intensity_before", os.path.join(scenes, A["file"] + ".blend"), shot,
+                     frames=120)
+    after = p8.play(args.ours, out, "p10a_intensity_after", copy, shot, frames=120) if os.path.isfile(copy) else {}
+    c["the game ran before and after"] = bool(before.get("ran") and after.get("ran"))
+    rows = r9.sphere_compare({"spheres": {"order": A["order"], "rects": A["rects"]}}, before.get("screenshot"),
+                             after.get("screenshot"))
+    for label in A["order"]:
+        row = rows.get(label)
+        c[MEASURED + "%s, the game before -> after: %s" % (label, "-" if not row else "%s -> %s, %.1f levels" % (
+            row["opengl"], row["remix"], row["mean_diff"]))] = True
+    tests[NAMES["intensity"]] = {"ok": all(c.values()), "checks": c, "detail": {"converted": R, "pictures": rows}}
+
+
+def t_lazy(args, out, scenes, E, tests):
+    import run_p8 as p8
+    A = _scene_ok(E, "fit", tests, NAMES["lazy"])
+    if A is None:
+        return
+    folder = os.path.join(out, "p10a_catalogue_lazy")
+    shutil.rmtree(folder, ignore_errors=True)
+    os.makedirs(folder)
+    log, env = p8.mock_env(args, out, "p10a_lazy", os.path.join(out, "cache_p10a_lazy"))
+    env.update(A.get("lazy_env") or {})
+    env.update({"BGE_REMIX_REMASTER_CATALOGUE": folder, "BGE_REMIX_P10A_FIT": json.dumps(A),
+                "BGE_REMIX_REMASTER_PRESETS": None})
+    r = probe(args, out, "p10a_lazy", os.path.join(scenes, A["file"] + ".blend"), "lazy", env)
+    s = (r.get("steps") or {}).get("s_lazy") or {}
+    fit = s.get("fit") or {}
+    likely = fit.get("likely") or []
+    files = [f for f in s.get("after") or [] if f.endswith(".npz")]
+    built = sorted(f.split("_")[3] if f.count("_") >= 3 else f for f in files)
+    c = {}
+    probe_finished(c, r)
+    c["the noise image fitted (its kind %s)" % fit.get("kind")] = bool(fit) and fit.get("kind") == 'RANDOM'
+    c["no catalogue before"] = s.get("before") == []
+    c["catalogues built for the likely presets only (%s; likely %s)" % (fit.get("built"), likely)] = \
+        bool(likely) and sorted(fit.get("built") or []) == sorted(likely) and len(files) == len(likely)
+    c["fewer than every preset (%d of %d), the regular Brick not among them" % (
+        len(likely), len(s.get("all_presets") or []))] = 0 < len(likely) < len(s.get("all_presets") or []) and \
+        'BRICK' not in likely
+    c["progress shown for each one built (%s)" % s.get("presets_with_progress")] = \
+        sorted(s.get("presets_with_progress") or []) == sorted(fit.get("built") or [])
+    c["kept: the next fit builds nothing (%s)" % s.get("second_built")] = s.get("second_built") == []
+    c[MEASURED + "%d bakes, %s s; fitted as %s (score %s)" % (s.get("bakes", 0), s.get("seconds"), fit.get("preset"),
+                                                              fit.get("score"))] = True
+    tests[NAMES["lazy"]] = {"ok": all(c.values()), "checks": c,
+                            "detail": {"lazy": s, "files": files, "errors": r.get("errors"), "built": built}}
+
+
 def normal(args, out, scenes, E, tests, sheets):
     """the normal run (the fake Remix runtime)"""
     if not getattr(args, "mock", None):
@@ -596,6 +812,14 @@ def normal(args, out, scenes, E, tests, sheets):
                                                     "detail": traceback.format_exc()}
     t_fit(args, out, scenes, E, tests)
     t_apply(args, out, scenes, E, tests, sheets)
+    # 6 Nov (Ayhan's decisions)
+    for fn in (t_upgrade, t_intensity, t_lazy):
+        try:
+            fn(args, out, scenes, E, tests)
+        except Exception:
+            import traceback
+            tests["p10a: %s ran" % fn.__name__] = {"ok": False, "checks": {"ran without an error": False},
+                                                    "detail": traceback.format_exc()}
 
 
 # ---------------------------------------------------------------------------

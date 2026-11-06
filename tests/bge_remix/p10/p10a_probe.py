@@ -7,6 +7,8 @@
 #           (BGE_REMIX_REMASTER_CATALOGUE); each preset baked at known
 #           settings (BGE_REMIX_P10A_FIT, JSON) and fitted again; the sign
 #           fitted (it must score low)
+#   lazy    (p10a_fit.blend, an empty catalogue folder) a noise image
+#           fitted: only its likely presets' catalogues are built, and kept
 #   catalogue  the catalogue only (the RTX run's, for apply's fits)
 #   apply   (the Apply scene) saved as BGE_REMIX_P10A_COPY first; the audit;
 #           the walls fitted and accepted; the preview square shown and
@@ -297,7 +299,33 @@ def s_save2():
     return {"copies": copies(), "file": bpy.data.filepath}
 
 
+def s_lazy():
+    """6 Nov: a fit with no catalogue yet builds only the likely presets'"""
+    tool = T()
+    ima = bpy.data.images.get(FIT.get("lazy_image", "P10F_noise"))
+    if ima is None:
+        return {"error": "no noise image"}
+    folder = tool.catalogue_folder()
+    before = sorted(os.listdir(folder))
+    steps = []
+
+    def progress(key, done, total):
+        steps.append([key, done, total])
+        if done == 1 or done == total:
+            write_progress({"step": "lazy catalogue", "preset": key, "done": done, "total": total})
+    t0 = time.time()
+    fit = tool.fit_image(ima, progress=progress)
+    after = sorted(os.listdir(folder))
+    second = tool.fit_image(ima)          # (kept: nothing built again)
+    return {"fit": {k: fit.get(k) for k in ("preset", "score", "kind", "likely", "built", "ranking")},
+            "second_built": second.get("built"), "before": before, "after": after,
+            "presets_with_progress": sorted(set(k for k, _d, _t in steps)), "bakes": len(steps),
+            "all_presets": list(tool.presets_module().ORDER), "seconds": round(time.time() - t0, 1)}
+
+
 def queue():
+    if "lazy" in PARTS:
+        QUEUE.append((0, s_lazy))
     if "catalogue" in PARTS:
         QUEUE.append((0, s_catalogue))
     if "fit" in PARTS:
