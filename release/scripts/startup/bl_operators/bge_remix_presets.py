@@ -496,6 +496,67 @@ def preset_group(key):
     return ng
 
 
+def _bricks_fraction_fixed(ng):
+    """BGE-Remix P10 (Ayhan's decision, 6 Nov): a version 1 "Remix Bricks"
+    group mended in place: its value per brick (Brick) taken as v - floor(v)
+    instead of Modulo(v, 1), which the game's GLSL makes -1 for 0 (one black
+    brick per tile). Returns whether it was changed."""
+    gout = next((n for n in ng.nodes if n.bl_idname == "NodeGroupOutput"), None)
+    if gout is None or gout.inputs.get("Brick") is None or not gout.inputs["Brick"].is_linked:
+        return False
+    link = gout.inputs["Brick"].links[0]
+    mod = link.from_node
+    if mod.bl_idname != "ShaderNodeMath" or mod.operation != 'MODULO' or not mod.inputs[0].is_linked or \
+            mod.inputs[1].is_linked or abs(mod.inputs[1].default_value - 1.0) > 1e-6:
+        return False
+    v = mod.inputs[0].links[0].from_socket
+    x, y = mod.location
+    shift = ng.nodes.new("ShaderNodeMath")
+    shift.operation = 'SUBTRACT'
+    shift.location = (x, y - 160)
+    ng.links.new(v, shift.inputs[0])
+    shift.inputs[1].default_value = 0.5
+    rnd = ng.nodes.new("ShaderNodeMath")
+    rnd.operation = 'ROUND'
+    rnd.location = (x + 100, y - 160)
+    ng.links.new(shift.outputs[0], rnd.inputs[0])
+    frac = ng.nodes.new("ShaderNodeMath")
+    frac.operation = 'SUBTRACT'
+    frac.location = (x + 200, y)
+    ng.links.new(v, frac.inputs[0])
+    ng.links.new(rnd.outputs[0], frac.inputs[1])
+    ng.links.new(frac.outputs[0], gout.inputs["Brick"])
+    ng.nodes.remove(mod)
+    return True
+
+
+def upgrade_old_presets():
+    """BGE-Remix P10 (Ayhan's decision, 6 Nov): the presets of a file made
+    before P10 brought up to this version when the file opens (P9.3's
+    conversion calls it): the Brick pattern's group mended in place, so every
+    material keeps its settings and only loses the black brick; the presets'
+    groups marked with this version (their nodes are the same). Runs once:
+    a group at this version is left alone. Returns the report's lines."""
+    lines = []
+    for ng in list(bpy.data.node_groups):
+        if ng.library is not None:
+            continue
+        if ng.name.startswith(BRICKS_GROUP) and ng.get("bge_remix_preset_version") == 1:
+            fixed = _bricks_fraction_fixed(ng)
+            ng["bge_remix_preset_version"] = VERSION
+            users = sorted(set(m.name for m in bpy.data.materials if m.node_tree is not None and any(
+                n.bl_idname == "ShaderNodeGroup" and n.node_tree is not None and n.node_tree.get("bge_remix_preset")
+                and any(k.bl_idname == "ShaderNodeGroup" and k.node_tree == ng for k in n.node_tree.nodes)
+                for n in m.node_tree.nodes)))
+            lines.append("%s: Brick's pattern brought up to P10 (%s; the black brick at each tile's corner "
+                         "gone, every setting kept)%s" % (ng.name, "mended" if fixed else "already right",
+                                                          ": " + ", ".join(users) if users else ""))
+    for ng in list(bpy.data.node_groups):
+        if ng.library is None and ng.get("bge_remix_preset") and ng.get("bge_remix_preset_version") == 1:
+            ng["bge_remix_preset_version"] = VERSION
+    return lines
+
+
 def preset_node(mat):
     """the material's preset group node, if it has one"""
     if mat is None or mat.node_tree is None:

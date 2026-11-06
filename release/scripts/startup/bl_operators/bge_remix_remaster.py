@@ -232,8 +232,8 @@ class IMAGE_OT_bge_remix_remaster_select(Operator):
 
 
 class IMAGE_OT_bge_remix_remaster_catalogue(Operator):
-    """Bake each preset's catalogue (about 200 small bakes each, made once and kept in """ \
-        """Blender's user folder)"""
+    """Bake every preset's catalogue now (about 200 small bakes each, kept in Blender's user folder; """ \
+        """Fit builds only the likely ones, on first use)"""
     bl_idname = "image.bge_remix_remaster_catalogue"
     bl_label = "Build Catalogue"
 
@@ -308,7 +308,7 @@ class IMAGE_OT_bge_remix_remaster_catalogue(Operator):
 
 
 class IMAGE_OT_bge_remix_remaster_fit(Operator):
-    """Match the image with the presets (the catalogue, then a simplex search)"""
+    """Match the image with its likely presets (their catalogues built on first use, then a simplex search)"""
     bl_idname = "image.bge_remix_remaster_fit"
     bl_label = "Fit"
 
@@ -319,9 +319,6 @@ class IMAGE_OT_bge_remix_remaster_fit(Operator):
         T = tool()
         if T.last_audit() is None:
             T.remaster_audit()
-        if T.catalogues_missing():
-            self.report({'ERROR'}, "Build the catalogue first")
-            return {'CANCELLED'}
         if self.all:
             names = [r["image"] for r in T.last_audit()["images"] if r.get("plan") == 'FIT']
         else:
@@ -329,14 +326,29 @@ class IMAGE_OT_bge_remix_remaster_fit(Operator):
             names = [ima.name] if ima is not None else []
         done = []
         wm = context.window_manager
-        wm.progress_begin(0, max(len(names), 1))
+        # (the progress: the likely presets' catalogues built on first use,
+        # a few hundred bakes each time one is missing, then the fits)
+        state = {"n": 0}
+
+        def progress(key, i, total):
+            state["n"] += 1
+            wm.progress_update(state["n"])
+            if i == 1:
+                print("BGE-Remix remaster: building the %s catalogue (%d bakes, once)" % (key, total))
+        wm.progress_begin(0, 10000)
         try:
-            for i, name in enumerate(names):
+            for name in names:
                 ima = bpy.data.images[name]
-                fit = T.fit_image(ima, T.audit_row(name))
+                fit = T.fit_image(ima, T.audit_row(name), progress=progress)
                 store_fit(ima, fit)
-                done.append("%s: %s %.2f" % (name, fit["preset"], fit["score"]))
-                wm.progress_update(i + 1)
+                done.append("%s: %s %.2f%s" % (name, fit["preset"], fit["score"],
+                                               " (catalogue built: %s)" % ", ".join(fit["built"])
+                                               if fit.get("built") else ""))
+                state["n"] += 1
+                wm.progress_update(state["n"])
+        except RuntimeError as ex:
+            self.report({'ERROR'}, str(ex))
+            return {'CANCELLED'}
         finally:
             wm.progress_end()
         self.report({'INFO'}, "; ".join(done) if done else "nothing to fit")

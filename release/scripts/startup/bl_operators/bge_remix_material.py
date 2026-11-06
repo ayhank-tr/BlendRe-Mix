@@ -154,6 +154,33 @@ def _data_image(tex):
             pass
 
 
+INTENSITY_LABEL = "Diffuse Intensity"
+
+
+def _keep_intensity(nt, node, ref):
+    """the image wired into Albedo times ref (a MixRGB Multiply node, its
+    Color2 the grey ref); nothing when ref is 1 or Albedo is not an image"""
+    sock = node.inputs["Albedo"]
+    if abs(ref - 1.0) < 1e-4 or not sock.is_linked:
+        return None
+    link = sock.links[0]
+    src = link.from_node
+    if src.bl_idname != "ShaderNodeTexture" or src.texture is None or src.texture.type != 'IMAGE':
+        return None
+    mix = nt.nodes.new("ShaderNodeMixRGB")
+    mix.blend_type = 'MULTIPLY'
+    mix.label = INTENSITY_LABEL
+    mix.location = (src.location[0] + 190, src.location[1] - 40)
+    mix.inputs["Fac"].default_value = 1.0
+    k = max(0.0, float(ref))
+    mix.inputs["Color2"].default_value = (k, k, k, 1.0)
+    from_socket = link.from_socket
+    nt.links.remove(link)
+    nt.links.new(from_socket, mix.inputs["Color1"])
+    nt.links.new(mix.outputs["Color"], sock)
+    return mix
+
+
 def make_remix_material(mat):
     """mat becomes an RTX Remix material (see the module's notes); returns
     the RTX Remix Material node"""
@@ -230,6 +257,13 @@ def make_remix_material(mat):
                 nt.links.new(tex.outputs["Color"], node.inputs["Emissive Color"])
                 if values.get("Emissive Intensity", 0.0) <= 0.0:
                     _set(node, "Emissive Intensity", slot.emit_factor)
+    # BGE-Remix P10 (Ayhan's decision, 6 Nov): a Classic material's Diffuse
+    # Intensity kept with a colour image: the game multiplies the image by
+    # it, so a Multiply node by the intensity goes between the image and
+    # Albedo (Remix gets the image times it, remix_material.cc); without an
+    # image the Albedo value already carries it (_values)
+    if not physical:
+        _keep_intensity(nt, node, mat.diffuse_intensity)
     # (an opacity from a texture: opaque for stock 2.79)
     out.inputs["Alpha"].default_value = 1.0 if node.inputs["Opacity"].is_linked else \
         node.inputs["Opacity"].default_value
