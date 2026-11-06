@@ -410,7 +410,9 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
 - Image textures and normal maps look softer in Remix than in the fallback,
   less so at larger window sizes, most likely Remix's denoiser (P9.2b found
   no Remix setting that changes it: texture detail, anisotropic filtering,
-  upscaling, the graphics preset; to be looked at again after P9.3).
+  upscaling, the graphics preset). Small images on their own also reach
+  Remix's picture at lower detail (P10.4: packing them sharpens them). To be
+  looked into with P14's quality work (decided 7 Nov).
 - In Remix a hemi lamp is sky light: it lights the whole scene, and no lamp
   keeps to its own layer.
 - Remix's lights reach everywhere: a lamp's Distance (and Sphere) does not
@@ -426,15 +428,20 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
 - Remix's particles are lit surfaces in the emitter's material: they do
   not glow or blend as the game's do, so smoke and sparks look darker, or
   barely show, in dark scenes.
-- Classic (Blender Internal) materials lit by a sun read brighter and paler
-  in Remix than in the fallback (about 25 levels on the P9.4 texture wall);
-  their patterns match. Flat skin presets read paler in Remix too (its
-  subsurface light). To be looked at with P10's value check.
+- Classic (Blender Internal) materials read a little brighter in Remix than
+  in the fallback: about 12 levels under a sun (it was about 25 before P10,
+  when Remix lost the material's Diffuse Intensity). The rest is Remix's own
+  reflection off the surface: a matte tile (Specular Intensity 0) matches
+  within 2 levels, so a material's Specular settings control it (P10.3,
+  accepted 6 Nov). Flat skin presets read paler in Remix too (its
+  subsurface light).
 - A texture set to Clip shows black beyond the image in Remix, the
   material's colour in F12.
-- Preset tiles baked for Remix: Brick shows dark bricks along the tile's
-  repeat edges, Rock faint ghosted edges where the tile is cross-faded (P10
-  rebuilds the tile bakes).
+- Preset tiles baked for Remix (fixed in P10.2): Brick's dark corner brick
+  was Blender 2.79's Modulo quirk, in the game too (old files are mended
+  when they open); random presets (Rock and the like) were baked squeezed
+  and cross-faded, and are now baked at the game's scale and, by default,
+  as 16 corner-matched tiles in Remix (P10.4), which hides the repeat.
 - Remix's bakes use one UV map; meshes without one are reported (on the
   Remix View's Remix layer, once per material).
 - The game starts before its textures are ready: each is encoded for Remix
