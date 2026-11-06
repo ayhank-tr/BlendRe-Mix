@@ -71,6 +71,12 @@ better.
   nothing in Blender uses them (only the game reads them).
 - **The Remix View.** It still shows the plain images. Only the game sends
   the pages.
+- **Sharper in Remix (measured on your PC).** Up close, Remix showed small
+  images on their own at a lower resolution than the same pixels on a page:
+  a 128-pixel image looked like a 32-pixel one. This is Remix's own texture
+  handling. Packed, they look as sharp as the original image, so packed and
+  not-packed squares differ in colour by up to about 20 levels near the
+  camera (1.6 far away).
 
 ## Picking a tile by hand
 

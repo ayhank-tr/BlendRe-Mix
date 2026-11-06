@@ -225,6 +225,83 @@ def _layout_json(dump, name):
 
 
 # ---------------------------------------------------------------------------
+# the packing scenes' images (as p10a4_scenes._image_pixel, which needs bpy
+# around it): to tell which image a square in Remix's picture shows
+
+IMAGE_SIZES = [32, 64, 128, 48, 96]
+QUAD_HALF, RECT_HALF = 0.7, 0.55   # a square's half side, its rectangle's (metres)
+
+
+def image_pixels(k):
+    """the k-th image, rows from the bottom, linear 0..1 (n x n x 3)"""
+    import colorsys
+    import numpy as np
+    n = IMAGE_SIZES[k % len(IMAGE_SIZES)]
+    r, g, b = colorsys.hsv_to_rgb((k * 0.137) % 1.0, 0.75, 0.9)
+    light, dark = np.array([r, g, b]), np.array([r, g, b]) * 0.25
+    x = (np.arange(n) + 0.5) / n
+    X, Y = np.meshgrid(x, x)
+    kind = k % 3
+    if kind == 0:
+        on = (np.floor(X * 4) % 2) == 0
+    elif kind == 1:
+        on = ((np.floor(X * 4) + np.floor(Y * 4)) % 2) == 0
+    else:
+        on = (np.floor(np.hypot(X - 0.5, Y - 0.5) * 8) % 2) == 0
+    on = np.where((X < 0.25) & (Y > 0.75), ~on, on)
+    return np.where(on[..., None], light, dark)
+
+
+def image_square(k, how, w, h):
+    """what square k's rectangle should show (h x w x 3, rows from the top):
+    its image over the rectangle's UVs (repeat: UV 0..2; Extend: -0.25..1.25,
+    clamped)"""
+    import numpy as np
+    src = image_pixels(k)
+    n = src.shape[0]
+    lo, hi = (QUAD_HALF - RECT_HALF) / (2 * QUAD_HALF), (QUAD_HALF + RECT_HALF) / (2 * QUAD_HALF)
+    u = lo + (hi - lo) * (np.arange(w) + 0.5) / w
+    v = lo + (hi - lo) * (1.0 - (np.arange(h) + 0.5) / h)
+    if how == "repeat":
+        u, v = (2 * u) % 1.0, (2 * v) % 1.0
+    elif how == "extend":
+        u, v = np.clip(-0.25 + 1.5 * u, 0, 0.9999), np.clip(-0.25 + 1.5 * v, 0, 0.9999)
+    iu, iv = (u * n).astype(int), (v * n).astype(int)
+    return src[iv[:, None], iu[None, :]]
+
+
+def _ncc(a, b):
+    """the correlation of two colour pictures (their overall mean out, the
+    channels' own kept: the hue counts, two images of one pattern differ)"""
+    a = a - a.mean()
+    b = b - b.mean()
+    return float((a * b).sum() / math.sqrt(float((a * a).sum() * (b * b).sum()) + 1e-9))
+
+
+def squares_shown(pic, rects, files, p8):
+    """per square of a Remix picture: which of the twenty images it shows
+    best (correlation), and how well its own fits"""
+    out = {}
+    for key, rect in sorted(rects.items()):
+        crop = p8.crop(pic, rect)
+        h, w = crop.shape[:2]
+        scores = []
+        for j in range(len(rects)):
+            how = files.get("sq%02d" % j, {}).get("uv", "plain")
+            scores.append(_ncc(crop, image_square(j, how, w, h)))
+        own = int(key[2:])
+        best = int(max(range(len(scores)), key=lambda i: scores[i]))
+        # (two of the twenty share a pattern and a near hue, sq03 and sq18:
+        # a best match of the same pattern within a hair of its own counts
+        # as its own)
+        same = best % 3 == own % 3 and files.get("sq%02d" % best, {}).get("uv") == \
+            files.get(key, {}).get("uv")
+        out[key] = {"shows": own if same and scores[best] - scores[own] <= 0.02 else best,
+                    "best": best, "own_fit": round(scores[own], 3)}
+    return out
+
+
+# ---------------------------------------------------------------------------
 # normal
 
 PICK_SCRIPT = r'''
@@ -658,13 +735,30 @@ def rtx(args, out, scenes, E, tests, sheets, report):
                 c["%s: pictures" % tag] = False
                 continue
             if tag == "near":
+                # fix round 2: Remix showed the small images on their own at
+                # a lower resolution than the same pixels in a page (its
+                # texture streaming, Remix's own: a 128-pixel image looked
+                # like 32), so the colour difference is measured, not gated;
+                # what is gated: each packed square shows its own image (no
+                # wrong cell, no offset), as the not-packed one does
                 rows = {}
                 for k, rect in sorted(I["rects_near"].items()):
                     diff = float(np.abs(p8.crop(pa, rect).mean(axis=(0, 1)) - p8.crop(pb, rect).mean(axis=(0, 1))).max())
                     rows[k] = round(diff, 2)
-                d["near: per square"] = rows
-                c["near: every square packed within %.0f of not packed (worst %s)" % (TOL_PACK, max(rows.values()))] = \
-                    max(rows.values()) <= TOL_PACK
+                d["near: per square, packed against not packed (measured)"] = rows
+                files = I["files"].get("p10a4_packed_near", {})
+                shown_a = squares_shown(pa, I["rects_near"], files, p8)
+                shown_b = squares_shown(pb, I["rects_near"], files, p8)
+                d["near: not packed, the image each square shows"] = shown_a
+                d["near: packed, the image each square shows"] = shown_b
+                wrong = [k for k, x in shown_b.items() if x["shows"] != int(k[2:])]
+                c["near: every packed square shows its own image (wrong: %s)" % (", ".join(wrong) or "none")] = \
+                    not wrong
+                report.append("P10.4 packing, near: colour difference per square, packed against not packed "
+                              "(measured, worst %s); the fit of each square to its own image: not packed %s, packed "
+                              "%s (means)" % (max(rows.values()), round(float(np.mean([x["own_fit"] for x in
+                                                                                       shown_a.values()])), 3),
+                                              round(float(np.mean([x["own_fit"] for x in shown_b.values()])), 3)))
             else:
                 diff = float(np.abs(pa - pb).mean())
                 d["far: whole picture"] = round(diff, 2)
