@@ -1723,7 +1723,16 @@ static int game_engine_exec(bContext *C, wmOperator *op)
 	
 	/* redraw to hide any menus/popups, we don't go back to
 	 * the window manager until after this operator exits */
-	WM_redraw_windows(C);
+	/* BGE-Remix P10 fix (as Run mode's): a Python context override (a
+	 * script passing its own "area") made every area's drawing see that
+	 * area, and a Properties header then found no Properties data and
+	 * crashed: the override is set aside for the redraw */
+	{
+		void *py_dict = CTX_py_dict_get(C);
+		CTX_py_dict_set(C, NULL);
+		WM_redraw_windows(C);
+		CTX_py_dict_set(C, py_dict);
+	}
 
 	BLI_callback_exec(bmain, &startscene->id, BLI_CB_EVT_GAME_PRE);
 
