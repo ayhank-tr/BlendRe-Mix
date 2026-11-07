@@ -43,6 +43,9 @@
 #include "KX_Camera.h"
 #include "KX_ClientObjectInfo.h"
 #include "KX_LogicBrickState.h"
+#ifdef WITH_REMIX
+#  include "KX_RemixRenderer.h"  /* IsRunning: Remix's first frame */
+#endif
 
 #include "SCA_IObject.h"
 #include "SCA_ISensor.h"
@@ -153,6 +156,7 @@ struct Run {
 	double start_time, remix_time;  /* when the run started, when Remix first drew (0: not yet) */
 	int remix_frame;                /* the frame Remix first drew (-1: none) */
 	double remix_played;            /* seconds played since then, at the end (-1: none) */
+	bool due;                       /* the run's own suspend is due (decided once, at a drawn frame) */
 	int frame[4];
 	std::string shot;
 	GVRunOverlayFn overlay;
@@ -698,6 +702,7 @@ extern "C" void BL_GameViewRunBegin(bContext *C, ARegion *ar, const GVRunOptions
 	r.remix_time = 0.0;
 	r.remix_frame = -1;
 	r.remix_played = -1.0;
+	r.due = false;
 	memcpy(r.frame, opts->frame, sizeof(r.frame));
 	r.shot = opts->shot ? opts->shot : "";
 	r.overlay = opts->overlay;
@@ -919,7 +924,10 @@ int BL_GameViewRunFrame(KX_KetsjiEngine *engine)
 		r.outcome = GV_RUN_OUT_STOP;
 		return KX_EXIT_REQUEST_BLENDER_ESC;
 	}
-	if (r.suspend_req || run_due(r)) {
+	/* BGE-Remix P10 sign-off fix: the time-based suspend is decided where the
+	 * frame is drawn (BL_GameViewRunPreSwap), not again here: a clock that
+	 * crossed the line in between suspended the game without its picture */
+	if (r.suspend_req || r.due) {
 		r.outcome = GV_RUN_OUT_SUSPEND;
 		return KX_EXIT_REQUEST_BLENDER_ESC;
 	}
@@ -948,12 +956,17 @@ void BL_GameViewRunPreSwap(void *engine_v)
 		r.overlay(r.C, r.ar, r.frame, view, proj);
 	}
 #ifdef WITH_REMIX
-	if (r.remix_time == 0.0 && engine->GetRemixScene() == scene) {
+	/* the first frame RTX Remix drew for the game (when the 3D view had
+	 * started Remix already, it takes over at once: that can be frame 1) */
+	if (r.remix_time == 0.0 && engine->GetRemixScene() == scene && engine->GetRemix() &&
+	    engine->GetRemix()->IsRunning())
+	{
 		r.remix_time = PIL_check_seconds_timer();  /* RTX Remix drew this frame */
 		r.remix_frame = r.frames;
 	}
 #endif
-	const bool last = r.suspend_req || r.stop_req || run_due(r);
+	r.due = r.due || run_due(r);
+	const bool last = r.suspend_req || r.stop_req || r.due;
 	if (last && !r.shot.empty() && !r.shot_taken) {
 		take_shot(r);
 		r.shot_taken = true;
