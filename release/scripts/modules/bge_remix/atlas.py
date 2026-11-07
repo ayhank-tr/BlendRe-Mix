@@ -53,7 +53,10 @@ PICK_LAYER = "bge_remix_cell"
 REGULAR = {'BRICK'}
 # random presets without the 16 tiles by default: Water (its flipbook)
 NOT_BY_DEFAULT = {'WATER'}
-DEFAULT_TILE_SIZE = 512          # the default set's largest tile (512 a metre)
+# the default set's largest tile: 256 pixels (a 1024 atlas, a quick first
+# start; Ayhan, 7 Nov), 512 for a material marked Sharp (seen up close)
+DEFAULT_TILE_SIZE = 256
+SHARP_TILE_SIZE = 512
 # the flipbook: how far the noise moves through its third axis over a loop
 # (the waves change shape; 0: only moved) and its normal map's slopes times
 DEFAULT_MORPH = 0.6
@@ -383,9 +386,11 @@ def atlas_of(material):
     if material is None:
         return None
     if tiles_by_default(material):
-        r = tiles_layout(2, _pow2_floor(min(_bake_size(material), DEFAULT_TILE_SIZE)), 0)
+        top = SHARP_TILE_SIZE if is_sharp(material) else DEFAULT_TILE_SIZE
+        r = tiles_layout(2, _pow2_floor(min(_bake_size(material), top)), 0)
         r["regular"] = False
         r["default"] = True
+        r["sharp"] = is_sharp(material)
         return r
     kind = material.get("bge_remix_atlas", 0)
     if kind == TILES:
@@ -410,6 +415,21 @@ def atlas_of(material):
                         "size": list(p.get("bge_remix_atlas_size", [0, 0])) if p is not None else [0, 0],
                         "gutter": int(p.get("bge_remix_atlas_gutter", 0)) if p is not None else 0}
     return None
+
+
+def is_sharp(material):
+    """the material's default tile set at 512 pixels a tile (not 256)"""
+    return bool(material is not None and material.get("bge_remix_atlas_sharp", 0))
+
+
+def set_sharp(material, on=True):
+    """Sharp: a random preset's default tile set at 512 pixels a tile, for a
+    surface seen up close (256 otherwise); an explicit size from
+    bake_tile_set wins"""
+    if on:
+        material["bge_remix_atlas_sharp"] = 1
+    elif "bge_remix_atlas_sharp" in material:
+        del material["bge_remix_atlas_sharp"]
 
 
 _KEYS = ("bge_remix_atlas", "bge_remix_atlas_colours", "bge_remix_atlas_size", "bge_remix_atlas_seed",

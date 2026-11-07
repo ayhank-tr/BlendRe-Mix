@@ -66,11 +66,7 @@ class IMAGE_PT_bge_remix_atlas(Panel):
             row.operator("image.bge_remix_tile_set")
             row.operator("image.bge_remix_flipbook")
         layout.operator("image.bge_remix_pack_images")
-        row = layout.row(align=True)
-        if lay is not None:
-            row.operator("image.bge_remix_atlas_off")
-        if "bge_remix_atlas" in ma:
-            row.operator("image.bge_remix_atlas_default")
+        draw_choices(layout, ma)
         layout.separator()
         row = layout.row(align=True)
         row.operator("image.bge_remix_atlas_show", text="Hide Cells" if context.scene.get("bge_remix_atlas_show")
@@ -93,6 +89,33 @@ class IMAGE_PT_bge_remix_atlas(Panel):
                       icon='FILE_TICK' if not problems else 'ERROR')
             for text in problems[:8]:
                 box.label(text=text)
+
+
+def draw_choices(layout, ma):
+    """the material's tile choices (also in the Material properties' RTX
+    Remix Material panel): Single Tile, Default, Sharp"""
+    from bge_remix import atlas
+    lay = atlas.atlas_of(ma)
+    row = layout.row(align=True)
+    if lay is not None:
+        row.operator("image.bge_remix_atlas_off")
+    if "bge_remix_atlas" in ma:
+        row.operator("image.bge_remix_atlas_default")
+    if ma.get("bge_remix_tile"):
+        row.operator("image.bge_remix_atlas_sharp", text="Sharp: On" if atlas.is_sharp(ma) else "Sharp: Off")
+
+
+def remix_tiles_label(ma):
+    """what Remix gets for a preset, in a few words"""
+    from bge_remix import atlas
+    lay = atlas.atlas_of(ma)
+    if lay is None:
+        return "Remix: a single tile"
+    if lay["kind"] == "tiles":
+        return "Remix: %d tiles, %d px%s" % (lay["tiles"], lay["pitch"], " (default)" if lay.get("default") else "")
+    if lay["kind"] == "flipbook":
+        return "Remix: a flipbook, %d frames" % lay["frames"]
+    return "Remix: packed"
 
 
 # ---------------------------------------------------------------------------
