@@ -240,7 +240,10 @@ def normal(args, out, scenes, E, tests, sheets):
         shutil.rmtree(folder, ignore_errors=True)
     os.makedirs(dump)
     log, env = p8.mock_env(args, out, "p9_presets_mock", cache, dump=dump)
-    run = r9.pipe_play(args.ours, out, "p9_presets_mock", S("p9_presets_remix"), env, seconds=20)
+    # (P10.4, 7 Nov: the random presets are 16-tile sets in Remix by default,
+    # their atlases 4 x the plain tile's side: they take longer to bake and
+    # encode, on the CPU here; the time to every texture is measured)
+    run = r9.pipe_play(args.ours, out, "p9_presets_mock", S("p9_presets_remix"), env, seconds=120)
     st = run.get("stats") or {}
     c["Remix drew the presets (the fake runtime)"] = bool(run["ran"]) and st.get("running") is True
     c["every texture encoded before the game ended"] = r9.textures_in(run)
@@ -267,7 +270,10 @@ def normal(args, out, scenes, E, tests, sheets):
                 m.get("height_tex", "-") != "-" and r9.near(m.get("displace_in"), T[key]["displace"], 1e-4)
     bakes, cached = st.get("procedural_bakes"), st.get("procedural_bakes_cached")
     d["bakes"] = {"baked": bakes, "from the cache": cached, "rebaked": st.get("procedural_rebakes"),
-                  "ms": st.get("procedural_bake_ms"), "gpu ms": st.get("procedural_bake_gpu_ms")}
+                  "ms": st.get("procedural_bake_ms"), "gpu ms": st.get("procedural_bake_gpu_ms"),
+                  # (measured: seconds from the start to every texture in)
+                  "every texture in after (s)": st.get("first_textured_seconds"),
+                  "encode s": st.get("encode_seconds")}
     c["each preset baked once for its tile and sphere (%s baked, %s from the cache)" % (bakes, cached)] = \
         bakes is not None and 0 < bakes <= len(order)
     seams = {}
@@ -386,6 +392,8 @@ def rtx(args, out, scenes, E, tests, sheets, report_lines):
     report_lines += ["", "Preset bakes (Remix runs):"]
     for tag, r in (("presets", rt), ("seams", sr)):
         st = r.get("stats") or {}
-        report_lines.append("  %-8s baked %s, from the cache %s, %s ms (%s ms on the graphics card)" % (
-            tag, st.get("procedural_bakes"), st.get("procedural_bakes_cached"), st.get("procedural_bake_ms"),
-            st.get("procedural_bake_gpu_ms")))
+        report_lines.append("  %-8s baked %s, from the cache %s, %s ms (%s ms on the graphics card); every texture in "
+                            "after %s s (encoding %s s)" % (
+                                tag, st.get("procedural_bakes"), st.get("procedural_bakes_cached"),
+                                st.get("procedural_bake_ms"), st.get("procedural_bake_gpu_ms"),
+                                st.get("first_textured_seconds"), st.get("encode_seconds")))

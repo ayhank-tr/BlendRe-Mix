@@ -380,6 +380,76 @@ void average_edges(const AtlasLayout &L, int kind, int l, int w, int h, std::vec
 	}
 }
 
+/* the covariance of sources a and b per channel, about mu (normal maps:
+ * their vectors' x and y) */
+void source_covariance(int kind, const std::vector<std::vector<float> > &S, int n, const double mu[4],
+                       double r_cov[3][3][4])
+{
+	for (int a = 0; a < n; a++) {
+		for (int b = 0; b < n; b++) {
+			for (int c = 0; c < 4; c++) {
+				double sum = 0.0;
+				size_t count = 0;
+				const double m = (kind == BRB_TEXTURE_NORMAL && c < 2) ? 0.0 : mu[c];
+				for (size_t i = c; i < S[a].size() && i < S[b].size(); i += 4) {
+					sum += (S[a][i] - m) * (S[b][i] - m);
+					count++;
+				}
+				r_cov[a][b][c] = count ? sum / (double)count : 0.0;
+			}
+		}
+	}
+}
+
+/* sources blended by weights wc (adding up to 1), their spread scaled back
+ * to what a single source has there: sqrt(sum wc var / sum wc wd cov) */
+void blend_sources(int kind, const std::vector<std::vector<float> > &R, size_t i, const float wc[3], int n,
+                   const double mu[4], const double cov[3][3][4], float r[4])
+{
+	float gain[4];
+	for (int c = 0; c < 4; c++) {
+		double target = 0.0, got = 0.0;
+		for (int a = 0; a < n; a++) {
+			target += wc[a] * cov[a][a][c];
+			for (int b = 0; b < n; b++) {
+				got += (double)wc[a] * wc[b] * cov[a][b][c];
+			}
+		}
+		gain[c] = (got > 1e-12 && target > 0.0) ? (float)std::min(sqrt(target / got), 3.0) : 1.0f;
+	}
+	float v[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+	for (int a = 0; a < n; a++) {
+		if (wc[a] == 0.0f) {
+			continue;
+		}
+		const float *p = &R[a][i * 4];
+		for (int c = 0; c < 4; c++) {
+			v[c] += wc[a] * p[c];
+		}
+	}
+	if (kind == BRB_TEXTURE_NORMAL) {
+		float x = v[0] * gain[0], y = v[1] * gain[1];
+		const float l = x * x + y * y;
+		if (l > 0.98f) {
+			const float f = sqrtf(0.98f / l);
+			x *= f;
+			y *= f;
+		}
+		r[0] = x;
+		r[1] = y;
+		r[2] = sqrtf(std::max(1.0f - x * x - y * y, 0.0f));
+		r[3] = 1.0f;
+		return;
+	}
+	for (int c = 0; c < 4; c++) {
+		float o = v[c];
+		if (c < 3) {
+			o = (float)mu[c] + (o - (float)mu[c]) * gain[c];
+		}
+		r[c] = std::min(std::max(o, 0.0f), 1.0f);
+	}
+}
+
 }  /* namespace */
 
 /* ------------------------------------------------------------------------- */
@@ -495,6 +565,11 @@ bool atlas_compose_tiles(const AtlasLayout &L, int kind, bool regular, const std
 	}
 	double mu[4];
 	channel_means(S, mu);
+	/* the sources' covariances per channel (a normal map's: its slopes),
+	 * for a blend that keeps a single source's contrast */
+	const int nsrc = std::min((int)S.size(), 3);
+	double cov[3][3][4];
+	source_covariance(kind, S, nsrc, mu, cov);
 	const int P = L.pitch, g = L.gutter, c = P - 2 * g;
 	const float gamma = regular ? 2.0f : 3.0f;
 	/* each colour's tile read at the cell's pixels (the gap: past the edges,
@@ -528,11 +603,25 @@ bool atlas_compose_tiles(const AtlasLayout &L, int kind, bool regular, const std
 		for (int y = 0; y < P; y++) {
 			for (int x = 0; x < P; x++) {
 				const size_t i = (size_t)y * P + x;
-				const float *v[4];
-				for (int k = 0; k < 4; k++) {
-					v[k] = &R[cn[k]][i * 4];
+				float *o = &out[((size_t)(y0 + y) * L.width + (x0 + x)) * 4];
+				if (regular) {
+					const float *v[4];
+					for (int k = 0; k < 4; k++) {
+						v[k] = &R[cn[k]][i * 4];
+					}
+					blend(kind, false, v, &W[i * 4], 4, mu, o);
+					continue;
 				}
-				blend(kind, !regular, v, &W[i * 4], 4, mu, &out[((size_t)(y0 + y) * L.width + (x0 + x)) * 4]);
+				/* sign-off fix (7 Nov): the corners' weights summed per
+				 * source (corners of one colour read the same source: the
+				 * old 1 / |w| over four corners doubled the contrast in a
+				 * tile of one colour, so Remix's Gravel came out 40% darker,
+				 * its height and normal map twice as strong) */
+				float wc[3] = {0.0f, 0.0f, 0.0f};
+				for (int k = 0; k < 4; k++) {
+					wc[cn[k]] += W[i * 4 + k];
+				}
+				blend_sources(kind, R, i, wc, nsrc, mu, cov, o);
 			}
 		}
 	}
