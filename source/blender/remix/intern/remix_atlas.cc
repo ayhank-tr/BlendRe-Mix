@@ -447,8 +447,9 @@ bool atlas_bake(Scene *scene, Material *ma, const std::string &name, BakeResult 
 	/* the atlas's content key: the material (its signature holds the node
 	 * values and the bake size) and the atlas's own settings */
 	{
-		/* (2: a flipbook from one bake; 3: from a bake per phase) */
-		static const char version[] = "BGE-Remix atlas 3";
+		/* (2: a flipbook from one bake; 3: from a bake per phase; 4: the
+		 * tiles' contrast kept per source, 7 Nov: the darker ones remade) */
+		static const char version[] = "BGE-Remix atlas 4";
 		uint64_t h = fnv(version, sizeof(version), 1469598103934665603ull);
 		h = fnv_v(bake_signature(ma), h);
 		h = fnv_v(L->kind, h);
