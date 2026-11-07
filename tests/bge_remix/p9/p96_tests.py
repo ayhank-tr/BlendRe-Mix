@@ -266,8 +266,21 @@ def normal(args, out, scenes, E, tests, sheets):
             c["%s: and roughness, normal map" % key] = m.get("roughness_tex", "-") != "-" and \
                 m.get("normal_tex", "-") != "-"
         if T[key]["displace"] >= RELIEF_DEPTH:
-            c["%s: a height map, %.3f m deep" % (key, T[key]["displace"])] = \
-                m.get("height_tex", "-") != "-" and r9.near(m.get("displace_in"), T[key]["displace"], 1e-4)
+            want = T[key]["displace"]
+            if "_tiles_" in (m.get("albedo_tex") or ""):
+                # (P10.4, 7 Nov: a 16-tile set's cell covers a quarter of the
+                # atlas's UVs less its gap, and Remix's relief depth is in
+                # texture coordinates: the depth sent is the preset's times
+                # that share)
+                try:
+                    got = float(m.get("displace_in"))
+                except (TypeError, ValueError):
+                    got = -1.0
+                c["%s: a height map, %.3f m deep (a tile set: about a quarter of it in its cell)" % (key, want)] = \
+                    m.get("height_tex", "-") != "-" and 0.18 * want <= got <= 0.2501 * want
+            else:
+                c["%s: a height map, %.3f m deep" % (key, want)] = \
+                    m.get("height_tex", "-") != "-" and r9.near(m.get("displace_in"), want, 1e-4)
     bakes, cached = st.get("procedural_bakes"), st.get("procedural_bakes_cached")
     d["bakes"] = {"baked": bakes, "from the cache": cached, "rebaked": st.get("procedural_rebakes"),
                   "ms": st.get("procedural_bake_ms"), "gpu ms": st.get("procedural_bake_gpu_ms"),
