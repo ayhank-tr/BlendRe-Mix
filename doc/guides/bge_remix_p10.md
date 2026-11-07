@@ -228,6 +228,10 @@ floor you can see the repeat. A tile set fixes that.
   tiles are 512 pixels each (512 a metre), so the atlas is 2048 pixels. The
   bake costs about a second a preset, once: after that the game finds it in
   its cache.
+- **The cost at a game's first start.** Each tile set is baked and encoded
+  once, then the game finds it in its cache. The atlases are four times a
+  single tile's side, so the first start takes longer before every texture
+  is in Remix. The tests report it as "every texture in after ... s".
 - **Not by default.** Brick (a regular pattern) and Water (its moving
   flipbook) keep their single tile unless you choose otherwise.
 - **Your choice wins.** In the UV editor's sidebar, open *RTX Remix Atlas*:
