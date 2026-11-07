@@ -1292,6 +1292,12 @@ class MATERIAL_PT_remix_node(MaterialButtonsPanel, Panel):
         from bl_operators.bge_remix_presets import PRESETS
         p = PRESETS.get(mat.get("bge_remix_preset", ""))
         layout.menu("MATERIAL_MT_bge_remix_presets", text="Preset: " + (p["label"] if p else "None"))
+        # P10.4: what Remix gets for a preset (tiles), and the choices
+        if p:
+            from .space_image_remix_atlas import draw_choices, remix_tiles_label
+            box = layout.box()
+            box.label(text=remix_tiles_label(mat))
+            draw_choices(box, mat)
         # the node's options, then each input and what feeds it
         col = layout.column()
         col.prop(node, "remix_type")

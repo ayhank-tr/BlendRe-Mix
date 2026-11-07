@@ -188,6 +188,8 @@ def make_floors(folder, E, files):
     rect = screen_rect(-hw + 0.3, -hh + 0.3, hw - 0.3, hh - 1.5)
     cols = [s96.screen_x(-hw + k) for k in range(1, int(FLOOR_W))]
     rows = [s96.screen_y(-hh + k) for k in range(1, int(FLOOR_H) - 1)]
+    from bl_operators.bge_remix_presets import PRESETS
+    out["displace"] = PRESETS['ROCK']['displace']
     out.update({"rect": rect, "columns": cols, "rows": rows, "period_px": PX_PER_M, "size": [FLOOR_W, FLOOR_H],
                 "tile_size": TILE_SIZE, "regular": sorted(atlas.REGULAR)})
     return out

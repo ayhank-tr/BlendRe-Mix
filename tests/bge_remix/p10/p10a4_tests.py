@@ -395,6 +395,14 @@ def _t_tiles(args, out, S, P, tests, sheets, p8, p2, r9):
         c["default: Remix's material is the 16-tile atlas"] = bool(m) and dm + "_tiles_" in (m.get("albedo_tex") or "")
         lay = _layout_json(dump, dm + "_tiles.albedo")
         c["default: 16 tiles, two corner colours"] = bool(lay) and len(lay["cells"]) == 16 and lay["colours"] == 2
+        # (sign-off fix, 7 Nov) Remix's relief is in texture coordinates: a
+        # tile's depth is the preset's times the cell's share of the atlas
+        if lay and m and F.get("displace"):
+            share = float(lay["cells"][0][2]) / float(lay["width"])
+            want_d = F["displace"] * share
+            d["default displace_in (sent, wanted)"] = [m.get("displace_in"), round(want_d, 5)]
+            c["default: the relief scaled to the tile's share of the atlas (displace_in %s, %.4f wanted)" % (
+                m.get("displace_in"), want_d)] = r9.near(m.get("displace_in"), want_d, 2e-4)
         sq = _layout_json(adump, "P10A4_floor__" + dm)
         meshes = _meshes_of(_mock_meshes(lines), _hashes(mats, dm + "_tiles"))
         uv = _floats(meshes[-1].get("uvbox")) if meshes else None

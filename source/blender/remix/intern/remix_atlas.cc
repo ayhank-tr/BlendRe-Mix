@@ -20,6 +20,7 @@
  * The material's settings (written by bge_remix.atlas):
  *   bge_remix_atlas          1 tiles, 2 flipbook, 3 packed (0 or none: off)
  *   bge_remix_atlas_size     a cell's side in pixels (else the Bake Size)
+ *   bge_remix_atlas_sharp    the default tile set: 512-pixel tiles, not 256
  *   bge_remix_atlas_colours  tiles: 2 (16 tiles) or 3 (81)
  *   bge_remix_atlas_seed     tiles: the corner colours' hash
  *   bge_remix_atlas_regular  tiles: 1 for a regular pattern (bricks): the
@@ -237,8 +238,11 @@ TextureRequest slot_request(int slot)
 	return t;
 }
 
-/* the default tile set's largest tile (pixels) */
-const int DEFAULT_TILE_SIZE = 512;
+/* the default tile set's largest tile (pixels): Ayhan's decision (7 Nov),
+ * 256 (a 1024 atlas, a quick first start); a material marked Sharp
+ * ("bge_remix_atlas_sharp"), seen up close: 512 */
+const int DEFAULT_TILE_SIZE = 256;
+const int SHARP_TILE_SIZE = 512;
 
 /* the flipbook: P9.6's coordinates move by these a Seed (bge_remix_presets
  * _coords: across, and through the noise's third axis); how far the noise
@@ -416,11 +420,10 @@ bool atlas_bake(Scene *scene, Material *ma, const std::string &name, BakeResult 
 	int size = prop_int(&ma->id, "bge_remix_atlas_size", 0);
 	if (size < 16 || size > 8192 || getenv("BGE_REMIX_BAKE_SIZE")) {
 		size = bake_size(ma);
-		/* by default (no choice made) at most 512 pixels a tile: 512 a
-		 * metre, P10.1's "sharp enough", and a 2048 atlas (a 2K bake's
-		 * size), so a game's start stays quick */
+		/* by default (no choice made) at most 256 pixels a tile (Sharp:
+		 * 512), so a game's first start stays quick */
 		if (atlas_tiles_by_default(ma)) {
-			size = std::min(size, DEFAULT_TILE_SIZE);
+			size = std::min(size, prop_int(&ma->id, "bge_remix_atlas_sharp", 0) ? SHARP_TILE_SIZE : DEFAULT_TILE_SIZE);
 		}
 	}
 	std::shared_ptr<AtlasLayout> L(new AtlasLayout());
@@ -449,7 +452,7 @@ bool atlas_bake(Scene *scene, Material *ma, const std::string &name, BakeResult 
 	{
 		/* (2: a flipbook from one bake; 3: from a bake per phase; 4: the
 		 * tiles' contrast kept per source, 7 Nov: the darker ones remade) */
-		static const char version[] = "BGE-Remix atlas 4";
+		static const char version[] = "BGE-Remix atlas 5"; /* (5: 256-pixel default tiles) */
 		uint64_t h = fnv(version, sizeof(version), 1469598103934665603ull);
 		h = fnv_v(bake_signature(ma), h);
 		h = fnv_v(L->kind, h);
@@ -627,8 +630,33 @@ bool atlas_bake(Scene *scene, Material *ma, const std::string &name, BakeResult 
 	return true;
 }
 
+namespace {
+
+/* Remix's relief (its parallax: displace_in + displace_out) is a depth in
+ * texture coordinates (1.6.1's pomGetStep), while a preset's is in metres,
+ * one UV unit a metre: a cell covering `share` of the atlas's UVs needs it
+ * that much smaller (sign-off fix, 7 Nov: a 16-tile set's Gravel dug 4 x
+ * deeper, 81 tiles 9 x, and came out dark with self-shadowing) */
+void scale_relief(MaterialSpec &spec, float share)
+{
+	if (share > 0.0f && share < 1.0f) {
+		spec.desc.displace_in *= share;
+		spec.desc.displace_out *= share;
+	}
+}
+
+}  /* namespace */
+
 void atlas_apply(const AtlasLayout &L, MaterialSpec &spec)
 {
+	if (L.kind == ATLAS_TILES && !L.cells.empty() && L.width > 0) {
+		scale_relief(spec, (float)L.cells[0].w / (float)L.width);
+	}
+	if (L.kind == ATLAS_FLIPBOOK && L.cols > 0) {
+		/* (Remix's sprite sheet puts the UVs into the frame before the
+		 * parallax) */
+		scale_relief(spec, 1.0f / (float)L.cols);
+	}
 	if (L.kind == ATLAS_FLIPBOOK) {
 		/* Remix plays it: frame (time x fps) mod frames, at column frame %
 		 * cols and row frame / cols, the UVs wrapping inside the frame */
@@ -708,6 +736,11 @@ std::shared_ptr<AtlasLayout> atlas_packed(const Material *ma, MaterialSpec &spec
 			spec.textures[i].atlas = L;
 			spec.textures[i].max_size = 0; /* (the page as it is: the cells' places) */
 		}
+	}
+	/* (its relief: as atlas_apply's) */
+	const AtlasCell &own = L->cells[cell];
+	if (L->width > 0 && L->height > 0) {
+		scale_relief(spec, 0.5f * ((float)own.w / (float)L->width + (float)own.h / (float)L->height));
 	}
 	return L;
 }

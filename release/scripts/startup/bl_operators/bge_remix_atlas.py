@@ -33,6 +33,11 @@ LAST_CHECK = {}
 
 
 def _material(context):
+    """the material in view (the Properties editor's), else the active
+    object's"""
+    ma = getattr(context, "material", None)
+    if ma is not None:
+        return ma
     ob = context.edit_object or context.active_object
     return ob.active_material if ob is not None else None
 
@@ -129,6 +134,25 @@ class IMAGE_OT_bge_remix_atlas_default(Operator):
     def execute(self, context):
         from bge_remix import atlas
         atlas.clear(_material(context))
+        return {'FINISHED'}
+
+
+class IMAGE_OT_bge_remix_atlas_sharp(Operator):
+    """Sharp: this preset's default tile set in Remix at 512 pixels a tile """ \
+        """(for surfaces seen up close; 256 otherwise, a quicker first start)"""
+    bl_idname = "image.bge_remix_atlas_sharp"
+    bl_label = "Sharp"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        ma = _material(context)
+        return ma is not None and bool(ma.get("bge_remix_tile"))
+
+    def execute(self, context):
+        from bge_remix import atlas
+        ma = _material(context)
+        atlas.set_sharp(ma, not atlas.is_sharp(ma))
         return {'FINISHED'}
 
 
@@ -271,6 +295,7 @@ classes = (
     IMAGE_OT_bge_remix_flipbook,
     IMAGE_OT_bge_remix_atlas_off,
     IMAGE_OT_bge_remix_atlas_default,
+    IMAGE_OT_bge_remix_atlas_sharp,
     IMAGE_OT_bge_remix_pack_images,
     IMAGE_OT_bge_remix_pick_cell,
     IMAGE_OT_bge_remix_atlas_check,

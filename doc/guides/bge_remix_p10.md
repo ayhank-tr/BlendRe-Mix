@@ -225,18 +225,26 @@ floor you can see the repeat. A tile set fixes that.
 - **The default (your decision, 7 Nov).** Every random preset (Rock,
   Gravel, Tarmac, Grass, Bark, Dirt, Sand, Snow, Concrete, the skins) gets
   16 tiles in Remix without you doing anything, old files included. The
-  tiles are 512 pixels each (512 a metre), so the atlas is 2048 pixels. The
-  bake costs about a second a preset, once: after that the game finds it in
-  its cache.
+  tiles are 256 pixels each, so the atlas is 1024 pixels. The bake costs
+  about a second a preset, once: after that the game finds it in its cache.
+- **Sharp (your decision, 7 Nov).** For a surface seen up close, press
+  *Sharp* to give its default tiles 512 pixels each (a 2048 atlas, about
+  four times the first-start cost). It is in the UV editor's *RTX Remix
+  Atlas* panel and in the material's *RTX Remix Material* panel. A size
+  chosen in *Make Tile Set* wins over both.
 - **The cost at a game's first start.** Each tile set is baked and encoded
   once, then the game finds it in its cache. The atlases are four times a
   single tile's side, so the first start takes longer before every texture
   is in Remix. The tests report it as "every texture in after ... s".
 - **Not by default.** Brick (a regular pattern) and Water (its moving
   flipbook) keep their single tile unless you choose otherwise.
-- **Your choice wins.** In the UV editor's sidebar, open *RTX Remix Atlas*:
-  *Single Tile* turns the tiles off for that material, *Make Tile Set* picks
-  16 or 81 tiles and their size, and *Default* goes back to the rule above.
+- **Your choice wins.** In the UV editor's sidebar, open *RTX Remix Atlas*
+  (or the material's *RTX Remix Material* panel): *Single Tile* turns the
+  tiles off for that material, *Make Tile Set* picks 16 or 81 tiles and
+  their size, and *Default* goes back to the rule above.
+- **The relief.** Remix measures a height map's depth across the texture,
+  so a tile, which covers only part of the atlas, gets its depth scaled
+  down to match. A tile set's relief then reads like its single tile's.
   P10.5's Apply makes a tile set for fitted presets.
 - **16 or 81?** 16 tiles cut the repeat at the tile's period to about two
   thirds of a plain tile (0.66, where a plain repeat is 1). 81 tiles cut it
@@ -322,6 +330,9 @@ its faces:
   not both.
 - **Sprite sheets have no gaps.** Remix wraps the UVs inside each frame, so
   a frame's edge can show half a pixel of the next frame up close.
+- **Relief at a grazing angle.** Remix's relief looks along the surface
+  for a little way. At a very low angle it can look past a tile's gap into
+  the next tile in the atlas, and a tile's edge can then show a faint line.
 - **Mostly hidden repeats.** With 16 tiles, the same corner patterns still
   come back often. They no longer line up on a grid, which is what made
   the repeat visible.
